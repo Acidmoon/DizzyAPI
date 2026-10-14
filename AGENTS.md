@@ -7,7 +7,8 @@
 > **给 AI agent 的使用方式**：动手前先读本文件。当本文件与代码不一致时，以本文件为准，
 > 并明确报告这处不一致，不要静默按代码走。
 >
-> 当前状态：**设计阶段，尚无代码**。
+> 当前状态：**设计阶段**。git 仓库与 cordis 引导层已落地（现状见 §4.1），
+> Go 侧尚无代码；本文件中 Go 侧的实现约定均属**目标**，不是现状。
 
 ---
 
@@ -361,6 +362,22 @@ DizzyAPI/
 └─ cmd/gatewayd/       # 组装点
 ```
 
+### 4.1 现状：cordis 引导层（TS 侧）
+
+上面那棵树是 **Go 侧的目标结构，尚未创建**。仓库当前实际存在的只有 cordis 引导层：
+
+| 路径 | 内容 | 写者 |
+|---|---|---|
+| `cordis.yml` | 引导层：loader + `plugin-cli` / `plugin-cli-cordis` / prelude | cordis（人工） |
+| `app.yml` | 插件树正文——「什么在运行」（D1） | cordis（人工） |
+| `package.json` / `pnpm-workspace.yaml` / `pnpm-lock.yaml` | 工作区与依赖；`packages/*` 是本项目插件的落点 | 人工 |
+| `tsconfig.json` / `tsconfig.base.json` | TS 编译配置；当前 `files: []`，等 `packages/*/src` 出现后再改 include | 人工 |
+| `.cordis/` | cordis 运行时目录，由 cordis 自动生成并被其自带 `.gitignore` 全量忽略 | cordis |
+
+`packages/` 目前尚不存在，但 `app.yml` 的 hmr root 与 `pnpm-workspace.yaml` 都已指向它；
+`contracts/` / `engine/` / `modules/` / `bridge/` / `cmd/` 同样尚未创建。
+在它们出现之前，本文件中一切 Go 侧或 TS 侧的模块路径都只是**目标**，不是现状。
+
 ---
 
 ## 5. 模块与契约面
@@ -613,7 +630,7 @@ CI 用 `go list -deps` 逐模块校验 `modules/*` 之间无相互 import，违�
 - 包名与版本：`cordis@4.0.0-rc.11`、`@cordisjs/plugin-loader@1.0.0-rc.8`、
   `@cordisjs/plugin-include@1.1.1`、`@cordisjs/plugin-cli@1.1.2`、
   `@cordisjs/plugin-cli-cordis@1.0.5`、`@cordisjs/plugin-timer@1.1.4`、
-  `@cordisjs/plugin-group@1.0.0`、`@cordisjs/plugin-hmr@1.1.1`、
+  `@cordisjs/plugin-group@1.0.0`、`@cordisjs/plugin-hmr@1.1.0`、
   `@cordisjs/plugin-logger-console@1.0.0`、`@cordisjs/plugin-env@1.0.1`
 - `cordis` 这个 bin **由 `cordis` 包自己的 `bin.js` 提供**，它只做三件事：
   `new Context()` → `baseUrl = cwd` → `plugin(Loader)` → `loader.create(include, { path: './cordis.yml' })`。
