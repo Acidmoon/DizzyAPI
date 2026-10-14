@@ -8,7 +8,7 @@
 > 并明确报告这处不一致，不要静默按代码走。
 >
 > 当前状态：**设计阶段**。git 仓库、cordis 引导层与第一个控制面插件
-> （`@dizzyapi/plugin-user`，见 D19 与 §4.1）已落地，Go 侧尚无代码；
+> （`@dizzyapi/plugin-user`，见 D19）已落地，Go 侧尚无代码；
 > 本文件中 Go 侧的实现约定均属**目标**，不是现状。
 
 ---
@@ -373,65 +373,16 @@ sub2api 在拿到首个上游响应前把额度显示为 `unknown`，
 
 ---
 
-## 4. 目录结构（目标）
+## 4. 现状与约定
 
-```
-DizzyAPI/
-├─ AGENTS.md           # 本文件
-├─ contracts/          # 接口 + 跨模块 DTO + 错误码（仅标准库）
-├─ engine/             # 链路执行器：按描述符跑阶段（唯一懂描述符的地方）
-├─ modules/
-│  ├─ stages/          # 阶段型：参与 LLM 请求链路，有顺序，进描述符（D16）
-│  │  ├─ auth/         #   key-auth        密钥鉴权
-│  │  ├─ quota/        #   quota-check / settle   余额门槛（> 0，不冻结）+ 结算
-│  │  ├─ audit/        #   content-audit   内容审计（可选，即插即用）
-│  │  ├─ accountsel/   #   account-select  选账号 + 粘性会话
-│  │  ├─ transport/    #   dispatch        发请求、收流；对号池无感知（D17）
-│  │  └─ usagelog/     #   usage-log       用量落库
-│  ├─ capabilities/    # 能力型：被依赖，不进描述符（D16）
-│  │  ├─ identity/     #   号池凭据与登录态、凭证刷新
-│  │  ├─ accountstate/ #   账号运行时状态（限流 / 余量 / 健康 / 冷却 / 隔离）
-│  │  ├─ ledger/       #   流水账本
-│  │  ├─ pricing/      #   定价
-│  │  ├─ ratelimit/    #   窗口限流
-│  │  ├─ tlsfp/        #   TLS 指纹模板
-│  │  ├─ proxy/        #   代理选择
-│  │  └─ payment/      #   订单与回调
-│  └─ httpapi/         # 入口与出口：对外 REST + 网关统一报错
-├─ bridge/             # UDS 桥（生命周期 / 描述符 / 命令）
-└─ cmd/gatewayd/       # 组装点
-```
+**本文件不规定目录结构。** 结构跟着实际需要走，出处是 owner 的决定，
+不是这份文档提前画好的一棵树。这一节只记录当前已经存在的事实。
 
-### 4.1 现状：cordis 引导层（TS 侧）
-
-上面那棵树是 **Go 侧的目标结构，尚未创建**。仓库当前实际存在的只有 cordis 引导层：
-
-| 路径 | 内容 | 写者 |
-|---|---|---|
-| `cordis.yml` | 引导层：loader + `plugin-cli` / `plugin-cli-cordis` / prelude | cordis（人工） |
-| `app.yml` | 插件树正文——「什么在运行」（D1） | cordis（人工） |
-| `package.json` / `pnpm-workspace.yaml` / `pnpm-lock.yaml` | 工作区与依赖；`packages/*` 是本项目插件的落点 | 人工 |
-| `tsconfig.json` / `tsconfig.base.json` | TS 配置；根 `tsconfig.json` 负责类型检查（`pnpm typecheck`），解析设置见 §10 | 人工 |
-| `.cordis/` | cordis 运行时目录，由 cordis 自动生成并被其自带 `.gitignore` 全量忽略 | cordis |
-
-cordis 侧的插件放在 `packages/*`，一个包一个插件：
-
-```
-packages/user/          # @dizzyapi/plugin-user：用户表单的唯一写者（D19）
-├─ src/
-│  ├─ index.ts          # 插件入口：默认导出 Service 类，Config 指向配置 schema
-│  ├─ service.ts        # UserService：管理面 + 余额面两组接口
-│  ├─ store.ts          # 存储适配器：内存 / 原子写的 JSON 文件（可替换为桥）
-│  ├─ schema.ts         # 配置 schema（手写的 Standard Schema，理由见 D19）
-│  ├─ model.ts          # User / UserId / UserStatus / Balance / 流水条目
-│  └─ errors.ts         # 稳定错误码
-└─ test/                # node:test：接口、边界与存储
-```
-
-`contracts/` / `engine/` / `modules/` / `bridge/` / `cmd/` 尚未创建。
-在它们出现之前，本文件中一切 Go 侧的模块路径都只是**目标**，不是现状。
-
-根 `tsconfig.json` 负责类型检查（`pnpm typecheck`），`pnpm test` 跑 `packages/*/test`。
+- `cordis.yml` / `app.yml`：cordis 引导层与插件树——「什么在运行」的权威（D1、D8）。
+- `package.json` / `pnpm-workspace.yaml` / `pnpm-lock.yaml` / `tsconfig.json` / `tsconfig.base.json`：
+  工作区与 TS 配置；`pnpm test` 与 `pnpm typecheck` 是当前的验证入口。
+- `packages/*`：本项目 cordis 插件的落点，现在只有 `@dizzyapi/plugin-user`（D19）。
+- `.cordis/` 与 `data/`：运行期产物，已被 `.gitignore` 忽略。
 
 ---
 
