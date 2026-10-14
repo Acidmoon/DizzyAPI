@@ -1,0 +1,11 @@
+# 统一换行符：仓库与工作区一律 LF。
+# 本机系统级 core.autocrlf=true 会把 checkout 出来的文件改成 CRLF，
+# 导致「未修改却出现整文件 diff」，也会让将来的 Go / 容器构建结果不一致。
+* text=auto eol=lf
+
+# 二进制文件不做换行符转换
+*.png  binary
+*.jpg  binary
+*.ico  binary
+*.woff binary
+*.woff2 binary
