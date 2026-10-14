@@ -1,0 +1,29 @@
+# DizzyAPI · cordis 启动入口
+#
+# `cordis run` 使用的是 cordis 包自带的 bin.js，它做三件事：
+#   1. new Context()，并把 baseUrl 指向 cwd
+#   2. ctx.plugin(@cordisjs/plugin-loader)
+#   3. ctx.loader.create(@cordisjs/plugin-include, { path: './cordis.yml' })  ← 就是本文件
+#
+# 所以本文件是「引导层」，不是插件树的正文。
+# 真正的插件树在 app.yml，由 @cordisjs/plugin-cli-cordis 载入。
+#
+# 结构配置的唯一写者是 cordis 侧（人工或管理台），Go 侧只读（见 AGENTS.md D8）。
+
+- name: '@cordisjs/plugin-cli'
+  config:
+    name: cordis
+
+- name: '@cordisjs/plugin-cli-cordis'
+  config:
+    path: ./app.yml
+    # daemon.enabled 是必填项，缺了会在「注册 run 命令」时抛异常
+    # （plugin-cli-cordis 第 20 行读 config.daemon.enabled），表现为
+    # `cordis run` 报 command "run" not found。
+    # 这里必须为 false：true 会 fork 出子进程做守护，
+    # 容器里进程一 fork 掉，docker run 就失去前景进程了。
+    daemon:
+      enabled: false
+    prelude:
+      - name: '@cordisjs/plugin-env'
+      - name: '@cordisjs/plugin-logger-console'

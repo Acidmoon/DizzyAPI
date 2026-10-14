@@ -1,0 +1,8 @@
+{
+  // 目前还没有 TS 源码（只有配置）。
+  // 等 packages/*/src 出现后，把下面这行换成：
+  //   "include": ["packages/*/src/**/*.ts"]
+  // 否则 tsc 会因为「没有任何输入文件」而报 TS18003。
+  "extends": "./tsconfig.base",
+  "files": []
+}

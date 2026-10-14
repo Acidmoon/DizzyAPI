@@ -1,0 +1,21 @@
+# DizzyAPI · cordis 插件树
+#
+# 这是「什么在运行」的定义（AGENTS.md D1）。
+# 每个 entry 的 id 是它在树里的稳定身份；禁用即置 disabled: true，
+# 删除即卸载——模块注册的一切都应随 effect 一起回收（AGENTS.md D5）。
+#
+# 注意：本文件属于 cordis 侧，Go 侧不得改写它（AGENTS.md D8）。
+
+- id: timer
+  name: '@cordisjs/plugin-timer'
+
+- id: development
+  label: Development
+  name: '@cordisjs/plugin-group'
+  config:
+    - id: hmr
+      name: '@cordisjs/plugin-hmr'
+      config:
+        root:
+          - app.yml
+          - packages

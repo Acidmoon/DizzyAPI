@@ -1,0 +1,673 @@
+# DizzyAPI · 项目说明书
+
+> 本文件是 DizzyAPI 的设计真相来源（single source of truth）。
+> 关于本项目的定位、架构决策、模块边界、命名与验证规则的共识，全部写在这里。
+> 新决策先改本文件，再改代码。
+>
+> **给 AI agent 的使用方式**：动手前先读本文件。当本文件与代码不一致时，以本文件为准，
+> 并明确报告这处不一致，不要静默按代码走。
+>
+> 当前状态：**设计阶段，尚无代码**。
+
+---
+
+## 1. 项目是什么
+
+DizzyAPI 是一个自托管的**模型网关**（AI API Gateway）：把上游模型服务聚合成统一入口，
+对外提供 OpenAI / Anthropic / Gemini 兼容协议，并在其上叠加账号、密钥、计费、额度与充值能力。
+
+对标项目：
+
+| 项目 | 定位 | 许可 |
+|---|---|---|
+| [sub2api](https://github.com/Wei-Shaw/sub2api) | 订阅配额分发，Claude / Codex / Grok 账号池 | LGPL-3.0 |
+| [new-api](https://github.com/QuantumNous/new-api) | 多渠道聚合与分发（One API 系） | AGPL-3.0 |
+| [yetone/magpie](https://github.com/yetone/magpie) | 本地优先的 agent 网关 | MIT |
+| [cordiverse/cordis](https://github.com/cordiverse/cordis) | 插件元框架，本项目用作编排层 | MIT |
+
+**与三者的根本差异**：DizzyAPI 把「组件编排与启用权威」交给 cordis，
+把「形成真实流量的那部分」（转发、计费、数据库）交给 Go。
+
+---
+
+## 2. 架构总纲
+
+三层：**cordis（编排与启用权威）／Go gatewayd（数据面与业务）／前端（插件形态）**。
+
+一句话原则：
+
+> **cordis 决定「什么在运行」，Go 决定「流量怎么走」。**
+
+### 2.1 职责边界
+
+| 层 | 负责 | 不负责 |
+|---|---|---|
+| cordis（TS） | 组件生命周期；启用／禁用；依赖与启动顺序；可逆回收；描述符下发与校验；管理台与设置面；热重载 | 请求处理；转发；计费；直连业务数据库 |
+| Go gatewayd | 请求链路执行（按描述符）；上游转发与流式；鉴权；额度与计费；用量落库；对外 HTTP API | 决定哪些模块被启用；组件编排 |
+| 前端插件 | 静态资源的版本与挂载；聚合已启用模块的管理页与设置卡 | 静态字节之外的任何请求路径（LLM 请求与界面请求都不经手） |
+
+### 2.2 为什么必须有 engine
+
+「cordis 禁用了某个模块，代码自然不执行」在**行为上**成立，但它需要一个落点：
+必须有人读取「该模块被禁用」这个事实，然后不调用它。这个落点就是 Go 里的 engine。
+
+engine 不是给 Go 增加灵活性，而是让 Go **服从** cordis 的决定：
+它持有 cordis 给出的启用集，只运行启用集内的阶段，其余阶段连入口都不暴露。
+
+### 2.3 三类流量与术语定义
+
+本项目中的「**请求**」一词**只指用户向网关发起的大模型请求**，
+**不指**插件、模块与 cordis 之间的通信。
+
+三类流量必须始终分开讨论：
+
+| 类型 | 固定术语 | 路径 | 频率 | 延迟敏感 | 失败语义 | 计费对象 | 落 usage_log |
+|---|---|---|---|---|---|---|---|
+| 大模型请求 | **LLM 请求**（= 用户请求、推理请求） | 客户端 → 网关 → 上游 | 高 | 是（首字延迟） | 计费相关阶段 fail-closed | **是** | **是** |
+| 桥消息 | **控制消息** | cordis ↔ Go，经 UDS 桥 | 低 | 否 | 可重试、可排队，但不可静默丢弃 | 否 | 否 |
+| 界面调用 | **界面请求** | 用户站 / 管理台 → Go REST API | 中 | 否 | 常规 HTTP 语义 | 否 | 否 |
+
+**五条绑定规则：**
+
+1. **桥不承载 LLM 请求**（v1）。桥上的消息全部是控制消息，见 D3。
+   唯一属于 LLM 请求路径的桥消息是 `stage.invoke` 及其取消消息，而 v1 不实现它们。
+2. **三类流量不得共用队列、锁、限流器、连接池与日志。**
+   尤其：控制面的一次大结果查询（如导出用量）绝不能与 LLM 请求争抢同一个队列或连接池。
+3. **契约类型命名**：`contracts.Ctx` 只用于 **LLM 请求**作用域。
+   控制消息**不得复用 `Ctx`**，它必须有自己的类型——控制消息不绑定任何客户端生命周期，
+   不随客户端断连而取消，也不携带 `Body`。
+4. **指标分开**：LLM 请求的 QPS / 首字延迟 / 并发数，与控制消息的调用次数，
+   必须分开统计。混在一起会让两块看板同时失去意义。
+5. **usage_log 只记录 LLM 请求**；控制消息与界面请求的日志另走一路。
+
+术语固定为 **LLM 请求**、**控制消息**、**界面请求** 三个词。
+不要用「请求」单独指代后两者；本文件中「请求链路」「请求路径」等词，
+一律指 LLM 请求的链路。
+
+---
+
+### 2.4 LLM 请求链路的规范形态
+
+```
+客户端 → 网关入口（域名 / 端口）
+        → engine 载入描述符，解析 profile
+  pre     → key-auth         鉴权，解析出 profile
+          → quota-check      余额门槛（> 0），放行 / 拒绝
+          → [content-audit]  可选，即插即用
+          → account-select   选账号 + 粘性会话
+  dispatch → transport       发请求、收流
+  post    → settle           按上游真实 usage 扣费
+          → usage-log        记录 cost 与用量，详细度可配置
+          → 结束
+```
+
+- 任何阶段的拒绝或失败，都由 **engine 统一渲染成 HTTP 错误返回用户**；
+  模块不自己写响应。
+- 扣费发生在 **post 相位**，不做预留（见 D11），因此链路**不需要请求级补偿机制**。
+  代价是并发窗口内可能产生超出余额的成本。
+- **合法插入点是有限的。** 以审计类模块为例，插在 `quota-check` 之前或之后语义不同：
+  之前——被拦的请求不进入计费，但审计承受全部流量；
+  之后——审计只服务通过余额门槛的请求。
+  非法插入点在**描述符校验阶段**就拒绝，而不是等到线上才发现。
+- 出站审计是另一种形态：它只能**截断 + 报错**，无法撤回已发给用户的内容；
+  流式下需边流边审，直接计入首字延迟。
+
+---
+
+## 3. 决策记录（ADR）
+
+状态只有三种：**生效** / **待定** / **已否决**。
+
+### D1 · cordis 不参与业务流程，只做组件管理与启用权威（方案甲）
+
+状态：**生效**
+
+不做用户自定义策略，因此不需要 TS 插件进入请求热路径。
+
+**已否决的替代方案（方案乙）**：TS 插件注册为链路阶段、每个请求过桥调用。
+否决理由：引入 IPC 延迟；TS 单线程成为全局瓶颈；超时与失败策略复杂度显著上升；
+而它唯一的收益（让用户自己写策略逻辑）已被明确排除，收益为零而成本很高。
+
+### D2 · 真实转发、请求、计费、数据库处理全部在 Go
+
+状态：**生效**
+
+### D3 · 桥（bridge）只做四件事
+
+状态：**生效**
+
+1. 组件生命周期：spawn / 健康检查 / drain / 重启
+2. 描述符下发与校验（cordis 是唯一写者）
+3. 命令与查询（管理台读数据、改配置）
+4. 事件上行（用量、频道故障、额度耗尽 → cordis 侧展示与告警）
+
+v1 **不实现** `stage.invoke`。描述符 schema 保留 `home: go | ts` 字段，
+v1 校验只接受 `go`，以便将来若要开乙，不必变更协议版本。
+
+### D4 · 解耦靠 contracts 包 + 单向依赖 + 组合根 + CI 强制
+
+状态：**生效**
+
+三条规则：
+
+1. `contracts/` 是唯一可被所有模块 import 的包，且它自身只允许依赖标准库。
+   一旦它引入第三方库，就会变成耦合漏斗。
+2. `modules/<x>/` 只允许 import `contracts/`，**严禁** import 其他 `modules/*`。
+3. `cmd/gatewayd/main.go` 是唯一组装点。每个模块暴露一个 `Register(reg)`，
+   去掉一行即少一个模块。
+
+规则 2 用 `go list -deps` 在 CI 中逐模块校验，违反即构建失败。
+**「解耦」必须是构建失败级别的约束，不是文档里的愿望。**
+
+### D5 · 「禁用」必须同时闸住四个入口
+
+状态：**生效**
+
+只闸住链路阶段等于**假禁用**。一个模块通常不止是链路里的一个阶段，
+它还会顺手注册别的东西。四个入口必须一起闸：
+
+1. 链路阶段（请求路径）
+2. HTTP 路由（它自己的管理接口、回调接口）
+3. 后台任务 / 定时器（对账、清理、上游健康轮询）
+4. 桥命令（管理台通过桥调用它的那些 `cmd`）
+
+这也正是 cordis 该干的活：模块注册的一切挂在 effect 上，卸载时统一回收，不留残余。
+
+### D6 · 计费不得事件驱动
+
+状态：**生效**
+
+计费必须是链路中**有序、有返回值、有显式失败策略**的阶段。
+事件没有顺序保证、没有返回值、失败无处处理，而计费要求「要么成功、要么明确拒绝」。
+
+事件只用于分析、通知、webhook 这类丢失不致命的场景。
+
+### D7 · 每个阶段的失败策略必须显式声明，默认 deny
+
+状态：**生效**
+
+计费模块故障时放行，等于敞开送 token。
+sub2api 有 `billing.circuit_breaker` 配置项，注释为 "fail closed on billing errors"，
+说明这是行业做法，不是本项目保守。
+
+### D8 · 三个存储，三个唯一写者
+
+状态：**生效**
+
+| 存储 | 内容 | 唯一写者 |
+|---|---|---|
+| cordis 的 yml | 插件树、基础设施配置 | cordis |
+| 描述符文件（挂载卷） | 链路结构、profile、启用集 | cordis |
+| 数据库 | 账户 / 额度 / 用量 / 流水 / 订单 | Go |
+
+**任何数据只有一个写者。** 需要读取时通过接口或桥命令，绝不跨层直连写入。
+
+### D9 · Go 不依赖 cordis 存活
+
+状态：**生效**
+
+- 描述符**落盘**。Go 冷启动先读文件、再接受 push。
+- cordis 挂掉时网关照常服务，只是暂时不能改配置。
+- 反方向：cordis 要能拉起挂掉的 Go，并支持 `drain` 优雅退出
+  （drain → 停止接新请求 → 跑完在途 → 退出 → 起新进程）。
+
+### D10 · 金融数值用整数最小单位或定点数，禁止浮点存余额
+
+状态：**生效**
+
+反例证据：sub2api 的 ent schema 用 `field.Float("balance")` 与 `field.Float("frozen_balance")`。
+浮点存余额在充值、扣费反复累加后必然漂移。
+
+### D11 · 后付费：扣费发生在请求成功之后，不做冻结与退款
+
+状态：**生效**
+
+owner 决策：`quota-check` 只做「是否允许发起」的**门槛判断**，
+真正的扣费在 **post 相位**按上游真实 usage 结算。
+不做预留 / 冻结，因此也不需要退款路径与请求级补偿机制。
+
+**已否决的替代方案：两阶段「预留 → 结算」。**
+参考项目证据：new-api 有 `quota_reserve.go`，sub2api 有 `frozen_balance`，
+二者都在解同一个问题——余额为 0 的用户并发开 N 条流可白拿 N 倍 token。
+本项目选择**简单性优先**，接受这一暴露面，改用两条低成本缓解措施：
+
+1. `quota-check` 的门槛要求 **可用余额 > 0**（而不是 ≥ 0）。
+2. `billed` profile 强制启用**每密钥并发上限**，这是限制并发刷量的主要手段。
+
+**已知且被接受的风险**：并发窗口内可能产生超出余额的成本，需要人工追讨或容忍损失。
+
+### D12 · 缓存 token 单独定价，且区分写入与读取
+
+状态：**生效**
+
+缓存写贵、缓存读便宜，不建模就是系统性错账。
+证据：sub2api `usage_log` 含 `cache_creation_tokens` / `cache_read_tokens`，
+且按 5m / 1h TTL 再拆两列，成本也分四路记。
+
+### D13 · 前端是一个 SPA、两块路由区，作为 cordis 插件挂载
+
+状态：**生效**
+
+- 一个 SPA，两块路由区：`/console`（用户）、`/admin`（管理员）。
+- 前端插件的职责有三：① 静态资源的安装 / 启用 / 版本 / 回滚
+  （装到挂载卷如 `web/current/`，原子换目录，保留上一版用于回滚）；
+  ② 聚合已启用模块的管理页与设置卡；
+  ③ 与 Go HTTP API 的契约。
+- 页面通过普通 REST 调 Go，**不走桥**。静态资源由 Go 或反代直接发字节，不走桥。
+- **模块被禁用时，它的管理页与设置卡必须自动消失**，不得为此改前端代码。
+  这是「极大解耦」在 UI 上真正值钱的体现。
+- 现成范例：本机 `dsh-model-fingerprint` 插件的 `dsh.client.inject`
+  （`dsh-client-ui-settings` / `dsh-client-ui-slots`）+ `./client` 导出。
+
+### D14 · 许可证纪律
+
+状态：**生效**
+
+- new-api 是 **AGPL-3.0**，sub2api 是 **LGPL-3.0**：
+  可以读它们学设计，**不得**复制其代码进本项目。
+- cordis 与 magpie 是 **MIT**：可以在其上构建与 vendor。
+
+这条不是形式主义。若本项目要闭源商用，复制 AGPL 代码会带来强制开源义务。
+
+### D15 · 模块宿主形态（进程内 vs 独立进程）
+
+状态：**待定**
+
+- 共同点：两种形态都由 cordis 决定启用，模块接口与描述符一致。
+- **关键约束**：独立进程**不能**省掉 engine。请求要按顺序穿过 quota → transport，
+  就必须有一个协调者按序调用；协调者不能是 cordis，否则退化成已否决的方案乙。
+  所以进程化只是把模块的**身体**搬出去，顺序仍然由 engine 管。
+- 倾向：P0 走**进程内**。零 IPC、零分布式事务，而「可禁用」的能力一点不少。
+  将来某个模块需要独立扩缩或崩溃隔离时，再挪到进程外，
+  engine 侧只把「本地调用」换成「过桥调用」，其余不动。
+
+### D16 · 模块分两类：阶段型与能力型
+
+状态：**生效**
+
+- **阶段型模块**：参与 LLM 请求链路，**有顺序**，出现在描述符里。
+- **能力型模块**：被其他模块依赖，**不参与链路顺序，不出现在描述符里**，
+  只受 cordis 的启用 / 禁用控制。
+
+| | 阶段型 | 能力型 |
+|---|---|---|
+| 出现在描述符 | 是 | 否 |
+| 有顺序 | 是 | 否 |
+| 例子 | `key-auth`、`quota-check`、`content-audit`、`account-select`、`transport`、`settle`、`usage-log` | `tls-fingerprint`、`proxy`、`credential-crypto`、`http-client`、`metrics` |
+
+**描述符只编排阶段型模块。** 能力型模块的启用与否体现在「谁依赖它、依赖是否满足」上。
+
+错误做法：把 TLS 指纹模板、代理选择这类能力做成链路阶段，
+会让链路里塞满一堆与请求语义无关的插槽。
+
+### D17 · 号池拆成四个模块，transport 对号池无感知
+
+状态：**生效**
+
+| 模块 | 类型 | 单一职责 |
+|---|---|---|
+| `identity` | 能力型 | 号池维护、固化登录态、持有与刷新登录凭证。**不发送请求。** |
+| `account-state` | 能力型 | 账号运行时状态：限流窗口、配额余量、健康、冷却、封禁、隔离 |
+| `account-select` | 阶段型 | 从池中选账号的策略 + 粘性会话映射（**选谁**） |
+| `transport` | 阶段型 | 发请求、收流、把结果与失败分类上报（**怎么送字节**） |
+
+**关键约束：`transport` 不感知「号池」这个概念。**
+它只接受「向某个上游、用某组凭据、发这个请求」这样的输入。
+收益：号池场景与普通 API key 频道**共用同一个 transport 模块**，一套代码两种情况。
+
+`account-state` 可参考 sub2api 的成熟做法，但注意它把状态建模成**多态而非布尔**：
+凭据无效、权限失败、限流冷却、额度耗尽、额度未知，是同一种表里的不同状态。
+sub2api 在拿到首个上游响应前把额度显示为 `unknown`，
+说明「**未知必须是一等状态**」，而不是「默认健康」。
+
+### D18 · 账号状态只有一个写者：transport 只上报事实
+
+状态：**生效**
+
+`transport` 观察到 401 / 403 / 429 / 额度耗尽时，**只能上报事实**，
+不得自己摘除、冻结或隔离账号。状态迁移由 `account-state` 决定。
+这是 D8（一个数据一个写者）在号池上的具体落实。
+
+同理，凭据刷新由 `identity` 独占：`transport` 发现凭据失效时只回报事实，不自行刷新。
+
+---
+
+## 4. 目录结构（目标）
+
+```
+DizzyAPI/
+├─ AGENTS.md           # 本文件
+├─ contracts/          # 接口 + 跨模块 DTO + 错误码（仅标准库）
+├─ engine/             # 链路执行器：按描述符跑阶段（唯一懂描述符的地方）
+├─ modules/
+│  ├─ stages/          # 阶段型：参与 LLM 请求链路，有顺序，进描述符（D16）
+│  │  ├─ auth/         #   key-auth        密钥鉴权
+│  │  ├─ quota/        #   quota-check / settle   余额门槛（> 0，不冻结）+ 结算
+│  │  ├─ audit/        #   content-audit   内容审计（可选，即插即用）
+│  │  ├─ accountsel/   #   account-select  选账号 + 粘性会话
+│  │  ├─ transport/    #   dispatch        发请求、收流；对号池无感知（D17）
+│  │  └─ usagelog/     #   usage-log       用量落库
+│  ├─ capabilities/    # 能力型：被依赖，不进描述符（D16）
+│  │  ├─ identity/     #   号池凭据与登录态、凭证刷新
+│  │  ├─ accountstate/ #   账号运行时状态（限流 / 余量 / 健康 / 冷却 / 隔离）
+│  │  ├─ ledger/       #   流水账本
+│  │  ├─ pricing/      #   定价
+│  │  ├─ ratelimit/    #   窗口限流
+│  │  ├─ tlsfp/        #   TLS 指纹模板
+│  │  ├─ proxy/        #   代理选择
+│  │  └─ payment/      #   订单与回调
+│  └─ httpapi/         # 入口与出口：对外 REST + 网关统一报错
+├─ bridge/             # UDS 桥（生命周期 / 描述符 / 命令）
+└─ cmd/gatewayd/       # 组装点
+```
+
+---
+
+## 5. 模块与契约面
+
+每个模块只 import `contracts/`，只通过注册表对外暴露能力。
+
+| 模块 | 类型 | 对外接口（进程内） | 桥命令 | 依赖 |
+|---|---|---|---|---|
+| `auth` | 阶段 | `Authenticator` | `key.list` / `key.create` / `key.revoke` | db |
+| `quota` | 阶段 | `Quota`：`Check` / `Settle` | `quota.get` / `quota.grant` | ledger, db |
+| `audit` | 阶段 | `Auditor`：`Inspect` | `audit.rules` | — |
+| `account-select` | 阶段 | `Selector`：`Pick` / `Report` | `account.list` / `account.quarantine` | account-state |
+| `transport` | 阶段 | `Transport`：`Send` | —（不在管理面暴露） | identity, tls-fingerprint |
+| `usage-log` | 阶段 | `Usage`：`Record` | `usage.query` | db |
+| `identity` | 能力 | `Identity`：`Credential` / `Refresh` | `pool.list` | db |
+| `account-state` | 能力 | `AccountState`：`Observe` / `State` | `account.state` | db, redis |
+| `ledger` | 能力 | `Ledger`：`Post` / `Balance` | `ledger.list` | db |
+| `pricing` | 能力 | `Pricing`：`Price` | `price.list` / `price.set` | db |
+| `ratelimit` | 能力 | `Limiter`：`Allow` | — | redis |
+| `tls-fingerprint` | 能力 | `ClientFactory` | — | — |
+| `proxy` | 能力 | `ProxyFor` | — | db |
+| `payment` | 能力 | `Payment`：`CreateOrder` / `HandleCallback` | `order.list` | db |
+| `httpapi` | 入口 | 路由注册 | — | 上面若干 |
+
+契约包规则：
+
+- `contracts/` 只允许依赖标准库。
+- **接口由消费者定义**，实现者不需要声明 `implements`（Go 接口是隐式实现的，
+  这比 TS 的显式 implements 更松）。
+- 跨模块 DTO 放 `contracts/`；模块私有类型留在模块内。
+
+模块间通信只有三种方式：
+
+1. **`Ctx` 数据槽**：请求路径上的首选。显式、有类型、顺序确定。
+2. **命名服务查询**：`Svc[T](ctx, "ledger")`，取的是接口而不是实现。
+3. **进程内事件**：用于通知类交互，见 D6 的使用限制。
+
+### 5.1 契约接口草案
+
+```go
+package contracts // 只依赖标准库
+
+type Phase uint8
+
+const (
+	PhasePre Phase = iota
+	PhaseDispatch
+	PhasePost
+)
+
+// 请求期上下文：模块之间只通过它交换数据，不通过直接调用
+type Ctx struct {
+	context.Context
+	ReqID string
+	Meta  RequestMeta // 小上下文：model / stream / 估算 token，不含全量 body
+	Body  BodyProvider // 惰性；只有声明 NeedBody() 的阶段才允许取
+
+	Key     *APIKey // 数据槽：前面的阶段写，后面的阶段读
+	Tenant  *Tenant
+	Profile string
+	Route   *RouteDecision
+
+	svc *ServiceSet
+}
+
+// Go 的方法不能带类型参数，所以取服务写成泛型自由函数
+func Svc[T any](c *Ctx, name string) (T, error)
+
+type Stage interface {
+	Name() string
+	Phase() Phase
+	Required() bool
+	NeedBody() bool
+	Run(*Ctx) (Decision, error)
+}
+
+type Decision struct {
+	Action  Action // Continue / Respond
+	Status  int
+	Headers map[string]string
+	Body    []byte
+}
+```
+
+模块侧只注册自己，不引用别人：
+
+```go
+// modules/quota/module.go
+func Register(reg *contracts.Registry) {
+	reg.Service("quota", New())
+	reg.Stage("quota-check", func(d contracts.Deps) (contracts.Stage, error) {
+		ledger, err := contracts.Svc[contracts.Ledger](d.Ctx, "ledger")
+		// ...
+	})
+}
+```
+
+去模块化 = 在 `main.go` 注释掉 `quota.Register(reg)` 这一行。
+此时若描述符里仍写着 `quota-check`，**必须在启动或应用配置时显式失败**，
+而不是静默跳过 —— 静默跳过等于悄悄变成免费中转，代价是真金白银。
+
+---
+
+## 6. 链路描述符
+
+**唯一写者：cordis。** Go 只校验与应用，绝不反向修改。
+
+```yaml
+version: 8
+required: [key-auth, dispatch]          # 缺失即拒绝应用
+stages:
+  key-auth:       { home: go, required: true }
+  quota-check:    { home: go, failPolicy: deny, timeoutMs: 50 }   # 只做门槛，不冻结（D11）
+  content-audit:  { home: go, failPolicy: deny, timeoutMs: 200 }  # 可选；合法插入点见 2.4
+  account-select: { home: go }
+  dispatch:       { home: go, required: true }                    # 上游调用 + 失败转移循环
+  settle:         { home: go, failPolicy: deny }
+  usage-log:      { home: go, failPolicy: allow, async: true }
+  model-map:      { home: ts, failPolicy: skip, timeoutMs: 20 }   # v1 预留不启用（D3）
+
+profiles:
+  billed:        # 收费中转
+    pre:  [key-auth, quota-check, content-audit, account-select]
+    post: [settle, usage-log]
+  free:          # 免费纯分发
+    pre:  [key-auth, account-select]
+    post: [usage-log]
+```
+
+`dispatch` 既是相位边界也是必须存在的阶段：失败转移循环发生在它内部；
+而 `post` 相位在所有出口（成功 / 上游错误 / 客户端取消 / 超时）**恰好执行一次**，
+由 `settle` 决定本次到底扣多少（失败可能为 0）。
+
+三条必须做对的细节：
+
+1. **相位要显式，不能是一条平铺的列表。**
+   至少分 `pre`（上游派发前）、`dispatch`（上游调用，内含失败转移循环）、
+   `post`（结算 / 记账 / 通知）。因为失败转移会让 `dispatch` 循环，
+   而 `post` 必须只跑一次。
+2. **profile 在请求中途解析，不能在收请求时就定死。**
+   链路先跑 `key-auth`，它返回 `profile: billed | free` 标签，
+   Go 再按该 profile 取后续阶段。否则「内部密钥免计费、外部密钥计费」
+   这种同一实例双形态就做不成，而这正是「收费中转」与「纯分发」并存的关键。
+3. **配置应用必须原子且保守。**
+   Go 收到新描述符先校验（未知阶段、缺 required 阶段、相位顺序非法、v1 的 home 只接受 go），
+   任何一条不通过就**保留旧描述符**并回报错误，绝不部分应用。
+   每个请求在 `usage_log` 里记下它使用的描述符版本，事后可审计。
+
+**能力回传**：Go 启动时通过 `hello` 上报已注册阶段清单与各自的配置 schema。
+cordis 据此校验后再下发，使管理台在结构上就无法生成非法描述符。
+
+---
+
+## 7. 桥协议
+
+- **传输**：Unix domain socket（容器内为 Linux）。
+- **帧**：长度前缀 JSON。
+- **待设计细节**：握手版本协商、背压与并发上限、每阶段超时、断连降级策略。
+
+桥上的消息分两组，**分属不同平面，不得混用**（见 2.3）。
+
+**控制消息（v1 全部实现在这一组）**
+
+| 方向 | 消息 | 用途 |
+|---|---|---|
+| Go → TS | `hello` | 协议版本、描述符版本、已注册阶段与配置 schema |
+| Go → TS | `event` | 结算完成、频道故障、额度耗尽 |
+| TS → Go | `descriptor.push` | 描述符下发，返回校验结果 |
+| TS → Go | `cmd` / `query` | `user.get` / `quota.grant` / `channel.disable` 等 |
+| TS → Go | `drain` / `resume` | 优雅排空 Go 进程 |
+
+**LLM 请求路径消息（v1 不实现，仅预留）**
+
+| 方向 | 消息 | 用途 |
+|---|---|---|
+| Go → TS | `stage.invoke` | 调用一个 `home: ts` 的阶段，每个 LLM 请求一次 |
+| Go → TS | `stage.cancel` | 客户端断连时撤销该次调用 |
+
+`stage.invoke` 与 `stage.cancel` 是桥上唯一与 **LLM 请求**相关的消息，
+其频率与「一人一次推理」同频；若将来启用，其延迟将直接计入首字延迟。
+两组消息**不得共用连接池、队列、限流器与超时策略**。
+
+设计红线：
+
+- v1 **不实现** `stage.invoke`。
+- 即使将来开乙，也不得把整个请求体塞过桥做体积传递。
+  桥上传的上下文限定为 `model / stream / messageCount / 估算 token / keyId / userId`，
+  几百字节量级。需要全量 body 的阶段必须显式声明并按其需要附送，属于罕见路径。
+- CPU 密集的阶段不许放在 TS 侧（正则扫大 body、签名、加解密）。
+  单线程 TS 上的 CPU 工作是全局瓶颈，这与语言快慢无关。
+- 每个阶段必须有 `timeoutMs` 与显式 `failPolicy`，默认 `deny`。
+- 桥断连不是崩溃，是降级：要么按策略逐个阶段处理，要么整体降级并告警，
+  绝不能让请求挂住。
+
+---
+
+## 8. 开发与验证规则
+
+### 8.1 依赖检查
+
+CI 用 `go list -deps` 逐模块校验 `modules/*` 之间无相互 import，违反即失败。
+
+### 8.2 boot 矩阵测试（P0 验收标准）
+
+逐个禁用模块（`quota-check` / `settle` / `usage-log` / `model-map` / `account-select`），
+加上全开与全关两种极端，逐个启动并断言：
+
+1. 网关仍能正常转发请求；
+2. `free` profile 的计费为零；
+3. `billed` profile 在 `settle` 缺失时**必须拒绝启动或拒绝应用配置**，
+   而不是静默免费；
+4. 被禁用模块的**四个入口全部关闭**（链路阶段、HTTP 路由、后台任务、桥命令）。
+
+**在上述测试跑绿之前，不得声称「解耦已实现」。**
+
+### 8.3 语言与写作
+
+- 文档与对话用中文；代码标识符、路径、命令用英文。
+
+---
+
+## 9. 待定项
+
+| 项 | 说明 |
+|---|---|
+| D15 模块宿主形态 | 进程内（倾向）还是独立进程 |
+| **部署形态** | 容器化，还是**仿照 DSH 的进程管理**（owner 2026-10-15 提出可不容器化）。注意 cordis CLI 自带 `daemon` 模式，即 fork + 心跳 + 自动重启，见 §10 |
+| cordis 侧运行时 | Node 已实测可用（v24.3.0）；Bun 未实测（IPC 更快、生态更薄） |
+| 支付渠道 | 倾向：兑换码 + 易支付打底，之后再接支付宝/微信/Stripe |
+| 上游模型来源范围 | 号池的**拆分方式已定**（D17）；待定的是 v1 是否就包含 OAuth 订阅账号池，还是先只做 API key 型频道 |
+| 包月 / 订阅 | 倾向 v2 再做（new-api 的 `subscription.go` 有 48KB） |
+
+---
+
+## 10. 已核实事实（截至 2026-10-15）
+
+以下数字由 `gh api repos/<repo>/git/trees/<branch>?recursive=1` 与 `contents` 接口实测得出，
+可复核。
+
+**cordis**（MIT，9.2k stars，TypeScript，仓库 2.7MB）
+- 核心包：`core` / `create` / `group` / `hmr` / `include` / `loader` / `logger-console` / `timer`
+- 它是 DeepSeek Harness 以 vendor 方式引入的插件框架
+- 文档：<https://deepseek-harness.github.io/deepseek-harness/reference/cordis-primer>
+- 五个核心概念：插件即 Service；上下文是服务容器；`inject` 声明依赖并据此决定启动顺序；
+  类型化事件（`emit` / `waterfall` / `parallel` / `serial` / `bail`）；
+  注册是可逆副作用（`ctx.effect()` / `ctx.on()`）
+
+**cordis 工程化事实（本项目实测，2026-10-15）**
+
+- 包名与版本：`cordis@4.0.0-rc.11`、`@cordisjs/plugin-loader@1.0.0-rc.8`、
+  `@cordisjs/plugin-include@1.1.1`、`@cordisjs/plugin-cli@1.1.2`、
+  `@cordisjs/plugin-cli-cordis@1.0.5`、`@cordisjs/plugin-timer@1.1.4`、
+  `@cordisjs/plugin-group@1.0.0`、`@cordisjs/plugin-hmr@1.1.1`、
+  `@cordisjs/plugin-logger-console@1.0.0`、`@cordisjs/plugin-env@1.0.1`
+- `cordis` 这个 bin **由 `cordis` 包自己的 `bin.js` 提供**，它只做三件事：
+  `new Context()` → `baseUrl = cwd` → `plugin(Loader)` → `loader.create(include, { path: './cordis.yml' })`。
+  它**不解析 argv**；`run` 子命令是由 `@cordisjs/plugin-cli-cordis` 注册的
+- `@cordisjs/plugin-cli-cordis` 的 `config.daemon.enabled` 是**必填**：
+  缺了会在注册 `run` 命令时抛异常，现象是 `cordis run` 报 `command "run" not found`
+- `daemon.enabled: true` 会 **fork 出子进程**，并带 `heartbeatTimeout` 与 `autoRestart`，
+  即 cordis 内置的守护进程能力——这正是「仿照 DSH 的进程管理」的现成实现
+- `daemon.enabled: false` 时在同进程内前台运行，`docker run` 才有前景进程
+- 源码级 HMR 需要 `node --expose-internals`；该参数**不能**放进 `NODE_OPTIONS`
+  （Node 24 实测直接报 `--expose-internals is not allowed in NODE_OPTIONS`）
+- pnpm 11：带安装脚本的依赖（如 `esbuild`）需要在 `pnpm-workspace.yaml` 的
+  `allowBuilds` 里放行，否则 `pnpm install` 以退出码 1 结束
+
+**sub2api**（LGPL-3.0，44k stars，Go + Vue 3）
+- `backend/` 3244 文件，`frontend/src/` 931 文件，`backend/internal/` 2561 文件
+- `backend/ent/schema/` 共 **40 张表**
+- 单文件 `frontend/src/views/admin/SettingsView.vue` 达 554KB
+- `user` 表字段含 `field.Float("balance")` / `field.Float("frozen_balance")`（反例，见 D10）
+- `api_key` 表含 `quota` / `quota_used` / `rate_limit_5h|1d|7d` / `usage_5h|1d|7d` 及窗口起始时间
+- `usage_log` 含四类 token（input / output / cache_creation / cache_read）与四类成本，
+  以及 `rate_multiplier` / `model_mapping_chain` / `requested_model` / `upstream_model`
+- 配置项含 `billing.circuit_breaker`（注释 "fail closed on billing errors"）
+
+**new-api**（AGPL-3.0，50k stars，Go + React 19）
+- `web/` 1426 文件，`relay/` 250，`relaykit/` 159，`controller/` 131，
+  `service/` 112，`model/` 112 文件
+- `web/src/i18n/locales/` 约 4.3MB（7 种语言）
+- `model/token.go` 字段含 `remain_quota` / `unlimited_quota` / `model_limits` /
+  `allow_ips` / `used_quota` / `group`
+- `model/user.go` 含六个第三方身份 id：github / discord / oidc / wechat / telegram / linuxdo
+- 有 `quota_reserve.go`（两阶段计费的证据）
+
+**magpie**（MIT，12.6k stars，Go）
+- `internal/gateway/` 780 文件，`internal/provider/` 630，`internal/gui/` 1288
+- 有 LAN 共享能力（每客户端命名网关密钥，带日/周/月 token 与成本上限）
+
+**本机环境**
+- `C:\Users\17740\.dsh\profiles\desktop` 是一个活的 cordis 应用实例：
+  `package.json` 的 `dsh.profile.bundles` + 空的 `cordis.yml` + `cordis.patch.yml` 组装
+- `@deepseek-ai/dsh-mcp-client` 以 `transport: stdio` 监管外部可执行文件
+  （如 `codegraph serve --mcp`、`kimi-cu.exe mcp`），
+  这是「cordis 插件监管外部进程」的现成范例，也是本项目 bridge 的原型
+- `E:\vibecoding\dsh-model-fingerprint\package.json` 的
+  `dsh.client.inject` + `./client` 导出，是「前端作为插件」的现成范例
+
+---
+
+## 11. 未验证事项（不要当成结论）
+
+- **数据面性能**：本项目未做任何压测。TS 单进程能扛多少并发流、
+  UDS 每次往返延迟、描述符落盘 + push 双通道的冷启动顺序，全部未实测。
+- 契约包按「消费者定义接口」拆分的实际手感。
+- Go 侧配置 schema 上报给 cordis 渲染设置页的可行性。
+- 桥的背压与超时策略细节。
+- 本文件第 10 节之外的所有关于参考项目的判断，均为基于 README 与 schema 的推理，
+  未做全文精读。

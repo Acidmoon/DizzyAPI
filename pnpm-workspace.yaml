@@ -1,0 +1,16 @@
+# 本项目的 cordis 插件放在 packages/*，各自是一个独立包。
+# 与 ~/.dsh/profiles/desktop 使用同一套 pnpm 设置（该组合在本机已实测可用）。
+packages:
+  - .
+  - packages/*
+
+nodeLinker: hoisted
+autoInstallPeers: false
+minimumReleaseAgeExclude:
+  - '@cordisjs/plugin-include@1.1.1'
+  - '@cordisjs/plugin-loader@1.0.0-rc.8'
+  - '@cordisjs/plugin-timer@1.1.4'
+  - cordis@4.0.0-rc.11
+allowBuilds:
+  # tsx（dev 脚本用）依赖 esbuild，其安装脚本需要放行才能拿到本机原生二进制
+  esbuild: true

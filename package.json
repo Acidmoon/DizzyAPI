@@ -1,0 +1,32 @@
+{
+  "name": "dizzyapi",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "packageManager": "pnpm@11.21.0",
+  "description": "DizzyAPI · 以 cordis 为编排层、Go 为数据面的模型网关",
+  "scripts": {
+    "start": "cordis run",
+    "dev": "cross-env NODE_ENV=development NODE_OPTIONS=\"--import tsx --import @cordisjs/unyaml\" node --expose-internals node_modules/cordis/bin.js run"
+  },
+  "dependencies": {
+    "@cordisjs/plugin-cli": "^1.1.2",
+    "@cordisjs/plugin-cli-cordis": "^1.0.5",
+    "@cordisjs/plugin-env": "^1.0.1",
+    "@cordisjs/plugin-group": "^1.0.0",
+    "@cordisjs/plugin-hmr": "^1.0.15",
+    "@cordisjs/plugin-include": "^1.1.1",
+    "@cordisjs/plugin-loader": "^1.0.0-rc.8",
+    "@cordisjs/plugin-logger-console": "^1.0.0",
+    "@cordisjs/plugin-timer": "^1.1.4",
+    "cordis": "^4.0.0-rc.11"
+  },
+  "devDependencies": {
+    "@cordisjs/unyaml": "^2.0.3",
+    "@types/node": "^25.3.5",
+    "cross-env": "^10.1.0",
+    "tsx": "npm:@cordiverse/tsx@4.19.3-fix.3",
+    "typescript": "^5.9.3"
+  }
+}
