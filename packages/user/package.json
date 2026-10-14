@@ -1,0 +1,20 @@
+{
+  "name": "@dizzyapi/plugin-user",
+  "version": "0.1.0",
+  "private": true,
+  "description": "DizzyAPI · 用户插件：用户表单（用户名 / 用户 ID / 状态 / 余额）的唯一写者，对外暴露管理面与余额面两组接口",
+  "type": "module",
+  "license": "MIT",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./package.json": "./package.json"
+  },
+  "scripts": {
+    "test": "node --import tsx --test \"test/*.test.ts\""
+  },
+  "dependencies": {
+    "cordis": "^4.0.0-rc.11"
+  }
+}

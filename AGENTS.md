@@ -7,8 +7,9 @@
 > **给 AI agent 的使用方式**：动手前先读本文件。当本文件与代码不一致时，以本文件为准，
 > 并明确报告这处不一致，不要静默按代码走。
 >
-> 当前状态：**设计阶段**。git 仓库与 cordis 引导层已落地（现状见 §4.1），
-> Go 侧尚无代码；本文件中 Go 侧的实现约定均属**目标**，不是现状。
+> 当前状态：**设计阶段**。git 仓库、cordis 引导层与第一个控制面插件
+> （`@dizzyapi/plugin-user`，见 D19 与 §4.1）已落地，Go 侧尚无代码；
+> 本文件中 Go 侧的实现约定均属**目标**，不是现状。
 
 ---
 
@@ -331,6 +332,45 @@ sub2api 在拿到首个上游响应前把额度显示为 `unknown`，
 
 同理，凭据刷新由 `identity` 独占：`transport` 发现凭据失效时只回报事实，不自行刷新。
 
+### D19 · 用户插件：控制面插件，余额的最终归属仍是 Go
+
+状态：**生效**
+
+第一个控制面插件 `@dizzyapi/plugin-user`（`packages/user`）维护**用户表单**：
+用户名、用户 ID、状态、余额。
+
+- **它不进 LLM 请求链路**，所以既不是阶段型也不是能力型模块（D16），
+  不出现在描述符里；启用与禁用由 `app.yml` 决定（D1、D5）。
+- **用户 ID 由注册顺序确定**：从 1 开始单调递增，删除后**不复用**。
+- **状态只有 `enabled` / `banned` 两态**；删除是独立操作而非状态，
+  且要求余额为零——先把钱结清，那会留下一笔流水。
+- **余额是整数最小单位**（`bigint`，1 元 = 1e6 最小单位），禁止浮点（D10）。
+- 每次改动都要自报插件名（`actor`）：越权调用按 `USER_ACTOR_FORBIDDEN` 拒绝，
+  调用本身也留在流水里。默认拒绝而非默认放行（同 D7 的取向）。
+
+三个接口面：
+
+| 面 | 方法 | 谁可以调用 |
+|---|---|---|
+| 管理面 | `create` / `rename` / `setStatus` / `remove` | 只有 `adminPlugins` 白名单里的插件（默认空 = 谁都不许） |
+| 余额面 | `adjustBalance` / `listBalanceEntries` | 默认任何插件；可用 `balanceWriters` 收窄 |
+| 只读 | `get` / `list` / `getBalance` | 任何插件 |
+
+余额变更必须带非空 `reason`，并追加一条只增不改的流水。**那只是审计附本**，
+真正的账本（额度 / 流水）仍归 Go（D8）。
+
+**关键约束：余额的权威值最终在 Go 侧。**
+`quota-check` 是 LLM 请求链路里的 Go 阶段（D11），它必须能在**不过桥**的前提下拿到余额，
+否则就退化成已否决的方案乙（D1）。因此：
+
+1. 本插件的存储是**可替换适配器**（现为内存 / 原子写的 JSON 文件）；
+   桥与 Go 就绪后换成 bridge 适配器，对外接口一字不改；
+2. 本插件**不得**演变成 LLM 请求热路径上的余额查询点；
+3. 迁移期只允许一个写者：Go 接手后，本插件立即退化为门面。
+
+**已知取舍**：在 Go 接手之前，用户表单与余额的持久化由 cordis 侧承担，
+这是对 D8 的一处**临时偏离**，迁移路径见上。
+
 ---
 
 ## 4. 目录结构（目标）
@@ -371,12 +411,27 @@ DizzyAPI/
 | `cordis.yml` | 引导层：loader + `plugin-cli` / `plugin-cli-cordis` / prelude | cordis（人工） |
 | `app.yml` | 插件树正文——「什么在运行」（D1） | cordis（人工） |
 | `package.json` / `pnpm-workspace.yaml` / `pnpm-lock.yaml` | 工作区与依赖；`packages/*` 是本项目插件的落点 | 人工 |
-| `tsconfig.json` / `tsconfig.base.json` | TS 编译配置；当前 `files: []`，等 `packages/*/src` 出现后再改 include | 人工 |
+| `tsconfig.json` / `tsconfig.base.json` | TS 配置；根 `tsconfig.json` 负责类型检查（`pnpm typecheck`），解析设置见 §10 | 人工 |
 | `.cordis/` | cordis 运行时目录，由 cordis 自动生成并被其自带 `.gitignore` 全量忽略 | cordis |
 
-`packages/` 目前尚不存在，但 `app.yml` 的 hmr root 与 `pnpm-workspace.yaml` 都已指向它；
-`contracts/` / `engine/` / `modules/` / `bridge/` / `cmd/` 同样尚未创建。
-在它们出现之前，本文件中一切 Go 侧或 TS 侧的模块路径都只是**目标**，不是现状。
+cordis 侧的插件放在 `packages/*`，一个包一个插件：
+
+```
+packages/user/          # @dizzyapi/plugin-user：用户表单的唯一写者（D19）
+├─ src/
+│  ├─ index.ts          # 插件入口：默认导出 Service 类，Config 指向配置 schema
+│  ├─ service.ts        # UserService：管理面 + 余额面两组接口
+│  ├─ store.ts          # 存储适配器：内存 / 原子写的 JSON 文件（可替换为桥）
+│  ├─ schema.ts         # 配置 schema（手写的 Standard Schema，理由见 D19）
+│  ├─ model.ts          # User / UserId / UserStatus / Balance / 流水条目
+│  └─ errors.ts         # 稳定错误码
+└─ test/                # node:test：接口、边界与存储
+```
+
+`contracts/` / `engine/` / `modules/` / `bridge/` / `cmd/` 尚未创建。
+在它们出现之前，本文件中一切 Go 侧的模块路径都只是**目标**，不是现状。
+
+根 `tsconfig.json` 负责类型检查（`pnpm typecheck`），`pnpm test` 跑 `packages/*/test`。
 
 ---
 
@@ -408,6 +463,11 @@ DizzyAPI/
 - **接口由消费者定义**，实现者不需要声明 `implements`（Go 接口是隐式实现的，
   这比 TS 的显式 implements 更松）。
 - 跨模块 DTO 放 `contracts/`；模块私有类型留在模块内。
+
+以上是 **Go 侧模块面**。cordis 侧的控制面插件（如 `@dizzyapi/plugin-user`，见 D19）
+不属于这张表：它们不 import `contracts/`，不进描述符，只受 `app.yml` 的启用 / 禁用控制。
+它们暴露的是进程内服务（消费者用 `ctx.inject(['user'], …)` 取），
+将来需要跨进程时再以桥命令暴露。
 
 模块间通信只有三种方式：
 
@@ -609,6 +669,7 @@ CI 用 `go list -deps` 逐模块校验 `modules/*` 之间无相互 import，违�
 | 支付渠道 | 倾向：兑换码 + 易支付打底，之后再接支付宝/微信/Stripe |
 | 上游模型来源范围 | 号池的**拆分方式已定**（D17）；待定的是 v1 是否就包含 OAuth 订阅账号池，还是先只做 API key 型频道 |
 | 包月 / 订阅 | 倾向 v2 再做（new-api 的 `subscription.go` 有 48KB） |
+| 用户表单与余额的存储归属 | 现由 cordis 侧插件承载（D19，JSON 存储）；Go 与桥就绪后迁到 Go，插件退化为门面 |
 
 ---
 
@@ -644,6 +705,22 @@ CI 用 `go list -deps` 逐模块校验 `modules/*` 之间无相互 import，违�
   （Node 24 实测直接报 `--expose-internals is not allowed in NODE_OPTIONS`）
 - pnpm 11：带安装脚本的依赖（如 `esbuild`）需要在 `pnpm-workspace.yaml` 的
   `allowBuilds` 里放行，否则 `pnpm install` 以退出码 1 结束
+- **cordis 的类型声明不能配 `nodenext` 解析**：`lib/*.d.ts` 用的是无扩展名相对再导出
+  （`export * from './context'`），`moduleResolution: node16 / nodenext` 会判 TS2834；
+  叠加 `skipLibCheck` 时这些再导出被静默丢弃，现象是 `import { Service } from 'cordis'`
+  报「模块没有导出成员 Service」。本仓库根 `tsconfig.json` 因此显式覆盖为
+  `module: preserve` + `moduleResolution: bundler`
+- **服务类里不能用 `#` 私有字段**：cordis 以 Proxy 作为 receiver 调用服务方法，
+  `#` 字段的 brand check 会抛「Receiver must be an instance of class」；
+  服务成员要用 TS 的 `private`（`plugin-hmr`、`plugin-timer` 都是这样写的）
+- **workspace 包必须出现在根 `package.json` 的依赖里**（`"@dizzyapi/plugin-user": "workspace:*"`）
+  才会被 link 进 `node_modules`；否则 `app.yml` 里按包名写的插件解析不到
+- **插件配置的校验入口是 `Config['~standard'].validate(config)`**，必须同步返回；
+  任何 Standard Schema 实现都行，不一定是 schemastery
+- **Node 24 + tsx 下 `node --test <目录>` 会把目录当成模块入口**：要用 glob，
+  即 `node --import tsx --test "packages/*/test/*.test.ts"`
+- `cordis run` 可加载 TS 插件包，前提是 `NODE_OPTIONS` 里带 `--import tsx`
+  （`pnpm dev` 已带；`pnpm start` 未带，因此 `start` 目前还跑不了 TS 源码）
 
 **sub2api**（LGPL-3.0，44k stars，Go + Vue 3）
 - `backend/` 3244 文件，`frontend/src/` 931 文件，`backend/internal/` 2561 文件

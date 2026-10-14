@@ -1,8 +1,26 @@
 {
-  // 目前还没有 TS 源码（只有配置）。
-  // 等 packages/*/src 出现后，把下面这行换成：
-  //   "include": ["packages/*/src/**/*.ts"]
-  // 否则 tsc 会因为「没有任何输入文件」而报 TS18003。
+  // 类型检查覆盖 packages/* 的源码与测试，且不产出任何文件。
+  //
+  // 为什么不用 tsconfig.base 里的 nodenext：cordis 发布的 lib/*.d.ts 用的是无扩展名的
+  // 相对再导出（`export * from './context'`），node16/nodenext 解析会判定
+  // TS2834「相对导入需要显式扩展名」；配合 skipLibCheck 这些再导出会被静默丢弃，
+  // 结果就是 `import { Service } from 'cordis'` 报「没有导出成员 Service」。
+  // bundler 解析宽容这一处，因此这里显式覆盖。运行期仍是 Node ESM（由 tsx / 类型剥离执行），
+  // 源码里的相对导入依旧写全 `.ts` 扩展名。
+  //
+  // tsconfig.base 里的 composite / emitDeclarationOnly 是为将来的声明产出准备的，
+  // 这里显式关掉：否则 tsc 会把 .d.ts 吐回 src 目录里。
+  // allowImportingTsExtensions：源码里 import './x.ts' 用的是真实文件名，只有配 noEmit 才允许。
   "extends": "./tsconfig.base",
-  "files": []
+  "compilerOptions": {
+    "module": "preserve",
+    "moduleResolution": "bundler",
+    "composite": false,
+    "declaration": false,
+    "emitDeclarationOnly": false,
+    "incremental": false,
+    "noEmit": true,
+    "allowImportingTsExtensions": true
+  },
+  "include": ["packages/*/src/**/*.ts", "packages/*/test/**/*.ts"]
 }
