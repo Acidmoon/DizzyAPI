@@ -27,7 +27,39 @@
   config:
     # 相对路径按 cordis 的 baseUrl（即工作目录）解析；/data 已在 .gitignore 里
     dataPath: ./data/users.json
-    # 「指定插件」：只有管理员管理插件可以创建 / 禁用 / 删除用户、改用户名。
-    # 其余插件调用管理面一律拒绝；该插件尚未编写，白名单先立着。
+    # 「指定插件」：只有列在这里的插件可以创建 / 禁用 / 删除用户、改用户名。
+    # admin 是管理员管理插件（尚未编写）；auth 是鉴权插件——注册的最后一步要建用户。
     adminPlugins:
       - '@dizzyapi/plugin-admin'
+      - '@dizzyapi/plugin-auth'
+
+# 外部通讯模块：把验证码之类的消息发出去。
+# 现在只做邮件。transport 为 log 时只把消息写进日志（含验证码），仅限开发环境；
+# 上生产改成 smtp，并配好 smtp.host / port / secure 与 from。
+- id: mailer
+  name: '@dizzyapi/plugin-mailer'
+  config:
+    transport: log
+    from: no-reply@dizzyapi.local
+    heloDomain: dizzyapi.local
+    # 改成 smtp 时的样子（密码建议走 smtp.passEnv 指向的环境变量，别写进本文件）：
+    # transport: smtp
+    # heloDomain: dizzyapi.local
+    # smtp:
+    #   host: smtp.example.com
+    #   port: 587
+    #   secure: false          # 587 = 连上后 STARTTLS；465 = secure: true
+    #   user: robot@example.com
+    #   passEnv: DIZZYAPI_SMTP_PASS
+
+# 鉴权插件：注册（邮箱验证码）、登录（密码）、会话签发与校验。
+# 界面请求的身份来自它；LLM 请求的身份来自 API key（D20），不经过这里。
+- id: auth
+  name: '@dizzyapi/plugin-auth'
+  config:
+    dataPath: ./data/auth.json
+    # 必须与 user.adminPlugins 里的名字一致，否则注册会在建用户那一步被拒绝
+    userActor: '@dizzyapi/plugin-auth'
+    codeTtlMs: 600000          # 验证码 10 分钟有效
+    sessionTtlMs: 604800000    # 会话 7 天
+    loginMaxFailures: 10       # 15 分钟内连续失败 10 次即暂时拒绝登录

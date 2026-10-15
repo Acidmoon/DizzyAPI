@@ -371,6 +371,44 @@ sub2api 在拿到首个上游响应前把额度显示为 `unknown`，
 **已知取舍**：在 Go 接手之前，用户表单与余额的持久化由 cordis 侧承担，
 这是对 D8 的一处**临时偏离**，迁移路径见上。
 
+### D20 · 身份认证分两个平面：LLM 请求靠 API key，界面请求靠会话
+
+状态：**生效**
+
+**结论：不给 LLM 请求再加一层「身份认证」。** API key 本身就是身份，而且是唯一合适的载体：
+
+- 对外承诺的是 OpenAI / Anthropic / Gemini 兼容协议，官方 SDK 与各种工具只会发
+  `Authorization: Bearer <key>`，协议里没有放会话令牌 / Cookie 的位置。
+- LLM 请求对延迟敏感。若每个请求都要带会话令牌回 cordis 侧校验一次，就等于把
+  D1 已否决的方案乙换个名字搬回来，还平白把「身份」拆成两份状态。
+- key → user 的解析放在 Go 的 **`key-auth` 阶段**（数据面、不过桥），结果写进
+  `Ctx.Key` / `Ctx.User`；`usage_log` 因此能记录 userId，`settle` 也据此扣费
+  （§2.4、§5、D8）。这就是「请求与用户关联」的实现方式。
+
+**界面请求（用户站 / 管理台）另算**：浏览器里没有 API key 的生命周期，
+用「邮箱 + 密码登录 → 会话令牌」，由控制面插件 `@dizzyapi/plugin-auth` 签发与校验。
+两者是不同平面，不得混用（§2.3）：
+
+| | LLM 请求 | 界面请求 |
+|---|---|---|
+| 身份载体 | API key | 会话令牌 |
+| 校验者 | Go `key-auth` 阶段（尚未实现） | `@dizzyapi/plugin-auth` |
+| 生命周期 | 长期，可吊销 | 有时限，可登出 |
+
+`@dizzyapi/plugin-auth` 的职责：注册（邮箱验证码）、登录（密码校验）、会话签发与校验、
+改密与找回。它**不进 LLM 请求链路**。几条纪律：
+
+- 密码用 scrypt（node:crypto）加盐存储；验证码与会话令牌**只存哈希**，
+  存储文件泄漏不等于会话被拿走。
+- 发信经外部通讯模块 `@dizzyapi/plugin-mailer`，用 `inject` 声明依赖：
+  没有 mailer 就不启动——验证码发不出去时注册必须失败，不能静默放过（D7 的取向）。
+- 注册与找回的受理阶段**不透露邮箱是否已注册**（防账号枚举）；
+  登录时「邮箱不存在」与「密码错误」返回同一个错误，并各走一次等价的派生运算拉平耗时。
+- API key 的签发 / 吊销**不在本插件**，按 §5 归 Go 的 `auth` 模块
+  （`key.list` / `key.create` / `key.revoke`）。v1 尚无 Go，故 key 相关能力暂缺。
+- 与 D19 同样的临时偏离：凭证与会话数据现在落在 cordis 侧的 JSON 存储里，
+  最终写者仍是 Go 的数据库（D8）；插件接口保持不变，迁移时只换存储适配器。
+
 ---
 
 ## 4. 现状与约定
@@ -381,7 +419,9 @@ sub2api 在拿到首个上游响应前把额度显示为 `unknown`，
 - `cordis.yml` / `app.yml`：cordis 引导层与插件树——「什么在运行」的权威（D1、D8）。
 - `package.json` / `pnpm-workspace.yaml` / `pnpm-lock.yaml` / `tsconfig.json` / `tsconfig.base.json`：
   工作区与 TS 配置；`pnpm test` 与 `pnpm typecheck` 是当前的验证入口。
-- `packages/*`：本项目 cordis 插件的落点，现在只有 `@dizzyapi/plugin-user`（D19）。
+- `packages/*`：本项目 cordis 插件的落点，现在有 `@dizzyapi/plugin-user`（D19）、
+  `@dizzyapi/plugin-auth` 与 `@dizzyapi/plugin-mailer`（D20），以及它们共用的
+  `@dizzyapi/plugin-kit`（配置 schema + 原子写 JSON 存储）。
 - `.cordis/` 与 `data/`：运行期产物，已被 `.gitignore` 忽略。
 
 ---
@@ -621,6 +661,8 @@ CI 用 `go list -deps` 逐模块校验 `modules/*` 之间无相互 import，违�
 | 上游模型来源范围 | 号池的**拆分方式已定**（D17）；待定的是 v1 是否就包含 OAuth 订阅账号池，还是先只做 API key 型频道 |
 | 包月 / 订阅 | 倾向 v2 再做（new-api 的 `subscription.go` 有 48KB） |
 | 用户表单与余额的存储归属 | 现由 cordis 侧插件承载（D19，JSON 存储）；Go 与桥就绪后迁到 Go，插件退化为门面 |
+| API key 的签发与 key→user 映射 | 按 §5 归 Go 的 `auth` 模块（`key.*` 桥命令）；v1 没有 Go，所以 key 相关能力暂缺，LLM 请求的真实鉴权要等它 |
+| 凭证 / 会话的存储归属 | 同 D19：现在落在 cordis 侧（D20），最终写者仍是 Go 的数据库 |
 
 ---
 
@@ -672,6 +714,16 @@ CI 用 `go list -deps` 逐模块校验 `modules/*` 之间无相互 import，违�
   即 `node --import tsx --test "packages/*/test/*.test.ts"`
 - `cordis run` 可加载 TS 插件包，前提是 `NODE_OPTIONS` 里带 `--import tsx`
   （`pnpm dev` 已带；`pnpm start` 未带，因此 `start` 目前还跑不了 TS 源码）
+- **类插件的 `inject` 必须写成静态属性**（`static inject = ['user', 'mailer']`），
+  不能写成模块级 `export const inject`：loader 取的是模块的默认导出（类），看不到模块级导出。
+  写错的现象是插件在依赖就绪前就构造（「mailer 明明启用了却报 mailer 不在运行」）。
+  依赖没满足时 fiber 停在 PENDING——不构造，也不报错
+- **类插件必须有默认导出**：`export default SomeService`。少了它，按包名加载会报
+  「invalid plugin, expect function or object with an "apply" method, received object」
+- **socket 读取必须先攒行再等人读**：SMTP 的问候语常常在监听器挂上之前就到了，
+  若「没人等就丢弃」，表现为莫名超时（本项目踩过一次）
+- **`Array.isArray` 收窄不了 `T | readonly X[]`**：直接用会让假分支仍带联合类型；
+  需要一个 `value is readonly X[]` 的断言函数
 
 **sub2api**（LGPL-3.0，44k stars，Go + Vue 3）
 - `backend/` 3244 文件，`frontend/src/` 931 文件，`backend/internal/` 2561 文件
