@@ -1,6 +1,7 @@
 import { isAbsolute, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { Service, type Context } from 'cordis'
+import { describeError, type JsonStore } from '@dizzyapi/plugin-kit'
 import { UserError } from './errors.ts'
 import {
   BALANCE_MINOR_UNITS_PER_YUAN,
@@ -13,7 +14,7 @@ import {
   type UserStatus,
 } from './model.ts'
 import { USER_CONFIG_SCHEMA, type ResolvedUserConfig } from './schema.ts'
-import { jsonFileStore, memoryStore, type UserStore } from './store.ts'
+import { createUserStore, type UserSnapshot } from './store.ts'
 
 export interface CreateUserInput {
   readonly name: string
@@ -50,7 +51,7 @@ export class UserService extends Service {
   static Config = USER_CONFIG_SCHEMA
 
   readonly config: ResolvedUserConfig
-  private store: UserStore
+  private store: JsonStore<UserSnapshot>
   private adminPlugins: readonly string[]
   private balanceWriters: readonly string[] | undefined
   private state: State | undefined
@@ -62,7 +63,7 @@ export class UserService extends Service {
     this.config = config
     this.adminPlugins = config.adminPlugins ?? []
     this.balanceWriters = config.balanceWriters
-    this.store = config.dataPath ? jsonFileStore(resolveDataPath(ctx, config.dataPath)) : memoryStore()
+    this.store = createUserStore(resolveDataPath(ctx, config.dataPath))
 
     const logger = ctx.logger('user')
     logger.info(
@@ -265,15 +266,22 @@ export class UserService extends Service {
   private loadState(): Promise<State> {
     if (this.state) return Promise.resolve(this.state)
     if (!this.loading) {
-      const loading = this.store.load().then((snapshot) => {
-        const state: State = {
-          nextId: snapshot.nextId,
-          users: [...snapshot.users],
-          entries: [...snapshot.entries],
-        }
-        this.state = state
-        return state
-      })
+      const loading = this.store
+        .read()
+        .then((snapshot) => {
+          const state: State = {
+            nextId: snapshot.nextId,
+            users: [...snapshot.users],
+            entries: [...snapshot.entries],
+          }
+          this.state = state
+          return state
+        })
+        .catch((error: unknown) => {
+          // 编解码自己抛的 UserError（数据损坏）原样带出，其余包成「读不出来」
+          if (error instanceof UserError) throw error
+          throw new UserError('USER_STORE_UNREADABLE', `读取用户数据失败：${describeError(error)}`)
+        })
       this.loading = loading
       loading.catch(() => {
         // 加载失败不缓存，下一次调用可以重试
@@ -284,7 +292,7 @@ export class UserService extends Service {
   }
 
   private async persist(state: State): Promise<void> {
-    await this.store.save({
+    await this.store.write({
       nextId: state.nextId,
       users: [...state.users],
       entries: [...state.entries],
@@ -307,8 +315,8 @@ function noop(): void {
   // 只用来把队列里失败的 promise 咽掉，避免污染下一次 task
 }
 
-function resolveDataPath(ctx: Context, path: string): string {
-  if (isAbsolute(path)) return path
+function resolveDataPath(ctx: Context, path: string | undefined): string | undefined {
+  if (path === undefined || isAbsolute(path)) return path
   const base = ctx.baseUrl ? fileURLToPath(ctx.baseUrl) : process.cwd()
   return resolve(base, path)
 }

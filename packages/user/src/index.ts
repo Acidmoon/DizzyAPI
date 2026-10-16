@@ -29,17 +29,16 @@ export {
   USER_CONFIG_SCHEMA,
   /** cordis 读取的配置 schema；校验不过就不构造插件。 */
   USER_CONFIG_SCHEMA as Config,
-  resolveUserConfig,
   validateUserConfig,
   type ResolvedUserConfig,
   type UserConfig,
 } from './schema.ts'
 export {
+  createUserStore,
   emptySnapshot,
-  jsonFileStore,
-  memoryStore,
+  snapshotCodec,
+  SNAPSHOT_VERSION,
   type UserSnapshot,
-  type UserStore,
 } from './store.ts'
 export { type CreateUserInput } from './service.ts'
 

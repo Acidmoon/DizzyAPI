@@ -326,7 +326,7 @@ sub2api 在拿到首个上游响应前把额度显示为 `unknown`，
 | `@dizzyapi/plugin-user` | `user` | 控制面 | 用户表单（用户名 / 用户 ID / 状态 / 余额）的唯一写者 |
 | `@dizzyapi/plugin-auth` | `auth` | 控制面 | 注册（邮箱验证码）、登录（密码校验）、会话签发与校验 |
 | `@dizzyapi/plugin-mailer` | `mailer` | 外部通讯模块 | 把消息发出去（邮件）；`log`（开发）与 `smtp` 两种投递 |
-| `@dizzyapi/plugin-kit` | — | 内部底座 | 配置 schema（手写 Standard Schema）+ 原子写 JSON 存储；目前 mailer / auth 在用，user 尚未迁移 |
+| `@dizzyapi/plugin-kit` | — | 内部底座 | 配置 schema（手写 Standard Schema）+ 原子写 JSON 存储；mailer / auth / user 共用 |
 
 ### 4.1 接口面
 
@@ -368,10 +368,7 @@ sub2api 在拿到首个上游响应前把额度显示为 `unknown`，
    因此本节这些插件**不得**演变成 LLM 请求热路径上的查询点。
 3. **API key 的签发 / 吊销不在这些插件里**，按 §5 归 Go 的 `auth` 模块（`key.*`）。
    v1 没有 Go，所以 LLM 请求目前还无法真正鉴权。
-4. **user 还没用上 kit**：`packages/user/src/schema.ts` 与 `packages/user/src/store.ts`
-   各有一份与 kit 功能重复的手写实现。kit 的 `JsonCodec` 本就是为 user 那种 bigint
-   编解码准备的，迁移是笔等值替换——但那是独立的一次改动，等 owner 说了再做。
-5. **`app.yml` 里的 `@dizzyapi/plugin-admin` 只是占位**：包还不存在，
+4. **`app.yml` 里的 `@dizzyapi/plugin-admin` 只是占位**：包还不存在，
    它被列在 `user.adminPlugins` 里是给将来的管理员插件占位。别在文档或代码里当成已存在的东西引用。
 
 ---

@@ -1,15 +1,19 @@
+import {
+  checkConfigObject,
+  readString,
+  readStringArray,
+  standardSchema,
+  type StandardIssue,
+} from '@dizzyapi/plugin-kit'
+
 /**
  * 插件配置与其校验。
  *
  * cordis 在构造插件前会调用 `Config['~standard'].validate(config)`，
- * 校验不过就不构造插件。这里**手写**这段 Standard Schema 实现，而不是引入
- * schemastery：本插件目前是仓库里唯一需要 schema 的地方，为一个配置面引入
- * 依赖不划算。等有第二个、第三个插件要 schema 时，再把这段提升为共享包，
- * 或统一换成 schemastery。
+ * 校验不过就不构造插件。这里用的是 kit 里那份手写的 Standard Schema 实现。
  *
  * 校验策略是保守的：未知字段直接报错，不做静默忽略——配置写错必须立刻可见。
  */
-
 export interface UserConfig {
   /**
    * 用户数据落盘路径。省略则纯内存，进程退出即丢。
@@ -39,79 +43,18 @@ export interface ResolvedUserConfig {
   readonly balanceWriters?: readonly string[] | undefined
 }
 
-export interface StandardIssue {
-  readonly message: string
-}
-
-export interface StandardSchema<Output> {
-  readonly '~standard': {
-    readonly version: 1
-    readonly vendor: string
-    readonly validate: (
-      value: unknown,
-    ) => { readonly value: Output } | { readonly issues: readonly StandardIssue[] }
-  }
-}
-
 const KNOWN_KEYS: readonly string[] = ['dataPath', 'adminPlugins', 'balanceWriters']
 
-export function validateUserConfig(value: unknown): readonly StandardIssue[] {
-  const issues: StandardIssue[] = []
+export function validateUserConfig(value: unknown): ResolvedUserConfig | readonly StandardIssue[] {
+  const { raw, issues } = checkConfigObject(value, KNOWN_KEYS)
 
-  if (value === undefined || value === null) return issues
-  if (typeof value !== 'object' || Array.isArray(value)) {
-    return [{ message: '用户插件配置必须是一个对象' }]
-  }
+  const dataPath = readString(raw, 'dataPath', issues)
+  const adminPlugins = readStringArray(raw, 'adminPlugins', issues)
+  const balanceWriters = readStringArray(raw, 'balanceWriters', issues)
 
-  const raw = value as Record<string, unknown>
+  if (issues.length > 0) return issues
 
-  for (const key of Object.keys(raw)) {
-    if (!KNOWN_KEYS.includes(key)) {
-      issues.push({ message: `未知配置项：${key}（可用项：${KNOWN_KEYS.join(' / ')}）` })
-    }
-  }
-
-  if (raw.dataPath !== undefined) {
-    if (typeof raw.dataPath !== 'string' || raw.dataPath.trim() === '') {
-      issues.push({ message: 'dataPath 必须是非空字符串' })
-    }
-  }
-
-  for (const key of ['adminPlugins', 'balanceWriters'] as const) {
-    const entry = raw[key]
-    if (entry === undefined) continue
-    if (!Array.isArray(entry)) {
-      issues.push({ message: `${key} 必须是字符串数组` })
-      continue
-    }
-    for (const name of entry) {
-      if (typeof name !== 'string' || name.trim() === '') {
-        issues.push({ message: `${key} 里的元素必须是非空字符串` })
-        break
-      }
-    }
-  }
-
-  return issues
+  return { dataPath, adminPlugins: adminPlugins ?? [], balanceWriters }
 }
 
-export function resolveUserConfig(value: unknown): ResolvedUserConfig {
-  const raw = (value ?? {}) as Record<string, unknown>
-  return {
-    dataPath: typeof raw.dataPath === 'string' ? raw.dataPath : undefined,
-    adminPlugins: Array.isArray(raw.adminPlugins) ? [...(raw.adminPlugins as string[])] : [],
-    balanceWriters: Array.isArray(raw.balanceWriters) ? [...(raw.balanceWriters as string[])] : undefined,
-  }
-}
-
-export const USER_CONFIG_SCHEMA: StandardSchema<ResolvedUserConfig> = {
-  '~standard': {
-    version: 1,
-    vendor: 'dizzyapi',
-    validate(value: unknown) {
-      const issues = validateUserConfig(value)
-      if (issues.length > 0) return { issues }
-      return { value: resolveUserConfig(value) }
-    },
-  },
-}
+export const USER_CONFIG_SCHEMA = standardSchema<ResolvedUserConfig>('dizzyapi', validateUserConfig)

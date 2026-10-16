@@ -99,6 +99,9 @@ importers:
 
   packages/user:
     dependencies:
+      '@dizzyapi/plugin-kit':
+        specifier: workspace:*
+        version: link:../kit
       cordis:
         specifier: ^4.0.0-rc.11
         version: 4.0.0-rc.11(@cordisjs/plugin-include@1.1.1)(@cordisjs/plugin-loader@1.0.0-rc.8)
