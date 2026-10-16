@@ -2,7 +2,7 @@
   "name": "@dizzyapi/plugin-auth",
   "version": "0.1.0",
   "private": true,
-  "description": "DizzyAPI · 鉴权插件：注册（邮箱验证码）、登录（密码校验）、会话签发与校验；界面请求的身份来自它，LLM 请求的身份来自 API key（D20）",
+  "description": "DizzyAPI · 鉴权插件：注册（邮箱验证码）、登录（密码校验）、会话签发与校验；界面请求的身份来自它，LLM 请求的身份来自 API key",
   "type": "module",
   "license": "MIT",
   "main": "./src/index.ts",

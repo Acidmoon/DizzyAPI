@@ -4,7 +4,7 @@ import type { User, UserId } from '@dizzyapi/plugin-user'
  * 凭证与会话的领域模型。
  *
  * 这里存的是「谁能证明自己是某个用户」：邮箱、密码哈希、会话。
- * 用户的业务属性（用户名 / 状态 / 余额）不在这里，在用户插件（D19）。
+ * 用户的业务属性（用户名 / 状态 / 余额）不在这里，在用户插件。
  */
 export interface Credential {
   readonly userId: UserId

@@ -53,7 +53,7 @@
     #   passEnv: DIZZYAPI_SMTP_PASS
 
 # 鉴权插件：注册（邮箱验证码）、登录（密码）、会话签发与校验。
-# 界面请求的身份来自它；LLM 请求的身份来自 API key（D20），不经过这里。
+# 界面请求的身份来自它；LLM 请求的身份来自 API key，不经过这里。
 - id: auth
   name: '@dizzyapi/plugin-auth'
   config:

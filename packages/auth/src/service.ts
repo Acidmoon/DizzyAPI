@@ -47,7 +47,7 @@ const LAST_SEEN_WRITE_INTERVAL_MS = 60_000
 /**
  * 鉴权插件：注册（邮箱验证码）、登录（密码校验）、会话签发与校验。
  *
- * **它不进 LLM 请求链路**（AGENTS.md D20）。LLM 请求的身份是 API key，
+ * **它不进 LLM 请求链路**。LLM 请求的身份是 API key，
  * 由 Go 的 key-auth 阶段在数据面解析；这里服务的是**界面请求**：
  * 用户在浏览器里没有 API key 的生命周期，需要「登录 → 会话令牌」。
  *

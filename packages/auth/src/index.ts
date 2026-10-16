@@ -3,7 +3,7 @@
  *
  * 服务名是 `auth`，字段名是 `user` / `mailer`（`inject` 声明）。
  * 它服务的是**界面请求**：注册、登录、会话校验。
- * **LLM 请求的身份不经过这里**——那是 API key 的活，由 Go 的 key-auth 阶段解析（D20）。
+ * **LLM 请求的身份不经过这里**——那是 API key 的活，由 Go 的 key-auth 阶段解析。
  */
 import { AuthService } from './service.ts'
 
