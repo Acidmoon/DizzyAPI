@@ -5,72 +5,234 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>DizzyAPI · 控制面板</title>
 <style>
+  /* 简约线条：只用 1px 细线、留白与一套等宽字。
+     没有填充色块、没有投影、没有圆角——层次靠线的疏密与字重，不靠盒子。 */
   :root {
-    --bg: #0f1115; --panel: #171a21; --panel-2: #1e222b; --line: #2c313d;
-    --fg: #e6e9ef; --dim: #9aa3b2; --accent: #6aa9ff; --ok: #4ec9a5;
-    --warn: #e2b341; --bad: #e0605e; --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    --bg: #0a0b0d;
+    --raise: #101114;
+    --fg: #e8e8e8;
+    --fg-2: #b9bdc4;
+    --dim: #7e838b;
+    --faint: #555a61;
+    --line: #1e2126;
+    --line-2: #30343a;
+    --accent: #9dc1e8;
+    --ok: #86b58c;
+    --warn: #c9a86a;
+    --bad: #cf8380;
+    --mono: ui-monospace, SFMono-Regular, "Cascadia Mono", Menlo, Consolas, monospace;
+    --sans: system-ui, "Segoe UI", "Microsoft YaHei", sans-serif;
   }
   * { box-sizing: border-box; }
-  body { margin: 0; background: var(--bg); color: var(--fg); font: 14px/1.5 system-ui, "Segoe UI", "Microsoft YaHei", sans-serif; }
-  header { display: flex; align-items: center; gap: 16px; padding: 12px 20px; border-bottom: 1px solid var(--line); position: sticky; top: 0; background: var(--bg); z-index: 5; }
-  header h1 { font-size: 15px; margin: 0; font-weight: 600; letter-spacing: .3px; }
+  body {
+    margin: 0; background: var(--bg); color: var(--fg);
+    font: 13px/1.65 var(--sans);
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* ── 顶栏 ───────────────────────────────────────────── */
+  header {
+    position: sticky; top: 0; z-index: 6;
+    display: flex; align-items: center; gap: 18px;
+    height: 56px; padding: 0 32px;
+    background: var(--bg); border-bottom: 1px solid var(--line);
+  }
+  header h1 {
+    margin: 0; font-size: 12px; font-weight: 600;
+    letter-spacing: .14em; color: var(--fg-2);
+  }
   header .spacer { flex: 1; }
-  nav { display: flex; gap: 4px; padding: 10px 20px 0; flex-wrap: wrap; }
-  nav button { background: transparent; color: var(--dim); border: 1px solid transparent; border-bottom: none; padding: 7px 14px; border-radius: 8px 8px 0 0; cursor: pointer; font: inherit; }
-  nav button.active { background: var(--panel); color: var(--fg); border-color: var(--line); }
-  main { padding: 16px 20px 60px; }
+  header .uptime { font-family: var(--mono); font-size: 12px; color: var(--faint); }
+
+  /* 连接状态：一个细圈 + 文字，不用色块。 */
+  .status { display: inline-flex; align-items: center; gap: 7px; font-size: 12px; color: var(--dim); }
+  .status::before { content: ''; width: 5px; height: 5px; border: 1px solid currentColor; border-radius: 50%; }
+  .status.ok { color: var(--ok); }
+  .status.bad { color: var(--bad); }
+
+  /* ── 导航：下划线式页签 ─────────────────────────────── */
+  nav {
+    position: sticky; top: 56px; z-index: 5;
+    display: flex; gap: 26px; padding: 0 32px;
+    background: var(--bg); border-bottom: 1px solid var(--line);
+  }
+  nav button {
+    appearance: none; background: none; border: 0; border-bottom: 1px solid transparent;
+    margin-bottom: -1px; padding: 12px 0 10px;
+    color: var(--dim); font: inherit; font-size: 13px; cursor: pointer;
+    transition: color .15s, border-color .15s;
+  }
+  nav button:hover { color: var(--fg-2); }
+  nav button.active { color: var(--fg); border-bottom-color: var(--accent); }
+
+  /* ── 版面 ───────────────────────────────────────────── */
+  main { max-width: 1180px; margin: 0 auto; padding: 28px 32px 90px; }
   section { display: none; }
-  section.active { display: block; }
-  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; margin-bottom: 14px; }
-  .card h2 { font-size: 13px; margin: 0 0 10px; color: var(--dim); font-weight: 600; text-transform: uppercase; letter-spacing: .6px; }
-  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
-  .kv { display: flex; justify-content: space-between; gap: 12px; padding: 3px 0; }
-  .kv span:first-child { color: var(--dim); }
-  .kv span:last-child { font-family: var(--mono); text-align: right; }
-  .pill { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 12px; border: 1px solid var(--line); color: var(--dim); }
-  .pill.ok { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 45%, transparent); }
-  .pill.bad { color: var(--bad); border-color: color-mix(in srgb, var(--bad) 45%, transparent); }
-  .pill.warn { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 45%, transparent); }
+  section.active { display: block; animation: enter .18s ease-out; }
+  @keyframes enter { from { opacity: 0; transform: translateY(2px); } to { opacity: 1; transform: none; } }
+
+  .page-head {
+    display: flex; align-items: flex-end; gap: 16px;
+    padding-bottom: 14px; border-bottom: 1px solid var(--line-2); margin-bottom: 16px;
+  }
+  .page-head h2 { margin: 0; font-size: 15px; font-weight: 600; letter-spacing: .02em; }
+  .page-head .lead { margin: 3px 0 0; font-size: 12px; color: var(--dim); }
+  .page-head .grow { flex: 1; }
+
+  /* 通用区块：只有一条上/下细线，没有底色与边框。 */
+  .card { padding: 16px 0 18px; border-bottom: 1px solid var(--line); }
+  .card:last-child { border-bottom: 0; }
+  .card h2 {
+    margin: 0 0 12px; font-size: 11px; font-weight: 500;
+    color: var(--faint); letter-spacing: .16em;
+  }
+
+  /* ── 概览 ───────────────────────────────────────────── */
+  /* 用 1px 的格子缝当分隔线：换行时也不会留下半截竖线。 */
+  .stats {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+    gap: 1px; background: var(--line);
+    border-bottom: 1px solid var(--line-2); margin-bottom: 8px;
+  }
+  .stat { background: var(--bg); padding: 16px 18px; }
+  .stat-title { font-size: 11px; color: var(--faint); letter-spacing: .16em; margin-bottom: 8px; }
+  .kv { display: flex; justify-content: space-between; gap: 16px; padding: 3px 0; }
+  .kv span:first-child { color: var(--dim); font-size: 12px; }
+  .kv span:last-child { font-family: var(--mono); font-size: 12.5px; text-align: right; }
+
+  /* 状态标记：一小段横线 + 小写状态词，颜色只落在线上。 */
+  .state { display: inline-flex; align-items: center; gap: 7px; font-family: var(--mono); font-size: 12px; color: var(--dim); white-space: nowrap; }
+  .state::before { content: ''; width: 14px; height: 1px; background: currentColor; flex: none; }
+  .state.ok { color: var(--ok); }
+  .state.warn { color: var(--warn); }
+  .state.bad { color: var(--bad); }
+
+  /* ── 表 ─────────────────────────────────────────────── */
+  table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+  th, td { text-align: left; padding: 9px 8px; border-bottom: 1px solid var(--line); vertical-align: top; overflow-wrap: anywhere; }
+  th { padding-top: 0; font-size: 11px; font-weight: 500; color: var(--faint); letter-spacing: .1em; }
+  tbody tr { transition: background .12s; }
+  tbody tr:hover { background: color-mix(in srgb, var(--fg) 3%, transparent); }
+  tr:last-child td { border-bottom: 0; }
+
+  .chips { display: flex; flex-wrap: wrap; gap: 5px; }
+  .chip {
+    font-family: var(--mono); font-size: 11.5px; line-height: 1.7;
+    color: var(--fg-2); border: 1px solid var(--line-2); padding: 0 5px;
+  }
+  .chip.missing { color: var(--bad); border-color: color-mix(in srgb, var(--bad) 38%, transparent); }
   .mono { font-family: var(--mono); }
   .dim { color: var(--dim); }
-  table { width: 100%; border-collapse: collapse; table-layout: fixed; }
-  th, td { text-align: left; padding: 7px 8px; border-bottom: 1px solid var(--line); vertical-align: top; overflow-wrap: anywhere; }
-  th { color: var(--dim); font-weight: 500; font-size: 12px; }
-  tr:last-child td { border-bottom: none; }
-  .chips { display: flex; flex-wrap: wrap; gap: 4px; }
-  .chip { font-family: var(--mono); font-size: 12px; background: var(--panel-2); border: 1px solid var(--line); border-radius: 5px; padding: 0 6px; }
-  .chip.missing { color: var(--bad); border-color: color-mix(in srgb, var(--bad) 45%, transparent); }
-  button.act { background: var(--panel-2); color: var(--fg); border: 1px solid var(--line); border-radius: 7px; padding: 4px 10px; cursor: pointer; font: inherit; font-size: 13px; }
-  button.act:hover:not(:disabled) { border-color: var(--accent); }
-  button.act:disabled { opacity: .45; cursor: not-allowed; }
-  button.danger { color: var(--bad); border-color: color-mix(in srgb, var(--bad) 45%, transparent); }
-  button.danger:hover:not(:disabled) { border-color: var(--bad); }
-  .toolbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
-  .svgwrap { overflow: auto; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; }
-  svg text { fill: var(--fg); font-family: system-ui, sans-serif; font-size: 12px; }
-  svg text.dim { fill: var(--dim); }
-  .field { display: grid; grid-template-columns: minmax(180px, 280px) 1fr auto; gap: 10px; align-items: center; padding: 6px 0; border-bottom: 1px solid var(--line); }
-  .field:last-child { border-bottom: none; }
-  .field input[type=text], .field input[type=number], .field select { width: 100%; background: var(--panel-2); border: 1px solid var(--line); color: var(--fg); border-radius: 7px; padding: 5px 8px; font: inherit; font-family: var(--mono); font-size: 13px; }
-  .field label { color: var(--fg); }
-  .field .hint { color: var(--dim); font-size: 12px; }
-  .nshead { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
-  .nshead h3 { margin: 0; font-size: 14px; font-family: var(--mono); }
-  .toast { position: fixed; right: 18px; bottom: 18px; max-width: 420px; background: var(--panel-2); border: 1px solid var(--line); border-left: 3px solid var(--accent); padding: 10px 14px; border-radius: 8px; box-shadow: 0 8px 30px #0008; display: none; }
+
+  /* ── 按钮：一律描边幽灵按钮 ─────────────────────────── */
+  button.ghost {
+    appearance: none; background: transparent; color: var(--fg-2);
+    border: 1px solid var(--line-2); border-radius: 0;
+    padding: 4px 12px; font: inherit; font-size: 12px; letter-spacing: .02em;
+    cursor: pointer; transition: color .15s, border-color .15s;
+  }
+  button.ghost:hover:not(:disabled) { color: var(--fg); border-color: var(--fg-2); }
+  button.ghost:disabled { color: var(--faint); border-color: var(--line); cursor: not-allowed; }
+  button.ghost.danger { color: var(--bad); border-color: color-mix(in srgb, var(--bad) 32%, transparent); }
+  button.ghost.danger:hover:not(:disabled) { color: var(--bad); border-color: var(--bad); }
+  button.ghost.danger:disabled { color: var(--faint); border-color: var(--line); }
+
+  .toolbar { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+  .toolbar .note { color: var(--dim); font-size: 12px; }
+  .toolbar .grow { flex: 1; }
+
+  /* ── 依赖图 ─────────────────────────────────────────── */
+  .svgwrap { overflow: auto; border-top: 1px solid var(--line); padding-top: 8px; }
+  svg text { fill: var(--fg-2); font-family: var(--mono); font-size: 11.5px; }
+  svg text.dim { fill: var(--faint); }
+
+  /* ── 设置 ───────────────────────────────────────────── */
+  .ns { padding: 18px 0 4px; border-bottom: 1px solid var(--line-2); }
+  .ns:last-child { border-bottom: 0; }
+  .ns-head { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; margin-bottom: 6px; }
+  .ns-name { font-family: var(--mono); font-size: 15px; color: var(--fg); }
+  .ns-pkg { font-family: var(--mono); font-size: 11.5px; color: var(--faint); }
+  .ns-head .grow { flex: 1; }
+  .ns-rev { font-family: var(--mono); font-size: 11.5px; color: var(--faint); }
+  .ns-head button.ghost { padding: 3px 10px; }
+
+  .field {
+    display: grid; grid-template-columns: minmax(180px, 240px) minmax(0, 1fr) minmax(88px, 120px);
+    gap: 20px; align-items: center;
+    padding: 9px 0; border-bottom: 1px solid var(--line);
+  }
+  .field:last-child { border-bottom: 0; }
+  .field-key { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+  .field-key label { font-size: 13px; color: var(--fg-2); }
+  .field-key .path { font-family: var(--mono); font-size: 11px; color: var(--faint); overflow-wrap: anywhere; }
+  .field-value { min-width: 0; }
+  .field-meta { font-size: 11px; color: var(--faint); text-align: right; letter-spacing: .02em; }
+  .ro { font-family: var(--mono); font-size: 12.5px; color: var(--dim); overflow-wrap: anywhere; }
+
+  /* 输入框只有一条底线：聚焦时那条线变成强调色。 */
+  .field input[type=text], .field input[type=number], .field select {
+    width: 100%; background: transparent; color: var(--fg);
+    border: 0; border-bottom: 1px solid var(--line-2); border-radius: 0;
+    padding: 4px 0; font: inherit; font-family: var(--mono); font-size: 13px;
+    transition: border-color .15s;
+  }
+  .field input:focus, .field select:focus { outline: none; border-bottom-color: var(--accent); }
+  .field input::placeholder { color: var(--faint); }
+  .field select { appearance: none; -webkit-appearance: none; cursor: pointer; padding-right: 16px; }
+  .field select option { background: var(--raise); color: var(--fg); }
+  .select-wrap { position: relative; }
+  .select-wrap::after {
+    content: ''; position: absolute; right: 2px; top: 50%;
+    width: 6px; height: 6px; border-right: 1px solid var(--dim); border-bottom: 1px solid var(--dim);
+    transform: translateY(-70%) rotate(45deg); pointer-events: none;
+  }
+  .field input[type=checkbox] {
+    appearance: none; -webkit-appearance: none; display: block;
+    width: 14px; height: 14px; margin: 2px 0; background: transparent;
+    border: 1px solid var(--line-2); cursor: pointer;
+    transition: background .12s, border-color .12s;
+  }
+  .field input[type=checkbox]:checked { background: var(--accent); border-color: var(--accent); }
+  .field input[type=checkbox]:focus-visible { outline: 1px solid var(--accent); outline-offset: 2px; }
+
+  /* ── 浮层 ───────────────────────────────────────────── */
+  .toast {
+    position: fixed; right: 28px; bottom: 28px; z-index: 60; max-width: 420px;
+    background: var(--raise); border: 1px solid var(--line-2); border-left: 2px solid var(--accent);
+    padding: 10px 14px; font-size: 12.5px; display: none;
+  }
   .toast.show { display: block; }
   .toast.bad { border-left-color: var(--bad); }
-  .empty { color: var(--dim); padding: 12px 0; }
-  .closed { position: fixed; inset: 0; background: var(--bg); display: none; place-items: center; z-index: 50; text-align: center; }
+
+  .empty { color: var(--faint); padding: 14px 0; font-size: 12.5px; }
+
+  .closed { position: fixed; inset: 0; z-index: 70; background: var(--bg); display: none; place-items: center; text-align: center; }
   .closed.show { display: grid; }
+  .closed .inner { padding: 24px 40px; border-top: 1px solid var(--line-2); border-bottom: 1px solid var(--line-2); }
+  .closed h2 { margin: 0 0 6px; font-size: 16px; font-weight: 600; letter-spacing: .08em; }
+  .closed p { margin: 0; color: var(--dim); font-size: 12.5px; }
+
+  @media (max-width: 760px) {
+    header, nav, main { padding-left: 16px; padding-right: 16px; }
+    header { gap: 12px; }
+    header h1 { letter-spacing: .06em; }
+    nav { gap: 18px; overflow-x: auto; }
+    .stats { grid-template-columns: 1fr 1fr; }
+    .field { grid-template-columns: 1fr; gap: 6px; padding: 12px 0; }
+    .field-meta { text-align: left; }
+    .ns-head { align-items: flex-start; }
+    .ns-head .grow { display: none; }
+    header .uptime { display: none; }
+  }
 </style>
 </head>
 <body>
 <header>
   <h1>DizzyAPI · 控制面板</h1>
-  <span id="conn" class="pill">连接中…</span>
+  <span id="conn" class="status">连接中…</span>
   <span class="spacer"></span>
-  <span id="uptime" class="dim mono"></span>
-  <button class="act danger" id="shutdown">退出并关闭</button>
+  <span id="uptime" class="uptime"></span>
+  <button class="ghost danger" id="shutdown">退出并关闭</button>
 </header>
 
 <nav>
@@ -83,66 +245,72 @@
 
 <main>
   <section id="tab-overview" class="active">
-    <div class="grid">
-      <div class="card"><h2>进程</h2><div id="ov-process" class="empty">—</div></div>
-      <div class="card"><h2>内存</h2><div id="ov-memory" class="empty">—</div></div>
-      <div class="card"><h2>CPU</h2><div id="ov-cpu" class="empty">—</div></div>
-      <div class="card"><h2>事件循环</h2><div id="ov-loop" class="empty">—</div></div>
+    <div class="page-head">
+      <div>
+        <h2>概览</h2>
+        <p class="lead">进程、内存、CPU 与事件循环；SSE 每 2 秒推一次。</p>
+      </div>
+    </div>
+    <div class="stats">
+      <div class="stat"><div class="stat-title">进程</div><div id="ov-process" class="empty">—</div></div>
+      <div class="stat"><div class="stat-title">内存</div><div id="ov-memory" class="empty">—</div></div>
+      <div class="stat"><div class="stat-title">CPU</div><div id="ov-cpu" class="empty">—</div></div>
+      <div class="stat"><div class="stat-title">事件循环</div><div id="ov-loop" class="empty">—</div></div>
     </div>
     <div class="card"><h2>插件状态</h2><div id="ov-plugins" class="empty">—</div></div>
   </section>
 
   <section id="tab-graph">
-    <div class="card" style="padding:0; overflow:hidden">
-      <div class="toolbar" style="padding:12px 16px">
-        <strong>插件 ↔ 服务</strong>
-        <span class="dim">线：插件提供该服务；箭头：插件消费该服务</span>
-        <span class="spacer" style="flex:1"></span>
-        <button class="act" id="graph-refresh">刷新</button>
+    <div class="page-head">
+      <div>
+        <h2>依赖图</h2>
+        <p class="lead">实线：插件提供该服务；细箭头：插件消费该服务。静态依赖，不是运行期调用计数。</p>
       </div>
-      <div class="svgwrap" id="graph-wrap"><div class="empty" style="padding:16px">加载中…</div></div>
+      <span class="grow"></span>
+      <button class="ghost" id="graph-refresh">刷新</button>
     </div>
+    <div class="svgwrap" id="graph-wrap"><div class="empty">加载中…</div></div>
   </section>
 
   <section id="tab-plugins">
-    <div class="card">
-      <div class="toolbar" style="margin-bottom:10px">
-        <strong>插件入口</strong>
-        <span class="dim">id 是 app.yml 里的 stable 身份；重启会级联到注入它的插件</span>
-        <span class="spacer" style="flex:1"></span>
-        <button class="act" id="plugins-refresh">刷新</button>
+    <div class="page-head">
+      <div>
+        <h2>插件入口</h2>
+        <p class="lead">id 是 app.yml 里的稳定身份；重启会级联到注入它的插件。</p>
       </div>
-      <div id="plugins-table"></div>
+      <span class="grow"></span>
+      <button class="ghost" id="plugins-refresh">刷新</button>
     </div>
+    <div id="plugins-table"></div>
   </section>
 
   <section id="tab-services">
-    <div class="card">
-      <div class="toolbar" style="margin-bottom:10px">
-        <strong>暴露的服务</strong>
-        <span class="dim">方法按原型链枚举（含 TS private——运行时都能调，只有类型层看不见）；静态依赖，不是运行期调用计数</span>
-        <span class="spacer" style="flex:1"></span>
-        <button class="act" id="services-refresh">刷新</button>
+    <div class="page-head">
+      <div>
+        <h2>暴露的服务</h2>
+        <p class="lead">方法按原型链枚举（含 TS private——运行时都能调，只有类型层看不见）。</p>
       </div>
-      <div id="services-table"></div>
+      <span class="grow"></span>
+      <button class="ghost" id="services-refresh">刷新</button>
     </div>
+    <div id="services-table"></div>
   </section>
 
   <section id="tab-settings">
-    <div class="card">
-      <div class="toolbar" style="margin-bottom:10px">
-        <strong>运行期设置</strong>
-        <span class="dim">app.yml 是基线；这里写的是覆盖文件</span>
-        <span class="spacer" style="flex:1"></span>
-        <button class="act" id="settings-refresh">刷新</button>
+    <div class="page-head">
+      <div>
+        <h2>运行期设置</h2>
+        <p class="lead">app.yml 是基线；这里写的是覆盖文件。输入留空 = 删除该键。</p>
       </div>
-      <div id="settings-list" class="empty">加载中…</div>
+      <span class="grow"></span>
+      <button class="ghost" id="settings-refresh">刷新</button>
     </div>
+    <div id="settings-list" class="empty">加载中…</div>
   </section>
 </main>
 
 <div id="toast" class="toast"></div>
-<div id="closed" class="closed"><div><h2>面板已关闭</h2><p class="dim">进程已退出，可以关掉这个页面了。</p></div></div>
+<div id="closed" class="closed"><div class="inner"><h2>面板已关闭</h2><p>进程已退出，可以关掉这个页面了。</p></div></div>
 
 <script>
 'use strict'
@@ -178,6 +346,18 @@ function kvList(pairs) {
     box.append(el('div', { class: 'kv' }, el('span', { text: k }), value))
   }
   return box
+}
+
+/** 状态标记：横线 + 状态词。`kind` 只影响那根线的颜色。 */
+function stateSpan(text, kind) {
+  return el('span', { class: kind ? `state ${kind}` : 'state', text })
+}
+
+function stateKind(state) {
+  if (state === 'active') return 'ok'
+  if (state === 'failed') return 'bad'
+  if (state === 'disabled') return ''
+  return 'warn'
 }
 
 function chip(text, missing) {
@@ -261,8 +441,7 @@ function renderOverview(o) {
   const box = el('div', { class: 'chips' })
   for (const [state, n] of Object.entries(counts)) {
     if (!n) continue
-    const cls = state === 'active' ? 'pill ok' : state === 'failed' ? 'pill bad' : state === 'disabled' ? 'pill' : 'pill warn'
-    box.append(el('span', { class: cls, text: `${state} ${n}` }))
+    box.append(stateSpan(`${state} ${n}`, stateKind(state)))
   }
   $('ov-plugins').replaceChildren(box)
 }
@@ -272,6 +451,9 @@ async function loadOverview() {
 }
 
 // ─────────────────────────────── 依赖图 ───────────────────────────────
+const LINE = '#3a3f46'
+const LINE_HOT = '#8fb2d4'
+
 function renderGraph(graph) {
   const wrap = $('graph-wrap')
   const plugins = graph.plugins.filter((p) => p.kind === 'plugin')
@@ -283,8 +465,10 @@ function renderGraph(graph) {
 
   const rowH = 30
   const padY = 24
-  const colW = 210
-  const width = 900
+  // 按容器实际宽度画：写死 900 会在窄窗口里把右侧的服务名推出可视区。
+  // 标签页隐藏时 clientWidth 是 0，退到 560；切换过来会重新渲染一次。
+  const width = Math.max(560, Math.floor(wrap.clientWidth) || 0)
+  const colW = Math.min(210, Math.max(140, Math.round(width * 0.25)))
   const height = Math.max(plugins.length, services.length) * rowH + padY * 2
   const leftX = 40
   const rightX = width - colW - 40
@@ -297,7 +481,7 @@ function renderGraph(graph) {
   svg.setAttribute('height', String(height))
   svg.setAttribute('viewBox', `0 0 ${width} ${height}`)
   const defs = document.createElementNS(NS, 'defs')
-  defs.innerHTML = '<marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#6aa9ff"/></marker>'
+  defs.innerHTML = `<marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="${LINE_HOT}"/></marker>`
   svg.append(defs)
 
   const addText = (x, y, text, dim, anchor, parent = svg) => {
@@ -315,22 +499,22 @@ function renderGraph(graph) {
     const mx = (x1 + x2) / 2
     line.setAttribute('d', `M ${x1} ${y1} C ${mx} ${y1}, ${mx} ${y2}, ${x2} ${y2}`)
     line.setAttribute('fill', 'none')
-    line.setAttribute('stroke', arrow ? '#3c4a63' : '#2f6fb8')
-    line.setAttribute('stroke-width', arrow ? '1' : '1.6')
+    line.setAttribute('stroke', arrow ? LINE_HOT : LINE)
+    line.setAttribute('stroke-width', '1')
     if (arrow) line.setAttribute('marker-end', 'url(#arrow)')
     svg.append(line)
   }
 
   for (const plugin of plugins) {
     const y = pluginY.get(plugin.id)
-    const color = plugin.state === 'active' ? '#4ec9a5' : plugin.state === 'failed' ? '#e0605e' : '#9aa3b2'
+    const color = plugin.state === 'active' ? '#86b58c' : plugin.state === 'failed' ? '#cf8380' : '#7e838b'
     // 悬停能看包名：prelude / include 造出来的 entry 只有随机 id，光看 id 认不出是谁。
     const group = document.createElementNS(NS, 'g')
     const title = document.createElementNS(NS, 'title')
     title.textContent = `${plugin.package} · ${plugin.state}${plugin.kind === 'group' ? ' · 分组' : ''}`
     group.append(title)
     const dot = document.createElementNS(NS, 'circle')
-    dot.setAttribute('cx', String(leftX)); dot.setAttribute('cy', String(y)); dot.setAttribute('r', '3.5')
+    dot.setAttribute('cx', String(leftX)); dot.setAttribute('cy', String(y)); dot.setAttribute('r', '2.5')
     dot.setAttribute('fill', color)
     group.append(dot)
     addText(leftX + 10, y, plugin.id, false, undefined, group)
@@ -383,7 +567,7 @@ function renderPlugins(graph) {
   }
   const table = el('table')
   table.append(
-    colgroup(['18%', '24%', '8%', '18%', '18%', '14%']),
+    colgroup(['17%', '24%', '11%', '17%', '18%', '13%']),
     el('thead', {}, el('tr', {},
       el('th', { text: 'id' }), el('th', { text: '包' }), el('th', { text: '状态' }),
       el('th', { text: '提供' }), el('th', { text: '注入' }), el('th', { text: '' }))),
@@ -391,7 +575,6 @@ function renderPlugins(graph) {
 
   const body = el('tbody')
   for (const plugin of graph.plugins) {
-    const stateClass = plugin.state === 'active' ? 'pill ok' : plugin.state === 'failed' ? 'pill bad' : plugin.state === 'disabled' ? 'pill' : 'pill warn'
     const provides = el('div', { class: 'chips' }, ...plugin.provides.map((name) => chip(name)))
     const injects = el('div', { class: 'chips' }, ...plugin.declaredInject.map((name) => chip(name, !plugin.resolvedInject.includes(name))))
 
@@ -399,7 +582,7 @@ function renderPlugins(graph) {
     if (plugin.kind === 'group') {
       button = el('span', { class: 'dim', text: '分组' })
     } else {
-      button = el('button', { class: 'act', text: '重启' })
+      button = el('button', { class: 'ghost', text: '重启' })
       button.disabled = !plugin.restartable
       if (!plugin.restartable && plugin.restartBlockedReason) button.title = plugin.restartBlockedReason
       button.addEventListener('click', () => restartPlugin(plugin))
@@ -408,7 +591,7 @@ function renderPlugins(graph) {
     body.append(el('tr', {},
       el('td', {}, el('span', { class: 'mono', text: plugin.id }), plugin.kind === 'group' ? el('span', { class: 'dim', text: '  (group)' }) : undefined),
       el('td', { class: 'mono dim', text: plugin.package }),
-      el('td', {}, el('span', { class: stateClass, text: plugin.state })),
+      el('td', {}, stateSpan(plugin.state, stateKind(plugin.state))),
       el('td', {}, provides),
       el('td', {}, injects),
       el('td', {}, button),
@@ -479,17 +662,32 @@ function renderServices(graph) {
 // ─────────────────────────────── 设置 ───────────────────────────────
 let settingsData = null
 
+/**
+ * 造一个可写字段的控件。
+ * 返回 `{ node, control }`：`node` 是放进版面的东西（下拉框要套一层画那个细箭头），
+ * `control` 才是读值 / 比初始值的那个元素。
+ */
 function fieldInput(field) {
   let input
   if (field.kind === 'boolean') {
     input = el('input', { attrs: { type: 'checkbox' } })
     input.checked = field.value === true
-  } else if (Array.isArray(field.values)) {
+    input.dataset.path = field.path
+    input.dataset.kind = field.kind
+    input.dataset.initial = String(input.checked)
+    return { node: input, control: input }
+  }
+  if (Array.isArray(field.values)) {
     input = el('select')
     input.append(el('option', { text: '（未设置）', attrs: { value: '' } }))
     for (const value of field.values) input.append(el('option', { text: value, attrs: { value } }))
     input.value = field.value === undefined ? '' : String(field.value)
-  } else if (field.kind === 'integer' || field.kind === 'number') {
+    input.dataset.path = field.path
+    input.dataset.kind = field.kind
+    input.dataset.initial = input.value
+    return { node: el('div', { class: 'select-wrap' }, input), control: input }
+  }
+  if (field.kind === 'integer' || field.kind === 'number') {
     input = el('input', { attrs: { type: 'number', placeholder: '留空 = 删除该键' } })
     if (field.value !== undefined) input.value = String(field.value)
     if (field.min !== undefined) input.min = String(field.min)
@@ -505,8 +703,8 @@ function fieldInput(field) {
   input.dataset.kind = field.kind
   // 记住原始值：保存时**只提交改过的字段**。否则「保存」会把整份基线抄进覆盖文件，
   // 往后再改 app.yml 的基线就永远不生效了（覆盖把旧值钉死了）。
-  input.dataset.initial = input.type === 'checkbox' ? String(input.checked) : input.value
-  return input
+  input.dataset.initial = input.value
+  return { node: input, control: input }
 }
 
 function readInputValue(input) {
@@ -529,50 +727,47 @@ function renderSettings(data) {
     return
   }
 
-  const cards = []
+  const blocks = []
   for (const ns of data.namespaces) {
-    const card = el('div', { class: 'card' })
-    const status = []
-    status.push(el('span', { class: ns.active ? 'pill ok' : 'pill warn', text: ns.active ? 'active' : ns.disabled ? 'disabled' : 'inactive' }))
-    if (ns.overridden) status.push(el('span', { class: 'pill warn', text: '有覆盖' }))
-    if (ns.pending) status.push(el('span', { class: 'pill bad', text: `待应用（${ns.pendingReason}）` }))
-
-    const head = el('div', { class: 'nshead' },
-      el('h3', { text: ns.ns }),
-      el('span', { class: 'mono dim', text: ns.plugin }),
-      ...status,
-      el('span', { style: 'flex:1' }),
-      el('span', { class: 'dim mono', text: ns.revision ? `rev ${ns.revision}` : '未覆盖' }))
-
-    const save = el('button', { class: 'act', text: '保存' })
+    const save = el('button', { class: 'ghost', text: '保存' })
     save.disabled = !ns.writable
     if (!ns.writable) save.title = '这个命名空间没有可写字段'
-    const reset = el('button', { class: 'act danger', text: '恢复基线' })
+    const reset = el('button', { class: 'ghost danger', text: '恢复基线' })
     reset.disabled = !ns.overridden
-    head.append(save, reset)
+
+    const head = el('div', { class: 'ns-head' },
+      el('span', { class: 'ns-name', text: ns.ns }),
+      el('span', { class: 'ns-pkg', text: ns.plugin }),
+      stateSpan(ns.active ? 'active' : ns.disabled ? 'disabled' : 'inactive', ns.active ? 'ok' : 'warn'),
+      ns.overridden ? stateSpan('有覆盖', 'warn') : undefined,
+      ns.pending ? stateSpan(`待应用（${ns.pendingReason}）`, 'bad') : undefined,
+      el('span', { class: 'grow' }),
+      el('span', { class: 'ns-rev', text: ns.revision ? `rev ${ns.revision}` : '未覆盖' }),
+      save, reset)
 
     const inputs = []
-    const fields = el('div')
+    const fields = el('div', { class: 'fields' })
     for (const field of ns.fields) {
-      const input = field.writable ? fieldInput(field) : undefined
-      if (input) inputs.push(input)
+      const built = field.writable ? fieldInput(field) : undefined
+      if (built) inputs.push(built.control)
       let current
       if (field.secret) {
-        current = field.writable && input ? input : el('span', { class: 'dim', text: field.configured ? '已配置（不可见）' : '未配置' })
-      } else if (input) {
-        current = input
+        current = built ? built.node : el('span', { class: 'ro', text: field.configured ? '已配置（不可见）' : '未配置' })
+      } else if (built) {
+        current = built.node
       } else {
-        current = el('span', { class: 'mono dim', text: field.value === undefined ? '—' : JSON.stringify(field.value) })
+        current = el('span', { class: 'ro', text: field.value === undefined ? '—' : JSON.stringify(field.value) })
       }
       const hintParts = []
       if (field.writable) hintParts.push('可写')
       if (field.secret) hintParts.push('秘密')
       if (field.credentialRef) hintParts.push('凭据引用')
-      const hint = el('span', { class: 'hint', text: hintParts.join(' · ') })
       fields.append(el('div', { class: 'field' },
-        el('div', {}, el('label', { text: field.label }), el('div', { class: 'dim mono', text: field.path })),
-        current,
-        hint))
+        el('div', { class: 'field-key' },
+          el('label', { text: field.label }),
+          el('span', { class: 'path', text: field.path })),
+        el('div', { class: 'field-value' }, current),
+        el('div', { class: 'field-meta', text: hintParts.join(' · ') })))
     }
     if (!ns.fields.length) fields.append(el('div', { class: 'empty', text: '没有字段' }))
 
@@ -601,10 +796,9 @@ function renderSettings(data) {
       } catch (error) { report(error) }
     })
 
-    card.append(head, fields)
-    cards.push(card)
+    blocks.push(el('div', { class: 'ns' }, head, fields))
   }
-  list.replaceChildren(...cards)
+  list.replaceChildren(...blocks)
 }
 
 async function loadSettings() {
@@ -630,6 +824,10 @@ for (const button of document.querySelectorAll('nav button')) {
   button.addEventListener('click', () => showTab(button.dataset.tab))
 }
 $('graph-refresh').addEventListener('click', loadGraph)
+// 图的宽度是按容器量出来的，窗口变了要重画（只在图这一页可见时）。
+window.addEventListener('resize', () => {
+  if (lastGraph && $('tab-graph').classList.contains('active')) renderGraph(lastGraph)
+})
 $('plugins-refresh').addEventListener('click', loadGraph)
 $('services-refresh').addEventListener('click', loadGraph)
 $('settings-refresh').addEventListener('click', loadSettings)
@@ -662,13 +860,13 @@ async function connect() {
   try {
     const res = await fetch('/api/events', { headers: { 'X-Panel-Request': '1' } })
     if (res.status === 401) {
-      pill.className = 'pill bad'; pill.textContent = '未授权'
+      pill.className = 'status bad'; pill.textContent = '未授权'
       toast('未授权：请用启动日志里带 token 的地址重新打开面板', true)
       return
     }
     if (!res.ok || !res.body) throw new Error(`SSE ${res.status}`)
     retry = 1000
-    pill.className = 'pill ok'; pill.textContent = '已连接'
+    pill.className = 'status ok'; pill.textContent = '已连接'
     const reader = res.body.getReader()
     const decoder = new TextDecoder()
     let buffer = ''
@@ -685,7 +883,7 @@ async function connect() {
     }
     throw new Error('连接被关闭')
   } catch (error) {
-    pill.className = 'pill bad'; pill.textContent = '已断开'
+    pill.className = 'status bad'; pill.textContent = '已断开'
     setTimeout(connect, retry)
     retry = Math.min(retry * 2, 15000)
   }
