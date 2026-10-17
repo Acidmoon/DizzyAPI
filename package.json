@@ -22,6 +22,7 @@
     "@cordisjs/plugin-loader": "^1.0.0-rc.8",
     "@cordisjs/plugin-logger-console": "^1.0.0",
     "@cordisjs/plugin-timer": "^1.1.4",
+    "@dizzyapi/plugin-admin": "workspace:*",
     "@dizzyapi/plugin-auth": "workspace:*",
     "@dizzyapi/plugin-credentials": "workspace:*",
     "@dizzyapi/plugin-kit": "workspace:*",

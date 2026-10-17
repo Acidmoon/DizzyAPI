@@ -1,0 +1,700 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DizzyAPI · 控制面板</title>
+<style>
+  :root {
+    --bg: #0f1115; --panel: #171a21; --panel-2: #1e222b; --line: #2c313d;
+    --fg: #e6e9ef; --dim: #9aa3b2; --accent: #6aa9ff; --ok: #4ec9a5;
+    --warn: #e2b341; --bad: #e0605e; --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 14px/1.5 system-ui, "Segoe UI", "Microsoft YaHei", sans-serif; }
+  header { display: flex; align-items: center; gap: 16px; padding: 12px 20px; border-bottom: 1px solid var(--line); position: sticky; top: 0; background: var(--bg); z-index: 5; }
+  header h1 { font-size: 15px; margin: 0; font-weight: 600; letter-spacing: .3px; }
+  header .spacer { flex: 1; }
+  nav { display: flex; gap: 4px; padding: 10px 20px 0; flex-wrap: wrap; }
+  nav button { background: transparent; color: var(--dim); border: 1px solid transparent; border-bottom: none; padding: 7px 14px; border-radius: 8px 8px 0 0; cursor: pointer; font: inherit; }
+  nav button.active { background: var(--panel); color: var(--fg); border-color: var(--line); }
+  main { padding: 16px 20px 60px; }
+  section { display: none; }
+  section.active { display: block; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; margin-bottom: 14px; }
+  .card h2 { font-size: 13px; margin: 0 0 10px; color: var(--dim); font-weight: 600; text-transform: uppercase; letter-spacing: .6px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
+  .kv { display: flex; justify-content: space-between; gap: 12px; padding: 3px 0; }
+  .kv span:first-child { color: var(--dim); }
+  .kv span:last-child { font-family: var(--mono); text-align: right; }
+  .pill { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 12px; border: 1px solid var(--line); color: var(--dim); }
+  .pill.ok { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 45%, transparent); }
+  .pill.bad { color: var(--bad); border-color: color-mix(in srgb, var(--bad) 45%, transparent); }
+  .pill.warn { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 45%, transparent); }
+  .mono { font-family: var(--mono); }
+  .dim { color: var(--dim); }
+  table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+  th, td { text-align: left; padding: 7px 8px; border-bottom: 1px solid var(--line); vertical-align: top; overflow-wrap: anywhere; }
+  th { color: var(--dim); font-weight: 500; font-size: 12px; }
+  tr:last-child td { border-bottom: none; }
+  .chips { display: flex; flex-wrap: wrap; gap: 4px; }
+  .chip { font-family: var(--mono); font-size: 12px; background: var(--panel-2); border: 1px solid var(--line); border-radius: 5px; padding: 0 6px; }
+  .chip.missing { color: var(--bad); border-color: color-mix(in srgb, var(--bad) 45%, transparent); }
+  button.act { background: var(--panel-2); color: var(--fg); border: 1px solid var(--line); border-radius: 7px; padding: 4px 10px; cursor: pointer; font: inherit; font-size: 13px; }
+  button.act:hover:not(:disabled) { border-color: var(--accent); }
+  button.act:disabled { opacity: .45; cursor: not-allowed; }
+  button.danger { color: var(--bad); border-color: color-mix(in srgb, var(--bad) 45%, transparent); }
+  button.danger:hover:not(:disabled) { border-color: var(--bad); }
+  .toolbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .svgwrap { overflow: auto; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; }
+  svg text { fill: var(--fg); font-family: system-ui, sans-serif; font-size: 12px; }
+  svg text.dim { fill: var(--dim); }
+  .field { display: grid; grid-template-columns: minmax(180px, 280px) 1fr auto; gap: 10px; align-items: center; padding: 6px 0; border-bottom: 1px solid var(--line); }
+  .field:last-child { border-bottom: none; }
+  .field input[type=text], .field input[type=number], .field select { width: 100%; background: var(--panel-2); border: 1px solid var(--line); color: var(--fg); border-radius: 7px; padding: 5px 8px; font: inherit; font-family: var(--mono); font-size: 13px; }
+  .field label { color: var(--fg); }
+  .field .hint { color: var(--dim); font-size: 12px; }
+  .nshead { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+  .nshead h3 { margin: 0; font-size: 14px; font-family: var(--mono); }
+  .toast { position: fixed; right: 18px; bottom: 18px; max-width: 420px; background: var(--panel-2); border: 1px solid var(--line); border-left: 3px solid var(--accent); padding: 10px 14px; border-radius: 8px; box-shadow: 0 8px 30px #0008; display: none; }
+  .toast.show { display: block; }
+  .toast.bad { border-left-color: var(--bad); }
+  .empty { color: var(--dim); padding: 12px 0; }
+  .closed { position: fixed; inset: 0; background: var(--bg); display: none; place-items: center; z-index: 50; text-align: center; }
+  .closed.show { display: grid; }
+</style>
+</head>
+<body>
+<header>
+  <h1>DizzyAPI · 控制面板</h1>
+  <span id="conn" class="pill">连接中…</span>
+  <span class="spacer"></span>
+  <span id="uptime" class="dim mono"></span>
+  <button class="act danger" id="shutdown">退出并关闭</button>
+</header>
+
+<nav>
+  <button data-tab="overview" class="active">概览</button>
+  <button data-tab="graph">依赖图</button>
+  <button data-tab="plugins">插件</button>
+  <button data-tab="services">服务</button>
+  <button data-tab="settings">设置</button>
+</nav>
+
+<main>
+  <section id="tab-overview" class="active">
+    <div class="grid">
+      <div class="card"><h2>进程</h2><div id="ov-process" class="empty">—</div></div>
+      <div class="card"><h2>内存</h2><div id="ov-memory" class="empty">—</div></div>
+      <div class="card"><h2>CPU</h2><div id="ov-cpu" class="empty">—</div></div>
+      <div class="card"><h2>事件循环</h2><div id="ov-loop" class="empty">—</div></div>
+    </div>
+    <div class="card"><h2>插件状态</h2><div id="ov-plugins" class="empty">—</div></div>
+  </section>
+
+  <section id="tab-graph">
+    <div class="card" style="padding:0; overflow:hidden">
+      <div class="toolbar" style="padding:12px 16px">
+        <strong>插件 ↔ 服务</strong>
+        <span class="dim">线：插件提供该服务；箭头：插件消费该服务</span>
+        <span class="spacer" style="flex:1"></span>
+        <button class="act" id="graph-refresh">刷新</button>
+      </div>
+      <div class="svgwrap" id="graph-wrap"><div class="empty" style="padding:16px">加载中…</div></div>
+    </div>
+  </section>
+
+  <section id="tab-plugins">
+    <div class="card">
+      <div class="toolbar" style="margin-bottom:10px">
+        <strong>插件入口</strong>
+        <span class="dim">id 是 app.yml 里的 stable 身份；重启会级联到注入它的插件</span>
+        <span class="spacer" style="flex:1"></span>
+        <button class="act" id="plugins-refresh">刷新</button>
+      </div>
+      <div id="plugins-table"></div>
+    </div>
+  </section>
+
+  <section id="tab-services">
+    <div class="card">
+      <div class="toolbar" style="margin-bottom:10px">
+        <strong>暴露的服务</strong>
+        <span class="dim">方法按原型链枚举（含 TS private——运行时都能调，只有类型层看不见）；静态依赖，不是运行期调用计数</span>
+        <span class="spacer" style="flex:1"></span>
+        <button class="act" id="services-refresh">刷新</button>
+      </div>
+      <div id="services-table"></div>
+    </div>
+  </section>
+
+  <section id="tab-settings">
+    <div class="card">
+      <div class="toolbar" style="margin-bottom:10px">
+        <strong>运行期设置</strong>
+        <span class="dim">app.yml 是基线；这里写的是覆盖文件</span>
+        <span class="spacer" style="flex:1"></span>
+        <button class="act" id="settings-refresh">刷新</button>
+      </div>
+      <div id="settings-list" class="empty">加载中…</div>
+    </div>
+  </section>
+</main>
+
+<div id="toast" class="toast"></div>
+<div id="closed" class="closed"><div><h2>面板已关闭</h2><p class="dim">进程已退出，可以关掉这个页面了。</p></div></div>
+
+<script>
+'use strict'
+
+const $ = (id) => document.getElementById(id)
+const fmtBytes = (n) => {
+  if (!Number.isFinite(n)) return '—'
+  const units = ['B', 'KiB', 'MiB', 'GiB']
+  let i = 0
+  while (n >= 1024 && i < units.length - 1) { n /= 1024; i++ }
+  return `${n.toFixed(i === 0 ? 0 : 1)} ${units[i]}`
+}
+const fmtMs = (n) => (Number.isFinite(n) ? `${n.toFixed(n < 10 ? 2 : 1)} ms` : '—')
+const fmtDuration = (sec) => {
+  if (!Number.isFinite(sec)) return '—'
+  const d = Math.floor(sec / 86400), h = Math.floor((sec % 86400) / 3600), m = Math.floor((sec % 3600) / 60), s = Math.floor(sec % 60)
+  return d ? `${d}d ${h}h` : h ? `${h}h ${m}m` : m ? `${m}m ${s}s` : `${s}s`
+}
+
+function el(tag, opts = {}, ...children) {
+  const node = document.createElement(tag)
+  if (opts.class) node.className = opts.class
+  if (opts.text !== undefined) node.textContent = String(opts.text)
+  if (opts.attrs) for (const [k, v] of Object.entries(opts.attrs)) node.setAttribute(k, v)
+  for (const child of children) if (child !== undefined && child !== null) node.append(child)
+  return node
+}
+
+function kvList(pairs) {
+  const box = el('div')
+  for (const [k, v] of pairs) {
+    const value = v instanceof Node ? v : el('span', { text: v })
+    box.append(el('div', { class: 'kv' }, el('span', { text: k }), value))
+  }
+  return box
+}
+
+function chip(text, missing) {
+  return el('span', { class: missing ? 'chip missing' : 'chip', text })
+}
+
+/** 固定列宽：`table-layout: fixed` 之后，不写列宽就会均分，长方法名会把行撑得很难看。 */
+function colgroup(widths) {
+  return el('colgroup', {}, ...widths.map((width) => el('col', { attrs: { style: `width:${width}` } })))
+}
+
+let toastTimer
+function toast(message, bad = false) {
+  const node = $('toast')
+  node.textContent = message
+  node.className = bad ? 'toast show bad' : 'toast show'
+  clearTimeout(toastTimer)
+  toastTimer = setTimeout(() => { node.className = 'toast' }, bad ? 6000 : 2500)
+}
+
+// ─────────────────────────────── HTTP ───────────────────────────────
+// 所有 /api 请求都带 X-Panel-Request：服务器用它挡跨站请求（无 CORS 头，预检过不去）。
+async function api(path, options = {}) {
+  const headers = { 'X-Panel-Request': '1', ...(options.headers || {}) }
+  let body = options.body
+  if (body !== undefined) headers['Content-Type'] = 'application/json'
+  const res = await fetch(path, { method: options.method || 'GET', headers, body: body === undefined ? undefined : JSON.stringify(body) })
+  const text = await res.text()
+  let data = null
+  try { data = text ? JSON.parse(text) : null } catch { /* 非 JSON */ }
+  if (!res.ok) {
+    const message = data && data.error ? data.error.message : `${res.status} ${res.statusText}`
+    const error = new Error(message)
+    error.code = data && data.error ? data.error.code : undefined
+    error.status = res.status
+    throw error
+  }
+  return data
+}
+
+function report(error) {
+  if (error && error.status === 401) {
+    toast('未授权：请用启动日志里带 token 的地址重新打开面板', true)
+    return
+  }
+  toast(error && error.message ? error.message : String(error), true)
+}
+
+// ─────────────────────────────── 概览 ───────────────────────────────
+function renderOverview(o) {
+  $('ov-process').replaceChildren(kvList([
+    ['pid', String(o.process.pid)],
+    ['node', o.process.node],
+    ['平台', o.process.platform],
+    ['已运行', fmtDuration(o.process.uptimeSec)],
+    ['面板', `${o.server.host}:${o.server.port}`],
+    ['SSE 客户端', String(o.server.sseClients)],
+  ]))
+  $('ov-memory').replaceChildren(kvList([
+    ['RSS', fmtBytes(o.memory.rss)],
+    ['堆总量', fmtBytes(o.memory.heapTotal)],
+    ['堆已用', fmtBytes(o.memory.heapUsed)],
+    ['external', fmtBytes(o.memory.external)],
+  ]))
+  $('ov-cpu').replaceChildren(kvList([
+    ['占用', `${o.cpu.percent.toFixed(1)}%（全核）`],
+    ['核数', String(o.cpu.cores)],
+    ['load1', o.cpu.load1.toFixed(2)],
+    ['user', `${(o.cpu.userMicros / 1000).toFixed(1)} ms`],
+    ['system', `${(o.cpu.systemMicros / 1000).toFixed(1)} ms`],
+  ]))
+  $('ov-loop').replaceChildren(kvList([
+    ['均值', fmtMs(o.eventLoop.meanMs)],
+    ['最大', fmtMs(o.eventLoop.maxMs)],
+    ['p50', fmtMs(o.eventLoop.p50Ms)],
+    ['p99', fmtMs(o.eventLoop.p99Ms)],
+  ]))
+  $('uptime').textContent = `up ${fmtDuration(o.process.uptimeSec)}`
+
+  const counts = o.plugins || {}
+  const box = el('div', { class: 'chips' })
+  for (const [state, n] of Object.entries(counts)) {
+    if (!n) continue
+    const cls = state === 'active' ? 'pill ok' : state === 'failed' ? 'pill bad' : state === 'disabled' ? 'pill' : 'pill warn'
+    box.append(el('span', { class: cls, text: `${state} ${n}` }))
+  }
+  $('ov-plugins').replaceChildren(box)
+}
+
+async function loadOverview() {
+  try { renderOverview(await api('/api/overview')) } catch (error) { report(error) }
+}
+
+// ─────────────────────────────── 依赖图 ───────────────────────────────
+function renderGraph(graph) {
+  const wrap = $('graph-wrap')
+  const plugins = graph.plugins.filter((p) => p.kind === 'plugin')
+  const services = graph.services
+  if (plugins.length === 0 || services.length === 0) {
+    wrap.replaceChildren(el('div', { class: 'empty', text: '图上没有可画的节点（没有插件或没有服务）' }))
+    return
+  }
+
+  const rowH = 30
+  const padY = 24
+  const colW = 210
+  const width = 900
+  const height = Math.max(plugins.length, services.length) * rowH + padY * 2
+  const leftX = 40
+  const rightX = width - colW - 40
+  const pluginY = new Map(plugins.map((p, i) => [p.id, padY + i * rowH]))
+  const serviceY = new Map(services.map((s, i) => [s.name, padY + i * rowH]))
+
+  const NS = 'http://www.w3.org/2000/svg'
+  const svg = document.createElementNS(NS, 'svg')
+  svg.setAttribute('width', String(width))
+  svg.setAttribute('height', String(height))
+  svg.setAttribute('viewBox', `0 0 ${width} ${height}`)
+  const defs = document.createElementNS(NS, 'defs')
+  defs.innerHTML = '<marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#6aa9ff"/></marker>'
+  svg.append(defs)
+
+  const addText = (x, y, text, dim, anchor, parent = svg) => {
+    const t = document.createElementNS(NS, 'text')
+    t.setAttribute('x', String(x)); t.setAttribute('y', String(y))
+    t.setAttribute('dominant-baseline', 'middle')
+    if (anchor) t.setAttribute('text-anchor', anchor)
+    if (dim) t.setAttribute('class', 'dim')
+    t.textContent = text
+    parent.append(t)
+    return t
+  }
+  const addLine = (x1, y1, x2, y2, arrow) => {
+    const line = document.createElementNS(NS, 'path')
+    const mx = (x1 + x2) / 2
+    line.setAttribute('d', `M ${x1} ${y1} C ${mx} ${y1}, ${mx} ${y2}, ${x2} ${y2}`)
+    line.setAttribute('fill', 'none')
+    line.setAttribute('stroke', arrow ? '#3c4a63' : '#2f6fb8')
+    line.setAttribute('stroke-width', arrow ? '1' : '1.6')
+    if (arrow) line.setAttribute('marker-end', 'url(#arrow)')
+    svg.append(line)
+  }
+
+  for (const plugin of plugins) {
+    const y = pluginY.get(plugin.id)
+    const color = plugin.state === 'active' ? '#4ec9a5' : plugin.state === 'failed' ? '#e0605e' : '#9aa3b2'
+    // 悬停能看包名：prelude / include 造出来的 entry 只有随机 id，光看 id 认不出是谁。
+    const group = document.createElementNS(NS, 'g')
+    const title = document.createElementNS(NS, 'title')
+    title.textContent = `${plugin.package} · ${plugin.state}${plugin.kind === 'group' ? ' · 分组' : ''}`
+    group.append(title)
+    const dot = document.createElementNS(NS, 'circle')
+    dot.setAttribute('cx', String(leftX)); dot.setAttribute('cy', String(y)); dot.setAttribute('r', '3.5')
+    dot.setAttribute('fill', color)
+    group.append(dot)
+    addText(leftX + 10, y, plugin.id, false, undefined, group)
+    svg.append(group)
+  }
+  for (const service of services) {
+    const y = serviceY.get(service.name)
+    addText(rightX + colW - 10, y, service.name, false, 'end')
+  }
+
+  const consumers = new Map()
+  for (const plugin of plugins) consumers.set(plugin.id, new Set())
+  for (const service of services) {
+    for (const consumer of service.consumers) {
+      if (consumer.pluginId && consumers.has(consumer.pluginId)) consumers.get(consumer.pluginId).add(service.name)
+    }
+  }
+  for (const service of services) {
+    const providerId = service.provider && service.provider.pluginId
+    if (providerId && pluginY.has(providerId)) {
+      addLine(leftX + 4, pluginY.get(providerId), rightX + colW - 4, serviceY.get(service.name), false)
+    }
+  }
+  for (const plugin of plugins) {
+    for (const name of consumers.get(plugin.id)) {
+      addLine(rightX + colW - 4, serviceY.get(name), leftX + 4, pluginY.get(plugin.id), true)
+    }
+  }
+
+  wrap.replaceChildren(svg)
+}
+
+async function loadGraph() {
+  try {
+    const graph = await api('/api/graph')
+    lastGraph = graph
+    renderGraph(graph)
+    renderPlugins(graph)
+    renderServices(graph)
+  } catch (error) { report(error) }
+}
+
+// ─────────────────────────────── 插件 ───────────────────────────────
+let lastGraph = null
+
+function renderPlugins(graph) {
+  if (!graph.plugins.length) {
+    $('plugins-table').replaceChildren(el('div', { class: 'empty', text: '没有插件入口' }))
+    return
+  }
+  const table = el('table')
+  table.append(
+    colgroup(['18%', '24%', '8%', '18%', '18%', '14%']),
+    el('thead', {}, el('tr', {},
+      el('th', { text: 'id' }), el('th', { text: '包' }), el('th', { text: '状态' }),
+      el('th', { text: '提供' }), el('th', { text: '注入' }), el('th', { text: '' }))),
+  )
+
+  const body = el('tbody')
+  for (const plugin of graph.plugins) {
+    const stateClass = plugin.state === 'active' ? 'pill ok' : plugin.state === 'failed' ? 'pill bad' : plugin.state === 'disabled' ? 'pill' : 'pill warn'
+    const provides = el('div', { class: 'chips' }, ...plugin.provides.map((name) => chip(name)))
+    const injects = el('div', { class: 'chips' }, ...plugin.declaredInject.map((name) => chip(name, !plugin.resolvedInject.includes(name))))
+
+    let button
+    if (plugin.kind === 'group') {
+      button = el('span', { class: 'dim', text: '分组' })
+    } else {
+      button = el('button', { class: 'act', text: '重启' })
+      button.disabled = !plugin.restartable
+      if (!plugin.restartable && plugin.restartBlockedReason) button.title = plugin.restartBlockedReason
+      button.addEventListener('click', () => restartPlugin(plugin))
+    }
+
+    body.append(el('tr', {},
+      el('td', {}, el('span', { class: 'mono', text: plugin.id }), plugin.kind === 'group' ? el('span', { class: 'dim', text: '  (group)' }) : undefined),
+      el('td', { class: 'mono dim', text: plugin.package }),
+      el('td', {}, el('span', { class: stateClass, text: plugin.state })),
+      el('td', {}, provides),
+      el('td', {}, injects),
+      el('td', {}, button),
+    ))
+  }
+  table.append(body)
+  $('plugins-table').replaceChildren(table)
+}
+
+async function restartPlugin(plugin) {
+  const graph = lastGraph
+  const cascaded = []
+  if (graph) {
+    const provided = new Set(plugin.provides)
+    for (const other of graph.plugins) {
+      if (other.id === plugin.id) continue
+      if (other.resolvedInject.some((name) => provided.has(name))) cascaded.push(other.id)
+    }
+  }
+  const note = cascaded.length ? `\n\n会一起重启：${cascaded.join(' / ')}` : ''
+  if (!confirm(`重启插件 ${plugin.id}？${note}`)) return
+  try {
+    const result = await api('/api/plugins/restart', { method: 'POST', body: { id: plugin.id } })
+    toast(`已重启 ${result.id}${result.cascaded.length ? `（连带 ${result.cascaded.map((x) => x.id).join(' / ')}）` : ''}`)
+    await loadGraph()
+    await loadOverview()
+  } catch (error) { report(error) }
+}
+
+// ─────────────────────────────── 服务 ───────────────────────────────
+function renderServices(graph) {
+  if (!graph.services.length) {
+    $('services-table').replaceChildren(el('div', { class: 'empty', text: '没有服务' }))
+    return
+  }
+  const table = el('table')
+  table.append(
+    colgroup(['16%', '14%', '40%', '30%']),
+    el('thead', {}, el('tr', {},
+      el('th', { text: '服务' }), el('th', { text: '提供者' }), el('th', { text: '方法' }), el('th', { text: '消费者' }))),
+  )
+
+  const body = el('tbody')
+  for (const service of graph.services) {
+    const provider = service.provider
+    const providerNode = provider.pluginId
+      ? el('span', { class: 'mono', text: provider.pluginId })
+      : el('span', { class: 'dim', text: provider.package || '（根上下文）' })
+    const methods = el('div', { class: 'chips' },
+      ...service.methods.map((m) => chip(`${m.name}(${m.arity})`)),
+      service.callable ? chip('（可调用）') : undefined)
+    const consumers = el('div', { class: 'chips' },
+      ...(service.consumers.length
+        ? service.consumers.map((c) => chip(c.pluginId || c.package || `fiber#${c.fiberUid}`))
+        : [el('span', { class: 'dim', text: '无' })]))
+
+    body.append(el('tr', {},
+      el('td', {}, el('span', { class: 'mono', text: service.name }), service.isolate ? el('span', { class: 'dim', text: ` [${service.isolate}]` }) : undefined),
+      el('td', {}, providerNode),
+      el('td', {}, methods),
+      el('td', {}, consumers),
+    ))
+  }
+  table.append(body)
+  $('services-table').replaceChildren(table)
+}
+
+// ─────────────────────────────── 设置 ───────────────────────────────
+let settingsData = null
+
+function fieldInput(field) {
+  let input
+  if (field.kind === 'boolean') {
+    input = el('input', { attrs: { type: 'checkbox' } })
+    input.checked = field.value === true
+  } else if (Array.isArray(field.values)) {
+    input = el('select')
+    input.append(el('option', { text: '（未设置）', attrs: { value: '' } }))
+    for (const value of field.values) input.append(el('option', { text: value, attrs: { value } }))
+    input.value = field.value === undefined ? '' : String(field.value)
+  } else if (field.kind === 'integer' || field.kind === 'number') {
+    input = el('input', { attrs: { type: 'number', placeholder: '留空 = 删除该键' } })
+    if (field.value !== undefined) input.value = String(field.value)
+    if (field.min !== undefined) input.min = String(field.min)
+    if (field.max !== undefined) input.max = String(field.max)
+  } else if (field.unit === 'ms') {
+    input = el('input', { attrs: { type: 'number', placeholder: '毫秒；留空 = 删除该键' } })
+    if (field.value !== undefined) input.value = String(field.value)
+  } else {
+    input = el('input', { attrs: { type: 'text', placeholder: '留空 = 删除该键' } })
+    if (field.value !== undefined) input.value = String(field.value)
+  }
+  input.dataset.path = field.path
+  input.dataset.kind = field.kind
+  // 记住原始值：保存时**只提交改过的字段**。否则「保存」会把整份基线抄进覆盖文件，
+  // 往后再改 app.yml 的基线就永远不生效了（覆盖把旧值钉死了）。
+  input.dataset.initial = input.type === 'checkbox' ? String(input.checked) : input.value
+  return input
+}
+
+function readInputValue(input) {
+  if (input.type === 'checkbox') return input.checked
+  const raw = input.value.trim()
+  if (raw === '') return null // 约定：空 = 删除该键
+  if (input.dataset.kind === 'integer' || input.dataset.kind === 'number') {
+    const n = Number(raw)
+    return Number.isFinite(n) ? n : raw
+  }
+  return raw
+}
+
+function renderSettings(data) {
+  settingsData = data
+  const list = $('settings-list')
+  list.className = ''
+  if (!data.namespaces.length) {
+    list.replaceChildren(el('div', { class: 'empty', text: '没有设置命名空间' }))
+    return
+  }
+
+  const cards = []
+  for (const ns of data.namespaces) {
+    const card = el('div', { class: 'card' })
+    const status = []
+    status.push(el('span', { class: ns.active ? 'pill ok' : 'pill warn', text: ns.active ? 'active' : ns.disabled ? 'disabled' : 'inactive' }))
+    if (ns.overridden) status.push(el('span', { class: 'pill warn', text: '有覆盖' }))
+    if (ns.pending) status.push(el('span', { class: 'pill bad', text: `待应用（${ns.pendingReason}）` }))
+
+    const head = el('div', { class: 'nshead' },
+      el('h3', { text: ns.ns }),
+      el('span', { class: 'mono dim', text: ns.plugin }),
+      ...status,
+      el('span', { style: 'flex:1' }),
+      el('span', { class: 'dim mono', text: ns.revision ? `rev ${ns.revision}` : '未覆盖' }))
+
+    const save = el('button', { class: 'act', text: '保存' })
+    save.disabled = !ns.writable
+    if (!ns.writable) save.title = '这个命名空间没有可写字段'
+    const reset = el('button', { class: 'act danger', text: '恢复基线' })
+    reset.disabled = !ns.overridden
+    head.append(save, reset)
+
+    const inputs = []
+    const fields = el('div')
+    for (const field of ns.fields) {
+      const input = field.writable ? fieldInput(field) : undefined
+      if (input) inputs.push(input)
+      let current
+      if (field.secret) {
+        current = field.writable && input ? input : el('span', { class: 'dim', text: field.configured ? '已配置（不可见）' : '未配置' })
+      } else if (input) {
+        current = input
+      } else {
+        current = el('span', { class: 'mono dim', text: field.value === undefined ? '—' : JSON.stringify(field.value) })
+      }
+      const hintParts = []
+      if (field.writable) hintParts.push('可写')
+      if (field.secret) hintParts.push('秘密')
+      if (field.credentialRef) hintParts.push('凭据引用')
+      const hint = el('span', { class: 'hint', text: hintParts.join(' · ') })
+      fields.append(el('div', { class: 'field' },
+        el('div', {}, el('label', { text: field.label }), el('div', { class: 'dim mono', text: field.path })),
+        current,
+        hint))
+    }
+    if (!ns.fields.length) fields.append(el('div', { class: 'empty', text: '没有字段' }))
+
+    save.addEventListener('click', async () => {
+      const patch = {}
+      for (const input of inputs) {
+        const value = readInputValue(input)
+        // 空输入 = 删除该键（null），与「原始就是空」在比较上等价。
+        const current = value === null ? '' : String(value)
+        if (current === input.dataset.initial) continue
+        patch[input.dataset.path] = value
+      }
+      if (!Object.keys(patch).length) { toast('没有改动'); return }
+      try {
+        await api('/api/settings/update', { method: 'POST', body: { ns: ns.ns, patch, expectedRevision: ns.revision || undefined } })
+        toast(`${ns.ns} 已应用`)
+        await loadSettings()
+      } catch (error) { report(error) }
+    })
+    reset.addEventListener('click', async () => {
+      if (!confirm(`清掉 ${ns.ns} 的所有覆盖，回到 app.yml 的基线？`)) return
+      try {
+        await api('/api/settings/reset', { method: 'POST', body: { ns: ns.ns } })
+        toast(`${ns.ns} 已恢复基线`)
+        await loadSettings()
+      } catch (error) { report(error) }
+    })
+
+    card.append(head, fields)
+    cards.push(card)
+  }
+  list.replaceChildren(...cards)
+}
+
+async function loadSettings() {
+  try { renderSettings(await api('/api/settings')) } catch (error) { report(error) }
+}
+
+// ─────────────────────────────── 导航与 SSE ───────────────────────────────
+const loaders = {
+  overview: loadOverview,
+  graph: loadGraph,
+  plugins: loadGraph,
+  services: loadGraph,
+  settings: loadSettings,
+}
+
+function showTab(name) {
+  for (const button of document.querySelectorAll('nav button')) button.classList.toggle('active', button.dataset.tab === name)
+  for (const section of document.querySelectorAll('main section')) section.classList.toggle('active', section.id === `tab-${name}`)
+  loaders[name]?.()
+}
+
+for (const button of document.querySelectorAll('nav button')) {
+  button.addEventListener('click', () => showTab(button.dataset.tab))
+}
+$('graph-refresh').addEventListener('click', loadGraph)
+$('plugins-refresh').addEventListener('click', loadGraph)
+$('services-refresh').addEventListener('click', loadGraph)
+$('settings-refresh').addEventListener('click', loadSettings)
+
+$('shutdown').addEventListener('click', async () => {
+  if (!confirm('退出并关闭整个进程？面板与网关都会停止。')) return
+  try {
+    await api('/api/shutdown', { method: 'POST', body: {} })
+    $('closed').className = 'closed show'
+  } catch (error) { report(error) }
+})
+
+function handleFrame(frame) {
+  let event = 'message'
+  const data = []
+  for (const line of frame.split('\n')) {
+    if (line.startsWith(':')) continue
+    if (line.startsWith('event:')) event = line.slice(6).trim()
+    else if (line.startsWith('data:')) data.push(line.slice(5).trim())
+  }
+  if (!data.length) return
+  let payload
+  try { payload = JSON.parse(data.join('\n')) } catch { return }
+  if (event === 'overview') renderOverview(payload)
+}
+
+let retry = 1000
+async function connect() {
+  const pill = $('conn')
+  try {
+    const res = await fetch('/api/events', { headers: { 'X-Panel-Request': '1' } })
+    if (res.status === 401) {
+      pill.className = 'pill bad'; pill.textContent = '未授权'
+      toast('未授权：请用启动日志里带 token 的地址重新打开面板', true)
+      return
+    }
+    if (!res.ok || !res.body) throw new Error(`SSE ${res.status}`)
+    retry = 1000
+    pill.className = 'pill ok'; pill.textContent = '已连接'
+    const reader = res.body.getReader()
+    const decoder = new TextDecoder()
+    let buffer = ''
+    for (;;) {
+      const { value, done } = await reader.read()
+      if (done) break
+      buffer += decoder.decode(value, { stream: true })
+      let index
+      while ((index = buffer.indexOf('\n\n')) >= 0) {
+        const frame = buffer.slice(0, index)
+        buffer = buffer.slice(index + 2)
+        handleFrame(frame)
+      }
+    }
+    throw new Error('连接被关闭')
+  } catch (error) {
+    pill.className = 'pill bad'; pill.textContent = '已断开'
+    setTimeout(connect, retry)
+    retry = Math.min(retry * 2, 15000)
+  }
+}
+
+// 首次加载
+loadOverview()
+loadGraph()
+connect()
+</script>
+</body>
+</html>

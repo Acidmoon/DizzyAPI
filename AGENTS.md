@@ -328,6 +328,7 @@ sub2api 在拿到首个上游响应前把额度显示为 `unknown`，
 | `@dizzyapi/plugin-mailer` | `mailer` | 外部通讯模块 | 把消息发出去（邮件）；`log`（开发）与 `smtp` 两种投递 |
 | `@dizzyapi/plugin-credentials` | `credentials` | 控制面 | 秘密（授权码之类）的唯一存放处；别的插件只持有引用名 |
 | `@dizzyapi/plugin-settings` | `settings` | 控制面 | 运行期可改的配置的唯一写者：`app.yml` 是基线，它写自己的覆盖文件 |
+| `@dizzyapi/plugin-admin` | `admin` | 开发者面板 | 插件 / 服务的静态依赖图、运行期概览、改设置、重启单个插件、退出整个进程 |
 | `@dizzyapi/plugin-kit` | — | 内部底座 | 配置 schema（手写 Standard Schema + 字段元数据）+ 原子写 JSON 存储；以上各包共用 |
 
 **配置不再硬编码**：`app.yml` 是「人写的基线」，**改配置的活口是 `settings` 插件**。
@@ -335,6 +336,12 @@ sub2api 在拿到首个上游响应前把额度显示为 `unknown`，
 让目标插件软重启，新值立刻生效——**从不回写 `app.yml`**（见 §10 的 `noSave` 那条）。
 秘密不进 `app.yml` 也不进设置：`credentials.set(ref, value)` 存值，
 `mailer` 的 `smtp.passRef` 只留引用名。
+
+**`admin` 是设置的 HTTP 写入口**：它绑 `127.0.0.1`，起一个单页（零构建、零新运行时依赖），
+启动日志打印 `http://127.0.0.1:7788/?t=<一次性 token>`。打开后 token 换成 HttpOnly cookie；
+`/api/*` 还要 `X-Panel-Request: 1` 与 `Host` 校验（挡 DNS rebinding 与跨站表单）。
+它同时能重启单个插件、退出整个进程。**关页面不等于退出**——这是网关，要在后台挂着；
+退出只认页面上的「退出并关闭」。
 
 ### 4.1 接口面
 
@@ -379,6 +386,20 @@ sub2api 在拿到首个上游响应前把额度显示为 `unknown`，
 `patch` 里某键为 `null` **表示删除该键**（用来把基线里的 `smtp.passEnv` 换成 `passRef`）。
 `revision` 是合并结果的 sha256 前 16 位，带上过期的指纹写就报 `SETTINGS_CONFLICT`（乐观锁）。
 
+**`admin`**（开发者面板，HTTP 服务）
+
+| 面 | 方法 | 说明 |
+|---|---|---|
+| 读 | `graph()` / `overview()` | 插件 + 服务快照（静态依赖，不做运行期调用计数）；进程 / 内存 / CPU / 事件循环 |
+| 扳手 | `restartPlugin(id)` | `fiber.update(fiber.config, true)`；会级联到注入了它提供服务的插件 |
+| 设置代理 | `describeSettings()` / `updateSettings()` / `resetSettings()` | 以 `@dizzyapi/plugin-admin` 身份调 `settings` |
+| 退出 | `shutdown()` | 停监听、断 SSE、发 `exit` 事件；**不** `process.exit`（退出的落点在 HTTP 路由） |
+| 只读属性 | `address` / `url` / `bootstrapUrl` / `listening` / `sseClientCount` | |
+
+内省规则在 `packages/admin/src/introspect.ts` 的文件头；HTTP 路由与四道闸在
+`packages/admin/src/http.ts` 的文件头。`admin` **不 inject `settings`**：设置插件会因为
+任何配置重载而重启，inject 它等于让面板跟着抖；改用时用 `_getImpl('settings', false)` 解析。
+
 **`mailer` 的三选一**：`smtp.pass`（明文，`writable: false` + `secret`，不许运行期写）/
 `smtp.passEnv`（环境变量）/ `smtp.passRef`（指向 `credentials`）最多给一个，多了直接报错。
 `passRef` 在**每次 `send` 时**解析，所以换授权码下一封就生效，不用重启。
@@ -393,6 +414,9 @@ sub2api 在拿到首个上游响应前把额度显示为 `unknown`，
 - `pnpm test`：`node --import tsx --test "packages/*/test/*.test.ts"`。
 - `pnpm typecheck`：`tsc -p tsconfig.json`。
 - 插件要能按包名从 `app.yml` 加载，必须先在根 `package.json` 里以 `workspace:*` 声明依赖。
+- 面板：`pnpm dev` 之后打开日志里的 `面板已启动：http://127.0.0.1:7788/?t=…`。
+  token 一次性；已经换到 cookie 的浏览器再点原地址仍然进得去（刷新页面的场景）。
+  改端口只会让它换个地址，所以 `port` 在字段元数据里是只读的；`port: 0` = 系统分配（测试用）。
 
 ### 4.3 边界与已知偏离
 
@@ -405,14 +429,17 @@ sub2api 在拿到首个上游响应前把额度显示为 `unknown`，
    因此本节这些插件**不得**演变成 LLM 请求热路径上的查询点。
 3. **API key 的签发 / 吊销不在这些插件里**，按 §5 归 Go 的 `auth` 模块（`key.*`）。
    v1 没有 Go，所以 LLM 请求目前还无法真正鉴权。
-4. **`app.yml` 里的 `@dizzyapi/plugin-admin` 只是占位**：包还不存在，
-   它被列在 `user.adminPlugins` 与 `settings.adminPlugins` 里，是给将来的管理员插件占位。
-   别在文档或代码里当成已存在的东西引用。
-5. **设置插件本轮只打通了 SMTP**：机制是通用的（任何插件的 schema 声明了可写字段就能改），
-   但真正接上端到端的只有 mailer 的 SMTP。`auth` / `user` 的字段目前只读可见，
-   因为**还没有写入口**：`settings.adminPlugins` 默认空、admin 插件尚未编写、
-   界面请求也还没有 HTTP 入口。鉴权与设置页要等这些到位再开放（写权限这一层不能先用后补）。
-   现状下的写入只能由进程内的调用方发起（测试与临时脚本就是这么做的）。
+4. **`@dizzyapi/plugin-admin` 已经落地**，不再是占位：它就是 `user.adminPlugins` /
+   `settings.adminPlugins` 里那个「指定插件」的实体。
+5. **设置插件的写入口现在是面板**：机制是通用的（任何插件的 schema 声明了可写字段就能改），
+   但真正声明了可写字段的仍只有 `mailer`（SMTP 那一组）；`user` / `auth` 的字段只读可见。
+   `settings.adminPlugins` 里只有 `@dizzyapi/plugin-admin`，所以**只有面板能改**——
+   新增写入口 = 往白名单加插件名，没有别的口子。
+6. **面板不是权限边界**：回环绑定 + cookie + 自定义头 + Host 校验挡的是「网页」与
+   DNS rebinding，挡不住本机同一用户的其他进程（它们可以自己发请求）。
+   别把它当成「多用户隔离」或「生产远程管理台」。
+7. **面板不碰秘密**：它只转述 `settings.describe()`，秘密字段只有「配没配」；
+   它既没有读 `credentials.resolve` 的代码，也没有把值带进任何 HTTP 响应。
 
 ---
 
@@ -744,6 +771,41 @@ CI 用 `go list -deps` 逐模块校验 `modules/*` 之间无相互 import，违�
   **抢在写之前**，用例就成了永远绿的摆设（本项目先写成过这样，改完把 `noSave` 故意改成
   `false` 才验出它有牙齿）。
 
+**cordis 内省与停机（本项目实测，2026-10-17，做开发者面板时踩的）**
+
+- **`entry.fiber` 不是真实 fiber，是 `Object.create(fiber)` 出来的包装**（`registry.plugin()`
+  为了挂 `.then` 造的）。它和真实 fiber 共享状态（原型链），但**对象身份不同**；
+  服务表里的 `impl.ctx.fiber` 是真实 fiber。按「fiber 对象」建索引必须用
+  `entry.fiber.ctx.fiber`，否则永远查不到——现象是服务节点的 `provider.pluginId`
+  全是 `null`。
+- **重启一个插件用 `fiber.update(fiber.config, true)`，不要用 `fiber.restart()`**：
+  `restart()` 在 `_error` 存在时直接早退（对 FAILED 的 fiber 是空操作），
+  `update()` 会先清错误再重载。`entry.refresh()` 也不是重启——fiber 已存在时它直接返回。
+  `noSave: true` 同时防止 loader 回写 `app.yml`。
+- **停机没有现成 API**：`ctx.root.fiber.dispose()` 是「重启/回收」，`loader.exit()` 是空函数。
+  生态做法是 `ctx.parallel('exit', signal)`，然后由调用方 `process.exit()`。
+  面板把这两步**分开**：`admin.shutdown()` 只发 `exit`，`process.exit` 在 HTTP 路由里
+  （否则测试进程会被一起带走）。
+- **`server.close()` 会被开着的 SSE / keep-alive 连接挂住**：要么自己跟踪并 end 掉所有连接，
+  要么用 `server.closeAllConnections()`（Node 18.2+ / 20+）。
+- **`EventSource` 发不了自定义请求头**，所以「所有 `/api/*` 都要 `X-Panel-Request: 1`」
+  这个设计直接排除了它。前端必须 `fetch` + `ReadableStream` 自己拆 `\n\n` 帧。
+- **`ctx.root.reflect.store` 是 `Dict<Impl, symbol>`**（symbol 键，值是 `Impl`），
+  且 `Impl` / `ReflectService` **没有从 `cordis` 的 index 导出**；要用它们得按结构
+  自己声明一份最小视图（面板的 `introspect.ts` 就是这么做的）。
+- **方法枚举只能按「字符串键 + 值是函数」过滤**：cordis 的内部成员都挂在 symbol 上，
+  所以 symbol 过滤天然把它们排掉；而 **TS 的 `private` 在运行时与 public 没有区别**，
+  面板显示的「接口」必然包含 private 方法，只能如实标注。
+- **`monitorEventLoopDelay` 在 Windows 上的基线不是 0**：系统计时器粒度约 15.6ms，
+  即便进程全闲，`p50` 也会在 20ms 上下。别把这个数字当成卡顿证据。
+- **测退出路由要 mock `process.exit`**：`t.mock.method(process, 'exit', () => {})`
+  必须给实现——不给实现时 mock 仍然会调用原函数，测试进程直接没。
+- **`Service` 的构造函数会立刻 `ctx.reflect.provide()`**，所以单测里 `new SomeService(ctx)`
+  就能拿到一个可枚举的对象（不需要 `ctx.plugin`）。
+- **`include` 生成的 entry id 带随机前缀**（`3ccf294d` 这种）：`entry.id` 只能当调试信息，
+  稳定身份一律用 `entry.options.id`；`app.yml` 里的 entry 有显式 id，prelude / include
+  自己创建的没有。
+
 **sub2api**（LGPL-3.0，44k stars，Go + Vue 3）
 - `backend/` 3244 文件，`frontend/src/` 931 文件，`backend/internal/` 2561 文件
 - `backend/ent/schema/` 共 **40 张表**；单文件 `frontend/src/views/admin/SettingsView.vue` 达 554KB
@@ -786,7 +848,13 @@ CI 用 `go list -deps` 逐模块校验 `modules/*` 之间无相互 import，违�
   250 只说明被接受。**但**：STARTTLS（587）那条分支仍未对真实服务器测过；其余错误路径
   （认证失败、被拒收、超时）也仍只到「对本机假服务器核对命令序列」这一层。
   别把这一次成功当成投产就绪。
-- 界面请求（会话令牌）目前没有 HTTP 入口，只能插件内调用；真正的入口要等 Go 的 `httpapi` 或桥。
+- **业务面的界面请求（会话令牌）仍没有 HTTP 入口**：面板的 HTTP 只服务面板自己
+  （看、改设置、退出），不是用户站 / 管理台的 API；那个入口要等 Go 的 `httpapi` 或桥。
+- **面板的前端只到「HTTP 层验过」这一层**：token 兑换、图、设置、重启、SSE、退出都用
+  `node:http` 客户端跑通了，但页面里的 JS 还没在真实浏览器里逐页签点过；
+  SSE 断线重连的退避、依赖图 SVG 在不同窗口宽度下的布局，都还没人肉眼确认。
+- 面板没有经过反代 / TLS，只支持回环 `http://127.0.0.1`；`SameSite=Lax` 的 cookie
+  在跨机访问场景下如何表现未验证（也刻意不支持）。
 - 控制面插件都是单进程假设：同一份 JSON 被两个 cordis 实例写会互相覆盖。
 - 契约包按「消费者定义接口」拆分的实际手感。
 - Go 侧配置 schema 上报给 cordis 渲染设置页的可行性。

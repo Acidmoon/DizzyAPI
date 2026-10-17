@@ -30,7 +30,7 @@
     # /data 已在 .gitignore 里。
     dataPath: ./data/users.json
     # 「指定插件」：只有列在这里的插件可以创建 / 禁用 / 删除用户、改用户名。
-    # admin 是管理员管理插件（尚未编写）；auth 是鉴权插件——注册的最后一步要建用户。
+    # admin 是开发者控制面板；auth 是鉴权插件——注册的最后一步要建用户。
     adminPlugins:
       - '@dizzyapi/plugin-admin'
       - '@dizzyapi/plugin-auth'
@@ -83,6 +83,16 @@
   name: '@dizzyapi/plugin-settings'
   config:
     dataPath: ./data/settings.json
-    # 「指定插件」：只有列在这里的插件可以改配置。admin 是管理员插件（尚未编写）。
+    # 「指定插件」：只有列在这里的插件可以改配置。
     adminPlugins:
       - '@dizzyapi/plugin-admin'
+
+# 开发者控制面板：看插件与服务的依赖图、看运行期概览、改设置、重启单个插件、退出整个进程。
+# 只绑 127.0.0.1；启动日志里会打印一条带一次性 token 的地址，打开后换成 HttpOnly cookie。
+# 必须排在 settings 之后——它要在运行期解析 settings 服务（但不 inject 它，
+# 否则改任何配置导致的设置插件重载都会把面板一起抖一下）。
+- id: admin
+  name: '@dizzyapi/plugin-admin'
+  config:
+    port: 7788
+
