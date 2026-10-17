@@ -26,8 +26,18 @@ export interface JsonCodec<T> {
   decode(raw: unknown): T
 }
 
-/** JSON 文件存储：写是原子的——先写同目录的 `<path>.tmp`，再 rename 覆盖。 */
-export function jsonFileStore<T>(path: string, codec: JsonCodec<T>, empty: () => T): JsonStore<T> {
+/**
+ * JSON 文件存储：写是原子的——先写同目录的 `<path>.tmp`，再 rename 覆盖。
+ *
+ * `mode` 只在新建文件时生效（rename 保留临时文件的权限位），Windows 忽略它；
+ * 存秘密的场合传 `0o600`。
+ */
+export function jsonFileStore<T>(
+  path: string,
+  codec: JsonCodec<T>,
+  empty: () => T,
+  options: { readonly mode?: number } = {},
+): JsonStore<T> {
   return {
     describe: `json（${path}）`,
     path,
@@ -47,7 +57,11 @@ export function jsonFileStore<T>(path: string, codec: JsonCodec<T>, empty: () =>
       const payload = `${JSON.stringify(codec.encode(value), null, 2)}\n`
       const temp = `${path}.tmp`
       await mkdir(dirname(path), { recursive: true })
-      await writeFile(temp, payload, 'utf8')
+      const encoding =
+        options.mode === undefined
+          ? ({ encoding: 'utf8' } as const)
+          : ({ encoding: 'utf8', mode: options.mode } as const)
+      await writeFile(temp, payload, encoding)
       await rename(temp, path)
     },
 

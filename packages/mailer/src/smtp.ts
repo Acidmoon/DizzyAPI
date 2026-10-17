@@ -8,8 +8,10 @@ import { connect as connectTls } from 'node:tls'
  * 为什么不用 nodemailer：本项目对依赖很克制，而这里需要的子集很小——
  * EHLO / STARTTLS / AUTH（PLAIN 或 LOGIN）/ MAIL FROM / RCPT TO / DATA / QUIT。
  *
- * **未与真实 SMTP 服务器联调过**：验证只到「用本机假服务器核对命令序列」这一层
- * （见 test/smtp.test.ts）。要投产必须先对真实服务器跑一次。
+ * **联调状态**：2026-10-16 对真实服务器投递成功过一次——163 的 465 直连 TLS +
+ * 授权码认证（走 mailer 插件，脚本见 temp/send-test-mail.ts）。但 STARTTLS（587）
+ * 那条分支仍只到「用本机假服务器核对命令序列」这一层（见 test/smtp.test.ts），
+ * 错误路径同理。要投产还得把 587 与拒收、超时这些情形都过一遍。
  */
 
 export interface SmtpConfig {

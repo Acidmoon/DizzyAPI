@@ -9,13 +9,17 @@ export {
 
 export {
   checkConfigObject,
+  flattenFields,
   isIssueList,
   issue,
+  knownKeysOf,
   readBoolean,
   readPositiveInteger,
   readString,
   readStringArray,
   standardSchema,
+  type FieldKind,
+  type FieldSpec,
   type ObjectCheck,
   type StandardIssue,
   type StandardSchema,

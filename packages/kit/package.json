@@ -11,6 +11,9 @@
     ".": "./src/index.ts",
     "./package.json": "./package.json"
   },
+  "scripts": {
+    "test": "node --import tsx --test \"test/*.test.ts\""
+  },
   "dependencies": {
     "cordis": "^4.0.0-rc.11"
   }

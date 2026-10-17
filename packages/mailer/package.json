@@ -17,5 +17,8 @@
   "dependencies": {
     "@dizzyapi/plugin-kit": "workspace:*",
     "cordis": "^4.0.0-rc.11"
+  },
+  "devDependencies": {
+    "@dizzyapi/plugin-credentials": "workspace:*"
   }
 }

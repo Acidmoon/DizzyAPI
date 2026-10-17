@@ -326,7 +326,15 @@ sub2api 在拿到首个上游响应前把额度显示为 `unknown`，
 | `@dizzyapi/plugin-user` | `user` | 控制面 | 用户表单（用户名 / 用户 ID / 状态 / 余额）的唯一写者 |
 | `@dizzyapi/plugin-auth` | `auth` | 控制面 | 注册（邮箱验证码）、登录（密码校验）、会话签发与校验 |
 | `@dizzyapi/plugin-mailer` | `mailer` | 外部通讯模块 | 把消息发出去（邮件）；`log`（开发）与 `smtp` 两种投递 |
-| `@dizzyapi/plugin-kit` | — | 内部底座 | 配置 schema（手写 Standard Schema）+ 原子写 JSON 存储；mailer / auth / user 共用 |
+| `@dizzyapi/plugin-credentials` | `credentials` | 控制面 | 秘密（授权码之类）的唯一存放处；别的插件只持有引用名 |
+| `@dizzyapi/plugin-settings` | `settings` | 控制面 | 运行期可改的配置的唯一写者：`app.yml` 是基线，它写自己的覆盖文件 |
+| `@dizzyapi/plugin-kit` | — | 内部底座 | 配置 schema（手写 Standard Schema + 字段元数据）+ 原子写 JSON 存储；以上各包共用 |
+
+**配置不再硬编码**：`app.yml` 是「人写的基线」，**改配置的活口是 `settings` 插件**。
+它自己独占一个覆盖文件（JSON，gitignored），合并后调 cordis 的 `fiber.update(…, true)`
+让目标插件软重启，新值立刻生效——**从不回写 `app.yml`**（见 §10 的 `noSave` 那条）。
+秘密不进 `app.yml` 也不进设置：`credentials.set(ref, value)` 存值，
+`mailer` 的 `smtp.passRef` 只留引用名。
 
 ### 4.1 接口面
 
@@ -345,6 +353,35 @@ sub2api 在拿到首个上游响应前把额度显示为 `unknown`，
 - 密码：`changePassword` / `requestPasswordReset` / `confirmPasswordReset`
 
 **`mailer`**：`send({ to, subject, text, kind? })`
+
+**`credentials`**（秘密的写者与唯一读口）
+
+| 面 | 方法 | 说明 |
+|---|---|---|
+| 写 | `set(ref, value)` / `unset(ref)` | `unset` 幂等；写入永不回显 |
+| 读 | `resolve(ref)` | **唯一返回值的方法**，进程内 seam，不得挂到任何 HTTP 路由上 |
+| 只读 | `describe(ref)` / `list()` | 只回答「配没配」与时间戳，返回类型里**没有** value 字段 |
+| 事件 | `credentials/reference-updated(ref)` | 为将来留的钩子 |
+
+引用名形如 `dizzyapi/smtp-163`（`^[a-z0-9][a-z0-9._-]*(/…)*$`，限长 200）。
+文件以 **0600** 落盘（Windows 忽略，Linux 生效）。
+
+**`settings`**（运行期配置的写者）
+
+| 面 | 方法 | 说明 |
+|---|---|---|
+| 读 | `describe()` / `get(ns)` | 读不限权；秘密字段只给 `configured`，不给 value |
+| 写 | `update(actor, ns, patch, expectedRevision?)` / `reset(actor, ns)` | 只有 `adminPlugins` 白名单里的插件能动 |
+| 事件 | `settings/updated(ns)` | |
+
+**命名空间 = `app.yml` 里 entry 的 `id`**（`mailer`、`auth`…），不是 `entry.id`。
+可写字段由各插件在自己的 schema 上声明（kit 的 `FieldSpec`）；没声明的整个配置面只读。
+`patch` 里某键为 `null` **表示删除该键**（用来把基线里的 `smtp.passEnv` 换成 `passRef`）。
+`revision` 是合并结果的 sha256 前 16 位，带上过期的指纹写就报 `SETTINGS_CONFLICT`（乐观锁）。
+
+**`mailer` 的三选一**：`smtp.pass`（明文，`writable: false` + `secret`，不许运行期写）/
+`smtp.passEnv`（环境变量）/ `smtp.passRef`（指向 `credentials`）最多给一个，多了直接报错。
+`passRef` 在**每次 `send` 时**解析，所以换授权码下一封就生效，不用重启。
 
 消费者用 `ctx.inject(['auth'], …)` 取服务。依赖用**类静态属性**声明
 （`static inject = ['user', 'mailer']`）：依赖没满足时该插件的 fiber 停在 PENDING，
@@ -369,7 +406,13 @@ sub2api 在拿到首个上游响应前把额度显示为 `unknown`，
 3. **API key 的签发 / 吊销不在这些插件里**，按 §5 归 Go 的 `auth` 模块（`key.*`）。
    v1 没有 Go，所以 LLM 请求目前还无法真正鉴权。
 4. **`app.yml` 里的 `@dizzyapi/plugin-admin` 只是占位**：包还不存在，
-   它被列在 `user.adminPlugins` 里是给将来的管理员插件占位。别在文档或代码里当成已存在的东西引用。
+   它被列在 `user.adminPlugins` 与 `settings.adminPlugins` 里，是给将来的管理员插件占位。
+   别在文档或代码里当成已存在的东西引用。
+5. **设置插件本轮只打通了 SMTP**：机制是通用的（任何插件的 schema 声明了可写字段就能改），
+   但真正接上端到端的只有 mailer 的 SMTP。`auth` / `user` 的字段目前只读可见，
+   因为**还没有写入口**：`settings.adminPlugins` 默认空、admin 插件尚未编写、
+   界面请求也还没有 HTTP 入口。鉴权与设置页要等这些到位再开放（写权限这一层不能先用后补）。
+   现状下的写入只能由进程内的调用方发起（测试与临时脚本就是这么做的）。
 
 ---
 
@@ -661,6 +704,46 @@ CI 用 `go list -deps` 逐模块校验 `modules/*` 之间无相互 import，违�
 - **`Array.isArray` 收窄不了 `T | readonly X[]`**：直接用会让假分支仍带联合类型，
   需要一个 `value is readonly X[]` 的断言函数
 
+**cordis 热重载（本项目实测，2026-10-16，做设置插件时踩的）**
+
+- **`fiber.update(config, noSave)` 的 `noSave` 必须是 `true`**。传 `false` 会 emit
+  `internal/commit`，`@cordisjs/plugin-loader` 收下它 → 写 `entry.options.config` →
+  `Include.commit` → 用 `yaml.dump` **整份重写 `app.yml`，注释全丢**。
+  传 `true` 则只换 `fiber.config`，`entry.options.config`（= 基线）一字不动。
+  `packages/settings` 有一条专门的回归用例盯着这件事（把 `noSave` 改成 `false` 就会红）。
+- **`fiber.update` 的校验是同步的**：`_resolve` 不过就 `throw ValidationError`，
+  而且发生在 `fiber.config = config` **之前**——所以非法配置不会写进 fiber、不会重启、
+  旧实例原样保留。设置插件仍然自己预校验，那是为了拿到人能读的错误。
+- **软重启换实例、但不换 fiber**：`fiber.uid` 重启前后**不变**，变的只是服务实例。
+  所以「实例换没换」不能拿 `fiber.uid` 验（会得到「什么都没发生」的假象）。
+- **软重启会级联到依赖方**：auth 的 `static inject` 里有 mailer，
+  所以改 mailer 的配置会**把 auth 也重启一遍**（`user` / `credentials` / `settings` 不受牵连）。
+  数据每次都落盘、重载后从盘重读，所以数据不丢，但在途操作会被打断。
+  想看谁被重启了，收 `ctx.root.on('internal/service', …, { global: true })`：
+  服务重新提供时会带 `(name, impl)` 发出来，impl 为 `undefined` 是回收。
+- **include 会把 `ctx.baseUrl` 改成配置文件所在的目录**：构造函数里
+  `this.ctx.baseUrl = new URL('.', pathToFileURL(this.filename)).href`。
+  各插件按 `resolveDataPath(ctx, …)` 解析的 `./data/*.json` 因此是**跟着配置文件走**的，
+  不是跟着 cwd 走。`app.yml` 在仓库根时两者恰好重合，所以这件事一直没露头；
+  一旦把树文件挪到别处（比如测试里的夹具），数据就会落到那份文件旁边。
+- **`ctx.loader.resolve(id)` 翻不进 include 的子树**：`app.yml` 里的 entry 长在
+  include 那棵树上，只有 `ctx.loader.entries()` 会顺着 `entry.subtree` 递归过去，
+  `resolve()` 只翻 Loader 自己的 store。设置插件的发现逻辑用的正是 `entries()`。
+- **别去碰 traced 服务 proxy**：`ctx.get(name)` 每次返回**新的** proxy，
+  `assert.equal(ctx.get('mailer'), mailer)` 永远失败；更要命的是断言失败时
+  AssertionError 会去 inspect 这个 proxy，`ReflectService.handler` 直接抛
+  「cannot get property "X" without inject」，看起来像是插件坏了。
+  要断言就断在**原始类型或行为**上（如 `mailer.config.smtp?.passRef`）。
+- **`Config` 上不能叫 `merge`**：`Service[symbols.resolveConfig]` 会读 `Config?.merge`，
+  字段元数据那条挂载属性只能叫别的名字（本项目叫 `fields`）。
+- **`EntryTree.create` 的类型声明漏了 `id`**（声明成 `Omit<EntryOptions, 'id'>`），
+  但实现里 `ensureId(options)` 会**原样采用**传进来的 `id`。`app.yml` 的 entry 全都带
+  显式 id，写测试要用它时得绕过这个声明缺口（`packages/settings/test` 里包了一层 `createEntry`）。
+- **`Include` 的落盘是 fire-and-forget**：`commit()` 里的 `_drain()` 不 await。
+  断言「文件没被改」必须先把 `includeEntry.subtree.flush()` 等掉，否则读文件会
+  **抢在写之前**，用例就成了永远绿的摆设（本项目先写成过这样，改完把 `noSave` 故意改成
+  `false` 才验出它有牙齿）。
+
 **sub2api**（LGPL-3.0，44k stars，Go + Vue 3）
 - `backend/` 3244 文件，`frontend/src/` 931 文件，`backend/internal/` 2561 文件
 - `backend/ent/schema/` 共 **40 张表**；单文件 `frontend/src/views/admin/SettingsView.vue` 达 554KB
@@ -698,8 +781,11 @@ CI 用 `go list -deps` 逐模块校验 `modules/*` 之间无相互 import，违�
 
 - **数据面性能**：本项目未做任何压测。TS 单进程能扛多少并发流、UDS 每次往返延迟、
   描述符落盘 + push 双通道的冷启动顺序，全部未实测。
-- **SMTP 未与真实服务器联调**：只测到「对本机假服务器核对命令序列」这一层；
-  STARTTLS 与 465 直连 TLS 的真实握手未测。投产前必须对真实服务器跑一次。
+- **SMTP 只对一家真实服务器测过一次**：2026-10-16，走 mailer 插件对 163（465 直连 TLS +
+  授权码认证）投递成功，服务器接收（DATA 得到 250）——**是否真的进了收件箱还没确认**，
+  250 只说明被接受。**但**：STARTTLS（587）那条分支仍未对真实服务器测过；其余错误路径
+  （认证失败、被拒收、超时）也仍只到「对本机假服务器核对命令序列」这一层。
+  别把这一次成功当成投产就绪。
 - 界面请求（会话令牌）目前没有 HTTP 入口，只能插件内调用；真正的入口要等 Go 的 `httpapi` 或桥。
 - 控制面插件都是单进程假设：同一份 JSON 被两个 cordis 实例写会互相覆盖。
 - 契约包按「消费者定义接口」拆分的实际手感。
