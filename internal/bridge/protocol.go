@@ -23,7 +23,11 @@ const (
 	MethodReplaceStrategies = "accountPriority.replaceStrategies"
 	MethodPreview           = "accountPriority.preview"
 	MethodPick              = "accountPriority.pick"
-	MethodShutdown          = "shutdown"
+	// MethodReplaceAccounts 是 identity → Go 的只读账号/令牌快照下发。
+	// 帧里含令牌，因此响应、日志与状态查询都不得回显快照内容。
+	MethodReplaceAccounts = "accounts.replace"
+	MethodAccountsStatus  = "accounts.status"
+	MethodShutdown        = "shutdown"
 )
 
 // Request 是 TS → Go 的一次请求。

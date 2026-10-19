@@ -6,6 +6,9 @@ package contracts
 
 import (
 	"context"
+	"fmt"
+	"io"
+	"net/http"
 	"time"
 )
 
@@ -47,11 +50,15 @@ const (
 )
 
 // Decision 是阶段交给 engine 的决定。
+//
+// 流式响应放在 Stream（engine/handler 负责关闭）；非流式响应放 Body。
+// 模块仍然不直接写 HTTP：渲染与写出都由 engine 那一侧完成。
 type Decision struct {
 	Action  Action
 	Status  int
 	Headers map[string]string
 	Body    []byte
+	Stream  io.ReadCloser
 }
 
 // RequestMeta 是 LLM 请求的小上下文：不含全量 body，几百字节量级。
@@ -71,12 +78,116 @@ type Ctx struct {
 	ReqID string
 	Meta  RequestMeta
 
-	// AccountCandidates 是账号池快照，由上游模块（将来的 account-state）填入。
-	// 本阶段只读它，不修改、不持久化。
+	// Headers 是客户端发来的 LLM 请求头。它可能包含 Authorization（网关密钥），
+	// 阶段不得整体记录或转发；transport 只按白名单复制。
+	Headers http.Header
+	// Body 是请求体的惰性读口；只有 NeedBody() 的阶段才允许取。
+	Body BodyProvider
+
+	// Key / Profile 由 key-auth 阶段写入。Profile 目前只是标签：
+	// 描述符与多 profile 编排尚未实现（§6）。
+	Key     *APIKey
+	Profile string
+
+	// AccountCandidates 是账号池快照。当前由 HTTP 入口从 internal/accounts 的
+	// identity 快照填充；将来的 account-state 会补上运行时状态。本阶段只读它，
+	// 不修改、不持久化。
 	AccountCandidates []AccountCandidate
 
 	// AccountRoute 是本阶段的输出：排好序的账号与最终选中的那一个。
 	AccountRoute *AccountRoute
+
+	// Attempts 是 dispatch 阶段的失败转移记录（账号 id + 状态码/错误码）。
+	// 不含秘密，可安全写入日志。
+	Attempts []AccountAttempt
+}
+
+// BodyProvider 让请求体只在真正需要时被读出来。
+type BodyProvider interface {
+	// Bytes 返回完整请求体；实现可以把读取错误推迟到这里。
+	Bytes() ([]byte, error)
+	// Size 返回 Content-Length；未知时返回 -1。
+	Size() int64
+}
+
+// BytesBody 是一个已经读进内存的 BodyProvider。
+type BytesBody []byte
+
+func (b BytesBody) Bytes() ([]byte, error) { return b, nil }
+func (b BytesBody) Size() int64            { return int64(len(b)) }
+
+// APIKey 是 key-auth 阶段解析出的调用方身份。
+type APIKey struct {
+	ID      string `json:"id"`
+	Profile string `json:"profile,omitempty"`
+}
+
+// AccountAttempt 是一次上游派发尝试的事实记录。
+type AccountAttempt struct {
+	AccountID string `json:"accountId"`
+	Status    int    `json:"status,omitempty"`
+	Code      string `json:"code,omitempty"`
+}
+
+// AccountCredential 是 transport 发请求所需的账号材料（含访问令牌）。
+//
+// 它只存在于 Go 进程内：不得写入日志、HTTP 响应或桥响应。
+// 权威数据在 identity（TS）；Go 持有的是一份只读内存快照。
+type AccountCredential struct {
+	AccountID   string
+	Provider    string
+	Kind        string
+	BaseURL     string
+	AccessToken string
+	ExpiresAt   *time.Time
+}
+
+// CredentialSource 是 transport 对账号快照缓存的最小依赖。
+// 接口由消费者定义；实现（内存缓存）在 internal/accounts。
+type CredentialSource interface {
+	Credential(accountID string) (AccountCredential, bool)
+}
+
+// StageError 是阶段返回的、可安全渲染给用户并可安全记日志的错误。
+//
+// Message 必须是脱敏后的文本：不得包含请求体、Authorization、访问令牌或
+// 上游原始错误里可能回显的秘密。engine 只渲染这类错误与 PublicError。
+type StageError struct {
+	Status    int
+	Code      string
+	Message   string
+	Retryable bool
+}
+
+func (e *StageError) Error() string {
+	return fmt.Sprintf("%s: %s", e.Code, e.Message)
+}
+
+// ErrorCode / HTTPStatus / PublicMessage 让错误可以走 PublicError 路径。
+func (e *StageError) ErrorCode() string     { return e.Code }
+func (e *StageError) HTTPStatus() int       { return e.Status }
+func (e *StageError) PublicMessage() string { return e.Message }
+func (e *StageError) CanRetry() bool        { return e.Retryable }
+
+// Errorf 构造一个 StageError。
+func Errorf(status int, code, format string, args ...any) *StageError {
+	return &StageError{Status: status, Code: code, Message: fmt.Sprintf(format, args...)}
+}
+
+// PublicError 是模块自定义错误可以实现的「可安全外露」契约。
+// 不实现它的错误一律按内部错误处理，消息不会返回给用户。
+type PublicError interface {
+	error
+	ErrorCode() string
+	HTTPStatus() int
+	PublicMessage() string
+}
+
+// RetryableError 表示同一次 LLM 请求可以换下一个账号再试。
+// transport 的上游 5xx / 429 / 网络失败属于这一类。
+type RetryableError interface {
+	error
+	CanRetry() bool
 }
 
 // Stage 是阶段型模块的最小接口（AGENTS.md §5.1）。

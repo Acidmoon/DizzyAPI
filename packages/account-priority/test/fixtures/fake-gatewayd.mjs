@@ -48,6 +48,8 @@ function run() {
   let revision = 0
   let strategies = []
   let defaultStrategy = 'default'
+  let accounts = []
+  let accountsRevision = 0
 
   const server = net.createServer((socket) => {
     let buffer = Buffer.alloc(0)
@@ -129,6 +131,7 @@ function run() {
           scored: 0,
           picked: 0,
           candidatesMax: 10_000,
+          accounts: accounts.length,
         })
         return
 
@@ -161,6 +164,28 @@ function run() {
         })
         return
       }
+
+      case 'accounts.replace': {
+        const params = request.params ?? {}
+        accounts = Array.isArray(params.accounts) ? params.accounts : []
+        accountsRevision += 1
+        respond(socket, request.id, {
+          revision: `fake-accounts-${accountsRevision}`,
+          accounts: accounts.length,
+          updatedAt: new Date().toISOString(),
+        })
+        return
+      }
+
+      case 'accounts.status':
+        respond(socket, request.id, {
+          ready: true,
+          revision: `fake-accounts-${accountsRevision}`,
+          generation: '',
+          accounts: accounts.length,
+          updatedAt: new Date().toISOString(),
+        })
+        return
 
       case 'accountPriority.preview': {
         const params = request.params ?? {}

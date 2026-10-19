@@ -1,11 +1,11 @@
 // gatewayd 是 Go 数据面的组合根（AGENTS.md D4）。
 //
-// 当前只有账号优先级模块与最小控制桥。它证明了两件事：
-//   - 模块可以被注册表装配、可以按阶段调用；
-//   - cordis（TS）可以通过控制桥拉起它、下发策略、查询排序、优雅停止。
+// 它装配三块东西：
+//   - 控制桥（TS ↔ Go，只承载控制消息，D3）；
+//   - LLM 请求链路（engine + key-auth + account-priority + transport，§2.4）；
+//   - HTTP 入口（POST /v1/chat/completions、GET /healthz）。
 //
-// LLM 请求链路尚未实现：本进程现在不监听任何模型请求端口。
-// 桥只承载控制消息，不承载 LLM 请求（AGENTS.md D3 / §2.3）。
+// 进程生命周期仍由 packages/account-priority 监管；本文件不新增任何监管逻辑。
 package main
 
 import (
@@ -17,19 +17,29 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"runtime"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
 
+	"github.com/Acidmoon/DizzyAPI/contracts"
+	"github.com/Acidmoon/DizzyAPI/internal/accounts"
 	"github.com/Acidmoon/DizzyAPI/internal/bridge"
+	"github.com/Acidmoon/DizzyAPI/internal/engine"
+	"github.com/Acidmoon/DizzyAPI/internal/httpapi"
 	"github.com/Acidmoon/DizzyAPI/modules/accountpriority"
+	"github.com/Acidmoon/DizzyAPI/modules/keyauth"
+	"github.com/Acidmoon/DizzyAPI/modules/transport"
 )
 
 type handler struct {
 	service  *accountpriority.Service
+	accounts *accounts.Cache
 	logger   *slog.Logger
 	shutdown chan struct{}
 	stopOnce sync.Once
@@ -82,6 +92,26 @@ func (h *handler) Handle(_ context.Context, method string, params json.RawMessag
 		}
 		return picked, nil
 
+	case bridge.MethodReplaceAccounts:
+		var snapshot accounts.Snapshot
+		if err := decodeParams(params, &snapshot); err != nil {
+			return nil, bridge.Errorf("BRIDGE_BAD_REQUEST", "账号快照参数不合法：%v", err)
+		}
+		result, err := h.accounts.Replace(snapshot)
+		if err != nil {
+			var typed *accounts.Error
+			if errors.As(err, &typed) {
+				return nil, bridge.Errorf(typed.Code, "%s", typed.Message)
+			}
+			return nil, bridge.Errorf("ACCOUNTS_INTERNAL", "账号快照更新失败")
+		}
+		// 只记计数与哈希；快照里的令牌永不进日志。
+		h.logger.Info("账号快照已更新", "revision", result.Revision, "accounts", result.Accounts)
+		return result, nil
+
+	case bridge.MethodAccountsStatus:
+		return h.accounts.State(), nil
+
 	case bridge.MethodShutdown:
 		// 先让响应写完，再关闭进程。TS 不依赖这个 ack，但排障时能看到它。
 		h.stopOnce.Do(func() {
@@ -128,15 +158,21 @@ func main() {
 }
 
 func run() error {
-	transport := flag.String("transport", "auto", "控制桥传输：auto / unix / tcp")
+	transportMode := flag.String("transport", "auto", "控制桥传输：auto / unix / tcp")
 	socket := flag.String("socket", "", "unix socket 路径（unix 传输必填）")
-	listen := flag.String("listen", "127.0.0.1:0", "TCP 监听地址（只允许回环）")
+	listen := flag.String("listen", "127.0.0.1:0", "控制桥 TCP 监听地址（只允许回环）")
+	httpListen := flag.String("http-listen", "127.0.0.1:8080", "LLM 请求 HTTP 监听地址（只允许回环）")
 	logFormat := flag.String("log-format", "text", "日志格式：text / json")
+	strategy := flag.String("strategy", "", "LLM 请求使用的账号优先级策略组；空 = 默认策略")
+	profile := flag.String("profile", keyauth.DefaultProfile, "key-auth 写入的 profile 标签")
+	requestTimeout := flag.Int("request-timeout-ms", transport.DefaultRequestTimeoutMs, "非流式上游请求超时")
+	headerTimeout := flag.Int("header-timeout-ms", transport.DefaultHeaderTimeoutMs, "等待上游响应头超时")
+	maxBody := flag.Int64("max-body-bytes", httpapi.DefaultMaxBodyBytes, "LLM 请求体上限")
 	flag.Parse()
 
 	logger := newLogger(*logFormat)
 
-	network := *transport
+	network := *transportMode
 	if network == "auto" {
 		if runtime.GOOS == "windows" {
 			network = "tcp"
@@ -151,20 +187,63 @@ func run() error {
 		}
 		address = *socket
 	}
+	if err := requireLoopback(*httpListen); err != nil {
+		return fmt.Errorf("LLM 请求入口拒绝非回环监听：%w", err)
+	}
 
-	service, err := accountpriority.New(accountpriority.Config{})
+	// 组合根是唯一组装点：注册顺序就是阶段顺序 pre → dispatch → post。
+	registry := contracts.NewRegistry()
+	keyStage := keyauth.Register(registry, keyauth.Config{
+		Keys:    parseAPIKeys(os.Getenv("DIZZYAPI_API_KEYS")),
+		Profile: *profile,
+	})
+	service, err := accountpriority.Register(registry, accountpriority.Config{})
 	if err != nil {
 		return fmt.Errorf("初始化账号优先级模块失败：%w", err)
 	}
+	accountCache := accounts.New()
+	if _, err := transport.Register(registry, transport.Config{
+		RequestTimeoutMs: *requestTimeout,
+		HeaderTimeoutMs:  *headerTimeout,
+	}, accountCache); err != nil {
+		return fmt.Errorf("初始化 transport 模块失败：%w", err)
+	}
+	requestEngine, err := engine.New(registry.Stages(), logger)
+	if err != nil {
+		return fmt.Errorf("初始化 LLM 请求 engine 失败：%w", err)
+	}
+	httpAPI, err := httpapi.New(requestEngine, accountCache, logger, httpapi.Config{
+		MaxBodyBytes: *maxBody,
+		Strategy:     *strategy,
+	})
+	if err != nil {
+		return fmt.Errorf("初始化 HTTP 入口失败：%w", err)
+	}
+
+	httpListener, err := net.Listen("tcp", *httpListen)
+	if err != nil {
+		return fmt.Errorf("监听 LLM 请求入口 %s 失败：%w", *httpListen, err)
+	}
+	httpServer := &http.Server{
+		Handler:           httpAPI.Handler(),
+		ReadHeaderTimeout: 10 * time.Second,
+	}
+	go func() {
+		if serveErr := httpServer.Serve(httpListener); serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
+			logger.Error("LLM 请求入口异常退出", "error", serveErr)
+		}
+	}()
 
 	stop := make(chan struct{})
 	control := &handler{
 		service:  service,
+		accounts: accountCache,
 		logger:   logger,
 		shutdown: stop,
 	}
 
 	status := service.Status()
+	accountState := accountCache.State()
 	hello := map[string]any{
 		"protocolVersion": bridge.ProtocolVersion,
 		"pid":             os.Getpid(),
@@ -172,6 +251,8 @@ func run() error {
 		"revision":        status.Revision,
 		"defaultStrategy": status.DefaultStrategy,
 		"strategies":      status.Strategies,
+		"accounts":        accountState.Accounts,
+		"httpAddress":     httpListener.Addr().String(),
 	}
 
 	server, err := bridge.NewServer(network, address, control, bridge.Options{
@@ -179,19 +260,23 @@ func run() error {
 		Logger: logger,
 	})
 	if err != nil {
+		_ = httpServer.Close()
 		return err
 	}
 	logger.Info("gatewayd 已启动",
 		"transport", network,
 		"address", server.Address().String(),
+		"httpAddress", httpListener.Addr().String(),
 		"revision", status.Revision,
 	)
+	logger.Info(keyStage.Describe())
 
 	// cordis 用这一行拿到实际地址（TCP :0 时端口是系统分配的）。
 	ready, err := json.Marshal(map[string]any{
 		"type":            "ready",
 		"transport":       network,
 		"address":         server.Address().String(),
+		"httpAddress":     httpListener.Addr().String(),
 		"pid":             os.Getpid(),
 		"protocolVersion": bridge.ProtocolVersion,
 	})
@@ -215,12 +300,39 @@ func run() error {
 		logger.Info("收到控制桥的 shutdown")
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if err := server.Close(ctx); err != nil {
+	if err := httpServer.Shutdown(shutdownCtx); err != nil {
+		logger.Warn("关闭 LLM 请求入口超时", "error", err)
+	}
+	if err := server.Close(shutdownCtx); err != nil {
 		return fmt.Errorf("关闭控制桥失败：%w", err)
 	}
 	logger.Info("gatewayd 已退出")
+	return nil
+}
+
+// parseAPIKeys 从环境变量读取静态 key。逗号、分号、空白都算分隔符。
+// 它只进内存；日志、状态与 ready 行都不会包含这些值。
+func parseAPIKeys(raw string) []string {
+	return strings.FieldsFunc(raw, func(r rune) bool {
+		return r == ',' || r == ';' || r == '\n' || r == '\r' || r == '\t' || r == ' '
+	})
+}
+
+func requireLoopback(address string) error {
+	host, port, err := net.SplitHostPort(address)
+	if err != nil {
+		return fmt.Errorf("地址 %q 不合法：%w", address, err)
+	}
+	switch host {
+	case "127.0.0.1", "::1", "localhost":
+	default:
+		return fmt.Errorf("只允许回环地址，收到 %q", host)
+	}
+	if port == "" {
+		return errors.New("必须显式给出端口")
+	}
 	return nil
 }
 

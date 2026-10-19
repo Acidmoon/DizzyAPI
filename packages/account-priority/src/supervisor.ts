@@ -13,6 +13,8 @@ import { AccountPriorityError } from './errors.ts'
 export interface GatewayReadyInfo {
   readonly transport: 'unix' | 'tcp'
   readonly address: string
+  /** LLM 请求 HTTP 入口的实际地址；旧版 gatewayd 可能没有这个字段。 */
+  readonly httpAddress?: string
   readonly pid: number
   readonly protocolVersion: number
 }
@@ -22,6 +24,7 @@ export interface GatewayProcessOptions {
   readonly args: readonly string[]
   readonly transport: 'unix' | 'tcp'
   readonly socketPath: string
+  readonly httpListen: string
   readonly startTimeoutMs: number
   readonly requestTimeoutMs: number
   readonly logFormat: 'text' | 'json'
@@ -283,6 +286,7 @@ function buildArgs(options: GatewayProcessOptions): string[] {
     args.push('--listen=127.0.0.1:0')
   }
   args.push(`--log-format=${options.logFormat}`)
+  args.push(`--http-listen=${options.httpListen}`)
   return args
 }
 
@@ -313,6 +317,9 @@ function parseReadyLine(line: string): GatewayReadyInfo | null {
   return {
     transport: record.transport,
     address: record.address,
+    ...(typeof record.httpAddress === 'string' && record.httpAddress !== ''
+      ? { httpAddress: record.httpAddress }
+      : {}),
     pid: record.pid,
     protocolVersion: record.protocolVersion,
   }

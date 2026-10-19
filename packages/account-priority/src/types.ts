@@ -114,6 +114,38 @@ export interface RemoteStatus {
   readonly scored: number
   readonly picked: number
   readonly candidatesMax: number
+  /** Go 侧缓存的账号快照数量（不含任何令牌）。 */
+  readonly accounts?: number
+}
+
+/**
+ * identity → Go 的只读账号/令牌快照。
+ *
+ * 帧里含访问令牌，因此它只走控制桥；响应、日志、状态查询都不得回显 accounts。
+ * 权威数据仍在 TS 的 identity 与 credentials 里。
+ */
+export interface GatewayAccountSnapshot {
+  readonly version: 1
+  readonly generation: string
+  readonly accounts: readonly GatewayAccount[]
+}
+
+export interface GatewayAccount {
+  readonly accountId: string
+  readonly provider: string
+  readonly kind: string
+  /** 上游 OpenAI 兼容 base URL（不含 /chat/completions）。 */
+  readonly baseUrl: string
+  readonly token: string
+  readonly expiresAt?: string
+  readonly priority?: number
+  readonly tags?: Readonly<Record<string, string>>
+}
+
+export interface GatewayAccountsResult {
+  readonly revision: string
+  readonly accounts: number
+  readonly updatedAt: string
 }
 
 export interface StrategyListResult {
@@ -143,6 +175,10 @@ export interface AccountPriorityStatus {
   readonly revision: string | null
   readonly defaultStrategy: string | null
   readonly strategies: number
+  /** 最近一次成功推送给 Go 的账号数量。 */
+  readonly accounts: number
+  /** Go 侧账号快照的 revision（内容哈希）。 */
+  readonly accountsRevision: string | null
   readonly restarts: number
   readonly lastError: string | null
   readonly startedAt: string | null

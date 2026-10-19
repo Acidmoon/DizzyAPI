@@ -36,6 +36,9 @@ import { DEFAULT_STRATEGY } from './types.ts'
 import type {
   AccountPriorityStatus,
   ChildState,
+  GatewayAccount,
+  GatewayAccountSnapshot,
+  GatewayAccountsResult,
   RemoteStatus,
   ReplaceStrategiesResult,
   ScoreRequest,
@@ -50,6 +53,32 @@ import {
   validateStrategyCollection,
   validateStrategyGroup,
 } from './validate.ts'
+
+/**
+ * identity 的结构性视图：只声明本插件用到的两个方法，不 import 它的实现。
+ * 令牌只进内存快照，随后经控制桥推给 Go；本插件不落盘、不记录、不回显。
+ */
+interface IdentitySeam {
+  list(): readonly {
+    readonly id: string
+    readonly provider: string
+    readonly kind: string
+    readonly enabled: boolean
+    readonly status: string
+    readonly accessExpiresAt: string | null
+  }[]
+  getAccessToken(id: string): Promise<string>
+}
+
+interface EventRoot {
+  on(
+    name: string,
+    listener: (...args: unknown[]) => void,
+    options?: { global?: boolean },
+  ): () => void
+}
+
+const ACCOUNTS_PUSH_DEBOUNCE_MS = 100
 
 export class AccountPriorityService extends Service {
   static Config = ACCOUNT_PRIORITY_CONFIG_SCHEMA
@@ -70,12 +99,16 @@ export class AccountPriorityService extends Service {
   private activeTransport: 'unix' | 'tcp' | null = null
   private address: string | null = null
   private revision: string | null = null
+  private accountsCount = 0
+  private accountsRevision: string | null = null
   private startedAt: string | null = null
   private lastError: string | null = null
   private restarts = 0
   private launches = 0
   private restartDelay: number
   private restartTimer: NodeJS.Timeout | undefined
+  private accountsTimer: NodeJS.Timeout | undefined
+  private accountsQueue: Promise<unknown> = Promise.resolve()
   private stopping = false
   private disposing = false
 
@@ -104,9 +137,12 @@ export class AccountPriorityService extends Service {
       }
     }
 
+    const stopAccountsWatch = this.watchAccounts()
     yield async () => {
       this.disposing = true
+      stopAccountsWatch()
       this.clearRestartTimer()
+      this.clearAccountsTimer()
       try {
         await this.exclusive(async () => {
           await this.stopProcess()
@@ -138,6 +174,8 @@ export class AccountPriorityService extends Service {
       revision: this.revision,
       defaultStrategy: this.defaultStrategy,
       strategies: this.strategies.size,
+      accounts: this.accountsCount,
+      accountsRevision: this.accountsRevision,
       restarts: this.restarts,
       lastError: this.lastError,
       startedAt: this.startedAt,
@@ -244,10 +282,11 @@ export class AccountPriorityService extends Service {
     })
   }
 
-  /** 把当前策略再推一次；桥断线恢复后也可以手动调用。 */
+  /** 把当前策略与账号快照再推一次；桥断线恢复后也可以手动调用。 */
   async sync(): Promise<void> {
     await this.exclusive(async () => {
       await this.apply()
+      await this.pushAccounts()
     })
   }
 
@@ -373,6 +412,7 @@ export class AccountPriorityService extends Service {
       args: this.config.args,
       transport,
       socketPath,
+      httpListen: this.config.httpListen,
       startTimeoutMs: this.config.startTimeoutMs,
       requestTimeoutMs: this.config.requestTimeoutMs,
       logFormat: this.config.logFormat,
@@ -410,9 +450,12 @@ export class AccountPriorityService extends Service {
       this.restartDelay = this.config.restartDelayMs
       this.setState('ready', null)
       this.logger.info(
-        `gatewayd 已就绪：${started.ready.transport} ${started.ready.address}（pid ${String(this.pid)}）`,
+        `gatewayd 已就绪：${started.ready.transport} ${started.ready.address}（pid ${String(this.pid)}）` +
+          (started.ready.httpAddress === undefined ? '' : `；LLM 请求入口 ${started.ready.httpAddress}`),
       )
       await this.apply()
+      // 不阻塞就绪：令牌可能在 identity 侧触发一次 RT 刷新。
+      this.scheduleAccountsPush()
     } catch (error) {
       if (this.gateway === gateway) this.gateway = undefined
       this.bridge = undefined
@@ -441,6 +484,8 @@ export class AccountPriorityService extends Service {
     this.bridge = undefined
     this.pid = null
     this.revision = null
+    this.accountsCount = 0
+    this.accountsRevision = null
     this.setState('stopped', null)
   }
 
@@ -457,6 +502,8 @@ export class AccountPriorityService extends Service {
     this.bridge = undefined
     this.pid = null
     this.revision = null
+    this.accountsCount = 0
+    this.accountsRevision = null
     const detail =
       error !== null
         ? describeError(error)
@@ -523,6 +570,115 @@ export class AccountPriorityService extends Service {
       ...(this.defaultStrategy === null ? {} : { defaultStrategy: this.defaultStrategy }),
       strategies,
     }
+  }
+
+  // ───────────────────────────────── 内部：账号快照推送
+
+  /**
+   * identity 是账号与令牌的唯一写者；它的事件只是「该重新取一份快照」的提示，
+   * 不是正确性来源。监听器挂在 root 上并带 global，跨插件子树也能收到。
+   */
+  private watchAccounts(): () => void {
+    const root = this.ctx.root as unknown as EventRoot
+    const trigger = (): void => this.scheduleAccountsPush()
+    const offUpdated = root.on('identity/account-updated', trigger, { global: true })
+    const offRefreshed = root.on('identity/account-refreshed', trigger, { global: true })
+    const offFailed = root.on('identity/account-failed', trigger, { global: true })
+    // identity 被启用 / 软重启后服务会重新 provide，此时没有账号事件，
+    // 但已有令牌需要立刻再推一次；被卸载时推空快照，避免 Go 继续用旧账号。
+    const offService = root.on(
+      'internal/service',
+      (...args: unknown[]) => {
+        if (args[0] === 'identity') trigger()
+      },
+      { global: true },
+    )
+    return () => {
+      offUpdated()
+      offRefreshed()
+      offFailed()
+      offService()
+    }
+  }
+
+  private scheduleAccountsPush(): void {
+    if (this.disposing || this.accountsTimer !== undefined) return
+    this.accountsTimer = setTimeout(() => {
+      this.accountsTimer = undefined
+      void this.pushAccounts()
+    }, ACCOUNTS_PUSH_DEBOUNCE_MS)
+    this.accountsTimer.unref?.()
+  }
+
+  private clearAccountsTimer(): void {
+    if (this.accountsTimer !== undefined) {
+      clearTimeout(this.accountsTimer)
+      this.accountsTimer = undefined
+    }
+  }
+
+  private pushAccounts(): Promise<void> {
+    const task = this.accountsQueue.then(
+      () => this.doPushAccounts(),
+      () => this.doPushAccounts(),
+    )
+    this.accountsQueue = task.then(
+      () => undefined,
+      () => undefined,
+    )
+    return task
+  }
+
+  private async doPushAccounts(): Promise<void> {
+    const bridge = this.bridge
+    if (bridge === undefined || this.disposing) return
+    try {
+      const snapshot = await this.buildAccountSnapshot()
+      if (this.bridge !== bridge || this.disposing) return
+      const result = await bridge.request<GatewayAccountsResult>(
+        'accounts.replace',
+        snapshot,
+        this.config.requestTimeoutMs,
+      )
+      this.accountsCount = result.accounts
+      this.accountsRevision = result.revision
+      this.logger.debug(
+        `账号快照已推送：revision=${result.revision} accounts=${String(result.accounts)}`,
+      )
+      this.ctx.emit('account-priority/accounts-applied', result.revision, result.accounts)
+    } catch (error) {
+      const message = describeError(error)
+      this.logger.warn(`推送账号快照失败：${message}`)
+      this.ctx.emit('account-priority/error', 'ACCOUNT_PRIORITY_ACCOUNTS_PUSH_FAILED', message)
+    }
+  }
+
+  private async buildAccountSnapshot(): Promise<GatewayAccountSnapshot> {
+    const identity = this.ctx.get('identity', false) as IdentitySeam | undefined
+    const accounts: GatewayAccount[] = []
+    if (identity !== undefined) {
+      for (const account of identity.list()) {
+        if (!account.enabled || account.status !== 'active') continue
+        const baseUrl = this.config.upstreamBaseUrls[account.provider]
+        if (baseUrl === undefined) continue
+        try {
+          const token = await identity.getAccessToken(account.id)
+          if (token.trim() === '') continue
+          accounts.push({
+            accountId: account.id,
+            provider: account.provider,
+            kind: account.kind,
+            baseUrl,
+            token,
+            ...(account.accessExpiresAt === null ? {} : { expiresAt: account.accessExpiresAt }),
+          })
+        } catch (error) {
+          // 令牌不在日志里；这里只记 identity 的安全错误文本。
+          this.logger.debug(`账号 ${account.id} 没有可用令牌，跳过：${describeError(error)}`)
+        }
+      }
+    }
+    return { version: 1, generation: `gen-${Date.now()}`, accounts }
   }
 
   private requireBridge(): BridgeClient {
