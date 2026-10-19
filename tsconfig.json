@@ -20,7 +20,10 @@
     "emitDeclarationOnly": false,
     "incremental": false,
     "noEmit": true,
-    "allowImportingTsExtensions": true
+    "allowImportingTsExtensions": true,
+    // 测试会 import 前端 assets 里的原生 ESM JS（路由 / API 客户端）。allowJs 让 TS
+    // 解析它们并给出类型；真正的 checkJs 在 packages/console/tsconfig.json 里单独跑。
+    "allowJs": true
   },
   "include": ["packages/*/src/**/*.ts", "packages/*/test/**/*.ts"]
 }

@@ -1,0 +1,174 @@
+import assert from 'node:assert/strict'
+import { test } from 'node:test'
+import {
+  ApiError,
+  createHttpApis,
+  createHttpTransport,
+  createMockApis,
+  isApiError,
+} from '../assets/lib/api.js'
+
+interface Call {
+  readonly url: string
+  readonly init: RequestInit
+}
+
+function response(body: unknown, status = 200, headers: Record<string, string> = {}) {
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    statusText: status === 200 ? 'OK' : 'Error',
+    headers: new Headers(headers),
+    text: async () => (body === undefined ? '' : JSON.stringify(body)),
+  }
+}
+
+function fakeFetch(reply: ReturnType<typeof response>, calls: Call[] = []) {
+  return (async (url: string | URL | Request, init?: RequestInit) => {
+    calls.push({ url: String(url), init: init ?? {} })
+    return reply
+  }) as unknown as typeof fetch
+}
+
+test('HTTP 客户端：路径、查询串、方法与 JSON body', async () => {
+  const calls: Call[] = []
+  const apis = createHttpApis({
+    baseUrl: 'http://gw.test/api/',
+    fetchImpl: fakeFetch(
+      response({ items: [], nextCursor: null }),
+      calls,
+    ),
+  })
+  await apis.accounts.list({ provider: 'claude', limit: 2 })
+  assert.equal(calls[0]?.url, 'http://gw.test/api/accounts?provider=claude&limit=2')
+  assert.equal(calls[0]?.init.method, 'GET')
+  assert.equal(calls[0]?.init.credentials, 'same-origin')
+  assert.equal((calls[0]?.init.headers as Record<string, string>).Accept, 'application/json')
+
+  const settingsFetch = fakeFetch(response({ ns: 'mailer' }), calls)
+  const settings = createHttpApis({ baseUrl: 'http://gw.test/api', fetchImpl: settingsFetch })
+  await settings.settings.update('mailer', { smtp: { host: 'smtp.example.com' } }, 'rev-1')
+  const call = calls[calls.length - 1]
+  assert.equal(call?.url, 'http://gw.test/api/settings/mailer')
+  assert.equal(call?.init.method, 'POST')
+  assert.equal((call?.init.headers as Record<string, string>)['Content-Type'], 'application/json')
+  assert.deepEqual(JSON.parse(String(call?.init.body)), {
+    patch: { smtp: { host: 'smtp.example.com' } },
+    expectedRevision: 'rev-1',
+  })
+})
+
+test('HTTP 客户端：keys / usage / topup 的路径与参数', async () => {
+  const calls: Call[] = []
+  const apis = createHttpApis({
+    baseUrl: '/api',
+    fetchImpl: (async (url: string | URL | Request, init?: RequestInit) => {
+      calls.push({ url: String(url), init: init ?? {} })
+      return response({})
+    }) as unknown as typeof fetch,
+  })
+  await apis.usage.get({ range: '7d', apiKeyId: 'key_1' })
+  await apis.keys.create({ name: 'ci' })
+  await apis.keys.update('key_1', { name: 'renamed' })
+  await apis.keys.remove('key_1')
+  await apis.topup.options()
+  await apis.topup.createOrder({ amountCents: 10_000, method: 'alipay' })
+  assert.deepEqual(
+    calls.map((call) => `${call.init.method ?? 'GET'} ${call.url}`),
+    [
+      'GET /api/usage?range=7d&apiKeyId=key_1',
+      'POST /api/keys',
+      'PATCH /api/keys/key_1',
+      'DELETE /api/keys/key_1',
+      'GET /api/topup/options',
+      'POST /api/topup/orders',
+    ],
+  )
+})
+
+test('HTTP 客户端：错误映射保留 code、status 与 request id', async () => {
+  const apis = createHttpApis({
+    baseUrl: 'http://gw.test/api',
+    fetchImpl: fakeFetch(
+      response(
+        { error: { code: 'SETTINGS_CONFLICT', message: '设置已被别人改过' } },
+        409,
+        { 'x-request-id': 'req-1', 'content-type': 'application/json' },
+      ),
+    ),
+  })
+  await assert.rejects(
+    () => apis.settings.update('mailer', { from: 'x' }, 'rev-old'),
+    (error: unknown) => {
+      assert.ok(isApiError(error))
+      assert.equal(error.status, 409)
+      assert.equal(error.code, 'SETTINGS_CONFLICT')
+      assert.equal(error.requestId, 'req-1')
+      assert.match(error.message, /设置已被别人改过/)
+      return true
+    },
+  )
+})
+
+test('HTTP 客户端：网络错误与超时', async () => {
+  const network = createHttpApis({
+    baseUrl: 'http://gw.test/api',
+    fetchImpl: (async () => {
+      throw new TypeError('fetch failed')
+    }) as unknown as typeof fetch,
+  })
+  await assert.rejects(
+    () => network.health.get(),
+    (error: unknown) => isApiError(error) && error.code === 'NETWORK_ERROR',
+  )
+
+  const transport = createHttpTransport({
+    timeoutMs: 5,
+    fetchImpl: ((_url: string | URL | Request, init?: RequestInit) =>
+      new Promise((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => reject(new Error('aborted')))
+      })) as unknown as typeof fetch,
+  })
+  await assert.rejects(
+    () => transport('/health'),
+    (error: unknown) => isApiError(error) && error.code === 'TIMEOUT',
+  )
+})
+
+test('mock：用量、keys、充值都是契约形状', async () => {
+  const mock = createMockApis({ latencyMs: 0, now: () => new Date('2026-10-19T12:00:00.000Z') })
+
+  const usage = await mock.usage.get({ range: '30d' })
+  assert.equal(usage.daily.length, 30)
+  assert.ok(usage.totals.costCents > 0)
+  assert.ok(usage.totals.requests > 0)
+  assert.ok(usage.daily.every((point) => point.date.match(/^\d{4}-\d{2}-\d{2}$/)))
+  assert.equal((await mock.usage.get({ range: '7d' })).daily.length, 7)
+  assert.equal((await mock.usage.get({ range: '30d', apiKeyId: 'key_ci_runner' })).apiKeyId, 'key_ci_runner')
+
+  const listed = await mock.keys.list()
+  assert.equal(listed.items.length, 3)
+  assert.ok(listed.items.every((item) => !('secret' in item)))
+  const created = await mock.keys.create({ name: 'ci' })
+  assert.match(created.secret, /^sk-dizzy-mock-/)
+  assert.ok(!('secret' in (await mock.keys.list()).items[0]))
+  assert.equal((await mock.keys.update(created.id, { name: 'ci-2' })).name, 'ci-2')
+  await mock.keys.remove(created.id)
+  assert.equal((await mock.keys.list()).items.length, 3)
+
+  const topup = await mock.topup.options()
+  assert.equal(topup.currency, 'CNY')
+  assert.ok(topup.methods.some((method) => method.id === 'alipay' && method.enabled))
+  const order = await mock.topup.createOrder({ amountCents: 10_000, method: 'alipay' })
+  assert.equal(order.status, 'pending')
+  assert.equal(order.amountCents, 10_000)
+  await assert.rejects(
+    () => mock.topup.createOrder({ amountCents: 1, method: 'alipay' }),
+    (error: unknown) => error instanceof ApiError && error.code === 'TOPUP_AMOUNT_OUT_OF_RANGE',
+  )
+
+  const manifest = await mock.console.manifest()
+  assert.ok(manifest.pages.some((page) => page.path === '/console'))
+  assert.ok(manifest.pages.some((page) => page.path === '/console/api_keys'))
+  assert.ok(manifest.pages.some((page) => page.path === '/console/top_up'))
+})

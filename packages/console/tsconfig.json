@@ -1,0 +1,21 @@
+{
+  // 浏览器侧的 assets/*.js 是零构建的原生 ESM。它们不是 TS 源码，但同样要过类型检查：
+  // 路由、API 客户端与 app.js 都用 JSDoc 写契约，`checkJs` 让 tsc 像检查 TS 一样检查它们。
+  // 这一份配置只覆盖 assets；服务端源码由根 tsconfig 检查。
+  "extends": "../../tsconfig.base",
+  "compilerOptions": {
+    "module": "preserve",
+    "moduleResolution": "bundler",
+    "composite": false,
+    "declaration": false,
+    "emitDeclarationOnly": false,
+    "incremental": false,
+    "noEmit": true,
+    "allowImportingTsExtensions": true,
+    "allowJs": true,
+    "checkJs": true,
+    "lib": ["es2023", "dom", "dom.iterable"],
+    "types": ["node"]
+  },
+  "include": ["assets/**/*.js", "assets/**/*.d.ts"]
+}
