@@ -96,7 +96,7 @@ async function rejectsCode(operation: Promise<unknown>, code: ApiKeyErrorCode): 
   })
 }
 
-test('创建：完整 key 只返回一次，列表只给掩码', async (t) => {
+test('创建：完整 key 落库，用户列表可以再次读取，管理面仍只给掩码', async (t) => {
   const { service, user } = await boot(t)
   user.add(1)
 
@@ -116,11 +116,13 @@ test('创建：完整 key 只返回一次，列表只给掩码', async (t) => {
 
   const views = await service.list(1)
   assert.equal(views.length, 1)
-  const payload = JSON.stringify(views)
-  assert.ok(!payload.includes(created.secret), '列表不得包含完整 key')
-  assert.ok(!payload.includes(created.secret.slice(6)), '列表不得包含 secret 本体')
-  assert.ok(!('secret' in views[0]!))
+  assert.equal(views[0]?.secret, created.secret)
+  assert.equal(views[0]?.maskedKey, created.key.maskedKey)
   assert.ok(!('secretHash' in views[0]!))
+
+  const adminViews = await service.listAll()
+  assert.equal(adminViews[0]?.secret, null, '管理面列表不下发完整 key')
+  assert.equal(adminViews[0]?.maskedKey, created.key.maskedKey)
 })
 
 test('名称：同一用户内唯一；不同用户可重名', async (t) => {
@@ -257,7 +259,7 @@ test('更新：改名 / 启停；空 patch 与非法值被拒绝', async (t) => 
   await rejectsCode(service.update(1, 'missing', { enabled: true }), 'API_KEY_NOT_FOUND')
 })
 
-test('轮换：trackingId 与 id 不变，旧 secret 立刻失效，新完整 key 只返回一次', async (t) => {
+test('轮换：trackingId 与 id 不变，旧 secret 立刻失效，新完整 key 写回列表', async (t) => {
   const { service, user } = await boot(t)
   user.add(1)
   user.add(2)
@@ -276,6 +278,7 @@ test('轮换：trackingId 与 id 不变，旧 secret 立刻失效，新完整 ke
     name: 'rotate',
     profile: 'billed',
   })
+  assert.equal((await service.list(1))[0]?.secret, rotated.secret)
 
   await rejectsCode(service.rotate(2, created.key.id), 'API_KEY_NOT_FOUND')
 })

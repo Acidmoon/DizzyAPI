@@ -397,9 +397,11 @@ tag、健康、冷却与并发饱和。`transport` 在 Windows 开发机自动�
 `baseUrl`、provider 也没有默认映射（默认只有 `openai`）的账号不会进入快照。
 
 **`apiKey` 是用户 API key 的唯一写者**：SQLite（Node 24 内置 `node:sqlite` 的
-`DatabaseSync`，零第三方依赖）落在 `data/api-keys.db`，表里只有 sha256 哈希与掩码，
-**永不存明文**。key 形状是 `sk-dz-<12 位 Crockford base32 trackingId>_<32 字节随机数的
-base64url secret>`；完整 key 只在 `create` / `rotate` 的返回值里出现一次。`verify` 先校验
+`DatabaseSync`，零第三方依赖）落在 `data/api-keys.db`。owner 2026-10-20 决定放宽
+「只存哈希」：表里保存完整 key、sha256 哈希与掩码，用户在自己的 key 列表里随时可以
+再次复制完整 key；管理面 `listAll` 仍只给掩码，推给 Go 的快照仍只有哈希。
+key 形状是 `sk-dz-<12 位 Crockford base32 trackingId>_<32 字节随机数的
+base64url secret>`。`verify` 先校验
 形状，再按 trackingId 取记录、用 `timingSafeEqual` 比对哈希；不存在、已停用、用户封禁
 都返回 `undefined`，不泄露差异。同一用户内名称唯一，每用户上限默认 100。
 
@@ -438,7 +440,7 @@ account-priority 在启动同步、`sync()` 与 `api-key/changed` 事件（防�
 
 | 面 | 方法 | 说明 |
 |---|---|---|
-| 用户面 | `create(userId, input)` / `list(userId)` / `get(userId, id)` / `update(userId, id, patch)` / `rotate(userId, id)` / `remove(userId, id)` | 全部按 `userId` 做所有权隔离；`create` / `rotate` 的返回值含完整 key 一次 |
+| 用户面 | `create(userId, input)` / `list(userId)` / `get(userId, id)` / `update(userId, id, patch)` / `rotate(userId, id)` / `remove(userId, id)` | 全部按 `userId` 做所有权隔离；`create` / `rotate` 返回完整 key，`list` / `get` 也带 `secret` 供再次复制（旧库历史行可为 `null`） |
 | 校验 | `verify(secret)` | 进程内 seam；命中返回 `{ keyId, userId, name, profile }`，否则 `undefined` |
 | 快照 | `snapshot()` | 只含 enabled 且用户可用的 key：`{ keyId, userId, keyHash, profile, name }` |
 | 管理面 | `listAll()` / `status()` | 管理员读；只有掩码与计数，没有 secret / hash |
@@ -596,7 +598,7 @@ class Foo extends Service {
 在 D13 的 `/console` 区域内落成 `/console/usage`、`/console/api_keys`、
 `/console/top_up`、`/console/transactions`、`/console/profile`；`/console` 是重定向到
 `/console/usage` 的隐藏页。用量页有余额 / 指标 / 成本柱状图；API keys 有创建
-（完整 key 只显示一次）、改名、启停、轮换、删除；充值有金额 chips、支付方式与订单结果；
+（列表可复制完整 key）、改名、启停、轮换、删除；充值有金额 chips、支付方式与订单结果；
 个人资料页有头像 / 用户名 / 改密码。账单仍是占位。参考页是 React + Rspack + `ds-*`，
 我们**没有**复制它的 CSS / JS / 图片 / 字体或真实账户数据；token 与结构见
 `packages/console/DESIGN.md`。
@@ -789,8 +791,8 @@ SPA 的 CSP 是 `img-src 'self' data: https:`：允许 data URL 与 https 外链
     整体 +2px：页面标题下不渲染 manifest 描述，设置卡 / 对话框 / 提示区只保留数据与操作，
     数据表的次级技术字段（账号 id、精确时间、`enabled` 文案等）也不再显示。
 15. **API key 的存储是 SQLite，不是 JSON**：`packages/api-key` 用 Node 24 内置的
-    `node:sqlite`（`DatabaseSync`），零第三方依赖。表里只有 sha256 哈希与掩码；
-    完整 key 只在 `create` / `rotate` 返回一次。写操作走 `BEGIN IMMEDIATE`，
+    `node:sqlite`（`DatabaseSync`），零第三方依赖。表里保存完整 key、sha256 哈希与掩码；
+    用户列表返回完整 key，管理面 `listAll` 只给掩码。写操作走 `BEGIN IMMEDIATE`，
     `generation` 元数据在同一个事务里递增。`lastUsedAt` 已预留，但 Go 尚未回报用量。
 16. **key 快照的权威写者仍是 TS**：`api-key` 是唯一写者，account-priority 只是转发；
     Go 的 `internal/apikeys` 只缓存与校验。account-priority 监听 `api-key/changed`、
@@ -1598,7 +1600,7 @@ CI 用 `go list -deps` 逐模块校验 `modules/*` 之间无相互 import，违�
   `api-key` 运行期被禁用 / 卸载会推空快照撤销旧 key；启动时就禁用则不推，
   Go 保持 Ready=false 的环境变量 / 占位路径。这两条路径都只在本机测试里验过。
 - **API key 没有真实前端闭环**：前端 API keys 页面仍用 mock；面向用户站的 REST
-  由 api-http 分支实现，尚未与本插件联调。完整 key 的一次性展示只在单测与 mock 里验过。
+  由 api-http 分支实现，尚未与本插件联调。完整 key 的列表回读只在单测与 mock 里验过。
 - **计费不存在**：没有 `quota-check` / `settle` / `usage-log`，请求不会扣费也不会落
   usage_log。post 相位目前是空集；engine 在响应写出前执行 post，流式响应结束后
   再解析 usage 的能力尚未实现。

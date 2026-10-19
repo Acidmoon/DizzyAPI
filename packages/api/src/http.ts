@@ -1644,6 +1644,7 @@ function normalizeKeySummary(value: unknown): ApiKeySummaryView {
     id,
     name: typeof record.name === 'string' ? record.name : '',
     trackingId: typeof record.trackingId === 'string' ? record.trackingId : '',
+    secret: typeof record.secret === 'string' ? record.secret : null,
     maskedKey: typeof record.maskedKey === 'string' ? record.maskedKey : '',
     createdAt: typeof record.createdAt === 'string' ? record.createdAt : '',
     lastUsedAt: typeof record.lastUsedAt === 'string' ? record.lastUsedAt : null,

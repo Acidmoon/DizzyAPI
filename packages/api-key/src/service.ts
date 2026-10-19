@@ -106,11 +106,11 @@ export class ApiKeyService extends Service {
       { method: 'keys.status', direction: 'outbound', responseShape: 'GatewayKeysStatus' },
     ],
     storage: [
-      { key: 'dataPath', kind: 'file', description: 'API key SQLite（只存哈希与掩码）' },
+      { key: 'dataPath', kind: 'file', description: 'API key SQLite（含完整 key、哈希与掩码）' },
     ],
     shapes: {
       ApiKeyView:
-        'id,userId,name,trackingId,maskedKey,enabled,appManaged,createdAt,updatedAt,lastUsedAt,rotatedAt',
+        'id,userId,name,trackingId,secret,maskedKey,enabled,appManaged,createdAt,updatedAt,lastUsedAt,rotatedAt',
       ApiKeySnapshot: 'version,generation,keys[{keyId,userId,keyHash,profile,name}]',
     },
   } as const
@@ -137,7 +137,7 @@ export class ApiKeyService extends Service {
   // ───────────────────────────────── 写：用户面 ─────────────────────────────────
 
   /**
-   * 创建 key。返回完整 key 一次；之后任何读取都只有掩码。
+   * 创建 key。完整 key 同时写入 `secret` 列，用户之后仍可在自己的列表里复制。
    *
    * 同一用户内名称唯一（`API_KEY_NAME_TAKEN`），便于前端识别；
    * 用户不存在或已封禁时拒绝（`API_KEY_USER_NOT_FOUND`，不区分两者）。
@@ -187,7 +187,7 @@ export class ApiKeyService extends Service {
 
   /**
    * 轮换 secret：trackingId 与 key id 不变，旧 secret 立刻失效。
-   * 返回新完整 key 一次。用户被禁用时拒绝。
+   * 新完整 key 写回 `secret` 列；用户被禁用时拒绝。
    */
   async rotate(userId: number, id: string): Promise<RotateApiKeyResult> {
     const uid = normalizeUserId(userId)
@@ -208,10 +208,10 @@ export class ApiKeyService extends Service {
         const now = new Date().toISOString()
         this.db
           .prepare(
-            'UPDATE api_keys SET secret_hash = ?, masked_key = ?, rotated_at = ?, updated_at = ? ' +
+            'UPDATE api_keys SET secret_hash = ?, secret = ?, masked_key = ?, rotated_at = ?, updated_at = ? ' +
               'WHERE id = ? AND user_id = ?',
           )
-          .run(hash, maskKey(current.tracking_id, secret), now, now, keyId, uid)
+          .run(hash, fullKey, maskKey(current.tracking_id, secret), now, now, keyId, uid)
         bumpGeneration(this.db)
         return { key: toView(this.requireRow(keyId)), secret: fullKey }
       }
@@ -250,12 +250,12 @@ export class ApiKeyService extends Service {
       .map((row) => toView(asRow(row)!))
   }
 
-  /** 管理员读：全部用户的 key，仍然只有掩码。 */
+  /** 管理员读：全部用户的 key，但**不下发完整 key**，只给掩码。 */
   async listAll(): Promise<ApiKeyView[]> {
     return this.db
       .prepare('SELECT * FROM api_keys ORDER BY created_at ASC, rowid ASC')
       .all()
-      .map((row) => toView(asRow(row)!))
+      .map((row) => ({ ...toView(asRow(row)!), secret: null }))
   }
 
   async get(userId: number, id: string): Promise<ApiKeyView> {
@@ -383,9 +383,9 @@ export class ApiKeyService extends Service {
         this.db
           .prepare(
             'INSERT INTO api_keys (' +
-              'id, user_id, name, tracking_id, secret_hash, masked_key, ' +
+              'id, user_id, name, tracking_id, secret_hash, secret, masked_key, ' +
               'enabled, app_managed, created_at, updated_at, last_used_at, rotated_at' +
-              ') VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL)',
+              ') VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL)',
           )
           .run(
             id,
@@ -393,6 +393,7 @@ export class ApiKeyService extends Service {
             name,
             trackingId,
             hash,
+            fullKey,
             maskKey(trackingId, secret),
             1,
             appManaged ? 1 : 0,

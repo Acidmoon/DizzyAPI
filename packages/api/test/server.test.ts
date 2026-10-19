@@ -327,7 +327,7 @@ test('资料：改用户名 / 头像、改密码、登出使 cookie 失效', asy
 
 // ───────────────────────────────── API keys ─────────────────────────────────
 
-test('API keys：服务缺失 503；存在时 create/list/rotate/update/remove 且 secret 只出现一次', async (t) => {
+test('API keys：服务缺失 503；存在时 create/list/rotate/update/remove，列表可再次复制完整 key', async (t) => {
   const unavailable = await setup(t, { withApiKey: false })
   const { cookie: unavailableCookie } = await login(unavailable.server)
   const missing = await call(unavailable.server, '/api/keys', { cookie: unavailableCookie })
@@ -340,8 +340,8 @@ test('API keys：服务缺失 503；存在时 create/list/rotate/update/remove �
   const listed = await call(server, '/api/keys', { cookie })
   assert.equal(listed.status, 200)
   assert.equal(listed.json.items.length, 1)
-  assert.ok(!('secret' in listed.json.items[0]))
-  assert.equal(typeof listed.json.items[0].maskedKey, 'string', '列表只给掩码')
+  assert.equal(typeof listed.json.items[0].secret, 'string', '用户列表可以复制完整 key')
+  assert.equal(typeof listed.json.items[0].maskedKey, 'string')
 
   const created = await call(server, '/api/keys', {
     method: 'POST',
@@ -356,7 +356,8 @@ test('API keys：服务缺失 503；存在时 create/list/rotate/update/remove �
   const secret = created.json.secret as string
 
   const afterCreate = await call(server, '/api/keys', { cookie })
-  assert.ok(!afterCreate.text.includes(secret), '列表不得回显完整 secret')
+  const createdView = afterCreate.json.items.find((item: { name: string }) => item.name === 'deploy')
+  assert.equal(createdView?.secret, secret, '列表必须能再次读到刚创建的完整 key')
 
   const rotated = await call(server, `/api/keys/${created.json.id}/rotate`, { method: 'POST', cookie })
   assert.equal(rotated.status, 200, rotated.text)
@@ -373,7 +374,7 @@ test('API keys：服务缺失 503；存在时 create/list/rotate/update/remove �
   assert.equal(updated.status, 200)
   assert.equal(updated.json.enabled, false)
   assert.equal(typeof updated.json.maskedKey, 'string')
-  assert.ok(!updated.text.includes(secret), 'PATCH 响应不得回显完整 secret')
+  assert.equal(updated.json.secret, rotated.json.secret, 'PATCH 响应仍带轮换后的完整 key，供列表复制')
 
   const removed = await call(server, `/api/keys/${created.json.id}`, { method: 'DELETE', cookie })
   assert.equal(removed.status, 200)

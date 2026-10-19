@@ -736,10 +736,12 @@ export function createMockApis(options = {}) {
         const sequence = state.keySequence++
         const id = `key_mock_${String(sequence).padStart(3, '0')}`
         const trackingId = `mock-${String(sequence).padStart(4, '0')}-4f2a-9c1e-${String(10_000 + sequence)}`
+        const secret = `sk-dizzy-mock-${String(sequence).padStart(4, '0')}-${trackingId}`
         const summary = {
           id,
           name,
           trackingId,
+          secret,
           maskedKey: `sk-dizzy-****${String(sequence).padStart(4, '0')}`,
           createdAt: stamp(),
           lastUsedAt: null,
@@ -747,7 +749,7 @@ export function createMockApis(options = {}) {
           enabled: true,
         }
         state.keys.unshift(summary)
-        return { ...clone(summary), secret: `sk-dizzy-mock-${String(sequence).padStart(4, '0')}-${trackingId}` }
+        return clone(summary)
       },
       /**
        * @param {string} id
@@ -789,8 +791,10 @@ export function createMockApis(options = {}) {
           throw new ApiError('App-managed key 不能在控制台轮换', { status: 409, code: 'KEY_APP_MANAGED' })
         }
         const sequence = state.keySequence++
+        const secret = `sk-dizzy-mock-rotated-${String(sequence).padStart(4, '0')}`
         key.maskedKey = `sk-dizzy-****${String(sequence).padStart(4, '0')}`
-        return { ...clone(key), secret: `sk-dizzy-mock-rotated-${String(sequence).padStart(4, '0')}` }
+        key.secret = secret
+        return { ...clone(key), secret }
       },
     },
     topup: {
@@ -1028,12 +1032,13 @@ function createMockState(now) {
   ]
 
   /** 可变的本地形状；列表响应返回的是 clone，不会把可变对象漏给调用方。 */
-  /** @type {{ id: string, name: string, trackingId: string, maskedKey: string, createdAt: string, lastUsedAt: string | null, appManaged: boolean, enabled: boolean }[]} */
+  /** @type {{ id: string, name: string, trackingId: string, secret: string | null, maskedKey: string, createdAt: string, lastUsedAt: string | null, appManaged: boolean, enabled: boolean }[]} */
   const keys = [
     {
       id: 'key_local_dev',
       name: 'local-dev',
       trackingId: 'mock-0001-4f2a-9c1e-10001',
+      secret: 'sk-dizzy-mock-local-dev-0001',
       maskedKey: 'sk-dizzy-****0001',
       createdAt: '2026-09-21T09:20:00.000Z',
       lastUsedAt: '2026-10-18T16:42:00.000Z',
@@ -1044,6 +1049,7 @@ function createMockState(now) {
       id: 'key_ci_runner',
       name: 'ci-runner',
       trackingId: 'mock-0002-4f2a-9c1e-10002',
+      secret: 'sk-dizzy-mock-ci-runner-0002',
       maskedKey: 'sk-dizzy-****0002',
       createdAt: '2026-09-30T14:05:00.000Z',
       lastUsedAt: '2026-10-19T07:10:00.000Z',
@@ -1054,6 +1060,7 @@ function createMockState(now) {
       id: 'key_mock_003',
       name: 'playground',
       trackingId: 'mock-0003-4f2a-9c1e-10003',
+      secret: null,
       maskedKey: '由 App 管理',
       createdAt: '2026-08-08T03:15:00.000Z',
       lastUsedAt: null,

@@ -1,8 +1,9 @@
 /**
  * API key 的 SQLite 存储层（Node 24 内置 `node:sqlite`，零第三方依赖）。
  *
- * 存储里**永远没有明文 key**：只有 sha256(fullKey) 的 64 位 hex 与可展示的掩码。
- * 完整 key 只在 service 的 create / rotate 返回值里出现一次。
+ * owner 2026-10-20 决定：完整 key 落库，用户可以在控制台随时复制。
+ * 这是**有意放宽**了早先「只存哈希」的约束；Go 的 key-auth 仍然只接收哈希快照，
+ * 列表 / 创建 / 轮换之外的路径（事件、日志、桥消息）都不带明文。
  *
  * 写入用 `BEGIN IMMEDIATE`：多进程（或将来多个插件实例）写同一个文件时，
  * 「检查配额 → 检查重名 → 插入」必须在同一个写事务里完成。
@@ -34,6 +35,8 @@ CREATE TABLE IF NOT EXISTS api_keys (
   name TEXT NOT NULL,
   tracking_id TEXT NOT NULL UNIQUE,
   secret_hash TEXT NOT NULL UNIQUE,
+  /** 完整 key；旧库迁移后历史行为 NULL，轮换后写入。 */
+  secret TEXT,
   masked_key TEXT NOT NULL,
   enabled INTEGER NOT NULL DEFAULT 1,
   app_managed INTEGER NOT NULL DEFAULT 0,
@@ -57,6 +60,7 @@ const REQUIRED_COLUMNS = [
   'name',
   'tracking_id',
   'secret_hash',
+  'secret',
   'masked_key',
   'enabled',
   'app_managed',
@@ -73,6 +77,7 @@ export interface ApiKeyRow {
   readonly name: string
   readonly tracking_id: string
   readonly secret_hash: string
+  readonly secret: string | null
   readonly masked_key: string
   readonly enabled: number
   readonly app_managed: number
@@ -97,6 +102,7 @@ export function openApiKeyDatabase(path: string | undefined): DatabaseSync {
     db.exec('PRAGMA synchronous = NORMAL')
     db.exec('PRAGMA busy_timeout = 5000')
     db.exec(SCHEMA)
+    ensureSecretColumn(db)
     verifySchema(db)
     verifyIntegrity(db)
     readGeneration(db)
@@ -215,6 +221,7 @@ export function toView(row: ApiKeyRow): ApiKeyView {
     userId: row.user_id,
     name: row.name,
     trackingId: row.tracking_id,
+    secret: row.secret,
     maskedKey: row.masked_key,
     enabled: row.enabled === 1,
     appManaged: row.app_managed === 1,
@@ -227,6 +234,19 @@ export function toView(row: ApiKeyRow): ApiKeyView {
 
 export function asRow(value: Record<string, unknown> | undefined): ApiKeyRow | undefined {
   return value as ApiKeyRow | undefined
+}
+
+/** 旧库升级：只加列，不改历史行。历史 key 的 secret 保持 NULL。 */
+function ensureSecretColumn(db: DatabaseSync): void {
+  const columns = db.prepare('PRAGMA table_info(api_keys)').all()
+  const names = new Set(
+    columns
+      .map((column) => column.name)
+      .filter((name): name is string => typeof name === 'string'),
+  )
+  if (!names.has('secret')) {
+    db.exec('ALTER TABLE api_keys ADD COLUMN secret TEXT')
+  }
 }
 
 function verifySchema(db: DatabaseSync): void {

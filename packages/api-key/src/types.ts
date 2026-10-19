@@ -1,18 +1,20 @@
 /**
  * API key 插件的领域模型与跨进程快照形状。
  *
- * 核心约束：完整 key 只在 create / rotate 的返回值里出现一次；
- * 列表、快照、日志与桥消息都只带掩码或哈希。
+ * owner 2026-10-20 决定：用户自己的列表可以返回完整 key，便于随时复制；
+ * 管理面 listAll 仍只给掩码，快照、日志与桥消息只带哈希。
  */
 
 export type ApiKeyAction = 'created' | 'updated' | 'rotated' | 'removed'
 
-/** 用户面看到的 key 记录。没有 secret / hash 字段。 */
+/** 用户面看到的 key 记录。secret 可为 null（旧库历史行）。 */
 export interface ApiKeyView {
   readonly id: string
   readonly userId: number
   readonly name: string
   readonly trackingId: string
+  /** 完整 key；旧库迁移后历史行为 null，轮换后写入。 */
+  readonly secret: string | null
   /** 形如 `sk-dz-<trackingId>_…<secret 最后 4 位>`。 */
   readonly maskedKey: string
   readonly enabled: boolean

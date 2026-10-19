@@ -247,6 +247,7 @@ export interface ApiKeySummaryView {
   readonly id: string
   readonly name: string
   readonly trackingId: string
+  readonly secret: string | null
   readonly maskedKey: string
   readonly createdAt: string
   readonly lastUsedAt: string | null

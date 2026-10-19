@@ -601,6 +601,7 @@ export class FakeApiKey implements ApiKeyPort {
       id: 'key_1',
       name: 'ci',
       trackingId: 'trk-1',
+      secret: 'sk-dizzy-secret-initial',
       maskedKey: 'sk-dizzy-****0001',
       createdAt: '2026-10-01T00:00:00.000Z',
       lastUsedAt: null,
@@ -621,6 +622,7 @@ export class FakeApiKey implements ApiKeyPort {
       id,
       name: input.name,
       trackingId: `trk-${this.sequence}`,
+      secret: `sk-dizzy-secret-${this.sequence}`,
       maskedKey: `sk-dizzy-****000${this.sequence}`,
       createdAt: new Date().toISOString(),
       lastUsedAt: null,
@@ -651,6 +653,7 @@ export class FakeApiKey implements ApiKeyPort {
     const item = this.items.get(id)
     if (item === undefined) throw new DomainError('KEY_NOT_FOUND', '没有这个 key')
     item.maskedKey = `sk-dizzy-****rot${this.sequence}`
+    item.secret = `sk-dizzy-rotated-${this.sequence}`
     return { key: item, secret: `sk-dizzy-rotated-${this.sequence}` }
   }
 }

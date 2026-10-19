@@ -204,13 +204,15 @@ test('mock：用量、keys、充值都是契约形状', async () => {
 
   const listed = await mock.keys.list()
   assert.equal(listed.items.length, 3)
-  assert.ok(listed.items.every((item) => !('secret' in item)))
+  assert.ok(listed.items.some((item) => typeof item.secret === 'string'))
+  assert.equal(listed.items.find((item) => item.appManaged)?.secret, null)
   const created = await mock.keys.create({ name: 'ci' })
   assert.match(created.secret, /^sk-dizzy-mock-/)
-  assert.ok(!('secret' in (await mock.keys.list()).items[0]))
+  assert.equal((await mock.keys.list()).items[0]?.secret, created.secret)
   assert.equal((await mock.keys.update(created.id, { name: 'ci-2' })).name, 'ci-2')
   const rotated = await mock.keys.rotate(created.id)
   assert.match(rotated.secret, /^sk-dizzy-mock-rotated-/)
+  assert.equal((await mock.keys.list()).items[0]?.secret, rotated.secret)
   await mock.keys.remove(created.id)
   assert.equal((await mock.keys.list()).items.length, 3)
 

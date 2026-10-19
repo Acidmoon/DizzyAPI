@@ -1431,7 +1431,31 @@ function keyRow(key, reload) {
           : el('div', { class: 'cell-sub' }, badge('已停用', 'neutral')),
     ),
     el('td', {}, el('code', { text: key.trackingId })),
-    el('td', {}, el('code', { text: key.maskedKey })),
+    el(
+      'td',
+      {},
+      el(
+        'div',
+        { class: 'table-actions start' },
+        el('code', { text: key.maskedKey }),
+        key.secret === null
+          ? null
+          : el('button', {
+              class: 'btn btn-icon',
+              attrs: { type: 'button', title: '复制完整 key' },
+              on: {
+                click: async () => {
+                  try {
+                    await navigator.clipboard.writeText(/** @type {string} */ (key.secret))
+                    toast('完整 API key 已复制')
+                  } catch {
+                    toast('复制失败：请手动选择', 'bad')
+                  }
+                },
+              },
+            }, icon('copy')),
+      ),
+    ),
     el('td', { text: formatTime(key.createdAt) }),
     el('td', { text: key.lastUsedAt === null ? '—' : formatTime(key.lastUsedAt) }),
     el('td', { class: 'cell-actions' }, el('div', { class: 'table-actions' }, edit, rotate, toggle, remove)),

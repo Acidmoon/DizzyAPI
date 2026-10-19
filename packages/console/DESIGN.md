@@ -99,8 +99,9 @@
 2. 右对齐亮色主按钮“创建 API key”；次级“按 API Key 查看用量”。
 3. 表格：名称 / Tracking ID / 掩码 Key / 创建日期 / 最近使用 / 行内操作。
 4. App-managed 条目带 `ds-tag` 风格的标记，编辑/删除禁用。
-5. 创建对话框：名称输入 → 成功页显示完整 key 一次 + 复制 + “我已保存”。
-   完整 key 只存在当前 dialog 的局部变量，关闭即丢；不写 localStorage / 日志 / URL。
+5. 创建对话框：名称输入 → 成功页显示完整 key + 复制 + “我已保存”。
+   完整 key 由服务端保存，列表里的复制按钮可以随时再次复制；前端仍不写
+   localStorage / 日志 / URL。
 6. 编辑只改名；删除二次确认。
 7. 启停与轮换：停用 / 启用直接生效；轮换需要二次确认，成功后新 secret 只显示一次。
 
@@ -159,7 +160,7 @@ tokens} / models[]{model, requests, tokens, costCents, daily?} / generatedAt`。
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| GET | `/api/keys` | `{ items }`，永不返回完整 key |
+| GET | `/api/keys` | `{ items }`，每项带完整 `secret`（旧库历史行可为 `null`） |
 | POST | `/api/keys` | `{ name }` → `CreatedApiKey`（服务返回 `{ key, secret }`，HTTP 层展开；仅此一次含 `secret`） |
 | PATCH | `/api/keys/:id` | `{ name?, enabled? }`，改名 / 启停 |
 | POST | `/api/keys/:id/rotate` | 轮换。服务返回 `{ key, secret }`，HTTP 层展开成扁平 `CreatedApiKey`（仅此一次含 `secret`） |

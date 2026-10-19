@@ -244,6 +244,8 @@ export interface ApiKeySummary {
   readonly id: string
   readonly name: string
   readonly trackingId: string
+  /** 完整 key；旧库历史行为 null，轮换后写入。 */
+  readonly secret: string | null
   readonly maskedKey: string
   readonly createdAt: string
   readonly lastUsedAt: string | null
@@ -260,7 +262,7 @@ export interface CreateApiKeyInput {
   readonly name: string
 }
 
-/** `secret` 只在这里出现一次；前端不得持久化。 */
+/** 创建 / 轮换响应；`secret` 与列表里的完整 key 相同。 */
 export interface CreatedApiKey extends ApiKeySummary {
   readonly secret: string
 }
