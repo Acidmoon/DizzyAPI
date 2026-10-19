@@ -1211,9 +1211,9 @@ CI 用 `go list -deps` 逐模块校验 `modules/*` 之间无相互 import，违�
 | 上游协议 | 当前只支持 OpenAI 兼容 `/chat/completions`；Claude / Gemini 协议与模型映射何时做、放在哪个模块，待定 |
 | gatewayd 孤儿进程 | cordis 异常退出时 Go 进程按 D9 继续存活；是否需要父进程探测、外部守护或启动时清理旧实例尚未决定 |
 | 前端剩余参考 | 亮色模式、账单 / 发票页、按模型请求数面积图与 Tokens 柱状图的序列契约尚未提供；个人资料页 / 管理台用户页已实现，但没有参考版式 |
-| 前端真实接口 | 用量 / API keys / 充值 / 账号 / 目录 / 设置 / 健康已由 `packages/api` 接上真实控制面服务；API keys 依赖尚未存在的 `apiKey` 服务（503），usage 没有历史，充值 501。是否迁到 Go `modules/httpapi` 待 owner 定 |
-| 前端静态资源集成 | `packages/api` 已按 DESIGN.md 的 `manifest.json` / `current.json` / 版本目录契约发字节（immutable / CSP / `state.json.enabled=false` 404）；尚未经反代或 Go 侧验证 |
-| 前端与账号管理的接口面 | `/api/accounts*`、`/api/users*`、`/api/catalog/modules`、`/api/settings*` 已实现，但要求 admin；本分支 user 没有 `role`，真实权限要等 user-system 分支 |
+| 前端真实接口 | 用量 / API keys / 充值 / 账号 / 目录 / 设置 / 健康已由 `packages/api` 接上真实控制面服务；API keys 已接 `apiKey`，usage 没有历史，充值 501。是否迁到 Go `modules/httpapi` 待 owner 定 |
+| 前端静态资源集成 | `packages/api` 已按 DESIGN.md 的 `manifest.json` / `current.json` / 版本目录契约发字节（immutable / CSP / `state.json.enabled=false` 404）；真实进程已验，尚未经反代 / TLS / Go 侧验证 |
+| 前端与账号管理的接口面 | `/api/accounts*`、`/api/users*`、`/api/catalog/modules`、`/api/settings*` 已实现，都要求 admin；用户 `role` 已落地，首个注册用户自动 admin |
 
 ---
 
@@ -1403,8 +1403,8 @@ CI 用 `go list -deps` 逐模块校验 `modules/*` 之间无相互 import，违�
   `/api/settings` 能看到 `account-priority` 命名空间；Ctrl-C 退出后子进程
   `process.kill(pid, 0)` 报 ESRCH（已停止）。
 - 当前全量（2026-10-19，用户系统 SQLite + API key + 产品 HTTP 合并后）：
-  `pnpm test` 295 个用例（294 通过 / 1 跳过），`pnpm typecheck` 干净；
-  `packages/api` 30 个、`packages/api-key` 16 个、`packages/account-priority` 23 个、
+  `pnpm test` 297 个用例（296 通过 / 1 跳过），`pnpm typecheck` 干净；
+  `packages/api` 32 个、`packages/api-key` 16 个、`packages/account-priority` 23 个、
   `packages/account-admin` 16 个、`packages/catalog` 9 个、`packages/console` 28 个用例全过；
   `go test ./...` 的 9 个包全过，`go vet ./...` 干净。
 - **API key / node:sqlite（本项目实测，2026-10-19）**：Node 24.3.0 的 `node:sqlite`
@@ -1488,7 +1488,7 @@ CI 用 `go list -deps` 逐模块校验 `modules/*` 之间无相互 import，违�
 
 **产品 HTTP 入口（本项目实测，2026-10-19）**
 
-- `packages/api` 的 30 个用例覆盖：配置校验、端口 0 起停与幂等 stop、Host / 自定义头 /
+- `packages/api` 的 32 个用例覆盖：配置校验、端口 0 起停与幂等 stop、Host / 自定义头 /
   Origin / Sec-Fetch-Site 四道闸、注册 / 登录 / 会话 cookie / 登出、admin 权限、
   keys（缺失 503；真实嵌套 `{ key, secret }` 的 create/rotate 展开；list 包成 `{ items }`；
   列表与 PATCH 只有掩码；全部 no-store）、accounts / catalog / settings 映射
@@ -1497,12 +1497,22 @@ CI 用 `go list -deps` 逐模块校验 `modules/*` 之间无相互 import，违�
   usage 金额换算、topup 501、请求体 413 / 坏 JSON 400 / 方法 405、头像 URL 与
   **解码后** 256 KiB 校验、会话失败只暴露稳定 code、错误不回声密码 / 验证码 / 上游凭据，
   以及 frontend / catalog / accountAdmin / settings / apiKey 缺失时的 503 与 fiber 仍 ACTIVE。
-- 全量 `pnpm test` 250 个用例（249 过 / 1 跳过），`pnpm typecheck` 干净
-  （含 `packages/console/assets/**/*.js` 的 `checkJs`）。`packages/api` 自身 30 个用例全过。
+- 全量 `pnpm test` 297 个用例（296 过 / 1 跳过），`pnpm typecheck` 干净
+  （含 `packages/console/assets/**/*.js` 的 `checkJs`）。`packages/api` 自身 32 个用例全过。
 - 静态字节读取走 `frontend.assetPath(path, version)` 与 `frontend.indexFile()`；
   路径穿越由 frontend 的 `normalizeAssetPath` + API 层的 404 双重兜底。
-- 用例用假端口 + `ctx.provide` 假服务直接构造 `ApiService` / `ApiServer`；
-  真实 app.yml 树与真实控制面存储尚未在这一轮联调（见 §11）。
+- **真实进程端到端已验（干净 `data/`，mailer=log）**：`pnpm dev` 同时起
+  `api`（127.0.0.1:7791）、gatewayd（127.0.0.1:8080）与 12 个页面 / 5 张设置卡 / 3 个插槽；
+  无 `X-Requested-With` 或 `Host: evil.test` → 403，无 cookie 的 `/api/session` → 401。
+  `POST /api/auth/register/request` 的验证码从 log mailer 读到，确认后首个用户
+  `role=admin`，会话只落 HttpOnly cookie；`GET /api/session` 返回 email 与 `permissions.admin`。
+  `POST /api/keys` 返回扁平 `CreatedApiKey`（完整 secret 一次），列表只有掩码；
+  gatewayd 用该 key 请求得到 503 `ACCOUNT_PRIORITY_NO_ELIGIBLE_ACCOUNT`（鉴权通过），
+  错误 key / 无 key 得到 401。轮换后旧 key 401、新 key 通过；停用后 401、启用后恢复。
+  资料改名 / data URL 头像 / 改密（旧密码 401、新密码 200）/ 余额调整后
+  `/api/usage` 的 `paidCents=100` / 唯一 admin 封禁 409 `USER_LAST_ADMIN` / 登出后 401
+  都已实测；`/api/catalog/modules` 18 个模块，`/api/settings` 只回 schema 与「配没配」，
+  充值订单 501。测试数据已恢复原状。
 
 **本机环境**
 - `C:\Users\17740\.dsh\profiles\desktop` 是一个活的 cordis 应用实例：
@@ -1602,18 +1612,17 @@ CI 用 `go list -deps` 逐模块校验 `modules/*` 之间无相互 import，违�
   的字段，嵌套字段会还原成对象提交。仍未验证：SSE 断线重连的退避在真实网络抖动下的表现。
 - 面板没有经过反代 / TLS，只支持回环 `http://127.0.0.1`；`SameSite=Lax` 的 cookie
   在跨机访问场景下如何表现未验证（也刻意不支持）。
-- **前端还没有在浏览器里对着真实 `api` 插件点过**：用量 / API keys / 充值 / 账号 /
-  目录 / 设置 / 健康已接真实 TS REST，但会话 cookie、401、CORS / 同源、支付回调与
-  API key 吊销均未在真实浏览器里验证。
-- **前端静态资源还没有在 Go / 反代 / 真实部署里发过**：`current.json` /
-  `manifest.json` 的文件契约与缓存头在 DESIGN.md 与 `packages/api` 单测里成立；
-  history fallback、immutable 缓存、CSP 与禁用门禁（`state.json.enabled=false`）
-  尚未端到端跑过。
+- **真实浏览器里的完整交互仍未逐页复验**：HTTP 面（注册 / 登录 / 会话 / 资料 / 改密 /
+  头像 / 余额 / users / keys / 轮换 / 启停 / 登出）已用 curl 端到端跑通；但浏览器里的
+  登录重定向、cookie 过期后的 401 处理、剪贴板复制与 dialog 关闭清理仍只经单测 / mock。
+- **静态资源仍未在 Go / 反代 / TLS 下发过**：TS `api` 插件已按契约发 immutable / CSP /
+  history fallback / `state.json.enabled=false` 404；Go 侧与真实反代部署未验。
 - **参考页只提供了深色 DOM/CSS**：亮色、账单页、按模型系列图仍缺参考；
   当前亮色是镜像取值，按模型区块只有汇总卡，没有源码里的两张小图。个人资料页 /
   管理台用户页已实现，但没有参考版式。
-- **API key 一次性展示流程只过了 mock**：浏览器剪贴板权限、dialog 关闭后清理与刷新
-  页面后的行为未做真实浏览器复验。
+- **API key 一次性展示的浏览器行为未验**：HTTP create / rotate 已实测 secret 只出现一次，
+  列表与更新只有掩码；浏览器剪贴板权限、dialog 关闭后清理与刷新页面后的行为未做真实
+  浏览器复验。
 - 控制面插件都是单进程假设：同一份 JSON 被两个 cordis 实例写会互相覆盖；
   SQLite 的 `BEGIN IMMEDIATE` 能串行化单条写，但两个实例的快照推送顺序与
   generation 语义没有跨实例验证。

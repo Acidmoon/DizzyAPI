@@ -514,7 +514,7 @@ export class ApiServer {
         throw new ApiError(
           'API_PROFILE_UNAVAILABLE',
           503,
-          '用户插件还没有 updateProfile 接口（等待 user-system 分支合并）',
+          '用户插件没有提供 updateProfile 接口',
         )
       }
       await update.call(this.runtime.user, view.userId, patch)
@@ -689,7 +689,7 @@ export class ApiServer {
             throw new ApiError(
               'API_USER_ROLE_UNAVAILABLE',
               503,
-              '用户插件还没有 setRole 接口（等待 user-system 分支合并）',
+              '用户插件没有提供 setRole 接口',
             )
           }
           await setRole.call(this.runtime.user, API_ACTOR, id, role)
@@ -701,7 +701,7 @@ export class ApiServer {
             throw new ApiError(
               'API_USER_BALANCE_ENABLED_UNAVAILABLE',
               503,
-              '用户插件还没有 setBalanceEnabled 接口（等待 user-system 分支合并）',
+              '用户插件没有提供 setBalanceEnabled 接口',
             )
           }
           await setBalanceEnabled.call(this.runtime.user, API_ACTOR, id, enabled)
@@ -1137,7 +1137,7 @@ export class ApiServer {
   private requireApiKey(): ApiKeyPort {
     const apiKey = this.runtime.apiKey()
     if (apiKey === undefined) {
-      throw new ApiError('API_KEY_UNAVAILABLE', 503, 'API key 服务尚未实现（等待 api-keys 分支合并）')
+      throw new ApiError('API_KEY_UNAVAILABLE', 503, 'API key 服务不在运行')
     }
     return apiKey
   }
@@ -1226,7 +1226,12 @@ export class ApiServer {
     const apiError = toApiError(error)
     if (!isApiError(error)) {
       const message = error instanceof Error ? error.message : String(error)
-      this.runtime.log('error', `产品 HTTP 入口内部错误：${message}`)
+      // 领域错误（4xx）是正常拒绝，别记成内部错误；只有 5xx 才是真的需要排障。
+      if (apiError.status >= 500) {
+        this.runtime.log('error', `产品 HTTP 入口内部错误：${message}`)
+      } else {
+        this.runtime.log('warn', `产品 HTTP 入口拒绝请求：${apiError.code} ${message}`)
+      }
     }
     try {
       this.sendJson(req, res, apiError.status, {
