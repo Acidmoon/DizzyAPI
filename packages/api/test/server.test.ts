@@ -184,6 +184,7 @@ test('会话：无 cookie 401，登录设置 HttpOnly cookie 且响应不含令�
   assert.match(String(cookieText), /SameSite=Lax/)
   assert.match(String(cookieText), /Path=\//)
   assert.doesNotMatch(String(cookieText), /Secure/)
+  assert.equal(reply.headers['cache-control'], 'no-store')
 
   const token = [...auth.tokens.keys()].pop()
   assert.ok(token !== undefined)
@@ -331,6 +332,7 @@ test('API keys：服务缺失 503；存在时 create/list/rotate/update/remove �
   assert.equal(listed.status, 200)
   assert.equal(listed.json.items.length, 1)
   assert.ok(!('secret' in listed.json.items[0]))
+  assert.equal(typeof listed.json.items[0].maskedKey, 'string', '列表只给掩码')
 
   const created = await call(server, '/api/keys', {
     method: 'POST',
@@ -339,6 +341,9 @@ test('API keys：服务缺失 503；存在时 create/list/rotate/update/remove �
   })
   assert.equal(created.status, 200, created.text)
   assert.match(created.json.secret, /^sk-dizzy-secret-/)
+  assert.equal(created.json.id.startsWith('key_'), true)
+  assert.equal('key' in created.json, false, '创建响应必须展开成扁平 CreatedApiKey')
+  assert.equal(created.headers['cache-control'], 'no-store')
   const secret = created.json.secret as string
 
   const afterCreate = await call(server, '/api/keys', { cookie })
@@ -347,6 +352,9 @@ test('API keys：服务缺失 503；存在时 create/list/rotate/update/remove �
   const rotated = await call(server, `/api/keys/${created.json.id}/rotate`, { method: 'POST', cookie })
   assert.equal(rotated.status, 200, rotated.text)
   assert.match(rotated.json.secret, /^sk-dizzy-rotated-/)
+  assert.equal(rotated.json.id, created.json.id)
+  assert.equal('key' in rotated.json, false, '轮换响应必须展开成扁平 CreatedApiKey')
+  assert.equal(rotated.headers['cache-control'], 'no-store')
 
   const updated = await call(server, `/api/keys/${created.json.id}`, {
     method: 'PATCH',
@@ -355,6 +363,8 @@ test('API keys：服务缺失 503；存在时 create/list/rotate/update/remove �
   })
   assert.equal(updated.status, 200)
   assert.equal(updated.json.enabled, false)
+  assert.equal(typeof updated.json.maskedKey, 'string')
+  assert.ok(!updated.text.includes(secret), 'PATCH 响应不得回显完整 secret')
 
   const removed = await call(server, `/api/keys/${created.json.id}`, { method: 'DELETE', cookie })
   assert.equal(removed.status, 200)
@@ -430,7 +440,30 @@ test('管理员账号：列表 / 详情剥掉 credentialRef，PATCH enabled 走 
   const listed = await call(server, '/api/accounts?provider=openai&limit=1', { cookie })
   assert.equal(listed.status, 200, listed.text)
   assert.equal(listed.json.items.length, 1)
+  assert.equal(listed.json.nextCursor, null)
   assert.equal(listed.json.items[0].id, 'acc_1')
+  assert.deepEqual(
+    Object.keys(listed.json.items[0]).sort(),
+    [
+      'accessExpiresAt',
+      'backoffUntil',
+      'createdAt',
+      'email',
+      'enabled',
+      'failureCount',
+      'id',
+      'kind',
+      'label',
+      'lastError',
+      'lastRefreshAt',
+      'provider',
+      'refreshDueAt',
+      'status',
+      'subject',
+      'updatedAt',
+    ].sort(),
+    '账号响应必须逐字段挑选，不能漏出 credentialRef / credentialConfigured',
+  )
   assert.ok(!listed.text.includes('credentialRef'))
   assert.ok(!listed.text.includes('credentialConfigured'))
 
@@ -446,7 +479,10 @@ test('管理员账号：列表 / 详情剥掉 credentialRef，PATCH enabled 走 
   assert.equal(patched.status, 200, patched.text)
   assert.equal(patched.json.label, 'renamed')
   assert.equal(patched.json.enabled, false)
+  const updateCall = accountAdmin.calls.find((entry) => entry.method === 'update')
+  assert.deepEqual(updateCall?.args, [API_ACTOR, 'acc_1', { label: 'renamed' }])
   assert.ok(accountAdmin.calls.some((entry) => entry.method === 'disable'))
+  assert.ok(!accountAdmin.calls.some((entry) => entry.method === 'enable'), 'enabled 不能被塞进 update')
 
   const credentials = await call(server, '/api/accounts/acc_1/credentials', {
     method: 'POST',
@@ -492,6 +528,7 @@ test('管理员目录：catalog.query 映射成 CatalogResponse，pages 按 owne
   const { cookie } = await login(server)
   const reply = await call(server, '/api/catalog/modules', { cookie })
   assert.equal(reply.status, 200, reply.text)
+  assert.equal(reply.json.generatedAt, '2026-10-19T00:00:00.000Z', 'generatedAt 来自 catalog.query()')
   const api = reply.json.modules.find((module: any) => module.id === 'api')
   assert.equal(api.kind, 'plugin')
   assert.equal(api.state, 'active')
@@ -586,6 +623,7 @@ test('静态：/ 重定向、SPA fallback 的 CSP、immutable 资源头、HEAD',
   assert.equal(spa.headers['cache-control'], 'no-store')
   assert.match(String(spa.headers['content-security-policy']), /default-src 'self'/)
   assert.match(String(spa.headers['content-security-policy']), /frame-ancestors 'none'/)
+  assert.match(String(spa.headers['content-security-policy']), /img-src 'self' data: https:/)
   assert.equal(spa.headers['referrer-policy'], 'no-referrer')
   assert.equal(spa.headers['x-content-type-options'], 'nosniff')
 
@@ -656,15 +694,112 @@ test('请求体：超限 413、坏 JSON 400、缺字段 400、方法 405', async
   assert.equal(missingRoute.status, 404)
 })
 
-test('请求体：头像超过 256 KiB 拒绝', async (t) => {
+function imageDataUrl(bytes: number): string {
+  return `data:image/png;base64,${Buffer.alloc(bytes, 0x41).toString('base64')}`
+}
+
+test('头像：https URL 通过、超长 URL / 其他 scheme 拒绝', async (t) => {
   const { server } = await setup(t)
   const { cookie } = await login(server)
-  const avatar = `data:image/png;base64,${'A'.repeat(300 * 1024)}`
-  const reply = await call(server, '/api/profile', {
+
+  const httpsAvatar = 'https://cdn.example.com/avatar.png?size=128'
+  const accepted = await call(server, '/api/profile', {
     method: 'PATCH',
     cookie,
-    body: JSON.stringify({ avatar }),
+    body: JSON.stringify({ avatar: httpsAvatar }),
   })
-  assert.equal(reply.status, 413)
-  assert.equal(reply.json.error.code, 'API_BODY_TOO_LARGE')
+  assert.equal(accepted.status, 200, accepted.text)
+  assert.equal(accepted.json.avatar, httpsAvatar)
+
+  const httpAccepted = await call(server, '/api/profile', {
+    method: 'PATCH',
+    cookie,
+    body: JSON.stringify({ avatar: 'http://cdn.example.com/avatar.png' }),
+  })
+  assert.equal(httpAccepted.status, 200, 'user 插件接受 http(s) URL（CSP 只放行 https 渲染）')
+
+  const tooLong = await call(server, '/api/profile', {
+    method: 'PATCH',
+    cookie,
+    body: JSON.stringify({ avatar: `https://example.com/${'a'.repeat(2048)}` }),
+  })
+  assert.equal(tooLong.status, 400)
+
+  const badScheme = await call(server, '/api/profile', {
+    method: 'PATCH',
+    cookie,
+    body: JSON.stringify({ avatar: 'ftp://example.com/avatar.png' }),
+  })
+  assert.equal(badScheme.status, 400)
+
+  const badData = await call(server, '/api/profile', {
+    method: 'PATCH',
+    cookie,
+    body: JSON.stringify({ avatar: 'data:text/plain;base64,AAAA' }),
+  })
+  assert.equal(badData.status, 400)
+})
+
+test('头像：data URL 按解码后大小校验（≤256 KiB）', async (t) => {
+  const { server } = await setup(t)
+  const { cookie } = await login(server)
+
+  const nearLimit = await call(server, '/api/profile', {
+    method: 'PATCH',
+    cookie,
+    body: JSON.stringify({ avatar: imageDataUrl(255 * 1024) }),
+  })
+  assert.equal(nearLimit.status, 200, nearLimit.text)
+
+  const overLimit = await call(server, '/api/profile', {
+    method: 'PATCH',
+    cookie,
+    body: JSON.stringify({ avatar: imageDataUrl(256 * 1024 + 1) }),
+  })
+  assert.equal(overLimit.status, 413)
+  assert.equal(overLimit.json.error.code, 'API_BODY_TOO_LARGE')
+})
+
+test('会话校验失败只暴露稳定 code，不带 auth 内部消息', async (t) => {
+  const { server } = await setup(t)
+
+  const banned = await call(server, '/api/session', { cookie: 'dizzyapi_session=banned-token' })
+  assert.equal(banned.status, 403)
+  assert.equal(banned.json.error.code, 'AUTH_USER_BANNED')
+  assert.ok(!banned.text.includes('内部细节'))
+
+  const broken = await call(server, '/api/session', { cookie: 'dizzyapi_session=broken-session' })
+  assert.equal(broken.status, 401)
+  assert.equal(broken.json.error.code, 'AUTH_SESSION_INVALID')
+  assert.ok(!broken.text.includes('内部细节'))
+})
+
+test('错误响应不回显请求体里的密码 / 验证码 / 上游凭据', async (t) => {
+  const { server } = await setup(t)
+
+  const password = 'super-secret-password-123'
+  const loginReply = await call(server, '/api/auth/login', {
+    method: 'POST',
+    body: JSON.stringify({ email: 'owner@example.com', password }),
+  })
+  assert.equal(loginReply.status, 401)
+  assert.ok(!loginReply.text.includes(password))
+
+  const code = '987654-secret-code'
+  const confirmReply = await call(server, '/api/auth/register/confirm', {
+    method: 'POST',
+    body: JSON.stringify({ email: 'nobody@example.com', code }),
+  })
+  assert.equal(confirmReply.status, 400)
+  assert.ok(!confirmReply.text.includes(code))
+
+  const { cookie } = await login(server)
+  const upstreamSecret = 'sk-upstream-super-secret'
+  const credentialsReply = await call(server, '/api/accounts/acc_1/credentials', {
+    method: 'POST',
+    cookie,
+    body: JSON.stringify({ payload: [upstreamSecret] }),
+  })
+  assert.equal(credentialsReply.status, 400)
+  assert.ok(!credentialsReply.text.includes(upstreamSecret))
 })

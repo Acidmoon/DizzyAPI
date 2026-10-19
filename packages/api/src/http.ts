@@ -55,8 +55,9 @@ export const API_VERSION = '0.1.0'
 
 const NO_STORE = 'no-store'
 const IMMUTABLE = 'public, max-age=31536000, immutable'
+// 头像允许 https:// 外链（user 插件接受这种值）；http:// 刻意不放开。
 const CONTENT_SECURITY_POLICY =
-  "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'"
+  "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: https:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'"
 
 const CONTENT_TYPES: Readonly<Record<string, string>> = {
   '.html': 'text/html; charset=utf-8',
@@ -408,10 +409,7 @@ export class ApiServer {
       if (!this.allowRead(req, res)) return
       await this.requireAdmin(req)
       const catalog = this.requireCatalog()
-      this.sendJson(req, res, 200, {
-        generatedAt: this.runtime.now().toISOString(),
-        modules: await this.catalogModules(catalog),
-      })
+      this.sendJson(req, res, 200, await this.catalogModules(catalog))
       return
     }
     if (parts[0] === 'settings') {
@@ -851,7 +849,9 @@ export class ApiServer {
 
   // ───────────────────────────────── 管理员：目录与设置 ─────────────────────────────────
 
-  private async catalogModules(catalog: CatalogPort): Promise<CatalogModuleView[]> {
+  private async catalogModules(
+    catalog: CatalogPort,
+  ): Promise<{ generatedAt: string; modules: readonly CatalogModuleView[] }> {
     // 禁用模块也要列出来（便于排障）；它们是 disabled，不会被当成 available。
     const result = await catalog.query({ includeUnavailable: true })
     let pages: readonly FrontendPageLike[] = []
@@ -860,7 +860,7 @@ export class ApiServer {
     } catch {
       pages = []
     }
-    return result.plugins.map((plugin) => {
+    const modules = result.plugins.map((plugin) => {
       const manifest = plugin.manifest as { description?: unknown } | undefined
       const capabilities = Array.isArray(plugin.capabilities) ? plugin.capabilities : []
       return {
@@ -876,6 +876,7 @@ export class ApiServer {
           .map((page) => page.path),
       }
     })
+    return { generatedAt: result.generatedAt, modules }
   }
 
   private async routeSettings(req: IncomingMessage, res: ServerResponse, parts: readonly string[]): Promise<void> {
@@ -884,7 +885,17 @@ export class ApiServer {
     if (parts.length === 1) {
       if (!this.allowRead(req, res)) return
       const settings = this.requireSettings()
-      this.sendJson(req, res, 200, { namespaces: await settings.describe() })
+      const described = await settings.describe()
+      // 新 settings 直接返回 `{ namespaces }`；旧实现返回数组。两种都接住。
+      const namespaces = Array.isArray(described)
+        ? described
+        : isPlainObject(described) && Array.isArray(described.namespaces)
+          ? described.namespaces
+          : null
+      if (namespaces === null) {
+        throw new ApiError('API_RESPONSE_INVALID', 502, '设置服务返回了无法识别的描述')
+      }
+      this.sendJson(req, res, 200, { namespaces })
       return
     }
 
@@ -924,9 +935,29 @@ export class ApiServer {
     return token
   }
 
+  /**
+   * 会话校验。auth 的原始错误细节不往外带：只保留稳定 code，消息统一成通用文案。
+   * banned 是 403，其余会话问题统一 401。
+   */
   private async requireSession(req: IncomingMessage): Promise<SessionViewLike> {
     const token = this.sessionToken(req)
-    return this.runtime.auth.verifySession(token)
+    try {
+      return await this.runtime.auth.verifySession(token)
+    } catch (error) {
+      if (isApiError(error)) throw error
+      const code = errorCodeOf(error)
+      if (code === 'AUTH_USER_BANNED') {
+        throw new ApiError(code, 403, '当前账号不可用')
+      }
+      if (
+        code === 'AUTH_SESSION_INVALID' ||
+        code === 'AUTH_SESSION_EXPIRED' ||
+        code === 'AUTH_USER_MISSING'
+      ) {
+        throw new ApiError(code, 401, '需要登录后才能访问')
+      }
+      throw error
+    }
   }
 
   private async requireAdmin(req: IncomingMessage): Promise<{ view: SessionViewLike; role: SessionRole }> {
@@ -1321,15 +1352,46 @@ function requiredBoolean(body: Record<string, unknown>, key: string): boolean {
 }
 
 const AVATAR_MAX_BYTES = 256 * 1024
+const AVATAR_URL_MAX_LENGTH = 2048
+const AVATAR_DATA_RE = /^data:(image\/(?:png|jpeg|webp|gif));base64,([A-Za-z0-9+/]+={0,2})$/i
 
+/**
+ * 头像与 user 插件的约定对齐：
+ * - `http(s)://` URL，长度 ≤ 2048；
+ * - `image/png|jpeg|webp|gif` 的 base64 data URL，**解码后** ≤ 256 KiB；
+ * - 其他 scheme / MIME 一律拒绝。
+ *
+ * 注意：CSP 只放行 `https:` 外链；`http:` 头像能存进用户表，但浏览器会按 CSP 拦下。
+ */
 function optionalAvatar(value: unknown): string | null {
   if (value === null) return null
-  if (typeof value !== 'string' || value === '') throw badRequest('avatar 必须是 data URL 或 null')
-  if (Buffer.byteLength(value, 'utf8') > AVATAR_MAX_BYTES) {
-    throw new ApiError('API_BODY_TOO_LARGE', 413, '头像不能超过 256 KiB')
+  if (typeof value !== 'string' || value === '') {
+    throw badRequest('avatar 必须是 data URL、http(s) URL 或 null')
   }
-  if (!/^data:image\/(png|jpeg|webp|gif);base64,/i.test(value)) {
-    throw badRequest('avatar 必须是 image/* 的 base64 data URL')
+
+  if (value.startsWith('data:')) {
+    const match = AVATAR_DATA_RE.exec(value)
+    if (match === null) {
+      throw badRequest('avatar 必须是 png / jpeg / webp / gif 的 base64 data URL')
+    }
+    const decoded = Buffer.from(match[2] as string, 'base64')
+    if (decoded.length > AVATAR_MAX_BYTES) {
+      throw new ApiError('API_BODY_TOO_LARGE', 413, '头像解码后不能超过 256 KiB')
+    }
+    return value
+  }
+
+  if (value.length > AVATAR_URL_MAX_LENGTH) {
+    throw badRequest(`avatar URL 最长 ${AVATAR_URL_MAX_LENGTH} 个字符`)
+  }
+  let url: URL
+  try {
+    url = new URL(value)
+  } catch {
+    throw badRequest('avatar 必须是合法的 http(s) URL 或 data URL')
+  }
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+    throw badRequest('avatar 只支持 http / https / data URL')
   }
   return value
 }
@@ -1472,14 +1534,27 @@ function normalizeKeySummary(value: unknown): ApiKeySummaryView {
   }
 }
 
+/**
+ * create / rotate 的真实形状是 `{ key: ApiKeyView, secret }`。这里展开成前端契约的
+ * 扁平 `CreatedApiKey`；同时兼容旧实现直接返回 `{ ...summary, secret }`。
+ */
 function normalizeCreatedKey(value: unknown): ApiKeySummaryView & { secret: string } {
-  const summary = normalizeKeySummary(value)
   const record = asRecord(value)
-  const secret = record?.secret
+  if (record === null) {
+    throw new ApiError('API_RESPONSE_INVALID', 502, 'API key 服务返回了无法识别的创建结果')
+  }
+  const summary = normalizeKeySummary(isPlainObject(record.key) ? record.key : record)
+  const secret = record.secret
   if (typeof secret !== 'string' || secret === '') {
     throw new ApiError('API_RESPONSE_INVALID', 502, 'API key 服务没有返回一次性 secret')
   }
   return { ...summary, secret }
+}
+
+function errorCodeOf(error: unknown): string | undefined {
+  if (typeof error !== 'object' || error === null) return undefined
+  const code = (error as { code?: unknown }).code
+  return typeof code === 'string' && code !== '' ? code : undefined
 }
 
 /** 账号响应只挑前端契约里的字段；`credentialRef` / 令牌永远不会出现在响应里。 */

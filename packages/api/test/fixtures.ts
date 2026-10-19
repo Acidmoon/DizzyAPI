@@ -237,6 +237,13 @@ export class FakeAuth implements AuthPort {
   }
 
   async verifySession(token: string): Promise<SessionViewLike> {
+    // 模拟新版 auth 的两种失败：原始 message 是内部细节，HTTP 层不得带出。
+    if (token === 'banned-token') {
+      throw new DomainError('AUTH_USER_BANNED', '内部细节：账号被上游封禁')
+    }
+    if (token === 'broken-session') {
+      throw new DomainError('AUTH_SESSION_INVALID', '内部细节：令牌哈希不匹配')
+    }
     const record = this.tokens.get(token)
     if (record === undefined) throw new DomainError('AUTH_SESSION_INVALID', '会话无效')
     const user = this.user.users.get(record.userId)
@@ -411,7 +418,7 @@ export class FakeCatalog implements CatalogPort {
   ]
 
   async query(): Promise<{ generatedAt: string; plugins: readonly CatalogPluginLike[] }> {
-    return { generatedAt: new Date().toISOString(), plugins: this.plugins }
+    return { generatedAt: '2026-10-19T00:00:00.000Z', plugins: this.plugins }
   }
 }
 
@@ -537,9 +544,10 @@ export class FakeSettings implements SettingsPort {
   readonly calls: { method: string; args: unknown[] }[] = []
   readonly namespaces = [{ ns: 'mailer', plugin: '@dizzyapi/plugin-mailer', writable: true, fields: [] }]
 
-  async describe(): Promise<readonly unknown[]> {
+  async describe(): Promise<unknown> {
     this.calls.push({ method: 'describe', args: [] })
-    return this.namespaces
+    // 真实 settings 服务的形状；HTTP 层必须原样透传 `{ namespaces }`。
+    return { namespaces: this.namespaces }
   }
 
   async update(actor: string, ns: string, patch: Record<string, unknown>, expectedRevision?: string): Promise<unknown> {
@@ -590,7 +598,8 @@ export class FakeApiKey implements ApiKeyPort {
       enabled: true,
     }
     this.items.set(id, item)
-    return { ...item, secret: `sk-dizzy-secret-${this.sequence}` }
+    // 真实 apiKey 服务返回 `{ key, secret }`；HTTP 层负责展开。
+    return { key: item, secret: `sk-dizzy-secret-${this.sequence}` }
   }
 
   async update(userId: number, id: string, patch: { name?: string; enabled?: boolean }): Promise<unknown> {
@@ -612,7 +621,7 @@ export class FakeApiKey implements ApiKeyPort {
     const item = this.items.get(id)
     if (item === undefined) throw new DomainError('KEY_NOT_FOUND', '没有这个 key')
     item.maskedKey = `sk-dizzy-****rot${this.sequence}`
-    return { ...item, secret: `sk-dizzy-rotated-${this.sequence}` }
+    return { key: item, secret: `sk-dizzy-rotated-${this.sequence}` }
   }
 }
 

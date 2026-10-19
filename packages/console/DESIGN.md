@@ -160,9 +160,9 @@ tokens} / models[]{model, requests, tokens, costCents, daily?} / generatedAt`。
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | GET | `/api/keys` | `{ items }`，永不返回完整 key |
-| POST | `/api/keys` | `{ name }` → `CreatedApiKey`（仅此一次含 `secret`） |
+| POST | `/api/keys` | `{ name }` → `CreatedApiKey`（服务返回 `{ key, secret }`，HTTP 层展开；仅此一次含 `secret`） |
 | PATCH | `/api/keys/:id` | `{ name?, enabled? }`，改名 / 启停 |
-| POST | `/api/keys/:id/rotate` | 轮换 → `CreatedApiKey`（仅此一次含 `secret`） |
+| POST | `/api/keys/:id/rotate` | 轮换。服务返回 `{ key, secret }`，HTTP 层展开成扁平 `CreatedApiKey`（仅此一次含 `secret`） |
 | DELETE | `/api/keys/:id` | 吊销，`{ removed: true }` |
 
 ### 充值
@@ -180,12 +180,12 @@ tokens} / models[]{model, requests, tokens, costCents, daily?} / generatedAt`。
 | GET | `/api/accounts?provider=&status=&cursor=&limit=` | 账号元数据，无 token / credentialRef |
 | GET/PATCH/DELETE | `/api/accounts/:id` | 元数据、启停、移除 |
 | GET | `/api/catalog/modules` | 插件 / 模块状态与贡献页面 |
-| GET | `/api/settings` | 设置命名空间（秘密只有 `configured`） |
+| GET | `/api/settings` | `{ namespaces }` 原样透传（秘密只有 `configured`） |
 | POST | `/api/settings/:ns` | `{ patch, expectedRevision? }`，actor 由服务端会话决定 |
 | DELETE | `/api/settings/:ns` | 恢复基线 |
 | GET | `/api/health` | 网关状态、版本、描述符 revision、桥、组件 |
 | GET | `/api/session` | `{ user, email, session, permissions:{admin} }`；余额只在允许时返回 |
-| PATCH | `/api/profile` | `{ name?, avatar? }` → `SessionUser` |
+| PATCH | `/api/profile` | `{ name?, avatar? }` → `SessionUser`。头像接受 `http(s)://` URL（≤2048）或 png/jpeg/webp/gif data URL（解码后 ≤256 KiB）；CSP 只放行 https 外链 |
 | POST | `/api/profile/password` | `{ currentPassword, newPassword }` |
 | GET | `/api/users?status=&offset=&limit=` | 管理台用户列表；余额是最小单位字符串 |
 | GET/PATCH/DELETE | `/api/users/:id` | 用户详情 / 状态 / 角色 / 余额开关 / 删除 |
@@ -214,8 +214,9 @@ tokens} / models[]{model, requests, tokens, costCents, daily?} / generatedAt`。
    `Cache-Control: public, max-age=31536000, immutable`。
 2. `/console/*`、`/admin/*` → `versions/<current>/index.html`，`no-store`。
 3. `/api/console/manifest` → `manifest.json`，`no-store`。
-4. CSP：`default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:;
-   connect-src 'self'; frame-ancestors 'none'; base-uri 'self'`。
+4. CSP：`default-src 'self'; script-src 'self'; style-src 'self';
+   img-src 'self' data: https:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'`。
+   头像允许 `data:` 与 `https:` 外链；`http://` 头像不支持。
 5. 前端插件被禁用时 `state.json.enabled=false`；`api` 插件据此对静态与 SPA 返回 404
    （`/api/health` 仍可用），反代也可据此硬门禁。
 6. 不要把 LLM 请求、凭据或控制桥挂在同一条路径上。

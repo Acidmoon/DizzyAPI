@@ -211,14 +211,20 @@ export interface AccountAdminPort {
 
 /** 设置插件的读/写面。只有运行中的 settings 服务才提供。 */
 export interface SettingsPort {
-  describe(): Promise<readonly unknown[]>
+  /** 真实服务返回 `{ namespaces }`；旧实现返回数组，HTTP 层两种都接。 */
+  describe(): Promise<unknown>
   update(actor: string, ns: string, patch: Record<string, unknown>, expectedRevision?: string): Promise<unknown>
   reset(actor: string, ns: string): Promise<unknown>
 }
 
 /**
  * API key 服务。本分支还不存在，方法返回 `unknown`，HTTP 层只做形状归一化。
- * 约定：list 返回数组或 `{items}`；create / rotate 的返回值里带一次性 `secret`。
+ *
+ * 与 feat/api-keys 的真实形状：
+ * - `list(userId)` → `ApiKeyView[]`（HTTP 层包成 `{ items }`）；
+ * - `create(userId, { name })` / `rotate(userId, id)` →
+ *   `{ key: ApiKeyView, secret: string }`（HTTP 层展开成扁平的 `CreatedApiKey`）。
+ * 兼容旧实现的数组 / 扁平返回，但测试以真实形状为准。
  */
 export interface ApiKeyPort {
   list(userId: number): Promise<unknown>

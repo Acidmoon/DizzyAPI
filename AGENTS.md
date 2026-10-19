@@ -556,8 +556,8 @@ class Foo extends Service {
 |---|---|---|
 | 公开 | `GET /api/health` / `GET /api/console/manifest` | 仍要求 Host 与 `X-Requested-With: dizzyapi`；health 汇总 user / frontend / catalog / accountPriority，拿不到 accountPriority 时 `state='degraded'`，不编造桥已连接 |
 | 注册 / 登录 | `POST /api/auth/register/request` / `confirm`、`login`、`logout`、`password/reset/request` / `confirm` | 登录与注册确认设置 HttpOnly + SameSite=Lax cookie；响应不含 token |
-| 会话 | `GET /api/session`、`PATCH /api/profile`、`POST /api/profile/password` | 用户视图不含密码哈希 / 令牌；余额只在 admin 或 `balanceEnabled` 时返回 |
-| API keys | `GET` / `POST /api/keys`、`PATCH` / `DELETE /api/keys/:id`、`POST /api/keys/:id/rotate` | 依赖可选的 `apiKey` 服务；本分支没有 → 503 `API_KEY_UNAVAILABLE`。secret 只在 create / rotate 响应里出现一次 |
+| 会话 | `GET /api/session`、`PATCH /api/profile`、`POST /api/profile/password` | 用户视图不含密码哈希 / 令牌；余额只在 admin 或 `balanceEnabled` 时返回。头像接受 `http(s)://` URL（≤2048）或 png/jpeg/webp/gif data URL（**解码后** ≤256 KiB） |
+| API keys | `GET` / `POST /api/keys`、`PATCH` / `DELETE /api/keys/:id`、`POST /api/keys/:id/rotate` | 依赖可选的 `apiKey` 服务；本分支没有 → 503 `API_KEY_UNAVAILABLE`。真实服务 `list` 返回数组、`create` / `rotate` 返回 `{ key, secret }`，HTTP 层分别包成 `{ items }` 与扁平 `CreatedApiKey`；secret 只出现一次 |
 | 用量 / 充值 | `GET /api/usage`、`GET /api/topup/options`、`POST /api/topup/orders` | 没有 usage-log：余额按 BigInt 换算成分，历史为空；创建订单返回 501 `TOPUP_NOT_IMPLEMENTED` |
 | 管理台 | `GET /api/users`、`/api/users/:id`、`PATCH` / `DELETE /api/users/:id`、`POST /api/users/:id/balance`、`GET /api/accounts…`、`GET /api/catalog/modules`、`GET /api/settings`、`POST` / `DELETE /api/settings/:ns` | 需要 `session.user.role === 'admin'`；写操作的 actor 固定为 `@dizzyapi/plugin-api` |
 | 静态 | `GET /assets/frontend/<version>/<path>`、`GET /console/*`、`GET /admin/*`、`GET /` | 资源从 frontend 的版本目录读盘；immutable + nosniff；SPA 带 CSP 与 no-store；`state.json.enabled=false` 时静态 404 |
@@ -571,7 +571,10 @@ class Foo extends Service {
 `ACCOUNT_ADMIN_UNAVAILABLE` / `API_SETTINGS_UNAVAILABLE` / `API_KEY_UNAVAILABLE`），
 入口本身照常存活，`/api/health` 也会把缺失能力标成 degraded。这样禁用前端宿主或目录
 不会让整个用户站跟着 PENDING 消失（D5）。所有 `/api/*` 的 Host / Origin / Sec-Fetch-Site /
-自定义头四道闸与开发者面板相同，并且不发任何 CORS 头。
+自定义头四道闸与开发者面板相同，并且不发任何 CORS 头；JSON 响应一律 `Cache-Control: no-store`。
+SPA 的 CSP 是 `img-src 'self' data: https:`：允许 data URL 与 https 外链头像，`http://` 头像
+能存但会被 CSP 拦下。`settings.describe()` 的真实形状 `{ namespaces }` 直接透传（同时兼容
+旧数组实现）。
 
 **`admin`**（开发者面板，HTTP 服务）
 
@@ -1303,8 +1306,8 @@ CI 用 `go list -deps` 逐模块校验 `modules/*` 之间无相互 import，违�
   `gatewayd 已就绪：tcp 127.0.0.1:<port>（pid …）` 与策略 revision；面板
   `/api/settings` 能看到 `account-priority` 命名空间；Ctrl-C 退出后子进程
   `process.kill(pid, 0)` 报 ESRCH（已停止）。
-- 当前全量（2026-10-19，产品 HTTP 入口合并后）：`pnpm test` 247 个用例
-  （246 通过 / 1 跳过），`pnpm typecheck` 干净；`packages/api` 27 个、
+- 当前全量（2026-10-19，产品 HTTP 入口合并后）：`pnpm test` 250 个用例
+  （249 通过 / 1 跳过），`pnpm typecheck` 干净；`packages/api` 30 个、
   `packages/account-priority` 16 个、`packages/account-admin` 16 个、
   `packages/catalog` 9 个、`packages/console` 28 个用例全过；`go test ./...` 的 8 个包全过，
   `go vet ./...` 干净。
@@ -1344,14 +1347,17 @@ CI 用 `go list -deps` 逐模块校验 `modules/*` 之间无相互 import，违�
 
 **产品 HTTP 入口（本项目实测，2026-10-19）**
 
-- `packages/api` 的 27 个用例覆盖：配置校验、端口 0 起停与幂等 stop、Host / 自定义头 /
+- `packages/api` 的 30 个用例覆盖：配置校验、端口 0 起停与幂等 stop、Host / 自定义头 /
   Origin / Sec-Fetch-Site 四道闸、注册 / 登录 / 会话 cookie / 登出、admin 权限、
-  keys（缺失 503 与 fake 服务的 create/list/rotate/update/remove）、
-  accounts / catalog / settings 映射、静态 fallback / immutable / 路径穿越 /
-  `state.json.enabled=false`、usage 金额换算、topup 501、请求体 413 / 坏 JSON 400 / 方法 405，
+  keys（缺失 503；真实嵌套 `{ key, secret }` 的 create/rotate 展开；list 包成 `{ items }`；
+  列表与 PATCH 只有掩码；全部 no-store）、accounts / catalog / settings 映射
+  （账号逐字段剥离 `credentialRef`、enabled 走 enable/disable、settings `{ namespaces }`
+  透传）、静态 fallback / immutable / 路径穿越 / `state.json.enabled=false`、
+  usage 金额换算、topup 501、请求体 413 / 坏 JSON 400 / 方法 405、头像 URL 与
+  **解码后** 256 KiB 校验、会话失败只暴露稳定 code、错误不回声密码 / 验证码 / 上游凭据，
   以及 frontend / catalog / accountAdmin / settings / apiKey 缺失时的 503 与 fiber 仍 ACTIVE。
-- 全量 `pnpm test` 247 个用例（246 过 / 1 跳过），`pnpm typecheck` 干净
-  （含 `packages/console/assets/**/*.js` 的 `checkJs`）。`packages/api` 自身 27 个用例全过。
+- 全量 `pnpm test` 250 个用例（249 过 / 1 跳过），`pnpm typecheck` 干净
+  （含 `packages/console/assets/**/*.js` 的 `checkJs`）。`packages/api` 自身 30 个用例全过。
 - 静态字节读取走 `frontend.assetPath(path, version)` 与 `frontend.indexFile()`；
   路径穿越由 frontend 的 `normalizeAssetPath` + API 层的 404 双重兜底。
 - 用例用假端口 + `ctx.provide` 假服务直接构造 `ApiService` / `ApiServer`；
@@ -1425,6 +1431,8 @@ CI 用 `go list -deps` 逐模块校验 `modules/*` 之间无相互 import，违�
   不存在（历史为空）、支付模块不存在（501）。前端已完成对应界面，但没有真实数据联调。
 - **静态资源未在反代 / TLS / Go 下验证**：产品入口只绑 `127.0.0.1:7791`；`Secure` cookie、
   多级反代、缓存头与 CSP 在真实部署下的表现未验证。
+- **头像外链未在浏览器验证**：API 接受 `http(s)://` 与 data URL，CSP 只放行 `https:` 外链；
+  https 图片的实际渲染、`Referrer-Policy: no-referrer` 行为与 256 KiB 解码上限只经单测验证。
 - **面板前端已在真实浏览器里逐页签点过**（2026-10-18，重写后复验）：概览 / 依赖图 / 插件 /
   服务 / 设置都渲染正常，亮色与暗色、1000px 与 600px 两档宽度都看过；设置保存只提交改动过
   的字段，嵌套字段会还原成对象提交。仍未验证：SSE 断线重连的退避在真实网络抖动下的表现。
