@@ -1431,31 +1431,7 @@ function keyRow(key, reload) {
           : el('div', { class: 'cell-sub' }, badge('已停用', 'neutral')),
     ),
     el('td', {}, el('code', { text: key.trackingId })),
-    el(
-      'td',
-      {},
-      el(
-        'div',
-        { class: 'table-actions start' },
-        el('code', { text: key.maskedKey }),
-        key.appManaged
-          ? null
-          : el('button', {
-              class: 'btn btn-icon',
-              attrs: { type: 'button', title: '复制掩码 key' },
-              on: {
-                click: async () => {
-                  try {
-                    await navigator.clipboard.writeText(key.maskedKey)
-                    toast('掩码 key 已复制')
-                  } catch {
-                    toast('复制失败：请手动选择', 'bad')
-                  }
-                },
-              },
-            }, icon('copy')),
-      ),
-    ),
+    el('td', {}, el('code', { text: key.maskedKey })),
     el('td', { text: formatTime(key.createdAt) }),
     el('td', { text: key.lastUsedAt === null ? '—' : formatTime(key.lastUsedAt) }),
     el('td', { class: 'cell-actions' }, el('div', { class: 'table-actions' }, edit, rotate, toggle, remove)),
@@ -1501,13 +1477,13 @@ function openCreateKeyDialog(reload) {
  * @param {CreatedApiKey} created
  */
 function showCreatedKey(dialog, created) {
-  const copy = el('button', { class: 'btn btn-small', attrs: { type: 'button' } }, icon('copy'), el('span', { text: '复制' }))
+  const copy = el('button', { class: 'btn btn-small', attrs: { type: 'button' } }, icon('copy'), el('span', { text: '复制完整 key' }))
   const close = el('button', { class: 'btn btn-small', attrs: { type: 'button' }, text: '我已保存' })
   const secret = el('code', { class: 'secret-value', text: created.secret })
   copy.addEventListener('click', async () => {
     try {
       await navigator.clipboard.writeText(created.secret)
-      toast('已复制到剪贴板')
+      toast('完整 API key 已复制')
     } catch {
       toast('复制失败：请手动选择并复制', 'bad')
     }
