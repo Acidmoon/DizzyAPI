@@ -443,7 +443,7 @@ export class ApiServer {
         const email = requiredString(body, 'email')
         const code = requiredString(body, 'code')
         const result = await this.runtime.auth.confirmRegistration({ email, code })
-        this.setSessionCookie(res, result.token, result.expiresAt)
+        this.setSessionCookie(req, res, result.token, result.expiresAt)
         this.sendJson(req, res, 200, this.loginResponse(result))
         return
       }
@@ -457,7 +457,7 @@ export class ApiServer {
           password,
           meta: deviceMeta(req),
         })
-        this.setSessionCookie(res, result.token, result.expiresAt)
+        this.setSessionCookie(req, res, result.token, result.expiresAt)
         this.sendJson(req, res, 200, this.loginResponse(result))
         return
       }
@@ -471,7 +471,7 @@ export class ApiServer {
             // 登出幂等：令牌无效 / 已过期都算成功。
           }
         }
-        this.clearSessionCookie(res)
+        this.clearSessionCookie(req, res)
         this.sendJson(req, res, 200, { ok: true })
         return
       }
@@ -1002,22 +1002,39 @@ export class ApiServer {
     }
   }
 
-  private setSessionCookie(res: ServerResponse, token: string, expiresAt: string): void {
+  private setSessionCookie(
+    req: IncomingMessage,
+    res: ServerResponse,
+    token: string,
+    expiresAt: string,
+  ): void {
     const expires = Date.parse(expiresAt)
     const maxAge = Number.isFinite(expires)
       ? Math.max(1, Math.floor((expires - this.runtime.now().getTime()) / 1_000))
       : 60 * 60
     res.setHeader(
       'Set-Cookie',
-      `${this.config.sessionCookieName}=${encodeURIComponent(token)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAge}`,
+      `${this.config.sessionCookieName}=${encodeURIComponent(token)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAge}${this.secureCookie(req)}`,
     )
   }
 
-  private clearSessionCookie(res: ServerResponse): void {
+  private clearSessionCookie(req: IncomingMessage, res: ServerResponse): void {
     res.setHeader(
       'Set-Cookie',
-      `${this.config.sessionCookieName}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0`,
+      `${this.config.sessionCookieName}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0${this.secureCookie(req)}`,
     )
+  }
+
+  /**
+   * 反向代理终止 TLS 时，`req.socket.encrypted` 在 Node 侧是 false，但 Caddy 会带
+   * `X-Forwarded-Proto: https`。只有确认请求是 HTTPS 才加 `Secure`，这样本机
+   * `http://127.0.0.1` 的开发预览仍然能收到 cookie。
+   */
+  private secureCookie(req: IncomingMessage): string {
+    const socket = req.socket as { encrypted?: boolean }
+    const forwarded = req.headers['x-forwarded-proto']
+    const proto = (Array.isArray(forwarded) ? forwarded[0] : forwarded)?.split(',')[0]?.trim()
+    return socket.encrypted === true || proto === 'https' ? '; Secure' : ''
   }
 
   // ───────────────────────────────── 健康 ─────────────────────────────────

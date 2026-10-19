@@ -807,6 +807,26 @@ SPA 的 CSP 是 `img-src 'self' data: https:`：允许 data URL 与 https 外链
     但 `/api/health` 仍可用。它只 inject `user` / `auth` / `loader`；其余服务运行期解析，
     缺失时对应路由 503，入口本身与其它路由照常存活。
 
+### 4.4 部署现状（2026-10-19）
+
+- 腾讯云服务器 `et-vps2` / `<OLD_SERVER_IP>`（Ubuntu 24.04，2C/1.9G），代码在
+  `/opt/dizzyapi`，由 `dizzyapi.service`（systemd）以 `ubuntu` 用户运行；
+  Node 22.23.2 + `tsx` 直接跑 TS 源码，gatewayd 是本地交叉编译的 Linux 静态二进制。
+- 端口：Caddy 对外 `80/443`；`api` `127.0.0.1:7791`；gatewayd `127.0.0.1:18080`；
+  开发者面板 `127.0.0.1:7788`。Nginx 的 `127.0.0.1:8080` 属于现有 darts-club，未改动。
+- 入口：`https://<OLD_SERVER_IP>/console`（IP 的 Let's Encrypt 短期证书），
+  `/v1/*` 与 `/healthz` 反代到 gatewayd；`www.acidmoon.online` 暂未启用。
+- 数据：从本机复制了 `data/`（SMTP 设置、credentials 文件、策略与前端缓存），
+  服务器上的 `users.db` / `auth.db` / `api-keys.db` 是新建空库；首个注册用户自动 admin。
+- 安全：Caddy 访问日志 `/var/log/caddy/dizzyapi-access.log` + 安全响应头 + HSTS；
+  fail2ban `dizzyapi` jail 监控 `/api/*` 与 `/v1/*` 的 401/403/429
+  （8 次/10 分钟，首封 1 小时，递增到 1 周）；sshd jail 仍在运行；
+  HTTPS 下会话 cookie 带 `Secure`；内部端口只绑回环。
+- 已知风险：IP 证书是 Let's Encrypt shortlived（当前到 2026-10-23 18:30 CST），
+  Caddy 计划 2026-10-20 续期；若海外校验仍被网络侧阻断，续期可能失败。
+  `www.acidmoon.online` 的 HTTP-01/TLS-ALPN 被海外校验节点异常响应挡住，
+  后续要走 DNS-01（DNSPod TXT）或完成域名/备案侧调整。
+
 ---
 
 ## 5. 模块与契约面

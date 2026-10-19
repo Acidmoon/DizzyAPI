@@ -85,9 +85,11 @@ async function login(
   server: ApiServer,
   email = 'owner@example.com',
   password = 'password1',
+  headers: Record<string, string> = {},
 ): Promise<{ reply: Reply; cookie: string }> {
   const reply = await call(server, '/api/auth/login', {
     method: 'POST',
+    headers,
     body: JSON.stringify({ email, password }),
   })
   assert.equal(reply.status, 200, reply.text)
@@ -184,6 +186,13 @@ test('会话：无 cookie 401，登录设置 HttpOnly cookie 且响应不含令�
   assert.match(String(cookieText), /SameSite=Lax/)
   assert.match(String(cookieText), /Path=\//)
   assert.doesNotMatch(String(cookieText), /Secure/)
+
+  // Caddy 终止 TLS 后会带 X-Forwarded-Proto；此时 cookie 必须加 Secure。
+  const secure = await login(server, undefined, undefined, { 'x-forwarded-proto': 'https' })
+  const secureSetCookie = secure.reply.headers['set-cookie']
+  const secureText = Array.isArray(secureSetCookie) ? secureSetCookie[0] : secureSetCookie
+  assert.match(String(secureText), /HttpOnly/)
+  assert.match(String(secureText), /Secure/)
   assert.equal(reply.headers['cache-control'], 'no-store')
 
   const token = [...auth.tokens.keys()].pop()
