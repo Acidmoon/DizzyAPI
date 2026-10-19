@@ -27,7 +27,11 @@ const (
 	// 帧里含令牌，因此响应、日志与状态查询都不得回显快照内容。
 	MethodReplaceAccounts = "accounts.replace"
 	MethodAccountsStatus  = "accounts.status"
-	MethodShutdown        = "shutdown"
+	// MethodReplaceKeys 是 api-key → Go 的只读 API key 哈希快照下发。
+	// 帧里只有 sha256 哈希，没有明文或掩码；响应、日志同样不得回显快照内容。
+	MethodReplaceKeys = "keys.replace"
+	MethodKeysStatus  = "keys.status"
+	MethodShutdown    = "shutdown"
 )
 
 // Request 是 TS → Go 的一次请求。

@@ -29,6 +29,7 @@ import (
 
 	"github.com/Acidmoon/DizzyAPI/contracts"
 	"github.com/Acidmoon/DizzyAPI/internal/accounts"
+	"github.com/Acidmoon/DizzyAPI/internal/apikeys"
 	"github.com/Acidmoon/DizzyAPI/internal/bridge"
 	"github.com/Acidmoon/DizzyAPI/internal/engine"
 	"github.com/Acidmoon/DizzyAPI/internal/httpapi"
@@ -40,6 +41,7 @@ import (
 type handler struct {
 	service  *accountpriority.Service
 	accounts *accounts.Cache
+	keys     *apikeys.Cache
 	logger   *slog.Logger
 	shutdown chan struct{}
 	stopOnce sync.Once
@@ -111,6 +113,26 @@ func (h *handler) Handle(_ context.Context, method string, params json.RawMessag
 
 	case bridge.MethodAccountsStatus:
 		return h.accounts.State(), nil
+
+	case bridge.MethodReplaceKeys:
+		var snapshot apikeys.Snapshot
+		if err := decodeParams(params, &snapshot); err != nil {
+			return nil, bridge.Errorf("BRIDGE_BAD_REQUEST", "API key 快照参数不合法：%v", err)
+		}
+		result, err := h.keys.Replace(snapshot)
+		if err != nil {
+			var typed *apikeys.Error
+			if errors.As(err, &typed) {
+				return nil, bridge.Errorf(typed.Code, "%s", typed.Message)
+			}
+			return nil, bridge.Errorf("KEYS_INTERNAL", "API key 快照更新失败")
+		}
+		// 只记计数与 revision；快照里的哈希永不进日志，更不回显。
+		h.logger.Info("API key 快照已更新", "revision", result.Revision, "keys", result.Keys)
+		return result, nil
+
+	case bridge.MethodKeysStatus:
+		return h.keys.Status(), nil
 
 	case bridge.MethodShutdown:
 		// 先让响应写完，再关闭进程。TS 不依赖这个 ack，但排障时能看到它。
@@ -193,9 +215,11 @@ func run() error {
 
 	// 组合根是唯一组装点：注册顺序就是阶段顺序 pre → dispatch → post。
 	registry := contracts.NewRegistry()
+	keyCache := apikeys.New()
 	keyStage := keyauth.Register(registry, keyauth.Config{
-		Keys:    parseAPIKeys(os.Getenv("DIZZYAPI_API_KEYS")),
-		Profile: *profile,
+		Keys:     parseAPIKeys(os.Getenv("DIZZYAPI_API_KEYS")),
+		Profile:  *profile,
+		Verifier: keyCache,
 	})
 	service, err := accountpriority.Register(registry, accountpriority.Config{})
 	if err != nil {
@@ -238,12 +262,14 @@ func run() error {
 	control := &handler{
 		service:  service,
 		accounts: accountCache,
+		keys:     keyCache,
 		logger:   logger,
 		shutdown: stop,
 	}
 
 	status := service.Status()
 	accountState := accountCache.State()
+	keyState := keyCache.Status()
 	hello := map[string]any{
 		"protocolVersion": bridge.ProtocolVersion,
 		"pid":             os.Getpid(),
@@ -252,6 +278,7 @@ func run() error {
 		"defaultStrategy": status.DefaultStrategy,
 		"strategies":      status.Strategies,
 		"accounts":        accountState.Accounts,
+		"keys":            keyState.Keys,
 		"httpAddress":     httpListener.Addr().String(),
 	}
 
@@ -279,6 +306,7 @@ func run() error {
 		"httpAddress":     httpListener.Addr().String(),
 		"pid":             os.Getpid(),
 		"protocolVersion": bridge.ProtocolVersion,
+		"keys":            keyState.Keys,
 	})
 	if err != nil {
 		return err

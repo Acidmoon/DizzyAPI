@@ -12,7 +12,7 @@
 import { existsSync, unlinkSync } from 'node:fs'
 import { isAbsolute, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { Service, type Context, type Logger } from 'cordis'
+import { FiberState, Service, type Context, type Logger } from 'cordis'
 import {
   describeError,
   isIssueList,
@@ -39,6 +39,8 @@ import type {
   GatewayAccount,
   GatewayAccountSnapshot,
   GatewayAccountsResult,
+  GatewayKeySnapshot,
+  GatewayKeysResult,
   RemoteStatus,
   ReplaceStrategiesResult,
   ScoreRequest,
@@ -70,6 +72,14 @@ interface IdentitySeam {
   getAccessToken(id: string): Promise<string>
 }
 
+/**
+ * api-key 的结构性视图：只声明快照方法，不 import 它的实现。
+ * 快照里只有哈希；本插件只负责转发，不落盘、不记录、不回显。
+ */
+interface ApiKeySeam {
+  snapshot(): Promise<GatewayKeySnapshot>
+}
+
 interface EventRoot {
   on(
     name: string,
@@ -79,6 +89,7 @@ interface EventRoot {
 }
 
 const ACCOUNTS_PUSH_DEBOUNCE_MS = 100
+const KEYS_PUSH_DEBOUNCE_MS = 100
 
 export class AccountPriorityService extends Service {
   static Config = ACCOUNT_PRIORITY_CONFIG_SCHEMA
@@ -124,6 +135,7 @@ export class AccountPriorityService extends Service {
       { method: 'accountPriority.pick', direction: 'outbound', requestShape: 'ScoreRequest', responseShape: 'ScoredAccount' },
       { method: 'accounts.replace', direction: 'outbound', requestShape: 'GatewayAccountSnapshot', responseShape: 'GatewayAccountsResult' },
       { method: 'accounts.status', direction: 'outbound', responseShape: 'accounts.State' },
+      { method: 'keys.replace', direction: 'outbound', requestShape: 'GatewayKeySnapshot', responseShape: 'GatewayKeysResult' },
     ],
     storage: [
       { key: 'dataPath', kind: 'file', description: '策略组 JSON（TS 是唯一写者）' },
@@ -149,6 +161,8 @@ export class AccountPriorityService extends Service {
   private revision: string | null = null
   private accountsCount = 0
   private accountsRevision: string | null = null
+  private keysCount = 0
+  private keysRevision: string | null = null
   private startedAt: string | null = null
   private lastError: string | null = null
   private restarts = 0
@@ -157,6 +171,8 @@ export class AccountPriorityService extends Service {
   private restartTimer: NodeJS.Timeout | undefined
   private accountsTimer: NodeJS.Timeout | undefined
   private accountsQueue: Promise<unknown> = Promise.resolve()
+  private keysTimer: NodeJS.Timeout | undefined
+  private keysQueue: Promise<unknown> = Promise.resolve()
   private stopping = false
   private disposing = false
 
@@ -186,11 +202,14 @@ export class AccountPriorityService extends Service {
     }
 
     const stopAccountsWatch = this.watchAccounts()
+    const stopKeysWatch = this.watchKeys()
     yield async () => {
       this.disposing = true
       stopAccountsWatch()
+      stopKeysWatch()
       this.clearRestartTimer()
       this.clearAccountsTimer()
+      this.clearKeysTimer()
       try {
         await this.exclusive(async () => {
           await this.stopProcess()
@@ -224,6 +243,8 @@ export class AccountPriorityService extends Service {
       strategies: this.strategies.size,
       accounts: this.accountsCount,
       accountsRevision: this.accountsRevision,
+      keys: this.keysCount,
+      keysRevision: this.keysRevision,
       restarts: this.restarts,
       lastError: this.lastError,
       startedAt: this.startedAt,
@@ -330,11 +351,12 @@ export class AccountPriorityService extends Service {
     })
   }
 
-  /** 把当前策略与账号快照再推一次；桥断线恢复后也可以手动调用。 */
+  /** 把当前策略、账号快照与 API key 快照再推一次；桥断线恢复后也可以手动调用。 */
   async sync(): Promise<void> {
     await this.exclusive(async () => {
       await this.apply()
       await this.pushAccounts()
+      await this.pushKeys()
     })
   }
 
@@ -504,6 +526,7 @@ export class AccountPriorityService extends Service {
       await this.apply()
       // 不阻塞就绪：令牌可能在 identity 侧触发一次 RT 刷新。
       this.scheduleAccountsPush()
+      this.scheduleKeysPush()
     } catch (error) {
       if (this.gateway === gateway) this.gateway = undefined
       this.bridge = undefined
@@ -534,6 +557,8 @@ export class AccountPriorityService extends Service {
     this.revision = null
     this.accountsCount = 0
     this.accountsRevision = null
+    this.keysCount = 0
+    this.keysRevision = null
     this.setState('stopped', null)
   }
 
@@ -552,6 +577,8 @@ export class AccountPriorityService extends Service {
     this.revision = null
     this.accountsCount = 0
     this.accountsRevision = null
+    this.keysCount = 0
+    this.keysRevision = null
     const detail =
       error !== null
         ? describeError(error)
@@ -727,6 +754,85 @@ export class AccountPriorityService extends Service {
       }
     }
     return { version: 1, generation: `gen-${Date.now()}`, accounts }
+  }
+
+  // ───────────────────────────────── 内部：API key 快照推送
+
+  /**
+   * api-key 是 key 的唯一写者；事件只是「该重新取一份快照」的提示。
+   * 监听器挂在 root 上并带 global，跨插件子树也能收到。
+   */
+  private watchKeys(): () => void {
+    const root = this.ctx.root as unknown as EventRoot
+    return root.on('api-key/changed', () => this.scheduleKeysPush(), { global: true })
+  }
+
+  private scheduleKeysPush(): void {
+    if (this.disposing || this.keysTimer !== undefined) return
+    this.keysTimer = setTimeout(() => {
+      this.keysTimer = undefined
+      void this.pushKeys()
+    }, KEYS_PUSH_DEBOUNCE_MS)
+    this.keysTimer.unref?.()
+  }
+
+  private clearKeysTimer(): void {
+    if (this.keysTimer !== undefined) {
+      clearTimeout(this.keysTimer)
+      this.keysTimer = undefined
+    }
+  }
+
+  private pushKeys(): Promise<void> {
+    const task = this.keysQueue.then(
+      () => this.doPushKeys(),
+      () => this.doPushKeys(),
+    )
+    this.keysQueue = task.then(
+      () => undefined,
+      () => undefined,
+    )
+    return task
+  }
+
+  private async doPushKeys(): Promise<void> {
+    const bridge = this.bridge
+    if (bridge === undefined || this.disposing) return
+    const apiKey = this.apiKeySeam()
+    if (apiKey === undefined) return
+    try {
+      const snapshot = await apiKey.snapshot()
+      if (this.bridge !== bridge || this.disposing) return
+      const result = await bridge.request<GatewayKeysResult>(
+        'keys.replace',
+        snapshot,
+        this.config.requestTimeoutMs,
+      )
+      this.keysCount = result.keys
+      this.keysRevision = result.revision
+      // 只记计数与 generation；key / 哈希永不进日志。
+      this.logger.debug(
+        `API key 快照已推送：revision=${result.revision} keys=${String(result.keys)} ` +
+          `generation=${String(snapshot.generation)}`,
+      )
+    } catch (error) {
+      const message = describeError(error)
+      this.logger.warn(`推送 API key 快照失败：${message}`)
+      this.ctx.emit('account-priority/error', 'ACCOUNT_PRIORITY_KEYS_PUSH_FAILED', message)
+    }
+  }
+
+  /**
+   * 取 api-key 服务的原始实例。
+   *
+   * 不用 static inject：api-key 被禁用时 account-priority 不应该跟着 pending。
+   * 也不碰 `ctx.get()` 的 traced proxy（AGENTS.md §10）。
+   */
+  private apiKeySeam(): ApiKeySeam | undefined {
+    const impl = this.ctx.root.reflect._getImpl('apiKey', false)
+    if (impl === undefined || impl.ctx.fiber.state !== FiberState.ACTIVE) return undefined
+    const value = impl.value as Partial<ApiKeySeam> | undefined
+    return typeof value?.snapshot === 'function' ? (value as ApiKeySeam) : undefined
   }
 
   private requireBridge(): BridgeClient {

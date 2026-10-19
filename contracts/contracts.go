@@ -117,9 +117,36 @@ func (b BytesBody) Bytes() ([]byte, error) { return b, nil }
 func (b BytesBody) Size() int64            { return int64(len(b)) }
 
 // APIKey 是 key-auth 阶段解析出的调用方身份。
+//
+// 静态环境变量 key / 开发占位模式只填 ID（密钥指纹）与 Profile；
+// 控制桥推来的动态 key 快照命中时填 KeyID / UserID / Name / Profile。
+// 新增字段保持零值兼容：不读 KeyID 的消费者不受影响。
 type APIKey struct {
-	ID      string `json:"id"`
+	ID string `json:"id"`
+	// UserID 是用户 id 的十进制字符串。静态 key 为空——它没有 key→user 映射。
+	UserID string `json:"userId,omitempty"`
+	// KeyID 与 ID 同义；显式命名是为了让结算 / 用量模块不必猜 ID 的含义。
+	KeyID   string `json:"keyId,omitempty"`
+	Name    string `json:"name,omitempty"`
 	Profile string `json:"profile,omitempty"`
+}
+
+// APIKeyRecord 是 key-auth 从只读 key 快照校验出的一条命中记录。
+//
+// UserID 用十进制字符串而不是 int64：TS 侧用户 id 是数字，Go 侧跨模块只需要
+// 一个稳定标识；字符串避免为「数字 vs 字符串」再造一层 JSON 兼容。
+type APIKeyRecord struct {
+	KeyID   string
+	UserID  string
+	Name    string
+	Profile string
+}
+
+// APIKeyVerifier 是 key-auth 对只读 key 快照的最小依赖。
+// 接口由消费者定义；实现（internal/apikeys）只提供校验与计数。
+type APIKeyVerifier interface {
+	Verify(presented string) (APIKeyRecord, bool)
+	Count() int
 }
 
 // AccountAttempt 是一次上游派发尝试的事实记录。
