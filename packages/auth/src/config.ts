@@ -11,7 +11,10 @@ import {
 
 /** 鉴权插件的配置。所有时间单位都是毫秒。 */
 export interface AuthConfig {
-  /** 凭证 / 会话 / 待验证码的落盘位置；省略则纯内存。 */
+  /**
+   * 凭证 / 会话 / 验证码数据库（SQLite）文件路径；省略或写 `:memory:` 则纯内存。
+   * 首次创建且同目录存在旧 `auth.json` 时自动一次性导入，旧文件保留。
+   */
   readonly dataPath?: string
   /**
    * 调用用户插件管理面时自报的插件名。必须同时出现在用户插件的
@@ -64,7 +67,7 @@ export interface ResolvedAuthConfig {
  * 什么时候允许热改由 owner 决定，不在这轮目录里顺手放开。
  */
 const AUTH_FIELDS: readonly FieldSpec[] = [
-  { key: 'dataPath', label: '鉴权数据文件位置', kind: 'string', writable: false },
+  { key: 'dataPath', label: '鉴权数据库文件位置', kind: 'string', writable: false },
   { key: 'userActor', label: '用户插件调用身份', kind: 'string', writable: false },
   { key: 'codeTtlMs', label: '验证码有效期', kind: 'integer', writable: false, min: 60_000, max: 86_400_000, unit: '毫秒' },
   { key: 'codeDigits', label: '验证码位数', kind: 'integer', writable: false, min: 4, max: 10 },

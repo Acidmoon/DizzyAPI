@@ -109,6 +109,7 @@ test('注册全流程：验证码通过之前不建用户，通过之后建用�
   assert.equal(result.user.id, 1)
   assert.equal(result.user.name, 'alice')
   assert.equal(result.user.status, 'enabled')
+  assert.equal(result.user.role, 'admin', '首个完成注册的用户自动是 admin')
   assert.equal(result.user.balance, 0n)
 
   const users = await harness.ctx.user.list()
@@ -118,6 +119,7 @@ test('注册全流程：验证码通过之前不建用户，通过之后建用�
   const view = await harness.ctx.auth.verifySession(result.token)
   assert.equal(view.userId, 1)
   assert.equal(view.user.name, 'alice')
+  assert.equal(view.email, EMAIL)
   assert.equal(view.sessionId, result.sessionId)
 })
 
@@ -314,7 +316,7 @@ test('用户被删除后留下孤儿凭证：同邮箱可以重新注册，拿�
 test('凭证与会话落盘：换一个 Context 重新装载后仍然能登录', async (t) => {
   const dir = await mkdtemp(join(tmpdir(), 'dizzyapi-auth-'))
   t.after(() => rm(dir, { recursive: true, force: true }))
-  const dataPath = { userDataPath: join(dir, 'users.json'), auth: { dataPath: join(dir, 'auth.json') } }
+  const dataPath = { userDataPath: join(dir, 'users.db'), auth: { dataPath: join(dir, 'auth.db') } }
 
   const first = await boot(dataPath)
   const registered = await register(first)
@@ -322,15 +324,44 @@ test('凭证与会话落盘：换一个 Context 重新装载后仍然能登录',
   await first.dispose()
 
   const second = await boot(dataPath)
-  t.after(() => second.dispose())
+  try {
+    // 用户表与凭证都落盘了
+    const again = await second.ctx.auth.login({ email: EMAIL, password: PASSWORD })
+    assert.equal(again.user.id, registered.user.id)
+    assert.equal(again.user.name, registered.user.name)
 
-  // 用户表与凭证都落盘了
-  const again = await second.ctx.auth.login({ email: EMAIL, password: PASSWORD })
-  assert.equal(again.user.id, registered.user.id)
-  assert.equal(again.user.name, registered.user.name)
+    // 会话也落盘了
+    assert.equal((await second.ctx.auth.verifySession(session.token)).userId, registered.user.id)
+  } finally {
+    // 必须赶在 t.after 删目录之前关掉数据库（Windows 上否则 EBUSY）
+    await second.dispose()
+  }
+})
 
-  // 会话也落盘了
-  assert.equal((await second.ctx.auth.verifySession(session.token)).userId, registered.user.id)
+test('并发登录：会话互不覆盖，数量与 id 都对', async (t) => {
+  const harness = await boot()
+  t.after(() => harness.dispose())
+  await register(harness)
+
+  const results = await Promise.all(
+    Array.from({ length: 5 }, () => harness.ctx.auth.login({ email: EMAIL, password: PASSWORD })),
+  )
+  assert.equal(new Set(results.map((item) => item.sessionId)).size, 5)
+  assert.equal(new Set(results.map((item) => item.token)).size, 5)
+
+  const sessions = await harness.ctx.auth.listSessions(results[0]!.token)
+  assert.equal(sessions.length, 6, '注册时的会话 + 5 次并发登录')
+})
+
+test('getEmail：只读返回邮箱；未知用户返回 null；不返回密码哈希', async (t) => {
+  const harness = await boot()
+  t.after(() => harness.dispose())
+  const registered = await register(harness)
+
+  assert.equal(await harness.ctx.auth.getEmail(registered.user.id), EMAIL)
+  assert.equal(await harness.ctx.auth.getEmail(999), null)
+  assert.equal(await harness.ctx.auth.getEmail(-1), null)
+  assert.equal(await harness.ctx.auth.getEmail(1.5), null)
 })
 
 test('配置 schema 由 cordis 强制执行：未知字段直接拒绝', async () => {

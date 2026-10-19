@@ -17,7 +17,11 @@ export function emptySnapshot(): AuthSnapshot {
 }
 
 /**
- * 快照编解码。
+ * 旧 JSON 快照的编解码（**迁移专用**）。
+ *
+ * 运行时存储已经换成 SQLite（见 db.ts）。这个文件保留下来只做两件事：
+ * 1. 首次建库时严格解码同目录的旧 `auth.json`；
+ * 2. 保留 `createAuthStore` / `snapshotCodec` 这些导出，避免已有消费者在升级瞬间断掉。
  *
  * 解码是严格的：字段缺失、类型不对、枚举不认识都直接抛错，
  * 绝不「尽力恢复」——凭证数据错一半比读不出来更危险。

@@ -1,47 +1,62 @@
 import { isAbsolute, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { Service, type Context } from 'cordis'
-import { describeError, type JsonStore } from '@dizzyapi/plugin-kit'
+import { UserDatabase } from './db.ts'
 import { UserError } from './errors.ts'
 import {
   BALANCE_MINOR_UNITS_PER_YUAN,
+  USER_AVATAR_DATA_MAX_BYTES,
+  USER_AVATAR_URL_MAX_LENGTH,
   USER_NAME_MAX_LENGTH,
   type Balance,
   type BalanceEntry,
   type User,
+  type UserChangedAction,
+  type UserChangedField,
   type UserId,
+  type UserProfilePatch,
   type UserQuery,
+  type UserRole,
   type UserStatus,
 } from './model.ts'
 import { USER_CONFIG_SCHEMA, type ResolvedUserConfig } from './schema.ts'
-import { createUserStore, type UserSnapshot } from './store.ts'
 
 export interface CreateUserInput {
   readonly name: string
-}
-
-interface State {
-  nextId: UserId
-  users: User[]
-  entries: BalanceEntry[]
+  /**
+   * 仅供迁移 / 测试指定角色。正常调用不要用它绕过「首个用户自动 admin」的规则；
+   * 省略时由本服务按当前用户数决定。
+   */
+  readonly role?: UserRole
 }
 
 const DEFAULT_LIST_LIMIT = 100
 const MAX_LIST_LIMIT = 1000
 
+/** data:image/* 的 base64 负载上限（解码前先按编码长度粗筛，避免对超大字符串做正则）。 */
+const MAX_AVATAR_DATA_URL_LENGTH =
+  Math.ceil(USER_AVATAR_DATA_MAX_BYTES / 3) * 4 + 128
+
+const AVATAR_DATA_URL =
+  /^data:image\/(png|jpeg|webp|gif);base64,([A-Za-z0-9+/]*={0,2})$/i
+
 /**
- * 用户插件。两个接口面，边界清楚：
+ * 用户插件。三个接口面，边界清楚：
  *
- * 1. **管理面**（create / rename / setStatus / remove）：只对 `adminPlugins`
- *    里列出的插件开放，默认拒绝。这就是「指定插件（管理员管理插件）改用户表单」。
- * 2. **余额面**（getBalance / adjustBalance / listBalanceEntries）：供其他插件读取与
+ * 1. **管理面**（create / rename / setStatus / setRole / setBalanceEnabled / remove）：
+ *    只对 `adminPlugins` 里列出的插件开放，默认拒绝。这就是「指定插件（管理员管理插件）
+ *    改用户表单」。
+ * 2. **自助资料面**（updateProfile）：只改用户名与头像。它不做 actor 白名单——
+ *    HTTP 层已经用会话确认了「这是谁」；能调到这里就意味着身份已经定了。
+ * 3. **余额面**（getBalance / adjustBalance / listBalanceEntries）：供其他插件读取与
  *    改动余额，默认不限制消费者，可用 `balanceWriters` 收窄。
  *
  * 另有只读的 get / list，任何插件可用。
  *
  * 写者唯一（AGENTS.md D8）：所有改动都经由本服务，外部拿到的是副本。
- * 所有改动串行执行（内存里的「读状态 → 改 → 落盘」不会交错），因此内部用一条队列
- * 串起来；这是控制面流量，量小，串行没有代价——LLM 请求路径不经过本服务。
+ * 所有改动串行执行（同一条队列）。存储是 SQLite（`node:sqlite` 的 DatabaseSync），
+ * 单次改动在一个 `BEGIN IMMEDIATE` 事务里完成；事务里不 await 任何异步服务。
+ * 这是控制面流量，量小，串行没有代价——LLM 请求路径不经过本服务。
  *
  * 注意：这里的成员**不能**用 `#` 私有字段。cordis 会以 Proxy 作为 receiver 调用服务
  * 方法，而 `#` 字段有 brand check，在 Proxy 上会抛
@@ -50,20 +65,48 @@ const MAX_LIST_LIMIT = 1000
 export class UserService extends Service {
   static Config = USER_CONFIG_SCHEMA
 
-  /** 能力清单：目录可见的部分。用户插件不发事件、不暴露桥命令。 */
+  /** 能力清单：目录可见的部分。用户插件不暴露桥命令。 */
   static catalog = {
-    capabilities: ['users', 'balances'],
-    events: [],
+    capabilities: ['users', 'balances', 'user-profile', 'roles', 'balance-toggle'],
+    events: [
+      {
+        name: 'user/changed',
+        description: '用户写入成功后发出；通知性质，不承载正确性',
+        payload:
+          "{ userId: number, action: 'created' | 'updated' | 'removed', fields?: string[] }",
+      },
+    ],
     bridge: [],
-    storage: [{ key: 'dataPath', kind: 'file', description: '用户与余额流水 JSON' }],
+    storage: [{ key: 'dataPath', kind: 'file', description: '用户与余额流水 SQLite' }],
+    shapes: {
+      User: {
+        description: '用户公开资料与余额；不含任何凭据或密码字段',
+        fields: {
+          id: { type: 'integer' },
+          name: { type: 'string' },
+          status: { type: 'enabled | banned' },
+          role: { type: 'admin | user' },
+          balance: { type: 'bigint（最小单位，1 元 = 1000000）' },
+          balanceEnabled: { type: 'boolean' },
+          avatar: { type: 'string | null', description: 'http(s) URL 或受限 data:image base64' },
+          createdAt: { type: 'string（ISO 8601）' },
+          updatedAt: { type: 'string（ISO 8601）' },
+        },
+      },
+      UserProfilePatch: {
+        description: '自助资料补丁；只允许 name / avatar 两个字段',
+        fields: {
+          name: { type: 'string', optional: true },
+          avatar: { type: 'string | null', optional: true },
+        },
+      },
+    },
   } as const
 
   readonly config: ResolvedUserConfig
-  private store: JsonStore<UserSnapshot>
+  private db: UserDatabase
   private adminPlugins: readonly string[]
   private balanceWriters: readonly string[] | undefined
-  private state: State | undefined
-  private loading: Promise<State> | undefined
   private queue: Promise<unknown> = Promise.resolve()
 
   constructor(ctx: Context, config: ResolvedUserConfig = {}) {
@@ -71,48 +114,56 @@ export class UserService extends Service {
     this.config = config
     this.adminPlugins = config.adminPlugins ?? []
     this.balanceWriters = config.balanceWriters
-    this.store = createUserStore(resolveDataPath(ctx, config.dataPath))
+    this.db = new UserDatabase(resolveDataPath(ctx, config.dataPath))
 
     const logger = ctx.logger('user')
     logger.info(
-      `用户插件已装载：存储 ${this.store.describe}；用户表单写者 ${this.adminPlugins.join(' / ') || '（无）'}`,
+      `用户插件已装载：存储 ${this.db.describe}；用户表单写者 ${this.adminPlugins.join(' / ') || '（无）'}`,
     )
+    if (this.db.legacyImport !== undefined) {
+      logger.info(
+        `已从旧 users.json 导入 ${this.db.legacyImport.users} 个用户、` +
+          `${this.db.legacyImport.entries} 条余额流水（旧文件保留）`,
+      )
+    }
     if (this.adminPlugins.length === 0) {
       logger.warn('adminPlugins 为空：当前没有任何插件可以创建 / 禁用 / 删除用户或改用户名')
     }
 
-    // 注册即副作用：插件被卸载时这里跟着回收（AGENTS.md D5）。
-    ctx.effect(() => () => this.store.close(), 'user.store')
+    // 注册即副作用：插件被卸载时数据库连接跟着关闭（AGENTS.md D5）。
+    ctx.effect(() => () => this.db.close(), 'user.db')
   }
 
   // ───────────────────────── 管理面：仅限被授权的插件 ─────────────────────────
 
   /**
-   * 创建用户。ID 按注册顺序分配：从 1 开始，单调递增，删除后也不复用。
-   * 新用户默认为 enabled、余额为 0；钱只经由 adjustBalance 变动，好留下流水。
+   * 创建用户。ID 按注册顺序分配：从 1 开始，单调递增，删除后也不复用
+   * （SQLite AUTOINCREMENT 保证）。
+   *
+   * 当前用户数为 0 时，新用户自动是 admin；之后注册的都是普通 user。
+   * 新用户默认 enabled、余额 0、不显示余额、无头像；钱只经由 adjustBalance 变动。
    */
   async create(actor: string, input: CreateUserInput): Promise<User> {
     this.assertAdmin(actor)
     const name = normalizeName(input?.name)
+    const requestedRole = input?.role === undefined ? undefined : normalizeRole(input.role)
 
     return this.exclusive(async () => {
-      const state = await this.loadState()
-      if (state.users.some((user) => user.name === name)) {
-        throw new UserError('USER_NAME_TAKEN', `用户名已被占用：${name}`)
-      }
-      const now = new Date().toISOString()
-      const user: User = {
-        id: state.nextId,
-        name,
-        status: 'enabled',
-        balance: 0n,
-        createdAt: now,
-        updatedAt: now,
-      }
-      state.nextId += 1
-      state.users.push(user)
-      await this.persist(state)
-      return { ...user }
+      const user = this.db.transaction(() => {
+        const role = requestedRole ?? (this.db.countUsers() === 0 ? 'admin' : 'user')
+        const now = new Date().toISOString()
+        return this.db.insertUser({
+          name,
+          status: 'enabled',
+          role,
+          balanceEnabled: false,
+          avatar: null,
+          createdAt: now,
+          updatedAt: now,
+        })
+      })
+      this.emitChanged(user.id, 'created')
+      return user
     })
   }
 
@@ -123,12 +174,15 @@ export class UserService extends Service {
     const nextName = normalizeName(name)
 
     return this.exclusive(async () => {
-      const state = await this.loadState()
-      const index = findIndex(state, userId)
-      if (state.users.some((user) => user.name === nextName && user.id !== userId)) {
-        throw new UserError('USER_NAME_TAKEN', `用户名已被占用：${nextName}`)
-      }
-      return this.replace(state, index, { name: nextName })
+      const user = this.db.transaction(() => {
+        this.requireUser(userId)
+        return this.db.updateUser(userId, {
+          name: nextName,
+          updatedAt: new Date().toISOString(),
+        })
+      })
+      this.emitChanged(userId, 'updated', ['name'])
+      return user
     })
   }
 
@@ -139,8 +193,61 @@ export class UserService extends Service {
     const nextStatus = normalizeStatus(status)
 
     return this.exclusive(async () => {
-      const state = await this.loadState()
-      return this.replace(state, findIndex(state, userId), { status: nextStatus })
+      const user = this.db.transaction(() => {
+        this.requireUser(userId)
+        return this.db.updateUser(userId, {
+          status: nextStatus,
+          updatedAt: new Date().toISOString(),
+        })
+      })
+      this.emitChanged(userId, 'updated', ['status'])
+      return user
+    })
+  }
+
+  /**
+   * 授予 / 撤销管理员角色。拒绝把最后一个 admin 降级：
+   * 否则管理台会失去唯一的入口，而且没有任何进程内办法恢复。
+   */
+  async setRole(actor: string, id: UserId, role: UserRole): Promise<User> {
+    this.assertAdmin(actor)
+    const userId = normalizeId(id)
+    const nextRole = normalizeRole(role)
+
+    return this.exclusive(async () => {
+      const user = this.db.transaction(() => {
+        const current = this.requireUser(userId)
+        if (current.role === 'admin' && nextRole !== 'admin' && this.db.countAdmins() <= 1) {
+          throw new UserError('USER_LAST_ADMIN', '不能撤销最后一个管理员的权限')
+        }
+        return this.db.updateUser(userId, {
+          role: nextRole,
+          updatedAt: new Date().toISOString(),
+        })
+      })
+      this.emitChanged(userId, 'updated', ['role'])
+      return user
+    })
+  }
+
+  /** 打开 / 关闭该用户的余额显示。只改展示开关，不动余额数值。 */
+  async setBalanceEnabled(actor: string, id: UserId, enabled: boolean): Promise<User> {
+    this.assertAdmin(actor)
+    const userId = normalizeId(id)
+    if (typeof enabled !== 'boolean') {
+      throw new UserError('USER_BALANCE_ENABLED_INVALID', '余额显示开关必须是布尔值')
+    }
+
+    return this.exclusive(async () => {
+      const user = this.db.transaction(() => {
+        this.requireUser(userId)
+        return this.db.updateUser(userId, {
+          balanceEnabled: enabled,
+          updatedAt: new Date().toISOString(),
+        })
+      })
+      this.emitChanged(userId, 'updated', ['balanceEnabled'])
+      return user
     })
   }
 
@@ -153,18 +260,53 @@ export class UserService extends Service {
     const userId = normalizeId(id)
 
     return this.exclusive(async () => {
-      const state = await this.loadState()
-      const index = findIndex(state, userId)
-      const user = state.users[index]!
-      if (user.balance !== 0n) {
-        throw new UserError(
-          'USER_BALANCE_NOT_ZERO',
-          `用户 ${user.name}（#${user.id}）余额为 ${formatBalance(user.balance)}，先结清再删除`,
-        )
+      const user = this.db.transaction(() => {
+        const current = this.requireUser(userId)
+        if (current.balance !== 0n) {
+          throw new UserError(
+            'USER_BALANCE_NOT_ZERO',
+            `用户 ${current.name}（#${current.id}）余额为 ${formatBalance(current.balance)}，先结清再删除`,
+          )
+        }
+        this.db.deleteUser(userId)
+        return { ...current }
+      })
+      this.emitChanged(userId, 'removed')
+      return user
+    })
+  }
+
+  // ───────────────────────── 自助资料：只改名字与头像 ─────────────────────────
+
+  /**
+   * 用户自助更新资料。**不做 actor 白名单**：HTTP 层已经用会话确认了身份，
+   * 参数里也没有 userId，调用方只能改「当前登录用户」。
+   *
+   * 只允许 `name` 与 `avatar` 两个字段；其它键直接拒绝，避免悄悄多出可写字段。
+   * `avatar: null` 表示清除；补丁为空对象时原样返回，不碰 updatedAt。
+   */
+  async updateProfile(id: UserId, patch: UserProfilePatch): Promise<User> {
+    const userId = normalizeId(id)
+    const normalized = normalizeProfilePatch(patch)
+
+    const fields: UserChangedField[] = []
+    if (normalized.name !== undefined) fields.push('name')
+    if (normalized.avatar !== undefined) fields.push('avatar')
+
+    return this.exclusive(async () => {
+      if (fields.length === 0) {
+        this.requireUser(userId)
+        return this.requireUser(userId)
       }
-      state.users.splice(index, 1)
-      await this.persist(state)
-      return { ...user }
+      const user = this.db.transaction(() =>
+        this.db.updateUser(userId, {
+          ...(normalized.name === undefined ? {} : { name: normalized.name }),
+          ...(normalized.avatar === undefined ? {} : { avatar: normalized.avatar }),
+          updatedAt: new Date().toISOString(),
+        }),
+      )
+      this.emitChanged(userId, 'updated', fields)
+      return user
     })
   }
 
@@ -172,25 +314,16 @@ export class UserService extends Service {
 
   async get(id: UserId): Promise<User | undefined> {
     const userId = normalizeId(id)
-    return this.exclusive(async () => {
-      const state = await this.loadState()
-      const user = state.users.find((item) => item.id === userId)
-      return user ? { ...user } : undefined
-    })
+    return this.exclusive(async () => this.db.getUser(userId))
   }
 
   async list(query: UserQuery = {}): Promise<User[]> {
     const status = query.status === undefined ? undefined : normalizeStatus(query.status)
+    const role = query.role === undefined ? undefined : normalizeRole(query.role)
     const offset = normalizeCount(query.offset, 0, 'offset')
     const limit = normalizeCount(query.limit, DEFAULT_LIST_LIMIT, 'limit', MAX_LIST_LIMIT)
 
-    return this.exclusive(async () => {
-      const state = await this.loadState()
-      const matched = status === undefined
-        ? state.users
-        : state.users.filter((user) => user.status === status)
-      return matched.slice(offset, offset + limit).map((user) => ({ ...user }))
-    })
+    return this.exclusive(async () => this.db.listUsers({ status, role, offset, limit }))
   }
 
   // ───────────────────────────── 余额面：供其他插件 ─────────────────────────────
@@ -199,8 +332,11 @@ export class UserService extends Service {
   async getBalance(id: UserId): Promise<Balance> {
     const userId = normalizeId(id)
     return this.exclusive(async () => {
-      const state = await this.loadState()
-      return state.users[findIndex(state, userId)]!.balance
+      const balance = this.db.getBalance(userId)
+      if (balance === undefined) {
+        throw new UserError('USER_NOT_FOUND', `没有这个用户：#${userId}`)
+      }
+      return balance
     })
   }
 
@@ -215,18 +351,12 @@ export class UserService extends Service {
     const userId = normalizeId(id)
     const change = normalizeDelta(delta)
     const why = normalizeReason(reason)
+    const actor = normalizeActor(consumer)
 
     return this.exclusive(async () => {
-      const state = await this.loadState()
-      const index = findIndex(state, userId)
-      const user = state.users[index]!
-      const balanceAfter = user.balance + change
-      const at = new Date().toISOString()
-
-      state.users[index] = { ...user, balance: balanceAfter, updatedAt: at }
-      state.entries.push({ userId, delta: change, balanceAfter, reason: why, actor: consumer, at })
-      await this.persist(state)
-      return balanceAfter
+      const balance = this.db.adjustBalance(userId, change, why, actor, new Date().toISOString())
+      this.emitChanged(userId, 'updated', ['balance'])
+      return balance
     })
   }
 
@@ -235,11 +365,7 @@ export class UserService extends Service {
     const userId = normalizeId(id)
     const take = normalizeCount(limit, DEFAULT_LIST_LIMIT, 'limit', MAX_LIST_LIMIT)
 
-    return this.exclusive(async () => {
-      const state = await this.loadState()
-      const mine = state.entries.filter((entry) => entry.userId === userId)
-      return mine.slice(Math.max(0, mine.length - take)).map((entry) => ({ ...entry }))
-    })
+    return this.exclusive(async () => this.db.listBalanceEntries(userId, take))
   }
 
   // ───────────────────────────────── 内部 ─────────────────────────────────
@@ -264,58 +390,35 @@ export class UserService extends Service {
     }
   }
 
-  /** 串行执行：同一时刻只有一次「读状态 → 改 → 落盘」在进行。 */
+  /** 串行执行：同一时刻只有一次「读 → 改 → 写」在进行。 */
   private exclusive<T>(task: () => Promise<T>): Promise<T> {
     const result = this.queue.then(task, task)
     this.queue = result.then(noop, noop)
     return result
   }
 
-  private loadState(): Promise<State> {
-    if (this.state) return Promise.resolve(this.state)
-    if (!this.loading) {
-      const loading = this.store
-        .read()
-        .then((snapshot) => {
-          const state: State = {
-            nextId: snapshot.nextId,
-            users: [...snapshot.users],
-            entries: [...snapshot.entries],
-          }
-          this.state = state
-          return state
-        })
-        .catch((error: unknown) => {
-          // 编解码自己抛的 UserError（数据损坏）原样带出，其余包成「读不出来」
-          if (error instanceof UserError) throw error
-          throw new UserError('USER_STORE_UNREADABLE', `读取用户数据失败：${describeError(error)}`)
-        })
-      this.loading = loading
-      loading.catch(() => {
-        // 加载失败不缓存，下一次调用可以重试
-        if (this.loading === loading) this.loading = undefined
-      })
+  private requireUser(id: UserId): User {
+    const user = this.db.getUser(id)
+    if (user === undefined) {
+      throw new UserError('USER_NOT_FOUND', `没有这个用户：#${id}`)
     }
-    return this.loading
+    return user
   }
 
-  private async persist(state: State): Promise<void> {
-    await this.store.write({
-      nextId: state.nextId,
-      users: [...state.users],
-      entries: [...state.entries],
+  /**
+   * 写成功后的通知。**在事务提交之后、串行队列之内发出**，所以事件顺序与写顺序一致。
+   * 载荷只有 userId / action / fields——不放名字、邮箱、余额数值或任何秘密。
+   */
+  private emitChanged(
+    userId: UserId,
+    action: UserChangedAction,
+    fields?: readonly UserChangedField[],
+  ): void {
+    this.ctx.emit('user/changed', {
+      userId,
+      action,
+      ...(fields === undefined || fields.length === 0 ? {} : { fields }),
     })
-  }
-
-  private async replace(
-    state: State,
-    index: number,
-    patch: { name?: string; status?: UserStatus },
-  ): Promise<User> {
-    const updated: User = { ...state.users[index]!, ...patch, updatedAt: new Date().toISOString() }
-    state.users[index] = updated
-    await this.persist(state)
-    return { ...updated }
   }
 }
 
@@ -323,16 +426,11 @@ function noop(): void {
   // 只用来把队列里失败的 promise 咽掉，避免污染下一次 task
 }
 
+/** 相对路径按 cordis 的 baseUrl 解析；`:memory:` 原样传给存储层。 */
 function resolveDataPath(ctx: Context, path: string | undefined): string | undefined {
-  if (path === undefined || isAbsolute(path)) return path
+  if (path === undefined || path === ':memory:' || isAbsolute(path)) return path
   const base = ctx.baseUrl ? fileURLToPath(ctx.baseUrl) : process.cwd()
   return resolve(base, path)
-}
-
-function findIndex(state: State, userId: UserId): number {
-  const index = state.users.findIndex((user) => user.id === userId)
-  if (index < 0) throw new UserError('USER_NOT_FOUND', `没有这个用户：#${userId}`)
-  return index
 }
 
 function normalizeActor(actor: string): string {
@@ -371,6 +469,13 @@ function normalizeStatus(value: unknown): UserStatus {
   return value
 }
 
+function normalizeRole(value: unknown): UserRole {
+  if (value !== 'admin' && value !== 'user') {
+    throw new UserError('USER_ROLE_INVALID', `未知的用户角色：${String(value)}（只认 admin / user）`)
+  }
+  return value
+}
+
 function normalizeDelta(value: unknown): Balance {
   if (typeof value !== 'bigint') {
     throw new UserError(
@@ -397,6 +502,94 @@ function normalizeCount(value: unknown, fallback: number, field: string, max?: n
     throw new UserError('USER_ID_INVALID', `${field} 最大 ${max}`)
   }
   return value
+}
+
+/**
+ * 资料补丁的严格校验：只认 name / avatar，其它键直接拒绝。
+ *
+ * `undefined` 与「没传这个字段」等价：TS 里可选属性、对象展开都可能留下 undefined，
+ * 把它当成调用错误没有收益。`avatar: null` 仍然明确表示清除。
+ */
+function normalizeProfilePatch(value: unknown): { name?: string; avatar?: string | null } {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    throw new UserError('USER_PROFILE_INVALID', '资料更新必须是一个对象')
+  }
+  const raw = value as Record<string, unknown>
+  for (const key of Object.keys(raw)) {
+    if (key !== 'name' && key !== 'avatar') {
+      throw new UserError('USER_PROFILE_INVALID', `资料更新不允许字段：${key}（只认 name / avatar）`)
+    }
+  }
+
+  const patch: { name?: string; avatar?: string | null } = {}
+  if (Object.prototype.hasOwnProperty.call(raw, 'name') && raw.name !== undefined) {
+    patch.name = normalizeName(raw.name)
+  }
+  if (Object.prototype.hasOwnProperty.call(raw, 'avatar') && raw.avatar !== undefined) {
+    patch.avatar = normalizeAvatar(raw.avatar)
+  }
+  return patch
+}
+
+/**
+ * 头像只接受两种形状：
+ * - `http(s)://` URL，长度 ≤ 2048；
+ * - `data:image/(png|jpeg|webp|gif);base64,...`，解码后 ≤ 256 KiB。
+ *
+ * 其它协议（file:、javascript:、svg+xml…）一律拒绝：这个值会被浏览器直接渲染，
+ * 不能把「任意 URL / 任意 MIME」放进用户表。null 表示清除。
+ */
+function normalizeAvatar(value: unknown): string | null {
+  if (value === null) return null
+  if (typeof value !== 'string') {
+    throw new UserError('USER_AVATAR_INVALID', '头像必须是字符串或 null')
+  }
+  const avatar = value.trim()
+  if (avatar === '') {
+    throw new UserError('USER_AVATAR_INVALID', '头像不能为空字符串（清除请用 null）')
+  }
+
+  if (/^https?:\/\//i.test(avatar)) {
+    if (avatar.length > USER_AVATAR_URL_MAX_LENGTH) {
+      throw new UserError('USER_AVATAR_INVALID', `头像 URL 最长 ${USER_AVATAR_URL_MAX_LENGTH} 个字符`)
+    }
+    let url: URL
+    try {
+      url = new URL(avatar)
+    } catch {
+      throw new UserError('USER_AVATAR_INVALID', '头像 URL 格式不正确')
+    }
+    if ((url.protocol !== 'http:' && url.protocol !== 'https:') || url.hostname === '') {
+      throw new UserError('USER_AVATAR_INVALID', '头像 URL 只支持 http / https')
+    }
+    return avatar
+  }
+
+  if (avatar.length > MAX_AVATAR_DATA_URL_LENGTH) {
+    throw new UserError(
+      'USER_AVATAR_INVALID',
+      `头像 data URL 过大（解码后上限 ${USER_AVATAR_DATA_MAX_BYTES} 字节）`,
+    )
+  }
+  const match = AVATAR_DATA_URL.exec(avatar)
+  if (match === null) {
+    throw new UserError(
+      'USER_AVATAR_INVALID',
+      '头像只支持 http(s) URL 或 data:image/(png|jpeg|webp|gif);base64',
+    )
+  }
+
+  const bytes = Buffer.from(match[2] ?? '', 'base64')
+  if (bytes.length === 0) {
+    throw new UserError('USER_AVATAR_INVALID', '头像 data URL 没有有效图片数据')
+  }
+  if (bytes.length > USER_AVATAR_DATA_MAX_BYTES) {
+    throw new UserError(
+      'USER_AVATAR_INVALID',
+      `头像解码后最多 ${USER_AVATAR_DATA_MAX_BYTES} 字节`,
+    )
+  }
+  return avatar
 }
 
 function formatBalance(balance: Balance): string {

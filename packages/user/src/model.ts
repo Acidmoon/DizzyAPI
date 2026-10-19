@@ -12,6 +12,15 @@ export type UserId = number
 export type UserStatus = 'enabled' | 'banned'
 
 /**
+ * 用户角色。首个完成注册的用户自动是 admin，之后由 admin 授予 / 撤销。
+ * 角色是**用户属性**，与插件级的 `adminPlugins` 白名单是两回事：
+ * 后者决定「哪个插件能调用管理面」，前者决定「哪个用户能用管理台」。
+ */
+export type UserRole = 'admin' | 'user'
+
+export const USER_ROLES: readonly UserRole[] = ['admin', 'user']
+
+/**
  * 余额是整数最小单位（AGENTS.md D10：禁止用浮点存余额）。
  * 1 元 = `BALANCE_MINOR_UNITS_PER_YUAN` 个最小单位。
  */
@@ -28,7 +37,16 @@ export interface User {
   readonly id: UserId
   readonly name: string
   readonly status: UserStatus
+  /** 管理角色；首个用户自动为 admin。 */
+  readonly role: UserRole
   readonly balance: Balance
+  /**
+   * 是否对用户显示余额。默认关闭，由管理员按用户打开；
+   * 余额数值本身仍只经由 adjustBalance 改动（D8 / D10）。
+   */
+  readonly balanceEnabled: boolean
+  /** 头像：http(s) URL 或受限的 data:image/* base64；null 表示未设置。 */
+  readonly avatar: string | null
   /** 首次注册时间，ISO 8601。 */
   readonly createdAt: string
   /** 最近一次改动时间，ISO 8601。 */
@@ -57,6 +75,43 @@ export interface BalanceEntry {
 
 export interface UserQuery {
   readonly status?: UserStatus
+  /** 可选角色过滤；不传表示不过滤。 */
+  readonly role?: UserRole
   readonly offset?: number
   readonly limit?: number
 }
+
+/** `user/changed` 的动作。 */
+export type UserChangedAction = 'created' | 'updated' | 'removed'
+
+/** `user/changed` 里可出现的字段名（只表达「哪个属性变了」，不带值）。 */
+export type UserChangedField =
+  | 'name'
+  | 'status'
+  | 'role'
+  | 'balanceEnabled'
+  | 'avatar'
+  | 'balance'
+
+/**
+ * 用户写入成功后的通知载荷。
+ *
+ * **只是通知，不承载正确性**：丢了最多让下游晚一次刷新，不能让任何流程依赖它。
+ * 不含密码、邮箱、令牌或任何秘密；`fields` 只说改了哪几个属性。
+ */
+export interface UserChangedEvent {
+  readonly userId: UserId
+  readonly action: UserChangedAction
+  readonly fields?: readonly UserChangedField[]
+}
+
+/** 自助资料更新：只有这两个字段允许用户自己改。 */
+export interface UserProfilePatch {
+  readonly name?: string
+  /** null 表示清除头像；undefined 表示不改。 */
+  readonly avatar?: string | null
+}
+
+/** 头像校验边界。 */
+export const USER_AVATAR_URL_MAX_LENGTH = 2048
+export const USER_AVATAR_DATA_MAX_BYTES = 256 * 1024

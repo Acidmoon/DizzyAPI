@@ -31,6 +31,7 @@ export {
   SNAPSHOT_VERSION,
   createAuthStore,
 } from './store.ts'
+export { AuthDatabase, type LegacyAuthImport } from './db.ts'
 export type {
   AuthSnapshot,
   Credential,

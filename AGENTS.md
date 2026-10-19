@@ -338,8 +338,8 @@ sub2api 在拿到首个上游响应前把额度显示为 `unknown`，
 
 | 包 | 服务名 | 角色 | 一句话职责 |
 |---|---|---|---|
-| `@dizzyapi/plugin-user` | `user` | 控制面 | 用户表单（用户名 / 用户 ID / 状态 / 余额）的唯一写者 |
-| `@dizzyapi/plugin-auth` | `auth` | 控制面 | 注册（邮箱验证码）、登录（密码校验）、会话签发与校验 |
+| `@dizzyapi/plugin-user` | `user` | 控制面 | 用户表单（用户名 / 状态 / 角色 / 余额 / 余额开关 / 头像）的唯一写者；SQLite |
+| `@dizzyapi/plugin-auth` | `auth` | 控制面 | 注册（邮箱验证码）、登录（密码校验）、会话签发与校验；SQLite |
 | `@dizzyapi/plugin-mailer` | `mailer` | 外部通讯模块 | 把消息发出去（邮件）；`log`（开发）与 `smtp` 两种投递 |
 | `@dizzyapi/plugin-credentials` | `credentials` | 控制面 | 秘密（授权码之类）的唯一存放处；别的插件只持有引用名 |
 | `@dizzyapi/plugin-identity` | `identity` | 控制面 | 上游账号（订阅 OAuth / API-key）的唯一写者；唯一用 refresh_token 换新令牌的地方 |
@@ -392,15 +392,29 @@ provider（默认只有 `openai`）不会进入快照。
 
 | 面 | 方法 | 谁可以调用 |
 |---|---|---|
-| 管理面 | `create` / `rename` / `setStatus` / `remove` | 只有 `adminPlugins` 白名单里的插件（默认空 = 谁都不许） |
+| 管理面 | `create` / `rename` / `setStatus` / `setRole` / `setBalanceEnabled` / `remove` | 只有 `adminPlugins` 白名单里的插件（默认空 = 谁都不许） |
+| 自助资料面 | `updateProfile(id, { name?, avatar? })` | 不限插件；HTTP 层必须先用会话确认「这是谁」 |
 | 余额面 | `adjustBalance` / `listBalanceEntries` | 默认任何插件；可用 `balanceWriters` 收窄 |
 | 只读 | `get` / `list` / `getBalance` | 任何插件 |
+
+`User` 字段：`id` / `name` / `status` / `role`（`admin` \| `user`）/ `balance`（bigint 最小单位）/
+`balanceEnabled` / `avatar`（string \| null）/ `createdAt` / `updatedAt`。
+当前用户数为 0 时 `create` 自动给 `admin`，之后是 `user`；`input.role` 只供迁移 / 测试。
+`setRole` 拒绝撤销最后一个 admin（`USER_LAST_ADMIN`）。头像只接受 `http(s)://` URL（≤2048）
+或 `data:image/(png|jpeg|webp|gif);base64,...`（解码后 ≤256 KiB），`null` 表示清除。
+
+- 事件：`user/changed(payload)`，载荷 `{ userId, action: 'created' | 'updated' | 'removed', fields? }`。
+  每次成功写入后发出（事务提交后、串行队列内），只是通知，不承载正确性；
+  供 api-key 快照刷新等消费者使用（例如用户 banned / removed 后重新推送 key 视图）。
+  载荷不含密码、邮箱、令牌或余额数值，`fields` 只说改了哪些属性。
 
 **`auth`**
 
 - 注册：`requestRegistration` / `confirmRegistration`（验证码通过后才在用户表建用户）
 - 登录与会话：`login` / `logout` / `verifySession` / `listSessions` / `revokeSession` / `revokeAllSessions`
 - 密码：`changePassword` / `requestPasswordReset` / `confirmPasswordReset`
+- 只读：`getEmail(userId)`，给 API 层组装资料 DTO；没有密码哈希字段。
+  `SessionView` 也带可选 `email`。首个注册用户成为 admin 的逻辑在 user 插件里，auth 不感知 role。
 
 **`mailer`**：`send({ to, subject, text, kind? })`
 
@@ -583,6 +597,12 @@ class Foo extends Service {
   授权码存在 `credentials` 的 `dizzyapi/smtp-sub2api`；`data/settings.json` 里已有
   `transport / from / heloDomain / timeoutMs / rejectUnauthorized / allowPlaintext / smtp.*` 的覆盖。
   再改 `app.yml` 里这些键不会生效——要先用面板「恢复基线」。
+- **用户与鉴权的 SQLite 存储（2026-10-19）**：`user` 用 `data/users.db`，`auth` 用 `data/auth.db`
+  （都是 `node:sqlite` 的 `DatabaseSync`，无第三方依赖）。配置 `dataPath` 省略或写 `:memory:`
+  时用内存库（测试 / 内嵌）；相对路径按 `ctx.baseUrl` 解析。文件库启用 WAL、`synchronous=NORMAL`、
+  `foreign_keys=ON`、`busy_timeout=5000`，版本记在 `PRAGMA user_version`。首次建库时若同目录
+  存在旧的 `users.json` / `auth.json`，会一次性严格导入并保留旧文件；DB 已有数据时绝不覆盖。
+  Node 24 会打印 `ExperimentalWarning: SQLite is an experimental feature`，这是预期现象。
 - **账号保管（2026-10-19）**：`identity` 已装载，账号记录在 `data/accounts.json`（当前 0 个），
   令牌在 `credentials` 的 `identity/<账号 id>` 下；首期只有 Claude 与 OpenAI/Codex 两个 RT 适配器。
 - **账号管理（2026-10-19）**：`account-admin` 已装载，`adminPlugins` 只有面板。它是
@@ -613,7 +633,8 @@ class Foo extends Service {
 
 ### 4.3 边界与已知偏离
 
-1. **控制面插件的存储在 cordis 侧**：用户表、凭证、会话现在都落在 `./data/*.json`。
+1. **控制面插件的存储在 cordis 侧**：用户表与鉴权数据现在落在 `./data/users.db` /
+   `./data/auth.db`（SQLite，两个插件各管各的库），其余控制面插件仍是 `./data/*.json`。
    按 D8，这些数据最终的唯一写者是 Go；当前实现只是可替换的存储适配器，
    桥与 Go 就绪后换适配器，插件对外接口一字不改。
 2. **LLM 请求不加第二层认证**：对外协议只有 `Authorization: Bearer <key>`，
@@ -1047,7 +1068,7 @@ CI 用 `go list -deps` 逐模块校验 `modules/*` 之间无相互 import，违�
 | 支付渠道 | 倾向：兑换码 + 易支付打底，之后再接支付宝/微信/Stripe |
 | 上游模型来源范围 | 号池的**拆分方式已定**（D17）；待定的是 v1 是否就包含 OAuth 订阅账号池，还是先只做 API key 型频道 |
 | 包月 / 订阅 | 倾向 v2 再做（new-api 的 `subscription.go` 有 48KB） |
-| 控制面数据的存储归属 | 用户表单 / 余额 / 凭证 / 会话 / 上游账号现在都在 cordis 侧（§4.3）；Go 与桥就绪后迁到 Go，插件退化为门面 |
+| 控制面数据的存储归属 | 用户表单 / 余额在 `users.db`，凭证 / 会话在 `auth.db`，上游账号在 `accounts.json`，都仍在 cordis 侧（§4.3）；Go 与桥就绪后迁到 Go，插件退化为门面 |
 | API key 的签发与 key→user 映射 | 按 §5 归 Go 的 `auth` 模块（`key.*` 桥命令）；当前只有 `modules/keyauth` 占位，没有签发/吊销/映射 |
 | `account-state` 与评分输入 | `Ctx.AccountCandidates` 现在由 `internal/accounts` 的 identity 快照填充；健康、限流、额度、并发等运行时状态仍应由 `account-state` 提供，尚未实现 |
 | 上游地址的归属 | 当前由 `account-priority` 的 `upstreamBaseUrls`（provider → base URL）决定；是否改为 identity 账号字段或独立路由配置，待 owner 定 |
@@ -1246,7 +1267,7 @@ CI 用 `go list -deps` 逐模块校验 `modules/*` 之间无相互 import，违�
   `gatewayd 已就绪：tcp 127.0.0.1:<port>（pid …）` 与策略 revision；面板
   `/api/settings` 能看到 `account-priority` 命名空间；Ctrl-C 退出后子进程
   `process.kill(pid, 0)` 报 ESRCH（已停止）。
-- 当前全量（2026-10-19，前端合并后）：`pnpm test` 218 个用例（217 通过 / 1 跳过），
+- 当前全量（2026-10-19，用户系统 SQLite 之后）：`pnpm test` 237 个用例（236 通过 / 1 跳过），
   `pnpm typecheck` 干净；`packages/account-priority` 16 个、`packages/account-admin` 16 个、
   `packages/catalog` 9 个、`packages/console` 26 个用例全过；`go test ./...` 的 8 个包全过，
   `go vet ./...` 干净。
@@ -1261,6 +1282,31 @@ CI 用 `go list -deps` 逐模块校验 `modules/*` 之间无相互 import，违�
   的响应与错误信息不含令牌；transport 对上游错误正文按账号令牌脱敏并截断。
 - **engine 的 post 恰好一次**：单测覆盖成功、pre 拒绝、dispatch 失败、dispatch panic
   四种出口；dispatch 单测覆盖可重试错误的账号转移与不可重试错误的立即停止。
+
+**用户系统 SQLite（本项目实测，2026-10-19）**
+
+- 存储用 Node 24 内置的 `node:sqlite`（`DatabaseSync`），**没有第三方依赖**。Node 24.3.0
+  会打印 `ExperimentalWarning: SQLite is an experimental feature and might change at any time`，
+  这是预期现象；不要为了消警告改全局脚本。
+- `users.db` 与 `auth.db` 是两个独立文件、各自迁移（`PRAGMA user_version = 1`），
+  符合 D8「一个数据一个写者」。user 管 `users` / `balance_entries`，auth 管
+  `credentials` / `pendings` / `sessions` / `counters`。
+- 余额以 bigint 最小单位存 SQLite `INTEGER`；读语句开 `setReadBigInts(true)`，绑定 bigint。
+  测试用 `2^53 + 1` 验证不丢精度。余额与流水在同一个 `BEGIN IMMEDIATE` 事务里写。
+- `DatabaseSync` 是**同步** API：事务里不能 await；密码派生与发信在事务外，
+  服务层的串行队列负责把跨调用顺序排好。控制面量小，同步阻塞的取舍见 §11。
+- `AUTOINCREMENT` 保证 id 不复用。旧 JSON 迁移会保留 `nextId`：把 `sqlite_sequence`
+  抬到 `nextId - 1`，避免复用已删除用户的 id。
+- 旧 JSON 导入只在**文件库首次创建**时发生：同目录有 `users.json` / `auth.json` 就整份
+  严格解码、单事务导入；旧文件保留，DB 已有数据时跳过。导入失败会删掉刚建的空库，
+  下次启动可重试。
+- Windows 上 WAL 会生成 `-wal` / `-shm`；测试清理必须先 `dispose()` 关闭连接再删目录，
+  否则 `rm` 报 EBUSY。
+- 测试覆盖：建表 / 迁移幂等、`:memory:` 与临时文件库、旧 JSON 全表导入与不覆盖、
+  首个用户 admin / 最后 admin 保护、角色与余额开关权限、头像合法 / 超限 / 非法 scheme /
+  null 清除、自助改名唯一性、bigint 精度、删除后流水保留、auth 原有登录 / 注册 / 改密 /
+  重置 / 会话 / 限流用例、`getEmail`、并发写不交错、`user/changed` 的动作 / fields /
+  顺序与「载荷不含秘密」。
 
 **前端宿主（本项目实测，2026-10-19）**
 
@@ -1297,6 +1343,16 @@ CI 用 `go list -deps` 逐模块校验 `modules/*` 之间无相互 import，违�
 
 ## 11. 未验证事项（不要当成结论）
 
+- **SQLite 存储只在本机 Node 24.3.0 上验过**：`node:sqlite` 仍是实验特性，跨 Node 版本的
+  API / 行为没有验证；也没在 Linux 文件系统或容器卷上跑过 WAL 与并发读写。
+- **`DatabaseSync` 是同步 API，会阻塞事件循环**：当前用户 / 鉴权都是控制面低流量，
+  没做压测，也没有把大量用户导入或大结果集查询的耗时量出来。将来若出现批量操作，
+  需要评估是否拆分或改用异步驱动（但本项目当前不引第三方依赖）。
+- **旧 JSON 迁移的边界**：只在目标 DB 文件**首次创建**时触发；DB 已存在（哪怕是空库）
+  不会重试导入。配置若仍把 `dataPath` 指向旧的 `users.json` / `auth.json`，
+  会被当成 SQLite 文件打开（不是旧 JSON），需要人工改成 `.db`。
+  迁移以单事务完成，失败会删掉刚创建的空库并保留旧文件；没有做「迁移后校验总数」之外的
+  人工回滚流程。
 - **数据面性能**：本项目未做任何压测。TS 单进程能扛多少并发流、UDS 每次往返延迟、
   描述符落盘 + push 双通道的冷启动顺序，全部未实测。
 - **LLM 链路只跑过假上游**：engine 已被真实 HTTP 请求调用，但 transport 只对

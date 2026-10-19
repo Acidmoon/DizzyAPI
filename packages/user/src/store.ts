@@ -3,13 +3,13 @@ import { UserError } from './errors.ts'
 import type { BalanceEntry, User, UserId } from './model.ts'
 
 /**
- * 用户快照的存储。
+ * 旧 JSON 快照的编解码（**迁移专用**）。
  *
- * 读写走 kit 的存储适配器（原子写 JSON / 内存两种），这里只负责编解码。
- * 之所以把存储做成可替换的适配器，而不是直接在服务里写文件：
- * 按 AGENTS.md D8，账户与额度的唯一写者最终是 Go。本插件现在自己落盘，
- * 只是「Go 与桥尚未存在」这一段时期的临时安排；等桥就绪，换一个
- * bridge 适配器即可，UserService 的对外接口一字不改。
+ * 运行时存储已经换成 SQLite（见 db.ts）。这个文件保留下来只做两件事：
+ * 1. 首次建库时严格解码同目录的旧 `users.json`；
+ * 2. 保留 `createUserStore` / `snapshotCodec` 这些导出，避免已有消费者在升级瞬间断掉。
+ *
+ * UserService 不再读写这里；新数据一律走 SQLite。
  */
 export interface UserSnapshot {
   readonly nextId: UserId
@@ -30,6 +30,10 @@ interface WireUser {
   balance: string
   createdAt: string
   updatedAt: string
+  /** 旧版快照（version 1 早期）没有这三个字段，解码时按默认值补齐。 */
+  role?: string
+  balance_enabled?: boolean
+  avatar?: string | null
 }
 
 interface WireEntry {
@@ -64,7 +68,10 @@ export const snapshotCodec: JsonCodec<UserSnapshot> = {
         id: user.id,
         name: user.name,
         status: user.status,
+        role: user.role,
         balance: user.balance.toString(),
+        balance_enabled: user.balanceEnabled,
+        avatar: user.avatar,
         createdAt: user.createdAt,
         updatedAt: user.updatedAt,
       })),
@@ -130,12 +137,24 @@ function decodeUser(value: unknown, index: number): User {
   if (typeof raw.createdAt !== 'string' || typeof raw.updatedAt !== 'string') {
     throw corrupt(`${where} 的时间戳必须是字符串`)
   }
+  if (raw.role !== undefined && raw.role !== 'admin' && raw.role !== 'user') {
+    throw corrupt(`${where}.role 必须是 admin 或 user`)
+  }
+  if (raw.balance_enabled !== undefined && typeof raw.balance_enabled !== 'boolean') {
+    throw corrupt(`${where}.balance_enabled 必须是布尔值`)
+  }
+  if (raw.avatar !== undefined && raw.avatar !== null && typeof raw.avatar !== 'string') {
+    throw corrupt(`${where}.avatar 必须是字符串或 null`)
+  }
 
   return {
     id: raw.id,
     name: raw.name,
     status: raw.status,
+    role: raw.role ?? 'user',
     balance: decodeBalance(raw.balance, `${where}.balance`),
+    balanceEnabled: raw.balance_enabled ?? false,
+    avatar: raw.avatar ?? null,
     createdAt: raw.createdAt,
     updatedAt: raw.updatedAt,
   }

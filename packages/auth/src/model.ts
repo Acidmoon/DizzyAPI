@@ -78,6 +78,8 @@ export interface SessionView {
   readonly sessionId: string
   readonly userId: UserId
   readonly user: User
+  /** 凭证里登记的邮箱；凭证缺失时省略（不返回密码哈希）。 */
+  readonly email?: string
   readonly createdAt: string
   readonly expiresAt: string
   readonly lastSeenAt: string

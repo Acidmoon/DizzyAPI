@@ -27,8 +27,9 @@
   config:
     # 相对路径按 cordis 的 baseUrl 解析——注意 include 会把 baseUrl 改成**本文件所在的目录**，
     # 而本文件在仓库根，所以这里就等于 ./data/。把本文件挪到别处，这些路径会跟着挪。
-    # /data 已在 .gitignore 里。
-    dataPath: ./data/users.json
+    # /data 已在 .gitignore 里。存储是 SQLite：首次建库时若同目录还有旧的 users.json，
+    # 会一次性导入并保留旧文件。
+    dataPath: ./data/users.db
     # 「指定插件」：只有列在这里的插件可以创建 / 禁用 / 删除用户、改用户名。
     # admin 是开发者控制面板；auth 是鉴权插件——注册的最后一步要建用户。
     adminPlugins:
@@ -63,7 +64,8 @@
 - id: auth
   name: '@dizzyapi/plugin-auth'
   config:
-    dataPath: ./data/auth.json
+    # SQLite；首次建库时若同目录还有旧的 auth.json，会一次性导入并保留旧文件。
+    dataPath: ./data/auth.db
     # 必须与 user.adminPlugins 里的名字一致，否则注册会在建用户那一步被拒绝
     userActor: '@dizzyapi/plugin-auth'
     codeTtlMs: 600000          # 验证码 10 分钟有效

@@ -16,32 +16,20 @@ import {
   sha256Hex,
   verifyPassword,
 } from './crypto.ts'
+import { AuthDatabase } from './db.ts'
 import { AuthError } from './errors.ts'
 import type {
-  Credential,
   DeviceMeta,
   LoginResult,
   PendingCode,
   PendingPurpose,
-  RateCounter,
   Session,
   SessionSummary,
   SessionView,
   Ticket,
 } from './model.ts'
-import { createAuthStore } from './store.ts'
-import type { JsonStore } from '@dizzyapi/plugin-kit'
 
-type Mutable<T> = { -readonly [K in keyof T]: T[K] }
-
-interface AuthState {
-  credentials: Mutable<Credential>[]
-  pendings: Mutable<PendingCode>[]
-  sessions: Mutable<Session>[]
-  counters: Mutable<RateCounter>[]
-}
-
-/** 会话的 lastSeenAt 最多每分钟写一次盘：界面请求会把盘写爆，而它只用于排障。 */
+/** 会话的 lastSeenAt 最多每分钟写一次库：界面请求会把库写爆，而它只用于排障。 */
 const LAST_SEEN_WRITE_INTERVAL_MS = 60_000
 
 /**
@@ -55,7 +43,9 @@ const LAST_SEEN_WRITE_INTERVAL_MS = 60_000
  * - `user`：用户表。注册成功的最后一步是往用户表新增用户。
  * - `mailer`：外部通讯模块。验证码必须真发出去，发不出去就失败（D7 的取向）。
  *
- * 全部改动串行执行（同一条队列），避免两个注册请求交错写坏凭证。
+ * 全部改动串行执行（同一条队列）。存储是 SQLite（`node:sqlite` 的 DatabaseSync）：
+ * 单次改动在一个 `BEGIN IMMEDIATE` 事务里完成，事务里不 await 任何异步服务；
+ * 密码派生、发信这些异步动作发生在事务之外。
  * 这是控制面流量，量小，串行没有代价。
  */
 export class AuthService extends Service {
@@ -76,16 +66,14 @@ export class AuthService extends Service {
     capabilities: ['authentication', 'sessions', 'registration', 'password-reset'],
     events: [],
     bridge: [],
-    storage: [{ key: 'dataPath', kind: 'file', description: '会话 / 验证码 / 凭证 JSON' }],
+    storage: [{ key: 'dataPath', kind: 'file', description: '凭证 / 会话 / 验证码 / 计数 SQLite' }],
   } as const
 
   readonly config: ResolvedAuthConfig
-  private store: JsonStore<ReturnType<typeof createAuthStore> extends JsonStore<infer T> ? T : never>
+  private db: AuthDatabase
   private user: UserService
   private mailer: MailerService
   private logger: Logger
-  private state: AuthState | undefined
-  private loading: Promise<AuthState> | undefined
   private queue: Promise<unknown> = Promise.resolve()
 
   constructor(ctx: Context, config: AuthConfig | ResolvedAuthConfig = {}) {
@@ -107,17 +95,24 @@ export class AuthService extends Service {
     }
     this.user = user
     this.mailer = mailer
-    this.store = createAuthStore(resolveDataPath(ctx, this.config.dataPath))
+    this.db = new AuthDatabase(resolveDataPath(ctx, this.config.dataPath))
     this.logger = ctx.logger('auth')
 
     this.logger.info(
-      `鉴权插件已装载：存储 ${this.store.describe}；建用户时自报 ${this.config.userActor}；` +
+      `鉴权插件已装载：存储 ${this.db.describe}；建用户时自报 ${this.config.userActor}；` +
         `验证码 ${this.config.codeDigits} 位 / ${Math.round(this.config.codeTtlMs / 60_000)} 分钟；` +
         `会话 ${Math.round(this.config.sessionTtlMs / 3600_000)} 小时`,
     )
+    if (this.db.legacyImport !== undefined) {
+      this.logger.info(
+        `已从旧 auth.json 导入 ${this.db.legacyImport.credentials} 条凭证、` +
+          `${this.db.legacyImport.pendings} 条验证码、${this.db.legacyImport.sessions} 个会话、` +
+          `${this.db.legacyImport.counters} 个计数窗口（旧文件保留）`,
+      )
+    }
 
-    // 注册即副作用：插件被卸载时存储跟着回收（AGENTS.md D5）。
-    ctx.effect(() => () => this.store.close(), 'auth.store')
+    // 注册即副作用：插件被卸载时数据库连接跟着关闭（AGENTS.md D5）。
+    ctx.effect(() => () => this.db.close(), 'auth.db')
   }
 
   // ────────────────────────────── 注册 ──────────────────────────────
@@ -135,30 +130,30 @@ export class AuthService extends Service {
 
     return this.exclusive(async () => {
       const now = nowIso()
-      const state = await this.loadState()
-      this.prune(state, now)
+      this.prune(now)
 
-      this.enforceCodeRateLimit(state, 'register', email, now)
+      const count = this.db.bumpCounter(`code:register:${email}`, 3600_000, now)
+      if (count > this.config.codeRequestsPerHour) {
+        throw new AuthError('AUTH_RATE_LIMITED', '验证码请求过于频繁，请稍后再试')
+      }
 
-      const existing = state.credentials.find((item) => item.email === email)
+      const existing = this.db.getCredentialByEmail(email)
       if (existing !== undefined) {
         const user = await this.user.get(existing.userId)
         if (user !== undefined) {
-          await this.persist(state)
           this.logger.warn(`注册申请：邮箱已占用，按防枚举策略静默受理 email=${email}`)
           return this.genericTicket(email, now)
         }
         // 用户被删掉了但凭证还在（孤儿）：允许重新注册，顺手清干净
-        this.dropCredential(state, existing.userId)
+        this.dropCredential(existing.userId)
       }
 
-      const cooldown = this.cooldownRemaining(state, 'register', email, now)
+      const cooldown = this.cooldownRemaining('register', email, now)
       if (cooldown > 0) {
-        await this.persist(state)
         return { email, expiresAt: addMilliseconds(now, this.config.codeTtlMs), resendAfterMs: cooldown }
       }
 
-      const ticket = await this.issueCode(state, 'register', email, now, { name, passwordHash })
+      const ticket = await this.issueCode('register', email, now, { name, passwordHash })
       this.logger.info(`注册申请：验证码已发出 email=${email}`)
       return ticket
     })
@@ -174,46 +169,50 @@ export class AuthService extends Service {
 
     return this.exclusive(async () => {
       const now = nowIso()
-      const state = await this.loadState()
-      this.prune(state, now)
+      this.prune(now)
 
-      const pending = await this.verifyCode(state, 'register', email, code, now)
+      const pending = await this.verifyCode('register', email, code, now)
 
-      const existing = state.credentials.find((item) => item.email === email)
+      const existing = this.db.getCredentialByEmail(email)
       if (existing !== undefined) {
         const user = await this.user.get(existing.userId)
         if (user !== undefined) {
-          this.dropPending(state, 'register', email)
-          await this.persist(state)
+          this.db.deletePending('register', email)
           throw new AuthError('AUTH_EMAIL_TAKEN', `邮箱 ${email} 已经注册过了，直接登录即可`)
         }
-        this.dropCredential(state, existing.userId)
+        this.dropCredential(existing.userId)
       }
 
-      if (pending.passwordHash === undefined) {
-        this.dropPending(state, 'register', email)
-        await this.persist(state)
+      const passwordHash = pending.passwordHash
+      if (passwordHash === undefined) {
+        this.db.deletePending('register', email)
         throw new AuthError('AUTH_CODE_INVALID', '这次注册缺少密码信息，请重新申请验证码')
       }
 
       const user = await this.createUser(email, pending.name)
+      const session = this.newSession(user.id, now)
       try {
-        state.credentials.push({
-          userId: user.id,
-          email,
-          passwordHash: pending.passwordHash,
-          createdAt: now,
-          updatedAt: now,
+        this.db.transaction(() => {
+          this.db.insertCredential({
+            userId: user.id,
+            email,
+            passwordHash,
+            createdAt: now,
+            updatedAt: now,
+          })
+          this.db.deletePending('register', email)
+          this.db.insertSession(session.record)
         })
-        this.dropPending(state, 'register', email)
-        const session = this.startSession(state, user.id, now)
-        await this.persist(state)
         this.logger.info(`注册完成：user=#${user.id} name=${user.name} email=${email}`)
-        return { token: session.token, sessionId: session.record.id, expiresAt: session.record.expiresAt, user }
+        return {
+          token: session.token,
+          sessionId: session.record.id,
+          expiresAt: session.record.expiresAt,
+          user,
+        }
       } catch (error) {
-        // 凭证没写成 → 把刚建的用户删掉（余额为 0，用户插件允许删），
+        // 凭证 / 会话事务已回滚 → 把刚建的用户删掉（余额为 0，用户插件允许删），
         // 不留「有用户没凭证」的孤儿。跨两个存储，只能这样补偿。
-        state.credentials = state.credentials.filter((item) => item.userId !== user.id)
         try {
           await this.user.remove(this.config.userActor, user.id)
         } catch (cleanupError) {
@@ -241,77 +240,78 @@ export class AuthService extends Service {
 
     return this.exclusive(async () => {
       const now = nowIso()
-      const state = await this.loadState()
-      this.prune(state, now)
+      this.prune(now)
 
       if (
-        this.readCounter(state, `login:${email}`, this.config.loginWindowMs, now) >=
+        this.db.readCounter(`login:${email}`, this.config.loginWindowMs, now) >=
         this.config.loginMaxFailures
       ) {
-        await this.persist(state)
         throw new AuthError('AUTH_RATE_LIMITED', '登录失败次数过多，请稍后再试')
       }
 
-      const credential = state.credentials.find((item) => item.email === email)
+      const credential = this.db.getCredentialByEmail(email)
       if (credential === undefined) {
         // 邮箱不存在时也走一次等价的派生运算，别让响应时间泄漏「这个邮箱没注册」
         await consumeDummyVerify(password)
-        this.bumpCounter(state, `login:${email}`, this.config.loginWindowMs, now)
-        await this.persist(state)
+        this.db.bumpCounter(`login:${email}`, this.config.loginWindowMs, now)
         this.logger.warn(`登录失败：邮箱不存在 email=${email}`)
         throw new AuthError('AUTH_CREDENTIALS_INVALID', '邮箱或密码错误')
       }
 
       if (!(await verifyPassword(credential.passwordHash, password))) {
-        this.bumpCounter(state, `login:${email}`, this.config.loginWindowMs, now)
-        await this.persist(state)
+        this.db.bumpCounter(`login:${email}`, this.config.loginWindowMs, now)
         this.logger.warn(`登录失败：密码不正确 user=#${credential.userId}`)
         throw new AuthError('AUTH_CREDENTIALS_INVALID', '邮箱或密码错误')
       }
 
       const user = await this.user.get(credential.userId)
       if (user === undefined) {
-        await this.persist(state)
         throw new AuthError('AUTH_USER_MISSING', '账号已不存在，请联系管理员')
       }
       if (user.status === 'banned') {
-        await this.persist(state)
         this.logger.warn(`登录被拒：账号已封禁 user=#${user.id}`)
         throw new AuthError('AUTH_USER_BANNED', '账号已被封禁')
       }
 
-      this.resetCounter(state, `login:${email}`)
-      const session = this.startSession(state, user.id, now)
-      await this.persist(state)
+      this.db.resetCounter(`login:${email}`)
+      const session = this.newSession(user.id, now)
+      this.db.transaction(() => this.db.insertSession(session.record))
       this.logger.info(`登录成功：user=#${user.id} name=${user.name} session=${session.record.id}`)
-      return { token: session.token, sessionId: session.record.id, expiresAt: session.record.expiresAt, user }
+      return {
+        token: session.token,
+        sessionId: session.record.id,
+        expiresAt: session.record.expiresAt,
+        user,
+      }
     })
   }
 
   /**
    * 校验会话：**界面请求的身份入口**。
-   * 调用方（将来的用户站 / 管理台，或经桥过来的 Go）拿令牌换来「这是谁」。
+   * 调用方（用户站 / 管理台，或经桥过来的 Go）拿令牌换来「这是谁」。
    */
   async verifySession(token: string): Promise<SessionView> {
     const raw = normalizeToken(token)
     return this.exclusive(async () => {
       const now = nowIso()
-      const state = await this.loadState()
-      this.prune(state, now)
-      const { record, user } = await this.requireSession(state, raw, now)
+      this.prune(now)
+      const { record, user } = await this.requireSession(raw, now)
 
+      let lastSeenAt = record.lastSeenAt
       if (Date.parse(now) - Date.parse(record.lastSeenAt) > LAST_SEEN_WRITE_INTERVAL_MS) {
-        record.lastSeenAt = now
-        await this.persist(state)
+        lastSeenAt = now
+        this.db.updateSessionLastSeen(record.id, now)
       }
 
+      const credential = this.db.getCredentialByUserId(record.userId)
       return {
         sessionId: record.id,
         userId: record.userId,
         user,
+        ...(credential === undefined ? {} : { email: credential.email }),
         createdAt: record.createdAt,
         expiresAt: record.expiresAt,
-        lastSeenAt: record.lastSeenAt,
+        lastSeenAt,
       }
     })
   }
@@ -321,11 +321,9 @@ export class AuthService extends Service {
     const raw = normalizeToken(token)
     return this.exclusive(async () => {
       const now = nowIso()
-      const state = await this.loadState()
-      this.prune(state, now)
-      const before = state.sessions.length
-      state.sessions = state.sessions.filter((item) => item.tokenHash !== sha256Hex(raw))
-      if (state.sessions.length !== before) await this.persist(state)
+      this.prune(now)
+      const record = this.db.getSessionByTokenHash(sha256Hex(raw))
+      if (record !== undefined) this.db.deleteSessionById(record.id)
     })
   }
 
@@ -333,18 +331,15 @@ export class AuthService extends Service {
     const raw = normalizeToken(token)
     return this.exclusive(async () => {
       const now = nowIso()
-      const state = await this.loadState()
-      this.prune(state, now)
-      const { record } = await this.requireSession(state, raw, now)
-      return state.sessions
-        .filter((item) => item.userId === record.userId)
-        .map((item) => ({
-          sessionId: item.id,
-          createdAt: item.createdAt,
-          expiresAt: item.expiresAt,
-          lastSeenAt: item.lastSeenAt,
-          current: item.id === record.id,
-        }))
+      this.prune(now)
+      const { record } = await this.requireSession(raw, now)
+      return this.db.listSessionsByUser(record.userId).map((item) => ({
+        sessionId: item.id,
+        createdAt: item.createdAt,
+        expiresAt: item.expiresAt,
+        lastSeenAt: item.lastSeenAt,
+        current: item.id === record.id,
+      }))
     })
   }
 
@@ -353,16 +348,14 @@ export class AuthService extends Service {
     const raw = normalizeToken(token)
     return this.exclusive(async () => {
       const now = nowIso()
-      const state = await this.loadState()
-      this.prune(state, now)
-      const { record } = await this.requireSession(state, raw, now)
+      this.prune(now)
+      const { record } = await this.requireSession(raw, now)
 
-      const target = state.sessions.find((item) => item.id === sessionId)
+      const target = this.db.getSessionById(sessionId)
       if (target === undefined || target.userId !== record.userId) {
         throw new AuthError('AUTH_SESSION_INVALID', '没有这个会话')
       }
-      state.sessions = state.sessions.filter((item) => item.id !== sessionId)
-      await this.persist(state)
+      this.db.deleteSessionById(sessionId)
       this.logger.info(`会话已吊销：user=#${record.userId} session=${sessionId}`)
     })
   }
@@ -372,13 +365,10 @@ export class AuthService extends Service {
     const raw = normalizeToken(token)
     return this.exclusive(async () => {
       const now = nowIso()
-      const state = await this.loadState()
-      this.prune(state, now)
-      const { record } = await this.requireSession(state, raw, now)
+      this.prune(now)
+      const { record } = await this.requireSession(raw, now)
 
-      const removed = state.sessions.filter((item) => item.userId === record.userId).length
-      state.sessions = state.sessions.filter((item) => item.userId !== record.userId)
-      await this.persist(state)
+      const removed = this.db.deleteSessionsByUser(record.userId)
       this.logger.info(`全部会话已吊销：user=#${record.userId} 共 ${removed} 个`)
       return removed
     })
@@ -397,24 +387,25 @@ export class AuthService extends Service {
 
     return this.exclusive(async () => {
       const now = nowIso()
-      const state = await this.loadState()
-      this.prune(state, now)
-      const { record, user } = await this.requireSession(state, raw, now)
+      this.prune(now)
+      const { record, user } = await this.requireSession(raw, now)
 
-      const credential = state.credentials.find((item) => item.userId === user.id)
+      const credential = this.db.getCredentialByUserId(user.id)
       if (credential === undefined) {
         throw new AuthError('AUTH_USER_MISSING', '账号缺少凭证，请联系管理员')
       }
-      if (typeof currentPassword !== 'string' || !(await verifyPassword(credential.passwordHash, currentPassword))) {
+      if (
+        typeof currentPassword !== 'string' ||
+        !(await verifyPassword(credential.passwordHash, currentPassword))
+      ) {
         throw new AuthError('AUTH_CREDENTIALS_INVALID', '当前密码不正确')
       }
 
-      credential.passwordHash = await hashPassword(next)
-      credential.updatedAt = now
-
-      const others = state.sessions.filter((item) => item.userId === user.id && item.id !== record.id).length
-      state.sessions = state.sessions.filter((item) => item.userId !== user.id || item.id === record.id)
-      await this.persist(state)
+      const nextHash = await hashPassword(next)
+      const others = this.db.transaction(() => {
+        this.db.updateCredentialPassword(user.id, nextHash, now)
+        return this.db.deleteOtherSessionsByUser(user.id, record.id)
+      })
       this.logger.info(`密码已修改：user=#${user.id}，作废其它会话 ${others} 个`)
       return { revokedSessions: others }
     })
@@ -426,24 +417,24 @@ export class AuthService extends Service {
 
     return this.exclusive(async () => {
       const now = nowIso()
-      const state = await this.loadState()
-      this.prune(state, now)
+      this.prune(now)
 
-      this.enforceCodeRateLimit(state, 'reset', email, now)
+      const count = this.db.bumpCounter(`code:reset:${email}`, 3600_000, now)
+      if (count > this.config.codeRequestsPerHour) {
+        throw new AuthError('AUTH_RATE_LIMITED', '验证码请求过于频繁，请稍后再试')
+      }
 
-      const credential = state.credentials.find((item) => item.email === email)
+      const credential = this.db.getCredentialByEmail(email)
       if (credential === undefined || (await this.user.get(credential.userId)) === undefined) {
-        await this.persist(state)
         return this.genericTicket(email, now)
       }
 
-      const cooldown = this.cooldownRemaining(state, 'reset', email, now)
+      const cooldown = this.cooldownRemaining('reset', email, now)
       if (cooldown > 0) {
-        await this.persist(state)
         return { email, expiresAt: addMilliseconds(now, this.config.codeTtlMs), resendAfterMs: cooldown }
       }
 
-      const ticket = await this.issueCode(state, 'reset', email, now, {})
+      const ticket = await this.issueCode('reset', email, now, {})
       this.logger.info(`重置密码：验证码已发出 user=#${credential.userId}`)
       return ticket
     })
@@ -461,12 +452,11 @@ export class AuthService extends Service {
 
     return this.exclusive(async () => {
       const now = nowIso()
-      const state = await this.loadState()
-      this.prune(state, now)
+      this.prune(now)
 
-      await this.verifyCode(state, 'reset', email, code, now)
+      await this.verifyCode('reset', email, code, now)
 
-      const credential = state.credentials.find((item) => item.email === email)
+      const credential = this.db.getCredentialByEmail(email)
       if (credential === undefined) {
         throw new AuthError('AUTH_CODE_INVALID', '验证码无效或已过期')
       }
@@ -475,16 +465,26 @@ export class AuthService extends Service {
         throw new AuthError('AUTH_USER_MISSING', '账号已不存在，请联系管理员')
       }
 
-      credential.passwordHash = await hashPassword(next)
-      credential.updatedAt = now
-      this.dropPending(state, 'reset', email)
-
-      const revoked = state.sessions.filter((item) => item.userId === user.id).length
-      state.sessions = state.sessions.filter((item) => item.userId !== user.id)
-      await this.persist(state)
+      const nextHash = await hashPassword(next)
+      const revoked = this.db.transaction(() => {
+        this.db.updateCredentialPassword(user.id, nextHash, now)
+        this.db.deletePending('reset', email)
+        return this.db.deleteSessionsByUser(user.id)
+      })
       this.logger.info(`密码已重置：user=#${user.id}，作废会话 ${revoked} 个`)
       return { userId: user.id, revokedSessions: revoked }
     })
+  }
+
+  // ────────────────────────────── 资料 ──────────────────────────────
+
+  /**
+   * 只读查询某用户的邮箱，供 API 层组装资料 DTO。
+   * 返回 null 表示没有凭证；**不返回密码哈希**。
+   */
+  async getEmail(userId: UserId): Promise<string | null> {
+    if (typeof userId !== 'number' || !Number.isSafeInteger(userId) || userId <= 0) return null
+    return this.exclusive(async () => this.db.getCredentialByUserId(userId)?.email ?? null)
   }
 
   // ────────────────────────────── 内部 ──────────────────────────────
@@ -495,63 +495,21 @@ export class AuthService extends Service {
     return result
   }
 
-  private loadState(): Promise<AuthState> {
-    if (this.state) return Promise.resolve(this.state)
-    if (!this.loading) {
-      const loading = this.store
-        .read()
-        .then((snapshot) => {
-          const state: AuthState = {
-            credentials: snapshot.credentials.map((item) => ({ ...item })),
-            pendings: snapshot.pendings.map((item) => ({ ...item })),
-            sessions: snapshot.sessions.map((item) => ({ ...item })),
-            counters: snapshot.counters.map((item) => ({ ...item })),
-          }
-          this.state = state
-          return state
-        })
-        .catch((error: unknown) => {
-          if (error instanceof AuthError) throw error
-          throw new AuthError('AUTH_STORE_UNREADABLE', `读取鉴权数据失败：${describeError(error)}`)
-        })
-      this.loading = loading
-      loading.catch(() => {
-        if (this.loading === loading) this.loading = undefined
-      })
-    }
-    return this.loading
+  /** 清掉过期的验证码、会话与计数窗口。同步、幂等。 */
+  private prune(now: string): void {
+    this.db.prune(now)
   }
 
-  private async persist(state: AuthState): Promise<void> {
-    await this.store.write({
-      credentials: state.credentials,
-      pendings: state.pendings,
-      sessions: state.sessions,
-      counters: state.counters,
-    })
-  }
-
-  private prune(state: AuthState, now: string): void {
-    state.pendings = state.pendings.filter((item) => !isExpired(item.expiresAt, now))
-    state.sessions = state.sessions.filter((item) => !isExpired(item.expiresAt, now))
-    state.counters = state.counters.filter(
-      (item) => Date.parse(now) < Date.parse(item.windowStart) + item.windowMs,
-    )
-  }
-
-  /** 生成验证码、落盘，然后交给外部通讯模块发出去；发信失败就撤掉这个码。 */
+  /** 生成验证码、落库，然后交给外部通讯模块发出去；发信失败就撤掉这个码。 */
   private async issueCode(
-    state: AuthState,
     purpose: PendingPurpose,
     email: string,
     now: string,
     extra: { name?: string; passwordHash?: string },
   ): Promise<Ticket> {
-    this.dropPending(state, purpose, email)
-
     const code = randomCode(this.config.codeDigits)
     const salt = randomSalt()
-    state.pendings.push({
+    const pending: PendingCode = {
       purpose,
       email,
       codeHash: sha256Hex(`${salt}:${code}`),
@@ -561,10 +519,13 @@ export class AuthService extends Service {
       expiresAt: addMilliseconds(now, this.config.codeTtlMs),
       name: extra.name,
       passwordHash: extra.passwordHash,
-    })
+    }
 
     // 先把码写进存储再发信：否则会出现「用户收到了码，服务器不认」
-    await this.persist(state)
+    this.db.transaction(() => {
+      this.db.deletePending(purpose, email)
+      this.db.upsertPending(pending)
+    })
 
     try {
       await this.mailer.send({
@@ -574,55 +535,60 @@ export class AuthService extends Service {
         kind: `auth-${purpose}-code`,
       })
     } catch (error) {
-      this.dropPending(state, purpose, email)
-      await this.persist(state)
+      this.db.deletePending(purpose, email)
       throw new AuthError('AUTH_MAIL_FAILED', `验证码发送失败：${describeError(error)}`)
     }
 
-    return { email, expiresAt: addMilliseconds(now, this.config.codeTtlMs), resendAfterMs: this.config.codeResendCooldownMs }
+    return {
+      email,
+      expiresAt: addMilliseconds(now, this.config.codeTtlMs),
+      resendAfterMs: this.config.codeResendCooldownMs,
+    }
   }
 
+  /**
+   * 核对验证码。失败计数与「超过上限即作废」必须在同一个事务里落库：
+   * 否则一次失败的尝试可能既不计数也不作废。
+   */
   private async verifyCode(
-    state: AuthState,
     purpose: PendingPurpose,
     email: string,
     code: string,
     now: string,
-  ): Promise<Mutable<PendingCode>> {
-    const pending = state.pendings.find((item) => item.purpose === purpose && item.email === email)
-    if (pending === undefined) {
-      throw new AuthError('AUTH_CODE_INVALID', '验证码无效或已过期')
-    }
-    if (isExpired(pending.expiresAt, now)) {
-      this.dropPending(state, purpose, email)
-      await this.persist(state)
-      throw new AuthError('AUTH_CODE_INVALID', '验证码无效或已过期')
-    }
-
-    const expected = sha256Hex(`${pending.salt}:${code}`)
-    if (!constantTimeEqualHex(expected, pending.codeHash)) {
-      pending.attempts += 1
-      if (pending.attempts >= this.config.codeMaxAttempts) {
-        this.dropPending(state, purpose, email)
-        await this.persist(state)
-        throw new AuthError('AUTH_CODE_ATTEMPTS_EXCEEDED', '验证码错误次数过多，请重新获取')
+  ): Promise<PendingCode> {
+    const outcome = this.db.transaction(() => {
+      const pending = this.db.getPending(purpose, email)
+      if (pending === undefined) return { kind: 'missing' } as const
+      if (isExpired(pending.expiresAt, now)) {
+        this.db.deletePending(purpose, email)
+        return { kind: 'expired' } as const
       }
-      await this.persist(state)
-      throw new AuthError('AUTH_CODE_INVALID', '验证码不正确')
-    }
 
-    return pending
+      const expected = sha256Hex(`${pending.salt}:${code}`)
+      if (!constantTimeEqualHex(expected, pending.codeHash)) {
+        const attempts = pending.attempts + 1
+        if (attempts >= this.config.codeMaxAttempts) {
+          this.db.deletePending(purpose, email)
+          return { kind: 'exceeded' } as const
+        }
+        this.db.setPendingAttempts(purpose, email, attempts)
+        return { kind: 'wrong' } as const
+      }
+
+      return { kind: 'ok', pending } as const
+    })
+
+    if (outcome.kind === 'missing' || outcome.kind === 'expired' || outcome.kind === 'wrong') {
+      throw new AuthError('AUTH_CODE_INVALID', '验证码无效或已过期')
+    }
+    if (outcome.kind === 'exceeded') {
+      throw new AuthError('AUTH_CODE_ATTEMPTS_EXCEEDED', '验证码错误次数过多，请重新获取')
+    }
+    return outcome.pending
   }
 
-  private enforceCodeRateLimit(state: AuthState, purpose: PendingPurpose, email: string, now: string): void {
-    const count = this.bumpCounter(state, `code:${purpose}:${email}`, 3600_000, now)
-    if (count > this.config.codeRequestsPerHour) {
-      throw new AuthError('AUTH_RATE_LIMITED', '验证码请求过于频繁，请稍后再试')
-    }
-  }
-
-  private cooldownRemaining(state: AuthState, purpose: PendingPurpose, email: string, now: string): number {
-    const pending = state.pendings.find((item) => item.purpose === purpose && item.email === email)
+  private cooldownRemaining(purpose: PendingPurpose, email: string, now: string): number {
+    const pending = this.db.getPending(purpose, email)
     if (pending === undefined) return 0
     const readyAt = Date.parse(pending.createdAt) + this.config.codeResendCooldownMs
     return Math.max(0, readyAt - Date.parse(now))
@@ -632,42 +598,39 @@ export class AuthService extends Service {
     return { email, expiresAt: addMilliseconds(now, this.config.codeTtlMs), resendAfterMs: 0 }
   }
 
-  private dropPending(state: AuthState, purpose: PendingPurpose, email: string): void {
-    state.pendings = state.pendings.filter((item) => !(item.purpose === purpose && item.email === email))
+  private dropCredential(userId: UserId): void {
+    this.db.transaction(() => {
+      this.db.deleteCredentialByUserId(userId)
+      this.db.deleteSessionsByUser(userId)
+    })
   }
 
-  private dropCredential(state: AuthState, userId: UserId): void {
-    state.credentials = state.credentials.filter((item) => item.userId !== userId)
-    state.sessions = state.sessions.filter((item) => item.userId !== userId)
-  }
-
-  private startSession(state: AuthState, userId: UserId, now: string): { token: string; record: Mutable<Session> } {
+  private newSession(userId: UserId, now: string): { token: string; record: Session } {
     const token = randomToken()
-    const record: Mutable<Session> = {
-      id: randomSessionId(),
-      userId,
-      tokenHash: sha256Hex(token),
-      createdAt: now,
-      expiresAt: addMilliseconds(now, this.config.sessionTtlMs),
-      lastSeenAt: now,
+    return {
+      token,
+      record: {
+        id: randomSessionId(),
+        userId,
+        tokenHash: sha256Hex(token),
+        createdAt: now,
+        expiresAt: addMilliseconds(now, this.config.sessionTtlMs),
+        lastSeenAt: now,
+      },
     }
-    state.sessions.push(record)
-    return { token, record }
   }
 
   /** 令牌 → 会话 + 用户；无效、过期、用户没了、被封禁都在这里拦下。 */
   private async requireSession(
-    state: AuthState,
     rawToken: string,
     now: string,
-  ): Promise<{ record: Mutable<Session>; user: User }> {
-    const record = state.sessions.find((item) => item.tokenHash === sha256Hex(rawToken))
+  ): Promise<{ record: Session; user: User }> {
+    const record = this.db.getSessionByTokenHash(sha256Hex(rawToken))
     if (record === undefined) {
       throw new AuthError('AUTH_SESSION_INVALID', '会话无效，请重新登录')
     }
     if (isExpired(record.expiresAt, now)) {
-      state.sessions = state.sessions.filter((item) => item.id !== record.id)
-      await this.persist(state)
+      this.db.deleteSessionById(record.id)
       throw new AuthError('AUTH_SESSION_EXPIRED', '会话已过期，请重新登录')
     }
 
@@ -710,38 +673,15 @@ export class AuthService extends Service {
       requested !== undefined ? `用户名 ${requested} 已被占用` : `无法为 ${email} 找到可用用户名（${lastMessage}）`,
     )
   }
-
-  private readCounter(state: AuthState, key: string, windowMs: number, now: string): number {
-    const counter = state.counters.find((item) => item.key === key)
-    if (counter === undefined) return 0
-    if (Date.parse(now) >= Date.parse(counter.windowStart) + Math.min(windowMs, counter.windowMs)) return 0
-    return counter.count
-  }
-
-  private bumpCounter(state: AuthState, key: string, windowMs: number, now: string): number {
-    const counter = state.counters.find((item) => item.key === key)
-    if (counter === undefined || Date.parse(now) >= Date.parse(counter.windowStart) + counter.windowMs) {
-      const fresh: Mutable<RateCounter> = { key, count: 1, windowStart: now, windowMs }
-      state.counters = state.counters.filter((item) => item.key !== key)
-      state.counters.push(fresh)
-      return 1
-    }
-    counter.count += 1
-    return counter.count
-  }
-
-  private resetCounter(state: AuthState, key: string): void {
-    state.counters = state.counters.filter((item) => item.key !== key)
-  }
 }
 
 function noop(): void {
   // 只用来把队列里失败的 promise 咽掉，避免污染下一次 task
 }
 
-/** 相对路径按 cordis 的 baseUrl（通常就是工作目录）解析，别让它跟着进程 cwd 跑。 */
+/** 相对路径按 cordis 的 baseUrl 解析；`:memory:` 原样传给存储层。 */
 function resolveDataPath(ctx: Context, path: string | undefined): string | undefined {
-  if (path === undefined || isAbsolute(path)) return path
+  if (path === undefined || path === ':memory:' || isAbsolute(path)) return path
   const base = ctx.baseUrl ? fileURLToPath(ctx.baseUrl) : process.cwd()
   return resolve(base, path)
 }

@@ -299,13 +299,13 @@ test('软重启会级联：改 mailer 会连带重启 inject 了它的 auth', as
   await createEntry(ctx, {
     id: 'user',
     name: '@dizzyapi/plugin-user',
-    config: { dataPath: join(dir, 'users.json'), adminPlugins: ['@dizzyapi/plugin-auth'] },
+    config: { dataPath: join(dir, 'users.db'), adminPlugins: ['@dizzyapi/plugin-auth'] },
   })
   await createEntry(ctx, { id: 'mailer', name: '@dizzyapi/plugin-mailer', config: { transport: 'log' } })
   await createEntry(ctx, {
     id: 'auth',
     name: '@dizzyapi/plugin-auth',
-    config: { dataPath: join(dir, 'auth.json'), userActor: '@dizzyapi/plugin-auth' },
+    config: { dataPath: join(dir, 'auth.db'), userActor: '@dizzyapi/plugin-auth' },
   })
   await createEntry(ctx, {
     id: 'settings',

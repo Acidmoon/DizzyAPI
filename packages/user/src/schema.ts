@@ -18,8 +18,9 @@ import {
  */
 export interface UserConfig {
   /**
-   * 用户数据落盘路径。省略则纯内存，进程退出即丢。
+   * 用户数据库（SQLite）文件路径。省略或写 `:memory:` 则纯内存，进程退出即丢。
    * 相对路径按 cordis 的 baseUrl（通常就是工作目录）解析。
+   * 首次创建且同目录存在旧 `users.json` 时自动一次性导入，旧文件保留。
    */
   readonly dataPath?: string
   /**
@@ -50,7 +51,7 @@ export interface ResolvedUserConfig {
  * `dataPath` 换的是数据落点；两个白名单改的是写权限——让自己给自己提权，绝不能做。
  */
 const USER_FIELDS: readonly FieldSpec[] = [
-  { key: 'dataPath', label: '用户数据文件位置', kind: 'string', writable: false },
+  { key: 'dataPath', label: '用户数据库文件位置', kind: 'string', writable: false },
   { key: 'adminPlugins', label: '可管理用户的插件', kind: 'stringArray', writable: false },
   { key: 'balanceWriters', label: '可改余额的插件', kind: 'stringArray', writable: false },
 ]
