@@ -15,6 +15,8 @@ interface FakeAccount {
   readonly kind: string
   readonly enabled: boolean
   readonly status: string
+  readonly baseUrl?: string | null
+  readonly priority?: number
   readonly accessExpiresAt: string | null
 }
 
@@ -109,6 +111,8 @@ function account(id: string, overrides: Partial<FakeAccount> = {}): FakeAccount 
     kind: 'api_key',
     enabled: true,
     status: 'active',
+    baseUrl: null,
+    priority: 0,
     accessExpiresAt: null,
     ...overrides,
   }
@@ -122,7 +126,15 @@ test('把 identity 的可用账号与令牌快照推给 Go', async (t) => {
     },
   })
   world.identity.add(account('acc-one'), 'sk-account-one')
-  world.identity.add(account('acc-two', { provider: 'custom', kind: 'api_key' }), 'sk-account-two')
+  world.identity.add(
+    account('acc-two', {
+      provider: 'custom',
+      kind: 'api_key',
+      baseUrl: 'https://override.example.com/v1',
+      priority: 9,
+    }),
+    'sk-account-two',
+  )
   world.identity.add(account('acc-disabled', { enabled: false }), 'sk-disabled')
   world.identity.add(account('acc-needs-reauth', { status: 'needs_reauth' }), 'sk-reauth')
   // 没有上游地址的 provider 不进快照。

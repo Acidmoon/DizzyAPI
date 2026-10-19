@@ -27,6 +27,9 @@ export interface AccountRecord {
   readonly credentialRef: string
   readonly email: string | null
   readonly subject: string | null
+  /** 账号自己的 OpenAI 兼容 base URL；null = 用 provider 默认映射。 */
+  readonly baseUrl: string | null
+  readonly priority: number
   readonly accessExpiresAt: string | null
   readonly refreshDueAt: string | null
   readonly lastRefreshAt: string | null
@@ -94,6 +97,8 @@ export interface CreateAccountInput {
   readonly label: string
   readonly email?: string
   readonly subject?: string
+  readonly baseUrl?: string
+  readonly priority?: number
   readonly enabled?: boolean
   /** 可选的凭据；解析后的值只交给 identity，永不回显。 */
   readonly credential?: CredentialImportInput
@@ -104,6 +109,8 @@ export interface UpdateAccountInput {
   readonly label?: string
   readonly email?: string | null
   readonly subject?: string | null
+  readonly baseUrl?: string | null
+  readonly priority?: number
 }
 
 /** 向已有账号导入 / 重新授权一份凭据。 */

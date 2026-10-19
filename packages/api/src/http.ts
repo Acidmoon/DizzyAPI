@@ -749,12 +749,24 @@ export class ApiServer {
           throw new ApiError('API_ACCOUNT_CREATE_UNAVAILABLE', 503, '账号管理服务不支持新建账号')
         }
         const body = await this.jsonBody(req)
-        assertOnlyKeys(body, ['provider', 'kind', 'label', 'email', 'subject', 'enabled', 'credential'])
+        assertOnlyKeys(body, [
+          'provider',
+          'kind',
+          'label',
+          'email',
+          'subject',
+          'baseUrl',
+          'priority',
+          'enabled',
+          'credential',
+        ])
         const provider = requiredString(body, 'provider')
         const kind = requiredString(body, 'kind')
         const label = requiredString(body, 'label')
         const email = optionalString(body, 'email')
         const subject = optionalString(body, 'subject')
+        const baseUrl = optionalString(body, 'baseUrl')
+        const priority = optionalInteger(body, 'priority', 0, 1000)
         const enabled = body.enabled === undefined ? undefined : requiredBoolean(body, 'enabled')
         const credential = accountCredentialOf(body.credential)
         const input = {
@@ -763,6 +775,8 @@ export class ApiServer {
           label,
           ...(email === undefined ? {} : { email }),
           ...(subject === undefined ? {} : { subject }),
+          ...(baseUrl === undefined ? {} : { baseUrl }),
+          ...(priority === undefined ? {} : { priority }),
           ...(enabled === undefined ? {} : { enabled }),
           ...(credential === undefined ? {} : { credential }),
         }
@@ -822,16 +836,29 @@ export class ApiServer {
       }
       if (req.method === 'PATCH') {
         const body = await this.jsonBody(req)
-        assertOnlyKeys(body, ['label', 'email', 'subject', 'enabled'])
-        const hasMeta = Object.hasOwn(body, 'label') || Object.hasOwn(body, 'email') || Object.hasOwn(body, 'subject')
+        assertOnlyKeys(body, ['label', 'email', 'subject', 'baseUrl', 'priority', 'enabled'])
+        const hasMeta =
+          Object.hasOwn(body, 'label') ||
+          Object.hasOwn(body, 'email') ||
+          Object.hasOwn(body, 'subject') ||
+          Object.hasOwn(body, 'baseUrl') ||
+          Object.hasOwn(body, 'priority')
         const hasEnabled = Object.hasOwn(body, 'enabled')
         if (!hasMeta && !hasEnabled) throw badRequest('没有可修改的字段')
 
         if (hasMeta) {
-          const patch: { label?: string; email?: string | null; subject?: string | null } = {}
+          const patch: {
+            label?: string
+            email?: string | null
+            subject?: string | null
+            baseUrl?: string | null
+            priority?: number
+          } = {}
           if (Object.hasOwn(body, 'label')) patch.label = requiredString(body, 'label')
           if (Object.hasOwn(body, 'email')) patch.email = nullableString(body, 'email')
           if (Object.hasOwn(body, 'subject')) patch.subject = nullableString(body, 'subject')
+          if (Object.hasOwn(body, 'baseUrl')) patch.baseUrl = nullableString(body, 'baseUrl')
+          if (Object.hasOwn(body, 'priority')) patch.priority = optionalInteger(body, 'priority', 0, 1000)
           await accountAdmin.update(API_ACTOR, id, patch)
         }
         if (hasEnabled) {
@@ -1428,6 +1455,20 @@ function requiredBoolean(body: Record<string, unknown>, key: string): boolean {
   return value
 }
 
+function optionalInteger(
+  body: Record<string, unknown>,
+  key: string,
+  min: number,
+  max: number,
+): number | undefined {
+  const value = body[key]
+  if (value === undefined || value === null) return undefined
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < min || value > max) {
+    throw badRequest(`${key} 必须是 ${min}..${max} 的整数`)
+  }
+  return value
+}
+
 const AVATAR_MAX_BYTES = 256 * 1024
 const AVATAR_URL_MAX_LENGTH = 2048
 const AVATAR_DATA_RE = /^data:(image\/(?:png|jpeg|webp|gif));base64,([A-Za-z0-9+/]+={0,2})$/i
@@ -1649,6 +1690,8 @@ function accountOf(value: unknown): AccountViewLike {
     status: typeof record.status === 'string' ? record.status : 'active',
     email: typeof record.email === 'string' ? record.email : null,
     subject: typeof record.subject === 'string' ? record.subject : null,
+    baseUrl: typeof record.baseUrl === 'string' ? record.baseUrl : null,
+    priority: typeof record.priority === 'number' ? record.priority : 0,
     accessExpiresAt: typeof record.accessExpiresAt === 'string' ? record.accessExpiresAt : null,
     refreshDueAt: typeof record.refreshDueAt === 'string' ? record.refreshDueAt : null,
     lastRefreshAt: typeof record.lastRefreshAt === 'string' ? record.lastRefreshAt : null,

@@ -161,6 +161,8 @@ export class IdentityService extends Service {
         credentialRef,
         email: emptyToNull(input.email),
         subject: emptyToNull(input.subject),
+        baseUrl: normalizeBaseUrl(input.baseUrl),
+        priority: normalizePriority(input.priority, 0),
         accessExpiresAt: bundle?.expiresAt ?? null,
         refreshDueAt: input.kind === 'oauth' ? dueIso(bundle?.expiresAt, this.config.refreshLeadMs) : null,
         lastRefreshAt: null,
@@ -196,6 +198,8 @@ export class IdentityService extends Service {
         label: patch.label === undefined ? account.label : requireLabel(patch.label),
         email: patch.email === undefined ? account.email : emptyToNull(patch.email ?? undefined),
         subject: patch.subject === undefined ? account.subject : emptyToNull(patch.subject ?? undefined),
+        baseUrl: patch.baseUrl === undefined ? account.baseUrl : normalizeBaseUrl(patch.baseUrl),
+        priority: patch.priority === undefined ? account.priority : normalizePriority(patch.priority, account.priority),
         enabled: patch.enabled === undefined ? account.enabled : patch.enabled,
         updatedAt: nowIso(),
       }
@@ -685,6 +689,30 @@ function emptyToNull(value: string | undefined): string | null {
   if (value === undefined) return null
   const trimmed = value.trim()
   return trimmed === '' ? null : trimmed
+}
+
+function normalizeBaseUrl(value: string | null | undefined): string | null {
+  if (value === undefined || value === null) return null
+  const trimmed = value.trim()
+  if (trimmed === '') return null
+  let url: URL
+  try {
+    url = new URL(trimmed)
+  } catch {
+    throw new IdentityError('IDENTITY_ACCOUNT_INVALID', 'baseUrl 必须是合法的 http(s) URL')
+  }
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+    throw new IdentityError('IDENTITY_ACCOUNT_INVALID', 'baseUrl 只支持 http / https')
+  }
+  return trimmed.replace(/\/+$/, '')
+}
+
+function normalizePriority(value: number | undefined, fallback: number): number {
+  if (value === undefined) return fallback
+  if (!Number.isInteger(value) || value < 0 || value > 1000) {
+    throw new IdentityError('IDENTITY_ACCOUNT_INVALID', 'priority 必须是 0–1000 的整数')
+  }
+  return value
 }
 
 function requireLabel(value: string): string {

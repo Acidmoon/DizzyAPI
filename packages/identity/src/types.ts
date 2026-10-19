@@ -49,6 +49,10 @@ export interface IdentityAccount {
   readonly email: string | null
   /** 上游侧主体标识（如 ChatGPT account_id、Claude account_uuid）。 */
   readonly subject: string | null
+  /** 该账号自己的 OpenAI 兼容 base URL；`null` = 用 account-priority 的 provider 默认值。 */
+  readonly baseUrl: string | null
+  /** 该账号在 account-priority 评分里的 priority 因子；默认 0。 */
+  readonly priority: number
   /** 访问令牌过期时间（ISO）；`null` = 尚未导入令牌。 */
   readonly accessExpiresAt: string | null
   /** 下一次应该尝试刷新的时间；`null` = 不需要刷新（api_key）。 */
@@ -69,6 +73,8 @@ export interface CreateIdentityAccountInput {
   readonly label: string
   readonly email?: string
   readonly subject?: string
+  readonly baseUrl?: string
+  readonly priority?: number
   readonly enabled?: boolean
   readonly secret?: IdentityTokenBundle
 }
@@ -78,6 +84,8 @@ export interface UpdateIdentityAccountInput {
   readonly label?: string
   readonly email?: string | null
   readonly subject?: string | null
+  readonly baseUrl?: string | null
+  readonly priority?: number
   readonly enabled?: boolean
 }
 

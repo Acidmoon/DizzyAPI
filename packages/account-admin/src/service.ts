@@ -82,7 +82,7 @@ const SUBJECT_MAX_LENGTH = 200
 const SEARCH_MAX_LENGTH = 200
 
 const QUERY_KEYS = ['provider', 'kind', 'enabled', 'status', 'search'] as const
-const UPDATE_KEYS = ['label', 'email', 'subject'] as const
+const UPDATE_KEYS = ['label', 'email', 'subject', 'baseUrl', 'priority'] as const
 const BULK_DEFAULT_KEYS = ['format', 'provider', 'kind', 'enabled', 'labelPrefix'] as const
 
 export class AccountAdminService extends Service {
@@ -110,6 +110,8 @@ export class AccountAdminService extends Service {
           credentialConfigured: { type: 'boolean' },
           email: { type: 'string', optional: true },
           subject: { type: 'string', optional: true },
+          baseUrl: { type: 'string', optional: true },
+          priority: { type: 'number' },
         },
       },
       CredentialImportPreview: {
@@ -191,6 +193,8 @@ export class AccountAdminService extends Service {
     const kind = requireKind(input.kind)
     assertProviderKind(provider, kind)
     const label = normalizeLabel(input.label)
+    const baseUrl = normalizeOptionalBaseUrl(input.baseUrl)
+    const priority = normalizeOptionalPriority(input.priority)
     const enabled = normalizeOptionalBoolean(input.enabled, 'enabled')
 
     let parsed: ParsedCredential | undefined
@@ -224,6 +228,8 @@ export class AccountAdminService extends Service {
       label,
       ...(email !== undefined ? { email } : {}),
       ...(subject !== undefined ? { subject } : {}),
+      ...(baseUrl !== undefined ? { baseUrl } : {}),
+      ...(priority !== undefined ? { priority } : {}),
       ...(enabled !== undefined ? { enabled } : {}),
       ...(parsed !== undefined ? { secret: parsed.bundle } : {}),
     })
@@ -244,10 +250,18 @@ export class AccountAdminService extends Service {
       }
     }
 
-    const normalized: { label?: string; email?: string | null; subject?: string | null } = {}
+    const normalized: {
+      label?: string
+      email?: string | null
+      subject?: string | null
+      baseUrl?: string | null
+      priority?: number
+    } = {}
     if ('label' in patch) normalized.label = normalizeLabel(patch.label)
     if ('email' in patch) normalized.email = normalizeNullableText(patch.email, 'email', EMAIL_MAX_LENGTH)
     if ('subject' in patch) normalized.subject = normalizeNullableText(patch.subject, 'subject', SUBJECT_MAX_LENGTH)
+    if ('baseUrl' in patch) normalized.baseUrl = normalizeNullableBaseUrl(patch.baseUrl)
+    if ('priority' in patch) normalized.priority = normalizeRequiredPriority(patch.priority)
 
     // 空 patch 是幂等的读：不制造一次无意义的写盘与 updatedAt 变化。
     if (Object.keys(normalized).length === 0) return this.get(accountId)
@@ -446,6 +460,8 @@ function toView(account: AccountRecord, credentialConfigured: boolean): AccountV
     credentialRef: account.credentialRef,
     email: account.email,
     subject: account.subject,
+    baseUrl: account.baseUrl,
+    priority: account.priority,
     accessExpiresAt: account.accessExpiresAt,
     refreshDueAt: account.refreshDueAt,
     lastRefreshAt: account.lastRefreshAt,
@@ -535,6 +551,45 @@ function normalizeNullableText(value: unknown, field: string, max: number): stri
 function normalizeOptionalBoolean(value: unknown, field: string): boolean | undefined {
   if (value === undefined) return undefined
   if (typeof value !== 'boolean') failInput(`${field} 必须是布尔值`)
+  return value
+}
+
+function normalizeOptionalBaseUrl(value: unknown): string | undefined {
+  if (value === undefined || value === null) return undefined
+  if (typeof value !== 'string') failInput('baseUrl 必须是字符串')
+  return normalizeBaseUrlText(value) ?? undefined
+}
+
+function normalizeNullableBaseUrl(value: unknown): string | null {
+  if (value === null) return null
+  if (typeof value !== 'string') failInput('baseUrl 必须是字符串或 null')
+  return normalizeBaseUrlText(value)
+}
+
+function normalizeBaseUrlText(value: string): string | null {
+  const trimmed = value.trim()
+  if (trimmed === '') return null
+  let url: URL
+  try {
+    url = new URL(trimmed)
+  } catch {
+    failInput('baseUrl 必须是合法的 http(s) URL')
+  }
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+    failInput('baseUrl 只支持 http / https')
+  }
+  return trimmed.replace(/\/+$/, '')
+}
+
+function normalizeOptionalPriority(value: unknown): number | undefined {
+  if (value === undefined) return undefined
+  return normalizeRequiredPriority(value)
+}
+
+function normalizeRequiredPriority(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 0 || value > 1000) {
+    failInput('priority 必须是 0–1000 的整数')
+  }
   return value
 }
 

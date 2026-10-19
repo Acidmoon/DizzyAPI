@@ -174,6 +174,8 @@ export interface AccountViewLike {
   readonly status: string
   readonly email: string | null
   readonly subject: string | null
+  readonly baseUrl: string | null
+  readonly priority: number
   readonly accessExpiresAt: string | null
   readonly refreshDueAt: string | null
   readonly lastRefreshAt: string | null
@@ -198,7 +200,13 @@ export interface AccountAdminPort {
   update(
     actor: string,
     id: string,
-    patch: { label?: string; email?: string | null; subject?: string | null },
+    patch: {
+      label?: string
+      email?: string | null
+      subject?: string | null
+      baseUrl?: string | null
+      priority?: number
+    },
   ): Promise<unknown>
   enable(actor: string, id: string): Promise<unknown>
   disable(actor: string, id: string): Promise<unknown>

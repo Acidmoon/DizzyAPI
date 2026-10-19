@@ -389,11 +389,12 @@ tag、健康、冷却与并发饱和。`transport` 在 Windows 开发机自动�
 （Node 的 `net` 连不上 Go 的 AF_UNIX socket）。
 
 它同时是 **identity → Go 的账号快照推送者**：从 `identity.list()` 取启用且 active 的账号，
-对每个账号调 `identity.getAccessToken(id)` 取令牌，按 `upstreamBaseUrls` 补上上游地址，
+对每个账号调 `identity.getAccessToken(id)` 取令牌，按账号自己的 `baseUrl`（若有）或
+`upstreamBaseUrls[provider]` 补上上游地址，并把账号的 `priority` 一起写进快照；
 整份经控制桥 `accounts.replace` 推给 Go；Go 只缓存，不落盘。identity 的
 `account-updated` / `account-refreshed` / `account-failed` 事件会触发防抖重推。
-令牌只存在于桥帧与 Go 内存里：不写日志、不进状态、不出现在桥响应。没有配上游地址的
-provider（默认只有 `openai`）不会进入快照。
+令牌只存在于桥帧与 Go 内存里：不写日志、不进状态、不出现在桥响应。既没有账号级
+`baseUrl`、provider 也没有默认映射（默认只有 `openai`）的账号不会进入快照。
 
 **`apiKey` 是用户 API key 的唯一写者**：SQLite（Node 24 内置 `node:sqlite` 的
 `DatabaseSync`，零第三方依赖）落在 `data/api-keys.db`，表里只有 sha256 哈希与掩码，
@@ -680,7 +681,10 @@ SPA 的 CSP 是 `img-src 'self' data: https:`：允许 data URL 与 https 外链
   identity 的门面，不新增存储文件；HTTP 入口由 `api` 插件的 `/api/accounts*` 提供
   （认证后的管理员映射成 `@dizzyapi/plugin-api`），响应不含令牌与 `credentialRef`。
   管理台账号池页可以新建账号（`POST /api/accounts`，凭据可留空）、导入 / 重新授权凭据、
-  启停与删除；凭据只上行，前端不保存、不回显。
+  启停与删除；凭据只上行，前端不保存、不回显。新建 / 修改可带 `baseUrl`
+  （只接受 http(s)，去掉尾部斜杠）与 `priority`（0–1000 的整数）：`baseUrl` 存在账号
+  记录里，account-priority 推送快照时优先用它，缺省才回落到 `upstreamBaseUrls[provider]`；
+  `priority` 原样进入 Go 的评分候选。
   面板 `/api/settings` 能看到 `account-admin` 命名空间：`maxBatchSize` 可写，
   `adminPlugins` 只读。
 - **账号请求优先级（2026-10-19）**：`account-priority` 已装载，策略在

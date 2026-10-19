@@ -67,6 +67,8 @@ interface IdentitySeam {
     readonly kind: string
     readonly enabled: boolean
     readonly status: string
+    readonly baseUrl: string | null
+    readonly priority: number
     readonly accessExpiresAt: string | null
   }[]
   getAccessToken(id: string): Promise<string>
@@ -740,7 +742,7 @@ export class AccountPriorityService extends Service {
     if (identity !== undefined) {
       for (const account of identity.list()) {
         if (!account.enabled || account.status !== 'active') continue
-        const baseUrl = this.config.upstreamBaseUrls[account.provider]
+        const baseUrl = account.baseUrl ?? this.config.upstreamBaseUrls[account.provider]
         if (baseUrl === undefined) continue
         try {
           const token = await identity.getAccessToken(account.id)
@@ -751,6 +753,7 @@ export class AccountPriorityService extends Service {
             kind: account.kind,
             baseUrl,
             token,
+            priority: account.priority,
             ...(account.accessExpiresAt === null ? {} : { expiresAt: account.accessExpiresAt }),
           })
         } catch (error) {

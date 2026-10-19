@@ -1563,12 +1563,26 @@ function openEditKeyDialog(key, reload) {
 /**
  * @param {string} title
  * @param {HTMLElement} form
+ * @param {{ wide?: boolean }} [options]
  * @returns {HTMLDialogElement}
  */
-function openDialog(title, form) {
+function openDialog(title, form, options = {}) {
   const dialog = /** @type {HTMLDialogElement} */ (document.createElement('dialog'))
-  dialog.className = 'dialog'
-  dialog.append(el('div', { class: 'dialog-body' }, el('h2', { text: title }), form))
+  dialog.className = options.wide === true ? 'dialog dialog-wide' : 'dialog'
+  const close = /** @type {HTMLButtonElement} */ (el('button', {
+    class: 'btn btn-icon dialog-close',
+    attrs: { type: 'button', title: '关闭', 'aria-label': '关闭' },
+    on: { click: () => dialog.close() },
+  }))
+  close.append(icon('close'))
+  dialog.append(
+    el(
+      'div',
+      { class: 'dialog-body' },
+      el('div', { class: 'dialog-head' }, el('h2', { text: title }), close),
+      form,
+    ),
+  )
   dialog.addEventListener('close', () => dialog.remove())
   document.body.append(dialog)
   dialog.showModal()
@@ -1969,84 +1983,267 @@ function accountRow(account, reload) {
     },
   ))
   toggle.append(icon(account.enabled ? 'close' : 'check'))
+  const edit = /** @type {HTMLButtonElement} */ (el('button', {
+    class: 'btn btn-icon',
+    attrs: { type: 'button', title: '编辑账号' },
+    on: { click: () => openEditAccountDialog(account, reload) },
+  }))
+  edit.append(icon('edit'))
   const credential = /** @type {HTMLButtonElement} */ (el('button', {
     class: 'btn btn-icon',
     attrs: { type: 'button', title: '导入凭据' },
     on: { click: () => openImportCredentialsDialog(account, reload) },
   }))
   credential.append(icon('lock'))
+  const remove = /** @type {HTMLButtonElement} */ (el('button', {
+    class: 'btn btn-icon btn-danger',
+    attrs: { type: 'button', title: '删除账号' },
+    on: {
+      click: async () => {
+        if (!window.confirm(`删除账号「${account.label}」？`)) return
+        remove.disabled = true
+        try {
+          await api().accounts.remove(account.id)
+          toast(`${account.label} 已删除`)
+          await reload()
+        } catch (error) {
+          remove.disabled = false
+          toast(errorMessage(error), 'bad')
+        }
+      },
+    },
+  }))
+  remove.append(icon('trash'))
   return el(
     'tr',
     { class: account.enabled ? '' : 'row-muted' },
-    el('td', {}, el('div', { class: 'cell-title', text: account.label })),
-    el('td', {}, el('div', { text: account.provider }), el('span', { class: 'muted', text: account.kind })),
+    el(
+      'td',
+      {},
+      el(
+        'div',
+        { class: 'cell-title' },
+        el('span', { text: account.label }),
+        account.priority > 0 ? badge(`P${account.priority}`, 'accent') : null,
+      ),
+    ),
+    el(
+      'td',
+      { attrs: account.baseUrl === null ? {} : { title: account.baseUrl } },
+      el('div', { text: account.provider }),
+      el('span', { class: 'muted', text: account.kind }),
+    ),
     el('td', {}, badge(account.status, accountTone(account.status))),
     el('td', {}, el('div', { text: formatRelative(account.accessExpiresAt) })),
     el('td', { text: formatRelative(account.refreshDueAt) }),
     el('td', {}, el('div', { text: String(account.failureCount) }), account.lastError === null ? null : el('code', { class: 'tone-bad-text', text: account.lastError })),
-    el('td', { class: 'cell-actions' }, el('div', { class: 'table-actions' }, credential, toggle)),
+    el('td', { class: 'cell-actions' }, el('div', { class: 'table-actions' }, edit, credential, toggle, remove)),
   )
 }
 
 /**
- * 新增账号：凭据可留空，稍后再用「导入凭据」补上。
+ * 新增账号：平台 / 认证方式用选择卡，API Key 与 OAuth 凭据分开输入。
+ * 上游地址与优先级随账号一起入库；凭据只上行，不保存、不回显。
  * @param {() => Promise<void>} reload
  */
 function openCreateAccountDialog(reload) {
-  const label = /** @type {HTMLInputElement} */ (el('input', { attrs: { type: 'text', maxlength: '200', required: '' } }))
-  const provider = /** @type {HTMLSelectElement} */ (el(
-    'select',
-    { class: 'select' },
-    el('option', { text: 'OpenAI / Codex', attrs: { value: 'openai' } }),
-    el('option', { text: 'Claude', attrs: { value: 'claude' } }),
-    el('option', { text: 'custom', attrs: { value: 'custom' } }),
-  ))
-  const oauth = /** @type {HTMLOptionElement} */ (el('option', { text: 'OAuth（订阅账号）', attrs: { value: 'oauth' } }))
-  const kind = /** @type {HTMLSelectElement} */ (el(
-    'select',
-    { class: 'select' },
-    oauth,
-    el('option', { text: 'API Key', attrs: { value: 'api_key' } }),
-  ))
-  kind.value = 'api_key'
-  const credential = /** @type {HTMLTextAreaElement} */ (el('textarea', {
-    class: 'input',
-    attrs: { rows: '5', placeholder: 'API Key 或 OAuth JSON（可留空）' },
+  const label = /** @type {HTMLInputElement} */ (el('input', {
+    attrs: { type: 'text', maxlength: '200', placeholder: '例如 Claude 主账号', required: '' },
   }))
+
+  let provider = /** @type {import('../src/contracts.ts').AccountProvider} */ ('openai')
+  let kind = /** @type {import('../src/contracts.ts').AccountKind} */ ('api_key')
+  const defaultBaseUrls = {
+    openai: 'https://api.openai.com/v1',
+    claude: '',
+    custom: '',
+  }
+  const baseUrl = /** @type {HTMLInputElement} */ (el('input', {
+    attrs: { type: 'text', placeholder: 'https://api.openai.com/v1' },
+  }))
+  baseUrl.value = defaultBaseUrls.openai
+  baseUrl.addEventListener('input', () => {
+    baseUrl.dataset.touched = '1'
+  })
+
+  const apiKey = /** @type {HTMLInputElement} */ (el('input', {
+    attrs: { type: 'password', autocomplete: 'off', placeholder: 'sk-...' },
+  }))
+  const oauth = /** @type {HTMLTextAreaElement} */ (el('textarea', {
+    class: 'input',
+    attrs: { rows: '6', placeholder: '{"access_token":"...","refresh_token":"..."}', hidden: '' },
+  }))
+  const credentialLabel = el('label', { text: 'API Key' })
+  const credentialField = el(
+    'div',
+    { class: 'form-field span-2' },
+    credentialLabel,
+    apiKey,
+    oauth,
+  )
+
+  const providerCards = new Map()
+  const providerGrid = el('div', { class: 'choice-grid', attrs: { role: 'radiogroup', 'aria-label': '平台' } })
+  for (const [value, text] of [
+    ['openai', 'OpenAI / Codex'],
+    ['claude', 'Claude'],
+    ['custom', '自定义上游'],
+  ]) {
+    const card = /** @type {HTMLButtonElement} */ (el('button', {
+      class: 'choice-card',
+      attrs: { type: 'button', role: 'radio', 'aria-checked': 'false' },
+      text,
+      on: { click: () => setProvider(/** @type {any} */ (value)) },
+    }))
+    providerCards.set(value, card)
+    providerGrid.append(card)
+  }
+
+  const kindCards = new Map()
+  const kindGrid = el('div', { class: 'choice-grid', attrs: { role: 'radiogroup', 'aria-label': '认证方式' } })
+  for (const [value, text] of [
+    ['oauth', 'OAuth 订阅'],
+    ['api_key', 'API Key'],
+  ]) {
+    const card = /** @type {HTMLButtonElement} */ (el('button', {
+      class: 'choice-card',
+      attrs: { type: 'button', role: 'radio', 'aria-checked': 'false' },
+      text,
+      on: { click: () => setKind(/** @type {any} */ (value)) },
+    }))
+    kindCards.set(value, card)
+    kindGrid.append(card)
+  }
+
+  function renderChoices() {
+    for (const [value, card] of providerCards) {
+      const active = value === provider
+      card.classList.toggle('active', active)
+      card.setAttribute('aria-checked', active ? 'true' : 'false')
+    }
+    for (const [value, card] of kindCards) {
+      const active = value === kind
+      const disabled = provider === 'custom' && value === 'oauth'
+      card.classList.toggle('active', active)
+      card.setAttribute('aria-checked', active ? 'true' : 'false')
+      card.disabled = disabled
+    }
+    apiKey.hidden = kind !== 'api_key'
+    oauth.hidden = kind !== 'oauth'
+    credentialLabel.textContent = kind === 'api_key' ? 'API Key' : 'OAuth 凭据 JSON'
+    apiKey.required = kind === 'api_key'
+    oauth.required = kind === 'oauth'
+  }
+
+  /** @param {import('../src/contracts.ts').AccountProvider} next */
+  function setProvider(next) {
+    const previousDefault = defaultBaseUrls[provider]
+    provider = next
+    if (baseUrl.dataset.touched !== '1' || baseUrl.value.trim() === previousDefault) {
+      baseUrl.value = defaultBaseUrls[next]
+      delete baseUrl.dataset.touched
+    }
+    baseUrl.placeholder =
+      defaultBaseUrls[next] || (next === 'custom' ? 'https://your-upstream.example/v1' : '')
+    if (next === 'custom' && kind === 'oauth') kind = 'api_key'
+    renderChoices()
+  }
+
+  /** @param {import('../src/contracts.ts').AccountKind} next */
+  function setKind(next) {
+    if (provider === 'custom' && next === 'oauth') return
+    kind = next
+    renderChoices()
+  }
+
+  const priority = /** @type {HTMLInputElement} */ (el('input', {
+    attrs: { type: 'number', min: '0', max: '1000', step: '1', value: '0' },
+  }))
+  const enabled = /** @type {HTMLInputElement} */ (el('input', {
+    class: 'checkbox',
+    attrs: { type: 'checkbox' },
+  }))
+  enabled.checked = true
+
   const error = el('p', { class: 'error-message', attrs: { hidden: '' } })
   const cancel = el('button', { class: 'btn', attrs: { type: 'button' }, text: '取消' })
-  const create = /** @type {HTMLButtonElement} */ (el('button', { class: 'btn btn-light', attrs: { type: 'submit' }, text: '添加' }))
+  const create = /** @type {HTMLButtonElement} */ (el('button', {
+    class: 'btn btn-light',
+    attrs: { type: 'submit' },
+    text: '添加账号',
+  }))
+
   const form = el(
     'form',
     {},
-    el('div', { class: 'form-field' }, el('label', { text: '名称' }), label),
-    el('div', { class: 'form-field' }, el('label', { text: '上游' }), provider),
-    el('div', { class: 'form-field' }, el('label', { text: '类型' }), kind),
-    el('div', { class: 'form-field' }, el('label', { text: '凭据' }), credential),
+    el('div', { class: 'form-section-title', text: '基础信息' }),
+    el(
+      'div',
+      { class: 'form-grid' },
+      el('div', { class: 'form-field span-2' }, el('label', { text: '名称' }), label),
+      el(
+        'div',
+        { class: 'form-field span-2' },
+        el('label', { text: '平台' }),
+        providerGrid,
+      ),
+      el(
+        'div',
+        { class: 'form-field span-2' },
+        el('label', { text: '认证方式' }),
+        kindGrid,
+      ),
+    ),
+    el('div', { class: 'form-section-title', text: '连接与调度' }),
+    el(
+      'div',
+      { class: 'form-grid' },
+      el('div', { class: 'form-field' }, el('label', { text: 'Base URL' }), baseUrl),
+      el('div', { class: 'form-field' }, el('label', { text: '优先级' }), priority),
+      credentialField,
+      el(
+        'div',
+        { class: 'form-field span-2 switch-row' },
+        enabled,
+        el('label', { text: '启用该账号' }),
+      ),
+    ),
     error,
     el('div', { class: 'dialog-actions' }, cancel, create),
   )
-  const dialog = openDialog('添加账号', form)
+
+  const dialog = openDialog('添加账号', form, { wide: true })
   cancel.addEventListener('click', () => dialog.close())
-  provider.addEventListener('change', () => {
-    const custom = provider.value === 'custom'
-    oauth.disabled = custom
-    if (custom) kind.value = 'api_key'
-  })
+  renderChoices()
   label.focus()
+
   form.addEventListener('submit', async (event) => {
     event.preventDefault()
     error.hidden = true
+    if (provider === 'custom' && baseUrl.value.trim() === '') {
+      error.textContent = '自定义上游必须填写 Base URL'
+      error.hidden = false
+      return
+    }
     create.disabled = true
     try {
+      const payload = kind === 'api_key' ? apiKey.value.trim() : oauth.value.trim()
       /** @type {import('../src/contracts.ts').CreateAccountInput} */
       const input = {
-        provider: /** @type {import('../src/contracts.ts').AccountProvider} */ (provider.value),
-        kind: /** @type {import('../src/contracts.ts').AccountKind} */ (kind.value),
+        provider,
+        kind,
         label: label.value,
-        ...(credential.value.trim() === ''
+        priority: Number(priority.value === '' ? '0' : priority.value),
+        enabled: enabled.checked,
+        ...(baseUrl.value.trim() === '' ? {} : { baseUrl: baseUrl.value.trim() }),
+        ...(payload === ''
           ? {}
-          : { credential: { payload: credential.value, format: 'auto' } }),
+          : {
+              credential: {
+                payload,
+                format: kind === 'api_key' ? 'api-key' : 'auto',
+              },
+            }),
       }
       await api().accounts.create(input)
       toast('账号已添加')
@@ -2056,6 +2253,67 @@ function openCreateAccountDialog(reload) {
       error.textContent = errorMessage(caught)
       error.hidden = false
       create.disabled = false
+    }
+  })
+}
+
+/**
+ * 编辑账号的非秘密字段与调度参数。
+ * @param {AccountSummary} account
+ * @param {() => Promise<void>} reload
+ */
+function openEditAccountDialog(account, reload) {
+  const label = /** @type {HTMLInputElement} */ (el('input', {
+    attrs: { type: 'text', maxlength: '200', value: account.label, required: '' },
+  }))
+  const baseUrl = /** @type {HTMLInputElement} */ (el('input', {
+    attrs: {
+      type: 'text',
+      value: account.baseUrl ?? '',
+      placeholder: 'https://your-upstream.example/v1',
+    },
+  }))
+  const priority = /** @type {HTMLInputElement} */ (el('input', {
+    attrs: { type: 'number', min: '0', max: '1000', step: '1', value: String(account.priority) },
+  }))
+  const error = el('p', { class: 'error-message', attrs: { hidden: '' } })
+  const cancel = el('button', { class: 'btn', attrs: { type: 'button' }, text: '取消' })
+  const save = /** @type {HTMLButtonElement} */ (el('button', {
+    class: 'btn btn-light',
+    attrs: { type: 'submit' },
+    text: '保存',
+  }))
+  const form = el(
+    'form',
+    {},
+    el('div', { class: 'form-grid' },
+      el('div', { class: 'form-field span-2' }, el('label', { text: '名称' }), label),
+      el('div', { class: 'form-field span-2' }, el('label', { text: 'Base URL' }), baseUrl),
+      el('div', { class: 'form-field' }, el('label', { text: '优先级' }), priority),
+    ),
+    error,
+    el('div', { class: 'dialog-actions' }, cancel, save),
+  )
+  const dialog = openDialog(`编辑账号 · ${account.label}`, form, { wide: true })
+  cancel.addEventListener('click', () => dialog.close())
+  label.focus()
+  form.addEventListener('submit', async (event) => {
+    event.preventDefault()
+    error.hidden = true
+    save.disabled = true
+    try {
+      await api().accounts.update(account.id, {
+        label: label.value,
+        baseUrl: baseUrl.value.trim() === '' ? null : baseUrl.value.trim(),
+        priority: Number(priority.value === '' ? '0' : priority.value),
+      })
+      toast('账号已更新')
+      dialog.close()
+      await reload()
+    } catch (caught) {
+      error.textContent = errorMessage(caught)
+      error.hidden = false
+      save.disabled = false
     }
   })
 }

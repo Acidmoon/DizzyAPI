@@ -44,6 +44,21 @@ function readNullableString(source: Record<string, unknown>, key: string, where:
   return value
 }
 
+/** 新字段必须兼容旧快照：缺失按 `null` / `0` 处理，不因为一次升级就拒绝整份文件。 */
+function readOptionalNullableString(source: Record<string, unknown>, key: string, where: string): string | null {
+  const value = source[key]
+  if (value === undefined || value === null) return null
+  if (typeof value !== 'string') corrupt(`${where}.${key} 必须是字符串或 null`)
+  return value
+}
+
+function readOptionalInteger(source: Record<string, unknown>, key: string, where: string): number {
+  const value = source[key]
+  if (value === undefined || value === null) return 0
+  if (typeof value !== 'number' || !Number.isInteger(value)) corrupt(`${where}.${key} 必须是整数`)
+  return value
+}
+
 function decodeAccount(raw: unknown, key: string): IdentityAccount {
   const where = `accounts.${key}`
   const source = asObject(raw, where)
@@ -67,6 +82,8 @@ function decodeAccount(raw: unknown, key: string): IdentityAccount {
     credentialRef: readStringField(source, 'credentialRef', where),
     email: readNullableString(source, 'email', where),
     subject: readNullableString(source, 'subject', where),
+    baseUrl: readOptionalNullableString(source, 'baseUrl', where),
+    priority: readOptionalInteger(source, 'priority', where),
     accessExpiresAt: readNullableString(source, 'accessExpiresAt', where),
     refreshDueAt: readNullableString(source, 'refreshDueAt', where),
     lastRefreshAt: readNullableString(source, 'lastRefreshAt', where),

@@ -456,6 +456,7 @@ test('管理员账号：列表 / 详情剥掉 credentialRef，PATCH enabled 走 
     [
       'accessExpiresAt',
       'backoffUntil',
+      'baseUrl',
       'createdAt',
       'email',
       'enabled',
@@ -465,6 +466,7 @@ test('管理员账号：列表 / 详情剥掉 credentialRef，PATCH enabled 走 
       'label',
       'lastError',
       'lastRefreshAt',
+      'priority',
       'provider',
       'refreshDueAt',
       'status',
@@ -487,6 +489,8 @@ test('管理员账号：列表 / 详情剥掉 credentialRef，PATCH enabled 走 
       provider: 'openai',
       kind: 'api_key',
       label: 'new account',
+      baseUrl: 'https://api.openai.com/v1',
+      priority: 7,
       credential: { payload: 'sk-upstream', format: 'auto' },
     }),
   })
@@ -500,6 +504,8 @@ test('管理员账号：列表 / 详情剥掉 credentialRef，PATCH enabled 走 
       provider: 'openai',
       kind: 'api_key',
       label: 'new account',
+      baseUrl: 'https://api.openai.com/v1',
+      priority: 7,
       credential: { payload: 'sk-upstream', format: 'auto' },
     },
   ])
@@ -507,13 +513,24 @@ test('管理员账号：列表 / 详情剥掉 credentialRef，PATCH enabled 走 
   const patched = await call(server, '/api/accounts/acc_1', {
     method: 'PATCH',
     cookie,
-    body: JSON.stringify({ label: 'renamed', enabled: false }),
+    body: JSON.stringify({
+      label: 'renamed',
+      baseUrl: 'https://new.example.com/v1',
+      priority: 9,
+      enabled: false,
+    }),
   })
   assert.equal(patched.status, 200, patched.text)
   assert.equal(patched.json.label, 'renamed')
+  assert.equal(patched.json.baseUrl, 'https://new.example.com/v1')
+  assert.equal(patched.json.priority, 9)
   assert.equal(patched.json.enabled, false)
   const updateCall = accountAdmin.calls.find((entry) => entry.method === 'update')
-  assert.deepEqual(updateCall?.args, [API_ACTOR, 'acc_1', { label: 'renamed' }])
+  assert.deepEqual(updateCall?.args, [
+    API_ACTOR,
+    'acc_1',
+    { label: 'renamed', baseUrl: 'https://new.example.com/v1', priority: 9 },
+  ])
   assert.ok(accountAdmin.calls.some((entry) => entry.method === 'disable'))
   assert.ok(!accountAdmin.calls.some((entry) => entry.method === 'enable'), 'enabled 不能被塞进 update')
 

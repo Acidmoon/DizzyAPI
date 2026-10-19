@@ -129,14 +129,22 @@ test('创建 API-key 账号：返回元数据，凭据尚未配置', async (t) =
     provider: 'custom',
     kind: 'api_key',
     label: '外部 API',
+    baseUrl: 'https://upstream.example.com/v1/',
+    priority: 8,
   })
 
   assert.equal(view.kind, 'api_key')
   assert.equal(view.enabled, true)
   assert.equal(view.status, 'active')
   assert.equal(view.credentialConfigured, false)
+  assert.equal(view.baseUrl, 'https://upstream.example.com/v1')
+  assert.equal(view.priority, 8)
   assert.equal(world.identity.list().length, 1)
   assertNoSecrets(view, ['accessToken', 'refreshToken', 'apiKey'])
+
+  const updated = await world.admin.update(ACTOR, view.id, { baseUrl: null, priority: 2 })
+  assert.equal(updated.baseUrl, null)
+  assert.equal(updated.priority, 2)
 })
 
 test('Claude .credentials.json：嵌套 claudeAiOauth、毫秒 expiresAt、scopes 拼成 scope', async (t) => {

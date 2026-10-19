@@ -103,11 +103,18 @@ test('API-key 账号：取得到 key，调度器不刷新', async (t) => {
     provider: 'custom',
     kind: 'api_key',
     label: '外部 API',
+    baseUrl: 'https://example.com/v1/',
+    priority: 12,
     secret: { apiKey: 'sk-test' },
   })
 
   assert.equal(await world.identity.getAccessToken(account.id), 'sk-test')
   assert.equal(account.refreshDueAt, null)
+  assert.equal(account.baseUrl, 'https://example.com/v1')
+  assert.equal(account.priority, 12)
+  const updated = await world.identity.update(account.id, { baseUrl: null, priority: 3 })
+  assert.equal(updated.baseUrl, null)
+  assert.equal(updated.priority, 3)
   await world.identity.runRefreshPass()
   assert.equal(calls.length, 0)
 })

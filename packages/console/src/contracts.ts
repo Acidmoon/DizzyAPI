@@ -25,6 +25,8 @@ export interface AccountSummary {
   readonly status: AccountStatus
   readonly email: string | null
   readonly subject: string | null
+  readonly baseUrl: string | null
+  readonly priority: number
   readonly accessExpiresAt: string | null
   readonly refreshDueAt: string | null
   readonly lastRefreshAt: string | null
@@ -52,6 +54,8 @@ export interface AccountUpdateInput {
   readonly label?: string
   readonly email?: string | null
   readonly subject?: string | null
+  readonly baseUrl?: string | null
+  readonly priority?: number
   readonly enabled?: boolean
 }
 
@@ -78,6 +82,8 @@ export interface CreateAccountInput {
   readonly label: string
   readonly email?: string
   readonly subject?: string
+  readonly baseUrl?: string
+  readonly priority?: number
   readonly enabled?: boolean
   readonly credential?: AccountCredentialInput
 }
