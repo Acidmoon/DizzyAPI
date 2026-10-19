@@ -80,7 +80,9 @@ export function createHttpTransport(options = {}) {
   const baseUrl = (options.baseUrl ?? '').replace(/\/+$/, '')
   const fetchImpl = options.fetchImpl ?? globalThis.fetch
   const timeoutMs = options.timeoutMs ?? 15_000
-  const defaultHeaders = options.headers ?? {}
+  // 所有 /api/* 都要求这个自定义头；统一在 transport 里加，避免每个调用点各写一遍。
+  // 自定义头会让浏览器先发预检，而网关不发任何 CORS 头，跨站页面因此发不出请求。
+  const defaultHeaders = { 'X-Requested-With': 'dizzyapi', ...(options.headers ?? {}) }
 
   return async (path, request = {}) => {
     const url = withQuery(`${baseUrl}${path.startsWith('/') ? path : `/${path}`}`, request.query)
@@ -160,6 +162,77 @@ export function createHttpTransport(options = {}) {
 export function createHttpApis(options = {}) {
   const request = createHttpTransport(options)
   return {
+    session: {
+      /** @returns {Promise<import('../../src/contracts.ts').SessionResponse>} */
+      get: () => request('/session'),
+      /**
+       * @param {{ email: string, password: string }} input
+       * @returns {Promise<import('../../src/contracts.ts').LoginResponse>}
+       */
+      login: (input) => request('/auth/login', { method: 'POST', body: input }),
+      /** @returns {Promise<void>} */
+      logout: async () => {
+        await request('/auth/logout', { method: 'POST' })
+      },
+      /**
+       * @param {{ email: string, password: string, name?: string }} input
+       * @returns {Promise<import('../../src/contracts.ts').AuthTicket>}
+       */
+      registerRequest: (input) => request('/auth/register/request', { method: 'POST', body: input }),
+      /**
+       * @param {{ email: string, code: string }} input
+       * @returns {Promise<import('../../src/contracts.ts').LoginResponse>}
+       */
+      registerConfirm: (input) => request('/auth/register/confirm', { method: 'POST', body: input }),
+      /**
+       * @param {{ email: string }} input
+       * @returns {Promise<import('../../src/contracts.ts').AuthTicket>}
+       */
+      requestPasswordReset: (input) => request('/auth/password/reset/request', { method: 'POST', body: input }),
+      /**
+       * @param {{ email: string, code: string, password: string }} input
+       * @returns {Promise<{ userId: number, revokedSessions: number }>}
+       */
+      confirmPasswordReset: (input) => request('/auth/password/reset/confirm', { method: 'POST', body: input }),
+      /**
+       * @param {{ name?: string, avatar?: string | null }} patch
+       * @returns {Promise<import('../../src/contracts.ts').SessionUser>}
+       */
+      updateProfile: (patch) => request('/profile', { method: 'PATCH', body: patch }),
+      /**
+       * @param {{ currentPassword: string, newPassword: string }} input
+       * @returns {Promise<{ revokedSessions: number }>}
+       */
+      changePassword: (input) => request('/profile/password', { method: 'POST', body: input }),
+    },
+    users: {
+      /**
+       * @param {{ status?: 'enabled' | 'banned', offset?: number, limit?: number }} [query]
+       * @returns {Promise<import('../../src/contracts.ts').AdminUserListResponse>}
+       */
+      list: (query = {}) =>
+        request('/users', { query: { status: query.status, offset: query.offset, limit: query.limit } }),
+      /** @param {number} id @returns {Promise<import('../../src/contracts.ts').AdminUserSummary>} */
+      get: (id) => request(`/users/${id}`),
+      /**
+       * @param {number} id
+       * @param {import('../../src/contracts.ts').AdminUserUpdateInput} patch
+       * @returns {Promise<import('../../src/contracts.ts').AdminUserSummary>}
+       */
+      update: (id, patch) => request(`/users/${id}`, { method: 'PATCH', body: patch }),
+      /** @param {number} id @returns {Promise<{ removed: true }>} */
+      remove: (id) => request(`/users/${id}`, { method: 'DELETE' }),
+      /**
+       * @param {number} id
+       * @param {import('../../src/contracts.ts').AdminBalanceInput} input
+       * @returns {Promise<{ balanceMinor: string }>}
+       */
+      adjustBalance: (id, input) =>
+        request(`/users/${id}/balance`, {
+          method: 'POST',
+          body: { delta: input.deltaMinor, reason: input.reason },
+        }),
+    },
     accounts: {
       /** @param {AccountListQuery} [query] @returns {Promise<AccountListResponse>} */
       list: (query = {}) =>
@@ -212,10 +285,16 @@ export function createHttpApis(options = {}) {
       list: () => request('/keys'),
       /** @param {{ name: string }} input @returns {Promise<CreatedApiKey>} */
       create: (input) => request('/keys', { method: 'POST', body: input }),
-      /** @param {string} id @param {{ name: string }} input @returns {Promise<ApiKeySummary>} */
+      /**
+       * @param {string} id
+       * @param {import('../../src/contracts.ts').UpdateApiKeyInput} input
+       * @returns {Promise<ApiKeySummary>}
+       */
       update: (id, input) => request(`/keys/${encodeURIComponent(id)}`, { method: 'PATCH', body: input }),
       /** @param {string} id @returns {Promise<{ removed: true }>} */
       remove: (id) => request(`/keys/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+      /** @param {string} id @returns {Promise<CreatedApiKey>} */
+      rotate: (id) => request(`/keys/${encodeURIComponent(id)}/rotate`, { method: 'POST' }),
     },
     topup: {
       /** @returns {Promise<TopupOptions>} */
@@ -243,7 +322,210 @@ export function createMockApis(options = {}) {
     latencyMs === 0 ? Promise.resolve() : new Promise((resolve) => setTimeout(resolve, latencyMs))
   const stamp = () => now().toISOString()
 
+  const sessionInfo = () => {
+    const at = now().toISOString()
+    return {
+      id: 'mock-session',
+      createdAt: at,
+      expiresAt: new Date(now().getTime() + 7 * 86_400_000).toISOString(),
+      lastSeenAt: at,
+    }
+  }
+
+  /** 用户表单是唯一写者；会话用户只是它的一份视图，改完要重算余额可见性。 */
+  const syncSessionUser = () => {
+    const record = state.users.find((item) => item.id === state.sessionUser.id)
+    if (record === undefined) return
+    state.sessionUser = {
+      ...state.sessionUser,
+      name: record.name,
+      status: record.status,
+      role: record.role,
+      balanceEnabled: record.balanceEnabled,
+      balanceCents:
+        record.role === 'admin' || record.balanceEnabled ? centsOfMinor(record.balanceMinor) : null,
+      updatedAt: stamp(),
+    }
+  }
+
   return {
+    session: {
+      /** @returns {Promise<import('../../src/contracts.ts').SessionResponse>} */
+      async get() {
+        await wait()
+        if (!state.authenticated) {
+          throw new ApiError('需要登录后才能访问', { status: 401, code: 'API_UNAUTHORIZED' })
+        }
+        return {
+          user: clone(state.sessionUser),
+          email: state.sessionEmail,
+          session: sessionInfo(),
+          permissions: { admin: state.sessionUser.role === 'admin' },
+        }
+      },
+      /**
+       * @param {{ email: string, password: string }} input
+       * @returns {Promise<import('../../src/contracts.ts').LoginResponse>}
+       */
+      async login(input) {
+        await wait()
+        if (input.email.trim() === '' || input.password === '') {
+          throw new ApiError('邮箱或密码错误', { status: 401, code: 'AUTH_CREDENTIALS_INVALID' })
+        }
+        state.authenticated = true
+        state.sessionEmail = input.email.trim()
+        syncSessionUser()
+        return { user: clone(state.sessionUser), session: sessionInfo() }
+      },
+      async logout() {
+        await wait()
+        state.authenticated = false
+      },
+      /**
+       * @param {{ email: string, password: string, name?: string }} input
+       * @returns {Promise<import('../../src/contracts.ts').AuthTicket>}
+       */
+      async registerRequest(input) {
+        await wait()
+        state.pendingEmail = input.email.trim()
+        state.pendingCode = '123456'
+        return {
+          email: state.pendingEmail,
+          expiresAt: new Date(now().getTime() + 600_000).toISOString(),
+          resendAfterMs: 60_000,
+        }
+      },
+      /**
+       * @param {{ email: string, code: string }} input
+       * @returns {Promise<import('../../src/contracts.ts').LoginResponse>}
+       */
+      async registerConfirm(input) {
+        await wait()
+        if (input.code.trim() !== state.pendingCode) {
+          throw new ApiError('验证码无效或已过期', { status: 401, code: 'AUTH_CODE_INVALID' })
+        }
+        state.authenticated = true
+        state.sessionEmail = input.email.trim() || state.pendingEmail
+        syncSessionUser()
+        return { user: clone(state.sessionUser), session: sessionInfo() }
+      },
+      /**
+       * @param {{ email: string }} input
+       * @returns {Promise<import('../../src/contracts.ts').AuthTicket>}
+       */
+      async requestPasswordReset(input) {
+        await wait()
+        state.pendingCode = '654321'
+        return {
+          email: input.email.trim(),
+          expiresAt: new Date(now().getTime() + 600_000).toISOString(),
+          resendAfterMs: 60_000,
+        }
+      },
+      /**
+       * @param {{ email: string, code: string, password: string }} input
+       * @returns {Promise<{ userId: number, revokedSessions: number }>}
+       */
+      async confirmPasswordReset(input) {
+        await wait()
+        if (input.code.trim() !== state.pendingCode) {
+          throw new ApiError('验证码无效或已过期', { status: 401, code: 'AUTH_CODE_INVALID' })
+        }
+        return { userId: state.sessionUser.id, revokedSessions: 0 }
+      },
+      /**
+       * @param {{ name?: string, avatar?: string | null }} patch
+       * @returns {Promise<import('../../src/contracts.ts').SessionUser>}
+       */
+      async updateProfile(patch) {
+        await wait()
+        if (patch.name !== undefined) {
+          const name = patch.name.trim()
+          if (name === '') throw new ApiError('用户名不能为空', { status: 400, code: 'USER_NAME_INVALID' })
+          const record = state.users.find((item) => item.id === state.sessionUser.id)
+          if (record !== undefined) record.name = name
+          state.sessionUser = { ...state.sessionUser, name, updatedAt: stamp() }
+        }
+        if (patch.avatar !== undefined) {
+          state.sessionUser = { ...state.sessionUser, avatar: patch.avatar, updatedAt: stamp() }
+        }
+        return clone(state.sessionUser)
+      },
+      /**
+       * @param {{ currentPassword: string, newPassword: string }} input
+       * @returns {Promise<{ revokedSessions: number }>}
+       */
+      async changePassword(input) {
+        await wait()
+        if (input.currentPassword === '') {
+          throw new ApiError('当前密码不正确', { status: 401, code: 'AUTH_CREDENTIALS_INVALID' })
+        }
+        return { revokedSessions: 0 }
+      },
+    },
+    users: {
+      /**
+       * @param {{ status?: 'enabled' | 'banned', offset?: number, limit?: number }} [query]
+       * @returns {Promise<import('../../src/contracts.ts').AdminUserListResponse>}
+       */
+      async list(query = {}) {
+        await wait()
+        const filtered = state.users.filter(
+          (user) => query.status === undefined || user.status === query.status,
+        )
+        const offset = query.offset ?? 0
+        const limit = Math.min(Math.max(query.limit ?? 100, 1), 500)
+        return { items: clone(filtered.slice(offset, offset + limit)) }
+      },
+      /** @param {number} id @returns {Promise<import('../../src/contracts.ts').AdminUserSummary>} */
+      async get(id) {
+        await wait()
+        const user = state.users.find((item) => item.id === id)
+        if (user === undefined) throw new ApiError('没有这个用户', { status: 404, code: 'USER_NOT_FOUND' })
+        return clone(user)
+      },
+      /**
+       * @param {number} id
+       * @param {import('../../src/contracts.ts').AdminUserUpdateInput} patch
+       * @returns {Promise<import('../../src/contracts.ts').AdminUserSummary>}
+       */
+      async update(id, patch) {
+        await wait()
+        const user = state.users.find((item) => item.id === id)
+        if (user === undefined) throw new ApiError('没有这个用户', { status: 404, code: 'USER_NOT_FOUND' })
+        if (patch.name !== undefined && patch.name.trim() === '') {
+          throw new ApiError('用户名不能为空', { status: 400, code: 'USER_NAME_INVALID' })
+        }
+        Object.assign(user, patch, { updatedAt: stamp() })
+        if (user.id === state.sessionUser.id) syncSessionUser()
+        return clone(user)
+      },
+      /** @param {number} id @returns {Promise<{ removed: true }>} */
+      async remove(id) {
+        await wait()
+        const index = state.users.findIndex((item) => item.id === id)
+        if (index < 0) throw new ApiError('没有这个用户', { status: 404, code: 'USER_NOT_FOUND' })
+        state.users.splice(index, 1)
+        return { removed: true }
+      },
+      /**
+       * @param {number} id
+       * @param {import('../../src/contracts.ts').AdminBalanceInput} input
+       * @returns {Promise<{ balanceMinor: string }>}
+       */
+      async adjustBalance(id, input) {
+        await wait()
+        if (!/^-?\d+$/.test(input.deltaMinor)) {
+          throw new ApiError('金额必须是整数最小单位', { status: 400, code: 'USER_BALANCE_INVALID' })
+        }
+        const user = state.users.find((item) => item.id === id)
+        if (user === undefined) throw new ApiError('没有这个用户', { status: 404, code: 'USER_NOT_FOUND' })
+        user.balanceMinor = (BigInt(user.balanceMinor) + BigInt(input.deltaMinor)).toString()
+        user.updatedAt = stamp()
+        if (user.id === state.sessionUser.id) syncSessionUser()
+        return { balanceMinor: user.balanceMinor }
+      },
+    },
     accounts: {
       async list(query = {}) {
         await wait()
@@ -386,19 +668,29 @@ export function createMockApis(options = {}) {
           createdAt: stamp(),
           lastUsedAt: null,
           appManaged: false,
+          enabled: true,
         }
         state.keys.unshift(summary)
         return { ...clone(summary), secret: `sk-dizzy-mock-${String(sequence).padStart(4, '0')}-${trackingId}` }
       },
-      /** @param {string} id @param {{ name: string }} input */
+      /**
+       * @param {string} id
+       * @param {{ name?: string, enabled?: boolean }} input
+       */
       async update(id, input) {
         await wait()
         const key = state.keys.find((item) => item.id === id)
         if (key === undefined) throw new ApiError(`没有这个 API key：${id}`, { status: 404, code: 'KEY_NOT_FOUND' })
-        if (key.appManaged) throw new ApiError('App-managed key 不能在控制台改名', { status: 409, code: 'KEY_APP_MANAGED' })
-        const name = input.name.trim()
-        if (name === '') throw new ApiError('名称不能为空', { status: 400, code: 'KEY_NAME_INVALID' })
-        key.name = name
+        if (key.appManaged) throw new ApiError('App-managed key 不能在控制台修改', { status: 409, code: 'KEY_APP_MANAGED' })
+        if (input.name === undefined && input.enabled === undefined) {
+          throw new ApiError('没有可修改的字段', { status: 400, code: 'KEY_INPUT_INVALID' })
+        }
+        if (input.name !== undefined) {
+          const name = input.name.trim()
+          if (name === '') throw new ApiError('名称不能为空', { status: 400, code: 'KEY_NAME_INVALID' })
+          key.name = name
+        }
+        if (input.enabled !== undefined) key.enabled = input.enabled
         return clone(key)
       },
       /** @param {string} id */
@@ -411,6 +703,18 @@ export function createMockApis(options = {}) {
         }
         state.keys.splice(index, 1)
         return { removed: true }
+      },
+      /** @param {string} id */
+      async rotate(id) {
+        await wait()
+        const key = state.keys.find((item) => item.id === id)
+        if (key === undefined) throw new ApiError(`没有这个 API key：${id}`, { status: 404, code: 'KEY_NOT_FOUND' })
+        if (key.appManaged) {
+          throw new ApiError('App-managed key 不能在控制台轮换', { status: 409, code: 'KEY_APP_MANAGED' })
+        }
+        const sequence = state.keySequence++
+        key.maskedKey = `sk-dizzy-****${String(sequence).padStart(4, '0')}`
+        return { ...clone(key), secret: `sk-dizzy-mock-rotated-${String(sequence).padStart(4, '0')}` }
       },
     },
     topup: {
@@ -642,7 +946,7 @@ function createMockState(now) {
   ]
 
   /** 可变的本地形状；列表响应返回的是 clone，不会把可变对象漏给调用方。 */
-  /** @type {{ id: string, name: string, trackingId: string, maskedKey: string, createdAt: string, lastUsedAt: string | null, appManaged: boolean }[]} */
+  /** @type {{ id: string, name: string, trackingId: string, maskedKey: string, createdAt: string, lastUsedAt: string | null, appManaged: boolean, enabled: boolean }[]} */
   const keys = [
     {
       id: 'key_local_dev',
@@ -652,6 +956,7 @@ function createMockState(now) {
       createdAt: '2026-09-21T09:20:00.000Z',
       lastUsedAt: '2026-10-18T16:42:00.000Z',
       appManaged: false,
+      enabled: true,
     },
     {
       id: 'key_ci_runner',
@@ -661,6 +966,7 @@ function createMockState(now) {
       createdAt: '2026-09-30T14:05:00.000Z',
       lastUsedAt: '2026-10-19T07:10:00.000Z',
       appManaged: false,
+      enabled: false,
     },
     {
       id: 'key_mock_003',
@@ -670,6 +976,7 @@ function createMockState(now) {
       createdAt: '2026-08-08T03:15:00.000Z',
       lastUsedAt: null,
       appManaged: true,
+      enabled: true,
     },
   ]
 
@@ -687,8 +994,59 @@ function createMockState(now) {
   }
 
   const manifest = createMockManifest(at)
+  /** @type {{ id: number, name: string, status: 'enabled' | 'banned', role: 'admin' | 'user', balanceEnabled: boolean, balanceMinor: string, createdAt: string, updatedAt: string }[]} */
+  const users = [
+    {
+      id: 1,
+      name: 'owner',
+      status: 'enabled',
+      role: 'admin',
+      balanceEnabled: true,
+      balanceMinor: '42000000',
+      createdAt: '2026-09-01T08:00:00.000Z',
+      updatedAt: at,
+    },
+    {
+      id: 2,
+      name: 'alice',
+      status: 'enabled',
+      role: 'user',
+      balanceEnabled: false,
+      balanceMinor: '500000',
+      createdAt: '2026-09-10T08:00:00.000Z',
+      updatedAt: at,
+    },
+    {
+      id: 3,
+      name: 'bob',
+      status: 'banned',
+      role: 'user',
+      balanceEnabled: true,
+      balanceMinor: '0',
+      createdAt: '2026-09-12T08:00:00.000Z',
+      updatedAt: at,
+    },
+  ]
+  /** @type {import('../../src/contracts.ts').SessionUser} */
+  const sessionUser = {
+    id: 1,
+    name: 'owner',
+    status: 'enabled',
+    role: 'admin',
+    balanceEnabled: true,
+    balanceCents: 4200,
+    avatar: null,
+    createdAt: '2026-09-01T08:00:00.000Z',
+    updatedAt: at,
+  }
   return {
     accounts,
+    users,
+    sessionUser,
+    sessionEmail: 'owner@example.com',
+    authenticated: true,
+    pendingCode: '123456',
+    pendingEmail: 'owner@example.com',
     settings,
     initialSettings: clone(settings),
     keys,
@@ -912,7 +1270,7 @@ function createMockManifest(at) {
         nav: '个人资料',
         hidden: true,
         order: 40,
-        view: { kind: 'placeholder', note: '参考页的用户行链接到 /profile；资料页字段尚未提供。' },
+        view: { kind: 'profile' },
       },
       {
         id: 'mock.admin.overview',
@@ -925,6 +1283,18 @@ function createMockManifest(at) {
         description: '网关健康、模块目录与已启用插件的管理入口。',
         order: 0,
         view: { kind: 'overview', flavor: 'admin' },
+      },
+      {
+        id: 'mock.admin.users',
+        owner: '@dizzyapi/plugin-frontend',
+        area: 'admin',
+        path: '/admin/users',
+        title: '用户',
+        nav: '用户',
+        icon: 'user',
+        description: '用户状态、角色、余额显示与余额调整；余额按最小单位整数运算。',
+        order: 15,
+        view: { kind: 'users' },
       },
       {
         id: 'mock.admin.accounts',
@@ -1007,6 +1377,13 @@ function createMockManifest(at) {
       },
     ],
   }
+}
+
+/** 最小单位 → 整数分（1 分 = 10_000 个最小单位）。 */
+/** @param {string} minor @returns {number} */
+function centsOfMinor(minor) {
+  const cents = BigInt(minor) / 10_000n
+  return Number(cents)
 }
 
 /** @param {unknown} value @returns {any} */

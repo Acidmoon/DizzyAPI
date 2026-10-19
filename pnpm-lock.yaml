@@ -44,6 +44,9 @@ importers:
       '@dizzyapi/plugin-admin':
         specifier: workspace:*
         version: link:packages/admin
+      '@dizzyapi/plugin-api':
+        specifier: workspace:*
+        version: link:packages/api
       '@dizzyapi/plugin-api-key':
         specifier: workspace:*
         version: link:packages/api-key
@@ -127,6 +130,15 @@ importers:
       '@dizzyapi/plugin-settings':
         specifier: workspace:*
         version: link:../settings
+
+  packages/api:
+    dependencies:
+      '@dizzyapi/plugin-kit':
+        specifier: workspace:*
+        version: link:../kit
+      cordis:
+        specifier: ^4.0.0-rc.11
+        version: 4.0.0-rc.11(@cordisjs/plugin-include@1.1.1)(@cordisjs/plugin-loader@1.0.0-rc.8)
 
   packages/api-key:
     dependencies:

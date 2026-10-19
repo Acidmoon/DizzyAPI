@@ -35,6 +35,7 @@
     adminPlugins:
       - '@dizzyapi/plugin-admin'
       - '@dizzyapi/plugin-auth'
+      - '@dizzyapi/plugin-api'
 
 # API key 插件：用户 API key 的唯一写者（签发 / 改名 / 启停 / 轮换 / 删除）。
 # 存储是 SQLite（Node 24 内置 node:sqlite），只落 sha256 哈希与掩码，永不落明文；
@@ -108,6 +109,7 @@
   config:
     adminPlugins:
       - '@dizzyapi/plugin-admin'
+      - '@dizzyapi/plugin-api'
     maxBatchSize: 100
 
 # 账号请求优先级：策略组的唯一写者 + gatewayd 的监管者。
@@ -154,6 +156,16 @@
     apiBase: /api
     mode: rest
 
+# 产品 HTTP 入口：同源提供 SPA 静态资源与 /api/*（界面请求）。
+# 静态字节从 frontend 的版本目录读盘；/api/* 在进程内调用控制面服务，不走控制桥。
+# 只绑 127.0.0.1；会话只进 HttpOnly cookie，API key 的完整值只在创建 / 轮换时出现一次。
+# 它只 inject user / auth / loader；frontend / catalog / accountAdmin 等运行期解析，
+# 缺谁只让对应路由 503，入口本身不会 PENDING。排在 frontend 之后只是为了让启动顺序直观。
+- id: api
+  name: '@dizzyapi/plugin-api'
+  config:
+    port: 7791
+
 # 设置插件：运行期可以改的配置由它管（本文件是「人写的基线」，它只覆盖，从不回写本文件）。
 # 必须排在它要管的目标后面：启动重放时它才看得见那些 entry。
 - id: settings
@@ -163,6 +175,7 @@
     # 「指定插件」：只有列在这里的插件可以改配置。
     adminPlugins:
       - '@dizzyapi/plugin-admin'
+      - '@dizzyapi/plugin-api'
 
 # 开发者控制面板：看插件与服务的依赖图、看运行期概览、改设置、重启单个插件、退出整个进程。
 # 只绑 127.0.0.1；启动日志里会打印一条带一次性 token 的地址，打开后换成 HttpOnly cookie。

@@ -196,6 +196,8 @@ export interface ApiKeySummary {
   readonly createdAt: string
   readonly lastUsedAt: string | null
   readonly appManaged: boolean
+  /** 省略时按启用处理（兼容旧服务）。 */
+  readonly enabled?: boolean
 }
 
 export interface ApiKeyListResponse {
@@ -212,7 +214,125 @@ export interface CreatedApiKey extends ApiKeySummary {
 }
 
 export interface UpdateApiKeyInput {
+  readonly name?: string
+  readonly enabled?: boolean
+}
+
+// ── 会话 / 个人资料 ─────────────────────────────────────────────────────
+
+export interface AuthTicket {
+  readonly email: string
+  readonly expiresAt: string
+  readonly resendAfterMs: number
+}
+
+export type SessionRole = 'admin' | 'user'
+
+/** 浏览器能看到的用户视图：没有密码哈希、没有令牌；余额只在允许时出现。 */
+export interface SessionUser {
+  readonly id: number
   readonly name: string
+  readonly status: 'enabled' | 'banned'
+  readonly role: SessionRole
+  readonly balanceEnabled: boolean
+  /** 只有 admin 或 balanceEnabled 时才有值；否则为 null。 */
+  readonly balanceCents: number | null
+  readonly avatar: string | null
+  readonly createdAt: string
+  readonly updatedAt: string
+}
+
+export interface SessionInfo {
+  readonly id: string
+  readonly createdAt: string
+  readonly expiresAt: string
+  readonly lastSeenAt: string
+}
+
+/** 登录 / 注册确认的直接响应；完整权限在随后一次 `session.get()` 里读。 */
+export interface LoginResponse {
+  readonly user: SessionUser
+  readonly session: SessionInfo
+}
+
+export interface SessionResponse {
+  readonly user: SessionUser
+  readonly email: string | null
+  readonly session: SessionInfo
+  readonly permissions: { readonly admin: boolean }
+}
+
+export interface ProfileUpdateInput {
+  readonly name?: string
+  readonly avatar?: string | null
+}
+
+export interface PasswordChangeInput {
+  readonly currentPassword: string
+  readonly newPassword: string
+}
+
+export interface RegisterRequestInput {
+  readonly email: string
+  readonly password: string
+  readonly name?: string
+}
+
+export interface PasswordResetConfirmInput {
+  readonly email: string
+  readonly code: string
+  readonly password: string
+}
+
+export interface SessionApi {
+  get(): Promise<SessionResponse>
+  login(input: { readonly email: string; readonly password: string }): Promise<LoginResponse>
+  logout(): Promise<void>
+  registerRequest(input: RegisterRequestInput): Promise<AuthTicket>
+  registerConfirm(input: { readonly email: string; readonly code: string }): Promise<LoginResponse>
+  requestPasswordReset(input: { readonly email: string }): Promise<AuthTicket>
+  confirmPasswordReset(input: PasswordResetConfirmInput): Promise<{ readonly userId: number; readonly revokedSessions: number }>
+  updateProfile(patch: ProfileUpdateInput): Promise<SessionUser>
+  changePassword(input: PasswordChangeInput): Promise<{ readonly revokedSessions: number }>
+}
+
+// ── 管理台：用户 ───────────────────────────────────────────────────────
+
+/** 管理台用户行；余额用十进制字符串表示最小单位，避免 JS number 丢精度。 */
+export interface AdminUserSummary {
+  readonly id: number
+  readonly name: string
+  readonly status: 'enabled' | 'banned'
+  readonly role: SessionRole
+  readonly balanceEnabled: boolean
+  readonly balanceMinor: string
+  readonly createdAt: string
+  readonly updatedAt: string
+}
+
+export interface AdminUserListResponse {
+  readonly items: readonly AdminUserSummary[]
+}
+
+export interface AdminUserUpdateInput {
+  readonly name?: string
+  readonly role?: SessionRole
+  readonly status?: 'enabled' | 'banned'
+  readonly balanceEnabled?: boolean
+}
+
+export interface AdminBalanceInput {
+  /** 最小单位的十进制字符串；负数表示扣减。 */
+  readonly deltaMinor: string
+  readonly reason: string
+}
+
+export interface AdminUsersApi {
+  list(query?: { readonly status?: 'enabled' | 'banned'; readonly offset?: number; readonly limit?: number }): Promise<AdminUserListResponse>
+  get(id: number): Promise<AdminUserSummary>
+  update(id: number, patch: AdminUserUpdateInput): Promise<AdminUserSummary>
+  remove(id: number): Promise<{ readonly removed: true }>
+  adjustBalance(id: number, input: AdminBalanceInput): Promise<{ readonly balanceMinor: string }>
 }
 
 export type PaymentMethod = 'alipay' | 'wechat'
@@ -283,6 +403,8 @@ export interface ApiKeysApi {
   create(input: CreateApiKeyInput): Promise<CreatedApiKey>
   update(id: string, input: UpdateApiKeyInput): Promise<ApiKeySummary>
   remove(id: string): Promise<{ readonly removed: true }>
+  /** 轮换密钥：旧 secret 立刻失效，新 secret 只在这次响应里出现一次。 */
+  rotate(id: string): Promise<CreatedApiKey>
 }
 
 export interface TopupApi {
@@ -291,6 +413,8 @@ export interface TopupApi {
 }
 
 export interface FrontendApis {
+  readonly session: SessionApi
+  readonly users: AdminUsersApi
   readonly accounts: AccountsApi
   readonly catalog: CatalogApi
   readonly settings: SettingsApi

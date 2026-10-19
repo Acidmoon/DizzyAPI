@@ -45,7 +45,7 @@ const SECURITY_HEADERS = {
   'Referrer-Policy': 'no-referrer',
   'Cache-Control': 'no-store',
   'Content-Security-Policy':
-    "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'",
+    "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: https:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'",
 } as const
 
 export async function startPreviewServer(options: PreviewServerOptions = {}): Promise<PreviewServer> {

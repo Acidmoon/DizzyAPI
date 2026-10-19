@@ -22,8 +22,9 @@
 | API keys | `/console/api_keys` | 已实现（说明区、创建按钮、表格、掩码 key、编辑/删除） |
 | 充值 | `/console/top_up` | 已实现（tab、金额 chips、自定义、支付方式、去支付、订单结果） |
 | 账单 | `/console/transactions` | 占位：源码有路由，但没有提供账单 DOM |
-| 个人资料 | `/console/profile` | 占位：侧栏用户行链接到这里 |
+| 个人资料 | `/console/profile` | 已实现（头像 / 用户名 / 邮箱 / 角色 / 余额可见性 / 改密码） |
 | `/console` | — | 前端重定向到 `/console/usage`（history replace，不发 HTTP 302） |
+| 管理台用户 | `/admin/users` | 已实现（启停、角色、余额可见性、调整余额、删除；只对 admin 显示） |
 | 管理台 | `/admin`、`/admin/catalog`、`/admin/accounts`、`/admin/strategies`、`/admin/settings` | 已实现或占位，沿用同一设计系统 |
 
 ## 2. 源码派生 token
@@ -101,6 +102,7 @@
 5. 创建对话框：名称输入 → 成功页显示完整 key 一次 + 复制 + “我已保存”。
    完整 key 只存在当前 dialog 的局部变量，关闭即丢；不写 localStorage / 日志 / URL。
 6. 编辑只改名；删除二次确认。
+7. 启停与轮换：停用 / 启用直接生效；轮换需要二次确认，成功后新 secret 只显示一次。
 
 ### 充值
 
@@ -116,20 +118,22 @@
 
 1. **亮色模式**的参考（源码只有深色）。
 2. **账单 / 发票页**的 DOM（路由是 `/transactions`，但源码没有提供页面内容）。
-3. **个人资料页**的 DOM（侧栏用户行指向 `/profile`）。
+3. **个人资料页**的参考版式（页面已按通用表单实现，DOM 参考仍缺）。
 4. 字体与图标：如果 Inter / 图标 sprite 是自托管资源，给路径；否则继续用系统字体与
    我们自己的线稿图标。
-5. 登录 / 会话：登录入口、401 行为、登出、角色模型（普通用户能否进 `/admin`）。
+5. 登录 / 会话：已按 owner 方案实现（cookie 会话、401 回登录页、登出、admin 才能进
+   `/admin`）；登录页的视觉参考仍缺。
 6. 支付：真实渠道、订单轮询/回调、发票入口；对公汇款是否需要凭证上传。
 7. 用量时区（参考页是 GMT+8）与数据延迟（参考页是 5 分钟）。
 8. 导出格式与自定义时间范围。
 9. 是否允许 API key 下载 / 多次查看（当前假设“只显示一次”）。
 
-## 6. 后端接口期望（Go `httpapi`）
+## 6. 后端接口（当前由 TS `api` 插件实现）
 
 同源、会话 cookie；前端**不**发送 actor / 用户 id / 上游凭据。
-错误统一 `{ "error": { "code": "…", "message": "…" } }`，可带 `x-request-id`。
-金额一律整数分（D10）。
+所有 `/api/*` 都要 `X-Requested-With: dizzyapi`；Host / Origin / Sec-Fetch-Site 与面板
+同一套闸，不发 CORS 头。错误统一 `{ "error": { "code": "…", "message": "…", "requestId": "…" } }`，
+响应头带 `x-request-id`。金额一律整数分（D10）。
 
 ### 清单 / 静态资源
 
@@ -156,8 +160,9 @@ tokens} / models[]{model, requests, tokens, costCents, daily?} / generatedAt`。
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | GET | `/api/keys` | `{ items }`，永不返回完整 key |
-| POST | `/api/keys` | `{ name }` → `CreatedApiKey`（仅此一次含 `secret`） |
-| PATCH | `/api/keys/:id` | `{ name }`，只改名 |
+| POST | `/api/keys` | `{ name }` → `CreatedApiKey`（服务返回 `{ key, secret }`，HTTP 层展开；仅此一次含 `secret`） |
+| PATCH | `/api/keys/:id` | `{ name?, enabled? }`，改名 / 启停 |
+| POST | `/api/keys/:id/rotate` | 轮换。服务返回 `{ key, secret }`，HTTP 层展开成扁平 `CreatedApiKey`（仅此一次含 `secret`） |
 | DELETE | `/api/keys/:id` | 吊销，`{ removed: true }` |
 
 ### 充值
@@ -175,11 +180,18 @@ tokens} / models[]{model, requests, tokens, costCents, daily?} / generatedAt`。
 | GET | `/api/accounts?provider=&status=&cursor=&limit=` | 账号元数据，无 token / credentialRef |
 | GET/PATCH/DELETE | `/api/accounts/:id` | 元数据、启停、移除 |
 | GET | `/api/catalog/modules` | 插件 / 模块状态与贡献页面 |
-| GET | `/api/settings` | 设置命名空间（秘密只有 `configured`） |
+| GET | `/api/settings` | `{ namespaces }` 原样透传（秘密只有 `configured`） |
 | POST | `/api/settings/:ns` | `{ patch, expectedRevision? }`，actor 由服务端会话决定 |
 | DELETE | `/api/settings/:ns` | 恢复基线 |
 | GET | `/api/health` | 网关状态、版本、描述符 revision、桥、组件 |
-| GET | `/api/session` | 当前用户展示信息（待定） |
+| GET | `/api/session` | `{ user, email, session, permissions:{admin} }`；余额只在允许时返回 |
+| PATCH | `/api/profile` | `{ name?, avatar? }` → `SessionUser`。头像接受 `http(s)://` URL（≤2048）或 png/jpeg/webp/gif data URL（解码后 ≤256 KiB）；CSP 只放行 https 外链 |
+| POST | `/api/profile/password` | `{ currentPassword, newPassword }` |
+| GET | `/api/users?status=&offset=&limit=` | 管理台用户列表；余额是最小单位字符串 |
+| GET/PATCH/DELETE | `/api/users/:id` | 用户详情 / 状态 / 角色 / 余额开关 / 删除 |
+| POST | `/api/users/:id/balance` | `{ delta, reason }`，delta 是十进制最小单位字符串 |
+| POST | `/api/accounts/:id/credentials` | 导入凭据；响应不含令牌 |
+| POST | `/api/accounts/import` / `import/preview` | 批量导入 / 预检；响应不含令牌 |
 
 ## 7. 清单模型与自动隐藏
 
@@ -192,7 +204,7 @@ tokens} / models[]{model, requests, tokens, costCents, daily?} / generatedAt`。
   `mount(root, { api, page, manifest, href, navigate })`，可返回 cleanup。
 - 设置卡只声明 `namespace`，通用设置渲染器读取 `/api/settings`。
 
-## 8. 静态资源与 Go / 反代集成
+## 8. 静态资源与产品 HTTP 入口 / 反代集成
 
 前端插件把内置资源安装到 `<dataPath>/versions/<version>/`，原子写
 `<dataPath>/current.json`（`{ current, previous, updatedAt }`），并写
@@ -202,10 +214,14 @@ tokens} / models[]{model, requests, tokens, costCents, daily?} / generatedAt`。
    `Cache-Control: public, max-age=31536000, immutable`。
 2. `/console/*`、`/admin/*` → `versions/<current>/index.html`，`no-store`。
 3. `/api/console/manifest` → `manifest.json`，`no-store`。
-4. CSP：`default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:;
-   connect-src 'self'; frame-ancestors 'none'; base-uri 'self'`。
-5. 前端插件被禁用时 `state.json.enabled=false`；Go 可据此硬门禁。
+4. CSP：`default-src 'self'; script-src 'self'; style-src 'self';
+   img-src 'self' data: https:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'`。
+   头像允许 `data:` 与 `https:` 外链；`http://` 头像不支持。
+5. 前端插件被禁用时 `state.json.enabled=false`；`api` 插件据此对静态与 SPA 返回 404
+   （`/api/health` 仍可用），反代也可据此硬门禁。
 6. 不要把 LLM 请求、凭据或控制桥挂在同一条路径上。
+
+`packages/api` 已按上面 1..6 实现；Go / 反代将来接同一份文件契约即可。
 
 回滚只改 `current.json` 指针；旧版本默认保留一个，`keepVersions` 控制总数。
 
@@ -222,6 +238,6 @@ pnpm preview:console
 ## 10. 非目标
 
 - 不 vendor / 复制参考项目的 CSS、JS、图片、字体、logo 或真实账户数据。
-- 不在 cordis 插件里起产品 HTTP 服务。
+- 不在 `frontend` 宿主里起产品 HTTP 服务；产品入口是独立的 `api` 插件（owner 2026-10-19 定）。
 - 不在前端存储或转发上游 OAuth 令牌、SMTP 授权码、支付凭据。
 - 不把 API key 完整值写进 localStorage、日志、URL 或错误上报。

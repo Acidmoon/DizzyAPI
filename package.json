@@ -30,6 +30,7 @@
     "@dizzyapi/plugin-account-admin": "workspace:*",
     "@dizzyapi/plugin-account-priority": "workspace:*",
     "@dizzyapi/plugin-admin": "workspace:*",
+    "@dizzyapi/plugin-api": "workspace:*",
     "@dizzyapi/plugin-api-key": "workspace:*",
     "@dizzyapi/plugin-auth": "workspace:*",
     "@dizzyapi/plugin-catalog": "workspace:*",
