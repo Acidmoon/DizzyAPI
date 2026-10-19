@@ -9,7 +9,7 @@
 > 记录性的修正（现状、事实、坑）直接改；涉及设计判断的，先问 owner，
 > 不要凭本文件去推翻 owner 的决定或已在运行的代码。
 >
-> 当前状态：**控制面插件 + 第一个 Go 数据面模块**。cordis 侧已有八个插件包（外加共用底座 kit）
+> 当前状态：**控制面插件 + 第一个 Go 数据面模块**。cordis 侧已有九个插件包（外加共用底座 kit）
 > 并全部装载运行（§4）；Go 侧已有 `modules/accountpriority`、最小 `cmd/gatewayd` 与控制桥（§5.2）。
 > 除这一块之外，本文件中 Go 侧的路径与接口仍是**目标**，不是现状；LLM 请求链路尚未实现。
 
@@ -335,6 +335,7 @@ sub2api 在拿到首个上游响应前把额度显示为 `unknown`，
 | `@dizzyapi/plugin-mailer` | `mailer` | 外部通讯模块 | 把消息发出去（邮件）；`log`（开发）与 `smtp` 两种投递 |
 | `@dizzyapi/plugin-credentials` | `credentials` | 控制面 | 秘密（授权码之类）的唯一存放处；别的插件只持有引用名 |
 | `@dizzyapi/plugin-identity` | `identity` | 控制面 | 上游账号（订阅 OAuth / API-key）的唯一写者；唯一用 refresh_token 换新令牌的地方 |
+| `@dizzyapi/plugin-account-admin` | `accountAdmin` | 控制面 | identity 的管理门面：账号导入 / 新建 / 修改 / 停用 / 删除；不存数据、不刷新令牌 |
 | `@dizzyapi/plugin-account-priority` | `accountPriority` | 控制面 + 数据面监管 | 策略组的唯一写者；拉起/监管 gatewayd；经控制桥推送策略、提供预览与选择查询 |
 | `@dizzyapi/plugin-settings` | `settings` | 控制面 | 运行期可改的配置的唯一写者：`app.yml` 是基线，它写自己的覆盖文件 |
 | `@dizzyapi/plugin-admin` | `admin` | 开发者面板 | 插件 / 服务的静态依赖图、运行期概览、改设置、重启单个插件、退出整个进程 |
@@ -442,6 +443,30 @@ tag、健康、冷却与并发饱和。`transport` 在 Windows 开发机自动�
 `maxRestartDelayMs`；`dataPath` / `binaryPath` / `args` / `socketPath` / `transport` /
 `logFormat` 不可运行期改。
 
+**`accountAdmin`**（账号管理门面）
+
+| 面 | 方法 | 说明 |
+|---|---|---|
+| 读 | `list(query?)` / `get(id)` / `credentialStatus(id)` / `previewImport(input)` | 只返回元数据与「凭据配没配」；预检只回答识别结果，不返回令牌 |
+| 写 | `create(actor, input)` / `update(actor, id, patch)` / `remove(actor, id)` | 修改只限 `label` / `email` / `subject` |
+| 开关 | `enable(actor, id)` / `disable(actor, id)` | 停用是独立开关，不占用 `status` |
+| 凭据 | `importCredentials(actor, id, input)` / `importAccounts(actor, input)` | 解析后交给 `identity.importCredentials` / `create`；批量逐项返回结果 |
+| 刷新 | `refresh(actor, id)` | 只委托 `identity.refreshNow`，本插件从不换令牌 |
+
+支持的导入格式：Claude Code `.credentials.json`（`claudeAiOauth`，`expiresAt` 毫秒）、
+Claude / 通用 OAuth 的 camelCase / snake_case 令牌响应、Codex `auth.json`
+（`tokens` 包装，或只有 `OPENAI_API_KEY` 的 API-key 模式）、`identity-bundle`、
+纯文本或 `apiKey` / `api_key` / `key` / `token` 字段的 API key。`format: 'auto'`
+按形状推断；OAuth 形状判断不出 provider 时明确要求 `claude` / `openai`。
+OpenAI `id_token` 只在内存里解出 `email` / `account_id`，不保存本体；导入到已有账号时
+只补空缺的元数据，不覆盖管理员手填的值。
+
+角色边界：本插件**没有存储、没有定时器、没有 HTTP 路由**，禁用时只是服务消失；
+账号与令牌仍由 identity / credentials 独占写入（D8）。写方法一律要求 actor 在
+`adminPlugins` 白名单里（默认空 = 全部拒绝），读方法不限权。`app.yml` 里当前只有
+`@dizzyapi/plugin-admin` 在名单里；将来接 HTTP 时，路由层要把认证后的管理员映射成
+白名单 actor，且不得把 `identity.getAccessToken` / `credentials.resolve` 暴露到路由。
+
 **`admin`**（开发者面板，HTTP 服务）
 
 | 面 | 方法 | 说明 |
@@ -483,6 +508,10 @@ tag、健康、冷却与并发饱和。`transport` 在 Windows 开发机自动�
   再改 `app.yml` 里这些键不会生效——要先用面板「恢复基线」。
 - **账号保管（2026-10-19）**：`identity` 已装载，账号记录在 `data/accounts.json`（当前 0 个），
   令牌在 `credentials` 的 `identity/<账号 id>` 下；首期只有 Claude 与 OpenAI/Codex 两个 RT 适配器。
+- **账号管理（2026-10-19）**：`account-admin` 已装载，`adminPlugins` 只有面板。它是
+  identity 的门面，不新增存储文件；当前**没有 HTTP 入口**，管理操作只能由进程内消费者
+  （或测试）以白名单 actor 调用。面板 `/api/settings` 能看到 `account-admin` 命名空间：
+  `maxBatchSize` 可写，`adminPlugins` 只读。
 - **账号请求优先级（2026-10-19）**：`account-priority` 已装载，策略在
   `data/account-priority.json`（首次启动写入内置 `default`）；`pnpm dev` 会拉起 gatewayd，
   日志里能看到 `gatewayd 已就绪：tcp 127.0.0.1:<port>（pid …）` 与策略 revision。
@@ -520,11 +549,19 @@ tag、健康、冷却与并发饱和。`transport` 在 Windows 开发机自动�
    TS 插件，Go 只接收只读快照；它**不写**账号运行时状态。LLM 请求链路与 engine 尚未实现，
    阶段目前只在 Go 单测里被直接调用，`Ctx.AccountCandidates` 还没有真正的生产者
    （将来由 `account-state` 填）。
-10. **Windows 开发机走 TCP，不是 UDS**：Node 的 `net` 在 Windows 上只支持命名管道，
+10. **`account-admin` 只有进程内服务面**：它没有自己的 HTTP 路由，面板目前只能看/改它的
+    设置，不能管理账号。前端 / 管理台需要的 HTTP 面是：`GET /admin/accounts`、
+    `GET /admin/accounts/:id`、`POST /admin/accounts`、`PATCH /admin/accounts/:id`、
+    `DELETE /admin/accounts/:id`、`POST /admin/accounts/:id/enable|disable`、
+    `POST /admin/accounts/:id/credentials`、`POST /admin/accounts/import`、
+    `POST /admin/accounts/import/preview`。实现时必须复用面板的 loopback + cookie +
+    `X-Panel-Request` + Host 四道闸，并把认证后的管理员映射成白名单 actor；
+    **任何路由都不得返回令牌**。
+11. **Windows 开发机走 TCP，不是 UDS**：Node 的 `net` 在 Windows 上只支持命名管道，
     连不上 Go 的 AF_UNIX socket；`transport: auto` 因此在 Windows 选回环 TCP
     （`127.0.0.1:<系统分配端口>`），Linux/macOS 选 UDS。生产目标是 UDS；TCP 分支只在
     回环地址上允许，`bridge.NewServer` 会拒绝非回环监听。
-11. **cordis 异常退出时 gatewayd 可能留下**：正常卸载/重启会由插件优雅停止子进程；
+12. **cordis 异常退出时 gatewayd 可能留下**：正常卸载/重启会由插件优雅停止子进程；
     进程崩溃或被强杀时 Go 侧按 D9 继续存活，但也不会自动退出。重启后会起一个新的
     gatewayd（新端口），旧进程需要人工清理；孤儿检测尚未实现（§9）。
 
@@ -1041,8 +1078,9 @@ CI 用 `go list -deps` 逐模块校验 `modules/*` 之间无相互 import，违�
   `gatewayd 已就绪：tcp 127.0.0.1:<port>（pid …）` 与策略 revision；面板
   `/api/settings` 能看到 `account-priority` 命名空间；Ctrl-C 退出后子进程
   `process.kill(pid, 0)` 报 ESRCH（已停止）。
-- 当前全量：`pnpm test` 164 个用例（163 通过 / 1 跳过），`pnpm typecheck` 干净；
-  `packages/account-priority` 自身 13 个用例全过，`go test ./...` 两个包全过。
+- 当前全量：`pnpm test` 180 个用例（179 通过 / 1 跳过），`pnpm typecheck` 干净；
+  `packages/account-priority` 自身 13 个用例、`packages/account-admin` 16 个用例全过，
+  `go test ./...` 两个包全过。
 
 **本机环境**
 - `C:\Users\17740\.dsh\profiles\desktop` 是一个活的 cordis 应用实例：
@@ -1080,6 +1118,9 @@ CI 用 `go list -deps` 逐模块校验 `modules/*` 之间无相互 import，违�
 - **`identity` 的 RT 交换只对假端点验过**：请求形状、RT 轮换、单飞、退避、`invalid_grant`
   分类都有测试，但还没用真实 Claude / OpenAI 订阅账号跑过一次刷新。多进程/分布式锁未实现
   （单进程假设），跨副本的令牌版本防回滚也没做。
+- **`account-admin` 的导入格式只对构造的样例验过**：Claude `.credentials.json` 与
+  Codex `auth.json` 的实际字段会随上游 CLI 版本变化，没有用真实账号文件跑过；
+  `auto` 推断也只在测试样例上验过。它没有 HTTP 入口，真实管理台链路尚未验证。
 - **业务面的界面请求（会话令牌）仍没有 HTTP 入口**：面板的 HTTP 只服务面板自己
   （看、改设置、退出），不是用户站 / 管理台的 API；那个入口要等 Go 的 `httpapi` 或桥。
 - **面板前端已在真实浏览器里逐页签点过**（2026-10-18，重写后复验）：概览 / 依赖图 / 插件 /

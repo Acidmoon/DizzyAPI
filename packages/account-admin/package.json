@@ -1,0 +1,21 @@
+{
+  "name": "@dizzyapi/plugin-account-admin",
+  "version": "0.1.0",
+  "private": true,
+  "description": "DizzyAPI · 账号管理门面：上游账号的导入 / 新建 / 停用 / 删除；存储与令牌刷新仍归 identity",
+  "type": "module",
+  "license": "MIT",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./package.json": "./package.json"
+  },
+  "scripts": {
+    "test": "node --import tsx --test \"test/*.test.ts\""
+  },
+  "dependencies": {
+    "@dizzyapi/plugin-kit": "workspace:*",
+    "cordis": "^4.0.0-rc.11"
+  }
+}
