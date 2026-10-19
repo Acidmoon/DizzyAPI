@@ -196,6 +196,8 @@ test('封禁的用户不能登录，已签发的会话也立即失效', async (t
   t.after(() => harness.dispose())
   const result = await register(harness)
 
+  // 首个注册用户是 admin；先补一个可用 admin，才能封禁原管理员
+  await harness.ctx.user.create(ACTOR, { name: 'backup', role: 'admin' })
   await harness.ctx.user.setStatus(ACTOR, result.user.id, 'banned')
   await rejectsCode(harness.ctx.auth.login({ email: EMAIL, password: PASSWORD }), 'AUTH_USER_BANNED')
   await rejectsCode(harness.ctx.auth.verifySession(result.token), 'AUTH_USER_BANNED')
@@ -305,12 +307,14 @@ test('用户被删除后留下孤儿凭证：同邮箱可以重新注册，拿�
   t.after(() => harness.dispose())
 
   const first = await register(harness)
+  // 首个注册用户是 admin；先补一个可用 admin，才能删除原管理员
+  const backup = await harness.ctx.user.create(ACTOR, { name: 'backup', role: 'admin' })
   await harness.ctx.user.remove(ACTOR, first.user.id)
-  assert.equal((await harness.ctx.user.list()).length, 0)
+  assert.deepEqual((await harness.ctx.user.list()).map((item) => item.id), [backup.id])
 
   const second = await register(harness)
-  assert.equal(second.user.id, 2, '用户 ID 不复用，重新注册拿到新号')
-  assert.equal((await harness.ctx.auth.login({ email: EMAIL, password: PASSWORD })).user.id, 2)
+  assert.equal(second.user.id, 3, '用户 ID 不复用，重新注册拿到新号')
+  assert.equal((await harness.ctx.auth.login({ email: EMAIL, password: PASSWORD })).user.id, 3)
 })
 
 test('凭证与会话落盘：换一个 Context 重新装载后仍然能登录', async (t) => {

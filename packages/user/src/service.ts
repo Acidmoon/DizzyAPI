@@ -186,7 +186,12 @@ export class UserService extends Service {
     })
   }
 
-  /** 封禁（banned）或启用（enabled）用户。删除是独立操作，不表达为状态。 */
+  /**
+   * 封禁（banned）或启用（enabled）用户。删除是独立操作，不表达为状态。
+   *
+   * 不允许把最后一个**可用管理员**封禁：`role=admin` 但已经被 banned 的账号
+   * 不构成管理入口，不能拿来兜底。
+   */
   async setStatus(actor: string, id: UserId, status: UserStatus): Promise<User> {
     this.assertAdmin(actor)
     const userId = normalizeId(id)
@@ -194,7 +199,15 @@ export class UserService extends Service {
 
     return this.exclusive(async () => {
       const user = this.db.transaction(() => {
-        this.requireUser(userId)
+        const current = this.requireUser(userId)
+        if (
+          current.role === 'admin' &&
+          current.status === 'enabled' &&
+          nextStatus === 'banned' &&
+          this.db.countEnabledAdmins() <= 1
+        ) {
+          throw new UserError('USER_LAST_ADMIN', '不能封禁最后一个可用管理员')
+        }
         return this.db.updateUser(userId, {
           status: nextStatus,
           updatedAt: new Date().toISOString(),
@@ -206,8 +219,9 @@ export class UserService extends Service {
   }
 
   /**
-   * 授予 / 撤销管理员角色。拒绝把最后一个 admin 降级：
+   * 授予 / 撤销管理员角色。拒绝把最后一个**可用管理员**降级：
    * 否则管理台会失去唯一的入口，而且没有任何进程内办法恢复。
+   * 被 banned 的 admin 不算可用管理员。
    */
   async setRole(actor: string, id: UserId, role: UserRole): Promise<User> {
     this.assertAdmin(actor)
@@ -217,8 +231,13 @@ export class UserService extends Service {
     return this.exclusive(async () => {
       const user = this.db.transaction(() => {
         const current = this.requireUser(userId)
-        if (current.role === 'admin' && nextRole !== 'admin' && this.db.countAdmins() <= 1) {
-          throw new UserError('USER_LAST_ADMIN', '不能撤销最后一个管理员的权限')
+        if (
+          current.role === 'admin' &&
+          current.status === 'enabled' &&
+          nextRole !== 'admin' &&
+          this.db.countEnabledAdmins() <= 1
+        ) {
+          throw new UserError('USER_LAST_ADMIN', '不能撤销最后一个可用管理员的权限')
         }
         return this.db.updateUser(userId, {
           role: nextRole,
@@ -253,7 +272,11 @@ export class UserService extends Service {
 
   /**
    * 删除用户。余额不为零时拒绝——先把钱结清，那会留下一笔流水，账才说得清。
+   * 也不能删除最后一个**可用管理员**：删掉后管理台就没有入口了。
    * 用户被删掉后，他的余额流水仍然保留（只增不改的审计附本）。
+   *
+   * 顺序：先余额、后管理员。余额非零时给 `USER_BALANCE_NOT_ZERO`，
+   * 这样调用方先处理钱的问题；两条都满足时给 `USER_LAST_ADMIN`。
    */
   async remove(actor: string, id: UserId): Promise<User> {
     this.assertAdmin(actor)
@@ -267,6 +290,13 @@ export class UserService extends Service {
             'USER_BALANCE_NOT_ZERO',
             `用户 ${current.name}（#${current.id}）余额为 ${formatBalance(current.balance)}，先结清再删除`,
           )
+        }
+        if (
+          current.role === 'admin' &&
+          current.status === 'enabled' &&
+          this.db.countEnabledAdmins() <= 1
+        ) {
+          throw new UserError('USER_LAST_ADMIN', '不能删除最后一个可用管理员')
         }
         this.db.deleteUser(userId)
         return { ...current }

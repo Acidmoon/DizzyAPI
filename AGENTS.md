@@ -400,7 +400,11 @@ provider（默认只有 `openai`）不会进入快照。
 `User` 字段：`id` / `name` / `status` / `role`（`admin` \| `user`）/ `balance`（bigint 最小单位）/
 `balanceEnabled` / `avatar`（string \| null）/ `createdAt` / `updatedAt`。
 当前用户数为 0 时 `create` 自动给 `admin`，之后是 `user`；`input.role` 只供迁移 / 测试。
-`setRole` 拒绝撤销最后一个 admin（`USER_LAST_ADMIN`）。头像只接受 `http(s)://` URL（≤2048）
+`setRole` / `setStatus('banned')` / `remove` 都保护「**最后一个可用管理员**」：
+可用 = `role = 'admin'` 且 `status = 'enabled'`，被 banned 的 admin 不算。
+目标是当前唯一可用管理员时，降级 / 封禁 / 删除都报 `USER_LAST_ADMIN`，数据库不变；
+可以先把另一个用户授予 admin，再封禁 / 降级 / 删除原管理员。`remove` 先检查余额非零
+（`USER_BALANCE_NOT_ZERO`），再检查最后可用管理员。头像只接受 `http(s)://` URL（≤2048）
 或 `data:image/(png|jpeg|webp|gif);base64,...`（解码后 ≤256 KiB），`null` 表示清除。
 
 - 事件：`user/changed(payload)`，载荷 `{ userId, action: 'created' | 'updated' | 'removed', fields? }`。
@@ -1267,7 +1271,7 @@ CI 用 `go list -deps` 逐模块校验 `modules/*` 之间无相互 import，违�
   `gatewayd 已就绪：tcp 127.0.0.1:<port>（pid …）` 与策略 revision；面板
   `/api/settings` 能看到 `account-priority` 命名空间；Ctrl-C 退出后子进程
   `process.kill(pid, 0)` 报 ESRCH（已停止）。
-- 当前全量（2026-10-19，用户系统 SQLite 之后）：`pnpm test` 237 个用例（236 通过 / 1 跳过），
+- 当前全量（2026-10-19，用户系统 SQLite 之后）：`pnpm test` 240 个用例（239 通过 / 1 跳过），
   `pnpm typecheck` 干净；`packages/account-priority` 16 个、`packages/account-admin` 16 个、
   `packages/catalog` 9 个、`packages/console` 26 个用例全过；`go test ./...` 的 8 个包全过，
   `go vet ./...` 干净。
@@ -1306,7 +1310,8 @@ CI 用 `go list -deps` 逐模块校验 `modules/*` 之间无相互 import，违�
   首个用户 admin / 最后 admin 保护、角色与余额开关权限、头像合法 / 超限 / 非法 scheme /
   null 清除、自助改名唯一性、bigint 精度、删除后流水保留、auth 原有登录 / 注册 / 改密 /
   重置 / 会话 / 限流用例、`getEmail`、并发写不交错、`user/changed` 的动作 / fields /
-  顺序与「载荷不含秘密」。
+  顺序与「载荷不含秘密」、最后一个可用管理员的封禁 / 降级 / 删除保护（含 banned admin
+  不计入、两个可用 admin 后可操作、失败不改数据库）。
 
 **前端宿主（本项目实测，2026-10-19）**
 

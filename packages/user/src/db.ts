@@ -173,9 +173,15 @@ export class UserDatabase {
     return readInt(requireRow(row, 'users 计数').n, 'users 计数')
   }
 
-  countAdmins(): number {
-    const row = this.row("SELECT COUNT(*) AS n FROM users WHERE role = 'admin'")
-    return readInt(requireRow(row, 'admin 计数').n, 'admin 计数')
+  /**
+   * 「可用管理员」的数量：role = admin 且 status = enabled。
+   * 被 banned 的 admin 不算——它进不了管理台，也就不能作为管理入口的兜底。
+   */
+  countEnabledAdmins(): number {
+    const row = this.row(
+      "SELECT COUNT(*) AS n FROM users WHERE role = 'admin' AND status = 'enabled'",
+    )
+    return readInt(requireRow(row, '可用 admin 计数').n, '可用 admin 计数')
   }
 
   getUser(id: UserId): User | undefined {

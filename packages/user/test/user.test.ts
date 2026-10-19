@@ -96,6 +96,8 @@ test('用户名：去空白、重名拒绝、非法值拒绝', async () => {
 test('封禁与启用', async () => {
   await withUser(ADMIN_ONLY, async (user) => {
     const alice = await user.create(ADMIN, { name: 'alice' })
+    // 需要一个备用可用 admin，否则封禁唯一管理员会被 USER_LAST_ADMIN 拦下
+    await user.create(ADMIN, { name: 'backup', role: 'admin' })
     assert.equal((await user.setStatus(ADMIN, alice.id, 'banned')).status, 'banned')
     assert.equal((await user.get(alice.id))?.status, 'banned')
     assert.equal((await user.setStatus(ADMIN, alice.id, 'enabled')).status, 'enabled')
@@ -248,6 +250,63 @@ test('setRole：仅管理插件；拒绝撤销最后一个 admin；可以重新�
     await rejectsCode(user.setRole(ADMIN, bob.id, 'user'), 'USER_LAST_ADMIN')
     assert.equal((await user.get(bob.id))?.role, 'admin')
     await rejectsCode(user.setRole(ADMIN, bob.id, 'root' as never), 'USER_ROLE_INVALID')
+  })
+})
+
+test('setStatus：不能封禁最后一个可用管理员；有第二个可用 admin 后可以', async () => {
+  await withUser(ADMIN_ONLY, async (user) => {
+    const alice = await user.create(ADMIN, { name: 'alice' }) // admin, enabled
+    const bob = await user.create(ADMIN, { name: 'bob' })
+
+    await rejectsCode(user.setStatus(ADMIN, alice.id, 'banned'), 'USER_LAST_ADMIN')
+    assert.equal((await user.get(alice.id))?.status, 'enabled', '失败不改变数据库状态')
+    assert.equal((await user.get(alice.id))?.role, 'admin')
+
+    // 先授予第二个可用 admin，再封禁原 admin 是允许的
+    await user.setRole(ADMIN, bob.id, 'admin')
+    assert.equal((await user.setStatus(ADMIN, alice.id, 'banned')).status, 'banned')
+
+    // 现在 bob 是唯一可用 admin，不能封禁
+    await rejectsCode(user.setStatus(ADMIN, bob.id, 'banned'), 'USER_LAST_ADMIN')
+    assert.equal((await user.get(bob.id))?.status, 'enabled')
+  })
+})
+
+test('remove：不能删除最后一个可用管理员；有第二个可用 admin 后可以', async () => {
+  await withUser(ADMIN_ONLY, async (user) => {
+    const alice = await user.create(ADMIN, { name: 'alice' })
+    const bob = await user.create(ADMIN, { name: 'bob' })
+
+    // 先余额、后管理员：余额非零时给余额错误
+    await user.adjustBalance(ADMIN, alice.id, 1n, '临时充值')
+    await rejectsCode(user.remove(ADMIN, alice.id), 'USER_BALANCE_NOT_ZERO')
+    await user.adjustBalance(ADMIN, alice.id, -1n, '退回')
+    await rejectsCode(user.remove(ADMIN, alice.id), 'USER_LAST_ADMIN')
+    assert.ok(await user.get(alice.id), '失败不改变数据库状态')
+
+    // 先授予第二个可用 admin，再删除原 admin 是允许的
+    await user.setRole(ADMIN, bob.id, 'admin')
+    assert.equal((await user.remove(ADMIN, alice.id)).id, alice.id)
+  })
+})
+
+test('被 banned 的 admin 不计入可用管理员：可降级 / 删除，唯一可用 admin 仍受保护', async () => {
+  await withUser(ADMIN_ONLY, async (user) => {
+    const alice = await user.create(ADMIN, { name: 'alice' })
+    const bob = await user.create(ADMIN, { name: 'bob', role: 'admin' })
+    assert.equal((await user.setStatus(ADMIN, bob.id, 'banned')).status, 'banned')
+
+    // 此时 bob 是 banned admin，不构成管理入口；alice 是唯一可用 admin
+    await rejectsCode(user.setStatus(ADMIN, alice.id, 'banned'), 'USER_LAST_ADMIN')
+    await rejectsCode(user.setRole(ADMIN, alice.id, 'user'), 'USER_LAST_ADMIN')
+    await rejectsCode(user.remove(ADMIN, alice.id), 'USER_LAST_ADMIN')
+
+    // 但 bob 可以被降级或删除：它本来就不是可用管理员
+    assert.equal((await user.setRole(ADMIN, bob.id, 'user')).role, 'user')
+    const carol = await user.create(ADMIN, { name: 'carol', role: 'admin' })
+    await user.setStatus(ADMIN, carol.id, 'banned')
+    assert.equal((await user.remove(ADMIN, carol.id)).id, carol.id)
+    assert.equal((await user.get(alice.id))?.role, 'admin')
   })
 })
 
