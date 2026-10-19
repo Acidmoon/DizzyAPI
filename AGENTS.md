@@ -9,8 +9,9 @@
 > 记录性的修正（现状、事实、坑）直接改；涉及设计判断的，先问 owner，
 > 不要凭本文件去推翻 owner 的决定或已在运行的代码。
 >
-> 当前状态：**设计阶段 + 控制面插件起步**。cordis 侧已有七个插件包（外加共用底座 kit）
-> 并全部装载运行（§4），Go 侧尚无代码；本文件中 Go 侧的一切路径与接口都是**目标**，不是现状。
+> 当前状态：**控制面插件 + 第一个 Go 数据面模块**。cordis 侧已有八个插件包（外加共用底座 kit）
+> 并全部装载运行（§4）；Go 侧已有 `modules/accountpriority`、最小 `cmd/gatewayd` 与控制桥（§5.2）。
+> 除这一块之外，本文件中 Go 侧的路径与接口仍是**目标**，不是现状；LLM 请求链路尚未实现。
 
 ---
 
@@ -295,6 +296,12 @@ owner 决策：`quota-check` 只做「是否允许发起」的**门槛判断**�
 | `account-select` | 阶段型 | 从池中选账号的策略 + 粘性会话映射（**选谁**） |
 | `transport` | 阶段型 | 发请求、收流、把结果与失败分类上报（**怎么送字节**） |
 
+> **落地记录（2026-10-19，owner 决定）**：`account-select` 由 `account-priority` 实现。
+> 它是双面的：作为 pre 阶段写 `Ctx.AccountRoute`（排序结果 + 选中项），
+> 同时暴露 Go 评分服务 `Score` / `Pick` 给其他模块查询。Go 代码在
+> `modules/accountpriority`；TS 管理插件是 `@dizzyapi/plugin-account-priority`。
+> 它**不写**账号运行时状态——健康、限流、额度仍归 `account-state`（D18）。
+
 **关键约束：`transport` 不感知「号池」这个概念。**
 它只接受「向某个上游、用某组凭据、发这个请求」这样的输入。
 收益：号池场景与普通 API key 频道共用同一个 transport 模块，一套代码两种情况。
@@ -328,6 +335,7 @@ sub2api 在拿到首个上游响应前把额度显示为 `unknown`，
 | `@dizzyapi/plugin-mailer` | `mailer` | 外部通讯模块 | 把消息发出去（邮件）；`log`（开发）与 `smtp` 两种投递 |
 | `@dizzyapi/plugin-credentials` | `credentials` | 控制面 | 秘密（授权码之类）的唯一存放处；别的插件只持有引用名 |
 | `@dizzyapi/plugin-identity` | `identity` | 控制面 | 上游账号（订阅 OAuth / API-key）的唯一写者；唯一用 refresh_token 换新令牌的地方 |
+| `@dizzyapi/plugin-account-priority` | `accountPriority` | 控制面 + 数据面监管 | 策略组的唯一写者；拉起/监管 gatewayd；经控制桥推送策略、提供预览与选择查询 |
 | `@dizzyapi/plugin-settings` | `settings` | 控制面 | 运行期可改的配置的唯一写者：`app.yml` 是基线，它写自己的覆盖文件 |
 | `@dizzyapi/plugin-admin` | `admin` | 开发者面板 | 插件 / 服务的静态依赖图、运行期概览、改设置、重启单个插件、退出整个进程 |
 | `@dizzyapi/plugin-kit` | — | 内部底座 | 配置 schema（手写 Standard Schema + 字段元数据）+ 原子写 JSON 存储；以上各包共用 |
@@ -350,6 +358,15 @@ sub2api 在拿到首个上游响应前把额度显示为 `unknown`，
 指数退避，`invalid_grant` 这类不可重试错误把账号转为 `needs_reauth`。它**不转发任何请求**
 （D17），transport 就绪后通过进程内 `getAccessToken(id)` 取用——该方法是秘密读口，
 不得挂到 HTTP 上。首期适配器：Claude 与 OpenAI/Codex；`custom` provider 只用于 API-key 账号。
+
+**`accountPriority` 是策略的写者、不是打分的执行者**：策略组保存在
+`data/account-priority.json`（TS 独占写入），启动时把整份策略经控制桥推给 Go；
+Go 的 `modules/accountpriority` 在请求链路里并发打分、排序、选中。TS 的
+`preview` / `pick` 是**管理面查询**（走控制桥），不是 LLM 请求转发；真正的链路调用
+发生在 Go 进程内部。默认策略是权重合计 100 的加权因子：health / quota / rateLimit /
+headroom / priority / capacity / success / latency / cost；硬过滤处理禁用、provider/kind/
+tag、健康、冷却与并发饱和。`transport` 在 Windows 开发机自动走回环 TCP，Linux 走 UDS
+（Node 的 `net` 连不上 Go 的 AF_UNIX socket）。
 
 ### 4.1 接口面
 
@@ -408,6 +425,23 @@ sub2api 在拿到首个上游响应前把额度显示为 `unknown`，
 `retryBaseMs` / `retryMaxMs` / `requestTimeoutMs`）；`dataPath` 与 `credentialPrefix`
 不可运行期改。刷新策略一改，identity 会软重启，账号与令牌从文件恢复，不需要额外处理。
 
+**`accountPriority`**（账号请求优先级：策略写入 + gatewayd 监管）
+
+| 面 | 方法 | 说明 |
+|---|---|---|
+| 读 | `status()` / `listStrategies()` / `getStrategy(id)` | 监管状态与策略组副本；不含任何秘密 |
+| 写 | `upsertStrategy()` / `removeStrategy()` | 策略组的唯一写入口；先校验、再落盘、再推送 |
+| 进程 | `start()` / `stop()` / `restart()` / `sync()` | 拉起/停止 gatewayd；`sync()` 重推当前策略 |
+| 查询 | `preview()` / `pick()` / `remoteStatus()` | **管理面**查询，经控制桥交给 Go；不是 LLM 请求路径 |
+| 事件 | `account-priority/child-state` / `strategies-updated` / `applied` / `error` | 通知性质，不承载正确性 |
+
+策略写入是「先落盘、后推送」：推送失败不会回滚已经保存的策略，但会把状态标成
+`degraded` 并发 `error` 事件；下一次启动或 `sync()` 会再推。`preview` 的候选上限是
+10000，`seed` 只影响 `weighted-random` 的可复现选择。可运行期改的是 `autoStart`、
+`startTimeoutMs` / `requestTimeoutMs` / `stopTimeoutMs`、`restartDelayMs` /
+`maxRestartDelayMs`；`dataPath` / `binaryPath` / `args` / `socketPath` / `transport` /
+`logFormat` 不可运行期改。
+
 **`admin`**（开发者面板，HTTP 服务）
 
 | 面 | 方法 | 说明 |
@@ -433,8 +467,12 @@ sub2api 在拿到首个上游响应前把额度显示为 `unknown`，
 ### 4.2 怎么跑、怎么验
 
 - `pnpm dev`：起 cordis（已带 `--import tsx`）。`pnpm start` 还没带，暂时跑不了 TS 源码。
+  `dev` 之前会自动跑 `predev` → `pnpm build:go`，所以修改 Go 代码后直接重启 dev 即可。
 - `pnpm test`：`node --import tsx --test "packages/*/test/*.test.ts"`。
 - `pnpm typecheck`：`tsc -p tsconfig.json`。
+- `pnpm build:go`：`go build -trimpath -o bin/ ./cmd/gatewayd`；Windows 产出 `bin/gatewayd.exe`，
+  其他平台产出 `bin/gatewayd`（`bin/` 已 gitignore）。TS 监管器会补 `.exe` 后缀。
+- `pnpm test:go`：`go test ./...`；`pnpm test:all` 跑 TS + Go 两套。
 - 插件要能按包名从 `app.yml` 加载，必须先在根 `package.json` 里以 `workspace:*` 声明依赖。
 - 面板：`pnpm dev` 之后打开日志里的 `面板已启动：http://127.0.0.1:7788/?t=…`。
   token 一次性；已经换到 cookie 的浏览器再点原地址仍然进得去（刷新页面的场景）。
@@ -445,6 +483,12 @@ sub2api 在拿到首个上游响应前把额度显示为 `unknown`，
   再改 `app.yml` 里这些键不会生效——要先用面板「恢复基线」。
 - **账号保管（2026-10-19）**：`identity` 已装载，账号记录在 `data/accounts.json`（当前 0 个），
   令牌在 `credentials` 的 `identity/<账号 id>` 下；首期只有 Claude 与 OpenAI/Codex 两个 RT 适配器。
+- **账号请求优先级（2026-10-19）**：`account-priority` 已装载，策略在
+  `data/account-priority.json`（首次启动写入内置 `default`）；`pnpm dev` 会拉起 gatewayd，
+  日志里能看到 `gatewayd 已就绪：tcp 127.0.0.1:<port>（pid …）` 与策略 revision。
+  Windows 开发机走回环 TCP，Linux 走 `./data/gatewayd.sock`。控制桥的地址由 gatewayd
+  在 stdout 打一行 `{"type":"ready",...}`，TS 读到后才连接。用面板的
+  `/api/settings` 可以看到 `account-priority` 命名空间与六个可写字段。
 
 ### 4.3 边界与已知偏离
 
@@ -471,6 +515,18 @@ sub2api 在拿到首个上游响应前把额度显示为 `unknown`，
 8. **`identity` 先以 cordis 插件落地**（owner 2026-10-19 决定）：D17 把 `identity` 定为 Go 能力模块，
    但 Go 侧尚未开工；当前 TS 实现只覆盖「账号保管 + RT 刷新」，账号落 `./data/accounts.json`。
    Go 与桥就绪后按 D8 迁到 Go，插件退化为门面；`getAccessToken` 是届时唯一的接缝。
+9. **`account-priority` 是第一个 Go 数据面模块**（owner 2026-10-19 决定）：打分与排序在
+   `modules/accountpriority`，TS 只做策略写入、进程监管与控制桥推送。策略组的唯一写者是
+   TS 插件，Go 只接收只读快照；它**不写**账号运行时状态。LLM 请求链路与 engine 尚未实现，
+   阶段目前只在 Go 单测里被直接调用，`Ctx.AccountCandidates` 还没有真正的生产者
+   （将来由 `account-state` 填）。
+10. **Windows 开发机走 TCP，不是 UDS**：Node 的 `net` 在 Windows 上只支持命名管道，
+    连不上 Go 的 AF_UNIX socket；`transport: auto` 因此在 Windows 选回环 TCP
+    （`127.0.0.1:<系统分配端口>`），Linux/macOS 选 UDS。生产目标是 UDS；TCP 分支只在
+    回环地址上允许，`bridge.NewServer` 会拒绝非回环监听。
+11. **cordis 异常退出时 gatewayd 可能留下**：正常卸载/重启会由插件优雅停止子进程；
+    进程崩溃或被强杀时 Go 侧按 D9 继续存活，但也不会自动退出。重启后会起一个新的
+    gatewayd（新端口），旧进程需要人工清理；孤儿检测尚未实现（§9）。
 
 ---
 
@@ -484,6 +540,7 @@ sub2api 在拿到首个上游响应前把额度显示为 `unknown`，
 | `quota` | 阶段 | `Quota`：`Check` / `Settle` | `quota.get` / `quota.grant` | ledger, db |
 | `audit` | 阶段 | `Auditor`：`Inspect` | `audit.rules` | — |
 | `account-select` | 阶段 | `Selector`：`Pick` / `Report` | `account.list` / `account.quarantine` | account-state |
+| `account-priority` | 阶段 + 能力 | `Scorer`：`Score` / `Pick` | `accountPriority.status` / `listStrategies` / `replaceStrategies` / `preview` / `pick` | account-state（将来） |
 | `transport` | 阶段 | `Transport`：`Send` | —（不在管理面暴露） | identity, tls-fingerprint |
 | `usage-log` | 阶段 | `Usage`：`Record` | `usage.query` | db |
 | `identity` | 能力 | `Identity`：`Credential` / `Refresh` | `pool.list` | db |
@@ -576,11 +633,79 @@ func Register(reg *contracts.Registry) {
 此时若描述符里仍写着 `quota-check`，**必须在启动或应用配置时显式失败**，
 而不是静默跳过 —— 静默跳过等于悄悄变成免费中转，代价是真金白银。
 
+### 5.2 Go 侧现状：账号优先级模块与最小 gatewayd（2026-10-19）
+
+这是 Go 侧的第一块代码，也是第一次真正使用 D4 / D16 的形态。
+
+**目录**
+
+| 路径 | 职责 |
+|---|---|
+| `go.mod` | module `github.com/Acidmoon/DizzyAPI`，Go 1.26.4 |
+| `contracts/` | 唯一共享包：`Phase` / `Action` / `Decision` / `Ctx` / `Stage` / `Registry`，以及 `AccountCandidate`、`ScoredAccount`、`ScoreResult` 等跨模块 DTO；只依赖标准库 |
+| `modules/accountpriority/` | 打分、排序、选择；只 import `contracts/` 与标准库 |
+| `internal/bridge/` | 控制桥服务端：长度前缀 JSON 帧、并发 handler、UDS/TCP 监听、优雅关闭 |
+| `cmd/gatewayd/` | 唯一组装点：注册模块、启动控制桥、打印 ready 行、等待信号/桥 shutdown |
+
+**模块 API**
+
+```go
+service, err := accountpriority.New(cfg)        // cfg 为空时启用内置 default 策略
+revision, err := service.Replace(cfg)           // 全量校验后原子换快照；绝不部分应用
+result, err := service.Score(req)               // 只排序，空池不报错
+picked, err := service.Pick(req)                // 没有可用账号时报 NO_ELIGIBLE_ACCOUNT
+result, picked, err := service.Evaluate(req)    // 阶段用：一次算出排序与选中项
+status := service.Status()                      // 计数、revision、默认策略
+list := service.Strategies()                    // 含禁用组的副本
+stage := accountpriority.NewStage(service)      // contracts.Stage：pre / required / needBody=false
+```
+
+阶段名是 `account-priority`。它读 `Ctx.Meta.Strategy` 与 `Ctx.AccountCandidates`，
+写 `Ctx.AccountRoute`（`Ranked` + `Picked`），不做任何 I/O、不修改账号状态。
+`contracts.Registry` 是最小注册表：`Service(name, impl)` + `Stage(stage)`；
+其他模块用 `reg.Lookup("account-priority")` 取实例，再断言成
+`contracts.AccountScorer`（`Score` / `Pick`）——这条路径只依赖 `contracts`，
+不需要 import 实现包。engine 尚未实现，所以没有按描述符调度阶段的代码。
+
+**打分模型（配置驱动，策略组）**
+
+1. **硬过滤**：禁用、`providers` / `kinds` / `tags`、健康策略
+   （`exclude_unhealthy` 默认 / `require_healthy` / `allow_all`）、
+   冷却（默认排除）、并发饱和（默认排除）。
+2. **因子**：`priority`、`capacity`、`health`、`quota`、`rateLimit`、`headroom`、
+   `success`、`latency`、`cost`、`freshness`。每个因子有 `weight`（0–100）、
+   可选 `direction`（min-max 因子：`asc` / `desc`）与 `unknown`（0–1，默认 0.5）。
+3. **归一化**：`health` / `quota` / `rateLimit` / `headroom` / `success` 是固定分数
+   因子（天然 0–1）；其余用候选集内的 min-max。方向 `asc` 取反。
+   未知值不参与 min-max，直接用 `unknown`——未知是一等状态（D17）。
+4. **得分**：`100 × Σ(weight × normalized) / Σ(weight)`；明细逐因子返回，
+   预览能回答「为什么选它 / 为什么没选它」。
+5. **排序**：分数降序；同分按 `tieBreaker`（默认 `priority`、`accountId`）。
+6. **选择**：`rank`（取第一）或 `weighted-random`（按分数加权，`seed` 可复现）。
+
+默认策略权重合计 100：health 30、quota 20、rateLimit 10、headroom 10、
+priority 10、capacity 10、success 5、latency 3（asc）、cost 2（asc）。
+
+**并发**
+
+- 策略快照用 `atomic.Pointer[snapshot]` 读取；`Score` / `Pick` / `Evaluate` 不加锁。
+- 写路径（`Replace`）用互斥锁串行化，编译好新快照后一次性原子替换。
+- 打分是请求内局部计算，没有 goroutine 扇出；并发来自同时到达的多个 LLM 请求。
+- 快照里的策略与因子是只读的；`Strategies()` 返回深拷贝，管理面改不到运行期状态。
+- 模块测试有 32 个并发读者 + 4 个并发写者的用例（本机 `-race` 不可用，见 §10）。
+
+**错误码**：`ACCOUNT_PRIORITY_INVALID_CONFIG` / `_STRATEGY_NOT_FOUND` /
+`_NO_ELIGIBLE_ACCOUNT` / `_INVALID_REQUEST` / `_TOO_MANY_CANDIDATES` /
+`_DUPLICATE_CANDIDATE`。桥会原样转发为 `error.code`。
+
 ---
 
 ## 6. 链路描述符
 
 **唯一写者：cordis。** Go 只校验与应用，绝不反向修改。
+
+> 现状（2026-10-19）：Go 侧只注册了 `account-priority` 一个阶段，engine、描述符校验
+> 与应用都还没实现；下面的 YAML 仍是**目标**，不是当前可运行的东西。
 
 ```yaml
 version: 8
@@ -664,6 +789,33 @@ cordis 据此校验后再下发，使管理台在结构上就无法生成非法�
 - 桥断连不是崩溃，是降级：要么按策略逐个阶段处理，要么整体降级并告警，
   绝不能让请求挂住。
 
+### 7.1 已实现的最小协议（2026-10-19）
+
+只实现了控制消息里的「生命周期 + 配置下发 + 查询」，没有 `descriptor.push`、
+`drain` / `resume` 或业务事件上行。LLM 请求路径消息（`stage.invoke` / `stage.cancel`）
+仍按 D3 不实现。
+
+- **传输**：Unix domain socket（Linux/macOS）；Windows 开发机用回环 TCP
+  （`127.0.0.1:0`，系统分配端口）。`bridge.NewServer` 拒绝非回环 TCP。
+- **就绪握手**：gatewayd 在 stdout 打印**一行** JSON
+  `{"type":"ready","transport":"unix|tcp","address":"…","pid":…,"protocolVersion":1}`；
+  TS 读到这行才知道该连哪里。日志全部走 stderr，stdout 只留 ready 行。
+- **帧**：4 字节大端长度 + UTF-8 JSON，单帧上限 16 MiB。
+  连接建立后 Go 先发 `{"type":"event","event":"hello","data":{"protocolVersion":1,…}}`；
+  TS 校验版本后才算连接成功。
+- **请求/响应**：`{"id","type":"request","method","params"}` →
+  `{"id","type":"response","ok":true,"result":…}` 或
+  `{"id","type":"response","ok":false,"error":{"code","message"}}`。
+- **方法**：`accountPriority.status` / `listStrategies` / `replaceStrategies` /
+  `preview` / `pick`，以及 `shutdown`。`replaceStrategies` 的 params 就是
+  `{"defaultStrategy"?, "strategies"}`；Go 校验不过就整份拒绝，返回稳定错误码。
+- **并发**：同一连接上的请求由 Go 侧 goroutine 并发处理（全局信号量 16），
+  响应按连接写锁串行化；控制消息不绑定客户端生命周期，不使用 `contracts.Ctx`。
+- **关闭**：TS 先发 `shutdown`（1 秒超时），Go 回 ack 后 100 ms 关闭监听并退出；
+  TS 再等 `stopTimeoutMs`，超时发 SIGTERM，再等 1 秒发 SIGKILL。
+- **未实现**：描述符下发、drain/resume、事件上行、多副本协调、鉴权
+  （桥只在回环/本地 socket 上，依赖操作系统权限）。
+
 ---
 
 ## 8. 开发与验证规则
@@ -703,6 +855,8 @@ CI 用 `go list -deps` 逐模块校验 `modules/*` 之间无相互 import，违�
 | 包月 / 订阅 | 倾向 v2 再做（new-api 的 `subscription.go` 有 48KB） |
 | 控制面数据的存储归属 | 用户表单 / 余额 / 凭证 / 会话 / 上游账号现在都在 cordis 侧（§4.3）；Go 与桥就绪后迁到 Go，插件退化为门面 |
 | API key 的签发与 key→user 映射 | 按 §5 归 Go 的 `auth` 模块（`key.*` 桥命令）；v1 没有 Go，所以 key 能力暂缺 |
+| `account-state` 与评分输入 | `account-priority` 已接受候选快照（`contracts.AccountCandidate`），但谁来填充 `Ctx.AccountCandidates` 还没定；短期由调用方/测试填，长期应由 `account-state` 提供 |
+| gatewayd 孤儿进程 | cordis 异常退出时 Go 进程按 D9 继续存活；是否需要父进程探测、外部守护或启动时清理旧实例尚未决定 |
 
 ---
 
@@ -862,6 +1016,34 @@ CI 用 `go list -deps` 逐模块校验 `modules/*` 之间无相互 import，违�
 - `internal/gateway/` 780 文件，`internal/provider/` 630，`internal/gui/` 1288
 - 有 LAN 共享能力（每客户端命名网关密钥，带日/周/月 token 与成本上限）
 
+**Go / gatewayd / 控制桥（本项目实测，2026-10-19）**
+
+- 本机是 `go1.26.4 windows/amd64`；`go test ./...` 与 `go vet ./...` 全绿。
+- **`go test -race` 在本机不可用**：任何带 `-race` 的测试二进制都以
+  `exit status 0xc0000139`（Windows `STATUS_ENTRYPOINT_NOT_FOUND`）退出，
+  与代码无关。并发用例因此是在不带 race detector 的情况下跑的；换 Linux CI 时应补跑
+  `go test -race ./...`。
+- `go build -trimpath -o bin/ ./cmd/gatewayd` 在 Windows 产出 `bin/gatewayd.exe`；
+  显式写文件名（`-o bin/gatewayd`）不会自动补 `.exe`，所以脚本输出到目录 `bin/`。
+- **Windows 的 Node `net` 连不上 Go 的 AF_UNIX socket**：Node 在 Windows 上把
+  `path` 当命名管道，libuv 不支持 AF_UNIX。`transport: auto` 因此在 Windows 选
+  回环 TCP，Linux/macOS 选 UDS；Go 的 bridge 单测对 UDS 分支用
+  `//go:build !windows` 单独覆盖。
+- `fiber.dispose()` 在 cordis 4 里返回 `void`（不是 Promise）；可以 `await`，
+  但**不能**对返回值调 `.catch()`——测试清理钩子踩过，报
+  「Cannot read properties of undefined (reading 'catch')」。要捕获异常就
+  `try { await fiber.dispose() } catch {}`。
+- Go 的 `flag` 接受 `--name=value`；TS 监管器就是按这个形式追加
+  `--transport=…` / `--socket=…` / `--listen=…` / `--log-format=…` 的。
+- 子进程输出用 `readline` 按行读；**stdout 只放 ready 一行**，日志走 stderr。
+  否则 ready 行会淹没在 slog 里，解析不可靠。
+- 真机端到端已验：`pnpm dev` → 日志出现
+  `gatewayd 已就绪：tcp 127.0.0.1:<port>（pid …）` 与策略 revision；面板
+  `/api/settings` 能看到 `account-priority` 命名空间；Ctrl-C 退出后子进程
+  `process.kill(pid, 0)` 报 ESRCH（已停止）。
+- 当前全量：`pnpm test` 164 个用例（163 通过 / 1 跳过），`pnpm typecheck` 干净；
+  `packages/account-priority` 自身 13 个用例全过，`go test ./...` 两个包全过。
+
 **本机环境**
 - `C:\Users\17740\.dsh\profiles\desktop` 是一个活的 cordis 应用实例：
   `package.json` 的 `dsh.profile.bundles` + 空的 `cordis.yml` + `cordis.patch.yml` 组装
@@ -877,6 +1059,20 @@ CI 用 `go list -deps` 逐模块校验 `modules/*` 之间无相互 import，违�
 
 - **数据面性能**：本项目未做任何压测。TS 单进程能扛多少并发流、UDS 每次往返延迟、
   描述符落盘 + push 双通道的冷启动顺序，全部未实测。
+- **`account-priority` 还没有跑过真实号池**：`Ctx.AccountCandidates` 目前只有测试和
+  管理面预览会填；`account-state` 尚未实现，LLM 请求 engine 也尚未实现，所以阶段还
+  没有被真实请求调用过。默认权重是首版取舍，没有用真实账号数据校准过。
+  **粘性会话映射尚未实现**（D17 把它归在 account-select 的职责里）：当前每次评分都是
+  无状态的，同一个会话两次请求可能选中不同账号。
+  `MaxCandidates = 10000` 只是校验上限，不是压测结论；`weighted-random` 只验过
+  可复现性，没验过长期分布是否均匀。
+- **控制桥只验证了单实例**：两个 cordis 实例会各自拉起 gatewayd，并同时写
+  `data/account-priority.json`（同一份 JSON 没有跨进程锁）。Windows 的 TCP 分支是
+  开发机妥协；Linux 上 Node ↔ Go 的 UDS 分支（含长路径、权限、残留 socket 清理）
+  没有在本机跑过。
+- **策略校验是两份实现**：TS 的 `validate.ts` 与 Go 的 `config.go` 各自校验同一套规则，
+  目前靠同样的人工用例约束，没有共享测试向量。规则改动时必须两边一起改；将来可以
+  用同一份 JSON fixture 同时喂给两边。
 - **SMTP 已做过两次真实投递**：2026-10-16 对 163（465 直连 TLS + 授权码认证）投递，
   服务器接收（250）但未确认进箱；2026-10-18 用同一配置（`smtp.163.com:465`）向 owner 邮箱
   实发测试邮件，**已确认收到**。仍未验证：STARTTLS（587）分支、认证失败 / 被拒收 / 超时

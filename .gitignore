@@ -1,5 +1,6 @@
 lib
 dist
+/bin
 /cache
 /data
 /temp

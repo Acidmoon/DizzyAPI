@@ -85,6 +85,17 @@
   config:
     dataPath: ./data/accounts.json
 
+# 账号请求优先级：策略组的唯一写者 + gatewayd 的监管者。
+# 打分与排序发生在 Go 侧（modules/accountpriority）；本插件只持有策略、拉起进程、
+# 经控制桥推送策略并提供预览/选择查询。它不在 LLM 请求热路径上。
+# binaryPath 由 pnpm build:go 产出（bin/ 已 gitignore）。
+- id: account-priority
+  name: '@dizzyapi/plugin-account-priority'
+  config:
+    dataPath: ./data/account-priority.json
+    binaryPath: ./bin/gatewayd
+    autoStart: true
+
 # 设置插件：运行期可以改的配置由它管（本文件是「人写的基线」，它只覆盖，从不回写本文件）。
 # 必须排在它要管的目标后面：启动重放时它才看得见那些 entry。
 - id: settings

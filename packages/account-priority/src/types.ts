@@ -1,0 +1,180 @@
+/**
+ * 账号优先级模块的跨进程类型。
+ *
+ * 这些形状与 Go 侧 `modules/accountpriority` 和 `contracts` 中的 JSON 一一对应。
+ * 两边各有校验：TS 在写盘前拒绝坏配置，Go 在应用前再校验一次（绝不部分应用）。
+ */
+
+export type AccountPriorityHealth = 'unknown' | 'healthy' | 'degraded' | 'unhealthy'
+export type StrategySelection = 'rank' | 'weighted-random'
+export type StrategyHealthPolicy = 'exclude_unhealthy' | 'require_healthy' | 'allow_all'
+export type StrategyDirection = 'asc' | 'desc'
+
+export interface FactorRule {
+  /** 0 表示不启用该因子。 */
+  readonly weight: number
+  /** 只对 min-max 因子有效：desc（默认）/ asc。 */
+  readonly direction?: StrategyDirection
+  /** 原始值未知时的归一化分数，默认 0.5。 */
+  readonly unknown?: number
+}
+
+export interface StrategyFilter {
+  readonly providers?: readonly string[]
+  readonly kinds?: readonly string[]
+  readonly tags?: Readonly<Record<string, string>>
+  readonly health?: StrategyHealthPolicy
+  readonly excludeCooling?: boolean
+  readonly excludeSaturated?: boolean
+}
+
+/** 与 Go 侧 StrategyGroup 同形。 */
+export interface StrategyGroup {
+  readonly id: string
+  readonly name?: string
+  readonly description?: string
+  readonly enabled?: boolean
+  readonly filter?: StrategyFilter
+  readonly factors: Readonly<Record<string, FactorRule>>
+  readonly selection?: StrategySelection
+  readonly tieBreaker?: readonly string[]
+  readonly maxCandidates?: number
+}
+
+/**
+ * 一个候选账号的快照。可空字段表达「未知」，不要用 0 冒充未知
+ * （AGENTS.md D17：未知必须是一等状态）。
+ */
+export interface AccountCandidate {
+  readonly accountId: string
+  readonly provider: string
+  readonly kind?: string
+  readonly disabled?: boolean
+  readonly priority?: number
+  readonly weight?: number
+  readonly health?: AccountPriorityHealth
+  readonly tags?: Readonly<Record<string, string>>
+  /** RFC3339 时间字符串。 */
+  readonly cooldownUntil?: string
+  readonly quotaRatio?: number
+  readonly rateLimitRatio?: number
+  readonly inFlight?: number
+  readonly concurrency?: number
+  /** RFC3339 时间字符串。 */
+  readonly lastUsedAt?: string
+  readonly successRate?: number
+  readonly latencyP95Ms?: number
+  readonly costMultiplier?: number
+}
+
+export interface ScoreRequest {
+  readonly strategy?: string
+  readonly candidates: readonly AccountCandidate[]
+  /** 只收窄返回列表，0 表示不额外限制。 */
+  readonly limit?: number
+  /** RFC3339；为空取 Go 侧当前时间。 */
+  readonly now?: string
+  /** weighted-random 的可复现种子；必须是安全整数。 */
+  readonly seed?: number
+}
+
+export interface ScoreFactor {
+  readonly name: string
+  readonly raw: number | null
+  readonly normalized: number
+  readonly weight: number
+  readonly contribution: number
+}
+
+export interface ScoredAccount {
+  readonly accountId: string
+  readonly score: number
+  readonly breakdown: readonly ScoreFactor[]
+}
+
+export interface ExcludedAccount {
+  readonly accountId: string
+  readonly reason: string
+}
+
+export interface ScoreResult {
+  readonly strategy: string
+  readonly revision: string
+  readonly evaluatedAt: string
+  readonly ranked: readonly ScoredAccount[]
+  readonly excluded?: readonly ExcludedAccount[]
+}
+
+export interface RemoteStatus {
+  readonly ready: boolean
+  readonly revision: string
+  readonly defaultStrategy: string
+  readonly strategies: number
+  readonly startedAt: string
+  readonly scored: number
+  readonly picked: number
+  readonly candidatesMax: number
+}
+
+export interface StrategyListResult {
+  readonly revision: string
+  readonly defaultStrategy: string
+  readonly strategies: readonly StrategyGroup[]
+}
+
+export interface ReplaceStrategiesResult {
+  readonly revision: string
+  readonly strategies: number
+  readonly defaultStrategy: string
+}
+
+/**
+ * TS 管理面看到的监管状态。它与 Go 的 RemoteStatus 不同：
+ * 前者描述「进程/桥接得怎么样」，后者描述「Go 模块内部的计数」。
+ */
+export type ChildState = 'stopped' | 'starting' | 'ready' | 'degraded' | 'stopping' | 'failed'
+
+export interface AccountPriorityStatus {
+  readonly state: ChildState
+  readonly pid: number | null
+  readonly transport: 'unix' | 'tcp' | null
+  readonly address: string | null
+  readonly bridgeConnected: boolean
+  readonly revision: string | null
+  readonly defaultStrategy: string | null
+  readonly strategies: number
+  readonly restarts: number
+  readonly lastError: string | null
+  readonly startedAt: string | null
+}
+
+export interface StrategyListSnapshot {
+  readonly revision: string | null
+  readonly defaultStrategy: string | null
+  readonly strategies: readonly StrategyGroup[]
+}
+
+/** 与 Go 侧 DefaultStrategy 保持一致的内置策略。 */
+export const DEFAULT_STRATEGY: StrategyGroup = {
+  id: 'default',
+  name: '默认',
+  enabled: true,
+  filter: {
+    health: 'exclude_unhealthy',
+    excludeCooling: true,
+    excludeSaturated: true,
+  },
+  factors: {
+    health: { weight: 30, unknown: 0.3 },
+    quota: { weight: 20 },
+    rateLimit: { weight: 10 },
+    headroom: { weight: 10 },
+    priority: { weight: 10 },
+    capacity: { weight: 10 },
+    success: { weight: 5 },
+    latency: { weight: 3, direction: 'asc' },
+    cost: { weight: 2, direction: 'asc' },
+  },
+  selection: 'rank',
+  tieBreaker: ['priority', 'accountId'],
+}

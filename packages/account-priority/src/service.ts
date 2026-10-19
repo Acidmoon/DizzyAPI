@@ -1,0 +1,617 @@
+/**
+ * 账号请求优先级管理插件（服务名 `accountPriority`）。
+ *
+ * 分工：
+ *   - **Go（gatewayd / modules/accountpriority）** 在 LLM 请求链路里并发打分、排序、选中账号；
+ *   - **本插件** 只做管理面：持有策略组（唯一写者）、拉起并监管 gatewayd、
+ *     把策略推给 Go、提供预览/选择查询。
+ *
+ * 本插件不在请求热路径上：`preview` / `pick` 是管理面查询，不是 LLM 请求转发；
+ * 真正的链路调用发生在 Go 进程内部（D1 / §2.3）。
+ */
+import { existsSync, unlinkSync } from 'node:fs'
+import { isAbsolute, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { Service, type Context, type Logger } from 'cordis'
+import {
+  describeError,
+  isIssueList,
+  type JsonStore,
+} from '@dizzyapi/plugin-kit'
+import {
+  ACCOUNT_PRIORITY_CONFIG_SCHEMA,
+  validateAccountPriorityConfig,
+  type AccountPriorityConfig,
+  type ResolvedAccountPriorityConfig,
+} from './config.ts'
+import { AccountPriorityError, isAccountPriorityError } from './errors.ts'
+import {
+  createAccountPriorityStore,
+  SNAPSHOT_VERSION,
+  type AccountPrioritySnapshot,
+} from './store.ts'
+import { GatewayProcess } from './supervisor.ts'
+import type { BridgeClient } from './bridge.ts'
+import { DEFAULT_STRATEGY } from './types.ts'
+import type {
+  AccountPriorityStatus,
+  ChildState,
+  RemoteStatus,
+  ReplaceStrategiesResult,
+  ScoreRequest,
+  ScoreResult,
+  ScoredAccount,
+  StrategyGroup,
+  StrategyListSnapshot,
+} from './types.ts'
+import {
+  MAX_STRATEGIES,
+  validateScoreRequest,
+  validateStrategyCollection,
+  validateStrategyGroup,
+} from './validate.ts'
+
+export class AccountPriorityService extends Service {
+  static Config = ACCOUNT_PRIORITY_CONFIG_SCHEMA
+
+  readonly config: ResolvedAccountPriorityConfig
+  private readonly store: JsonStore<AccountPrioritySnapshot>
+  private readonly logger: Logger
+
+  private strategies = new Map<string, StrategyGroup>()
+  private defaultStrategy: string | null = null
+  private ready = false
+  private queue: Promise<unknown> = Promise.resolve()
+
+  private gateway: GatewayProcess | undefined
+  private bridge: BridgeClient | undefined
+  private state: ChildState = 'stopped'
+  private pid: number | null = null
+  private activeTransport: 'unix' | 'tcp' | null = null
+  private address: string | null = null
+  private revision: string | null = null
+  private startedAt: string | null = null
+  private lastError: string | null = null
+  private restarts = 0
+  private launches = 0
+  private restartDelay: number
+  private restartTimer: NodeJS.Timeout | undefined
+  private stopping = false
+  private disposing = false
+
+  constructor(ctx: Context, config: AccountPriorityConfig | ResolvedAccountPriorityConfig = {}) {
+    super(ctx, 'accountPriority')
+    this.config = resolveConfig(config)
+    this.store = createAccountPriorityStore(resolveLocalPath(ctx, this.config.dataPath))
+    this.logger = ctx.logger('account-priority')
+    this.restartDelay = this.config.restartDelayMs
+  }
+
+  async *[Service.init](): AsyncGenerator<() => Promise<void>> {
+    await this.load()
+    this.ready = true
+    this.logger.info(
+      `账号优先级插件已装载：策略 ${this.strategies.size} 个；` +
+        `gatewayd ${this.config.binaryPath}；自动启动 ${this.config.autoStart ? '开' : '关'}`,
+    )
+
+    if (this.config.autoStart) {
+      try {
+        await this.launch()
+      } catch (error) {
+        // 不把整个 cordis 树拖垮：状态、日志与事件都已经记录，可以稍后 restart。
+        this.logger.error(`gatewayd 自动启动失败：${describeError(error)}`)
+      }
+    }
+
+    yield async () => {
+      this.disposing = true
+      this.clearRestartTimer()
+      try {
+        await this.exclusive(async () => {
+          await this.stopProcess()
+        })
+      } catch (error) {
+        this.logger.warn(`卸载时停止 gatewayd 失败：${describeError(error)}`)
+      }
+      if (this.activeTransport === 'unix') {
+        const socketPath = this.socketPath()
+        try {
+          unlinkSync(socketPath)
+        } catch {
+          // 文件可能已被 Go 侧删除。
+        }
+      }
+    }
+  }
+
+  // ───────────────────────────────── 读
+
+  /** 监管状态：进程、桥、已应用的 revision。 */
+  status(): AccountPriorityStatus {
+    return {
+      state: this.state,
+      pid: this.pid,
+      transport: this.activeTransport,
+      address: this.address,
+      bridgeConnected: this.bridge !== undefined,
+      revision: this.revision,
+      defaultStrategy: this.defaultStrategy,
+      strategies: this.strategies.size,
+      restarts: this.restarts,
+      lastError: this.lastError,
+      startedAt: this.startedAt,
+    }
+  }
+
+  /** 策略组的权威副本（TS 是唯一写者）。 */
+  listStrategies(): StrategyListSnapshot {
+    this.assertReady()
+    return {
+      revision: this.revision,
+      defaultStrategy: this.defaultStrategy,
+      strategies: [...this.strategies.values()].map((strategy) => structuredClone(strategy)),
+    }
+  }
+
+  getStrategy(id: string): StrategyGroup | undefined {
+    this.assertReady()
+    const strategy = this.strategies.get(id)
+    return strategy === undefined ? undefined : structuredClone(strategy)
+  }
+
+  // ───────────────────────────────── 写（策略组）
+
+  async upsertStrategy(input: StrategyGroup): Promise<StrategyGroup> {
+    this.assertReady()
+    const strategy = validateStrategyGroup(input)
+    return this.exclusive(async () => {
+      const next = new Map(this.strategies)
+      if (!next.has(strategy.id) && next.size >= MAX_STRATEGIES) {
+        throw new AccountPriorityError(
+          'ACCOUNT_PRIORITY_STRATEGY_INVALID',
+          `策略组最多 ${MAX_STRATEGIES} 个`,
+        )
+      }
+      next.set(strategy.id, strategy)
+
+      const preferred = this.defaultStrategy === strategy.id ? strategy.id : this.defaultStrategy
+      const chosenDefault = chooseDefault(next, preferred)
+      const validated = validateStrategyCollection([...next.values()], chosenDefault)
+      await this.commit(next, validated.defaultStrategy)
+
+      this.ctx.emit('account-priority/strategies-updated', strategy.id, 'upsert')
+      await this.apply()
+      return structuredClone(strategy)
+    })
+  }
+
+  async removeStrategy(id: string): Promise<void> {
+    this.assertReady()
+    return this.exclusive(async () => {
+      if (!this.strategies.has(id)) {
+        throw new AccountPriorityError(
+          'ACCOUNT_PRIORITY_STRATEGY_NOT_FOUND',
+          `策略组不存在：${id}`,
+        )
+      }
+      const next = new Map(this.strategies)
+      next.delete(id)
+      if (next.size === 0) {
+        throw new AccountPriorityError(
+          'ACCOUNT_PRIORITY_STRATEGY_INVALID',
+          '至少要保留一个策略组',
+        )
+      }
+      const preferred = this.defaultStrategy === id ? null : this.defaultStrategy
+      const chosenDefault = chooseDefault(next, preferred)
+      const validated = validateStrategyCollection([...next.values()], chosenDefault)
+      await this.commit(next, validated.defaultStrategy)
+
+      this.ctx.emit('account-priority/strategies-updated', id, 'remove')
+      await this.apply()
+    })
+  }
+
+  // ───────────────────────────────── 子进程生命周期
+
+  /** 显式启动 gatewayd（autoStart=false 或启动失败后使用）。 */
+  async start(): Promise<AccountPriorityStatus> {
+    this.assertReady()
+    return this.exclusive(async () => {
+      this.stopping = false
+      await this.launch()
+      return this.status()
+    })
+  }
+
+  /** 优雅停止 gatewayd；策略组仍保留在内存与磁盘里。 */
+  async stop(): Promise<AccountPriorityStatus> {
+    return this.exclusive(async () => {
+      await this.stopProcess()
+      return this.status()
+    })
+  }
+
+  /** 停止再启动，并在就绪后重新推送当前策略。 */
+  async restart(): Promise<AccountPriorityStatus> {
+    this.assertReady()
+    return this.exclusive(async () => {
+      await this.stopProcess()
+      this.stopping = false
+      await this.launch()
+      return this.status()
+    })
+  }
+
+  /** 把当前策略再推一次；桥断线恢复后也可以手动调用。 */
+  async sync(): Promise<void> {
+    await this.exclusive(async () => {
+      await this.apply()
+    })
+  }
+
+  // ───────────────────────────────── 管理面查询（经桥）
+
+  /** 预览排序与可解释明细。 */
+  async preview(request: ScoreRequest): Promise<ScoreResult> {
+    const parsed = validateScoreRequest(request)
+    return this.requireBridge().request<ScoreResult>(
+      'accountPriority.preview',
+      parsed,
+      this.config.requestTimeoutMs,
+    )
+  }
+
+  /** 按策略选中一个账号。 */
+  async pick(request: ScoreRequest): Promise<ScoredAccount> {
+    const parsed = validateScoreRequest(request)
+    return this.requireBridge().request<ScoredAccount>(
+      'accountPriority.pick',
+      parsed,
+      this.config.requestTimeoutMs,
+    )
+  }
+
+  /** Go 模块自己的运行期计数（与 status() 的监管状态不同）。 */
+  async remoteStatus(): Promise<RemoteStatus> {
+    return this.requireBridge().request<RemoteStatus>(
+      'accountPriority.status',
+      {},
+      this.config.requestTimeoutMs,
+    )
+  }
+
+  // ───────────────────────────────── 内部：加载与持久化
+
+  private async load(): Promise<void> {
+    let snapshot: AccountPrioritySnapshot
+    try {
+      snapshot = await this.store.read()
+    } catch (error) {
+      if (
+        isAccountPriorityError(error) &&
+        error.code === 'ACCOUNT_PRIORITY_STORE_CORRUPT'
+      ) {
+        throw error
+      }
+      throw new AccountPriorityError(
+        'ACCOUNT_PRIORITY_STORE_CORRUPT',
+        `读取策略文件失败：${describeError(error)}`,
+      )
+    }
+
+    let strategies = [...snapshot.strategies]
+    let defaultStrategy = snapshot.defaultStrategy
+    if (strategies.length === 0) {
+      strategies = [structuredClone(DEFAULT_STRATEGY)]
+      defaultStrategy = DEFAULT_STRATEGY.id
+      try {
+        await this.store.write({
+          version: SNAPSHOT_VERSION,
+          defaultStrategy,
+          strategies,
+        })
+      } catch (error) {
+        throw new AccountPriorityError(
+          'ACCOUNT_PRIORITY_STORE_WRITE_FAILED',
+          `初始化默认策略失败：${describeError(error)}`,
+        )
+      }
+    }
+
+    const validated = validateStrategyCollection(strategies, defaultStrategy, {
+      code: 'ACCOUNT_PRIORITY_STORE_CORRUPT',
+      label: '策略存储',
+    })
+    this.strategies = new Map(validated.strategies.map((strategy) => [strategy.id, strategy]))
+    this.defaultStrategy = validated.defaultStrategy
+  }
+
+  private async commit(
+    next: Map<string, StrategyGroup>,
+    defaultStrategy: string | null,
+  ): Promise<void> {
+    const sorted = [...next.values()].sort((a, b) => a.id.localeCompare(b.id))
+    try {
+      await this.store.write({
+        version: SNAPSHOT_VERSION,
+        defaultStrategy,
+        strategies: sorted,
+      })
+    } catch (error) {
+      throw new AccountPriorityError(
+        'ACCOUNT_PRIORITY_STORE_WRITE_FAILED',
+        `策略写入失败：${describeError(error)}`,
+      )
+    }
+    this.strategies = new Map(sorted.map((strategy) => [strategy.id, strategy]))
+    this.defaultStrategy = defaultStrategy
+  }
+
+  // ───────────────────────────────── 内部：进程与桥
+
+  private async launch(): Promise<void> {
+    if (this.gateway !== undefined) return
+    this.assertReady()
+
+    const executable = this.resolveExecutable()
+    const transport = this.resolveTransport()
+    const socketPath = this.socketPath()
+    if (transport === 'unix' && Buffer.byteLength(socketPath) > 100) {
+      throw new AccountPriorityError(
+        'ACCOUNT_PRIORITY_START_FAILED',
+        `Unix socket 路径过长（${Buffer.byteLength(socketPath)} 字节，上限约 100）：${socketPath}；` +
+          '请缩短路径或把 transport 配成 tcp',
+      )
+    }
+
+    this.setState('starting', null)
+    let gateway: GatewayProcess
+    gateway = new GatewayProcess({
+      executable,
+      args: this.config.args,
+      transport,
+      socketPath,
+      startTimeoutMs: this.config.startTimeoutMs,
+      requestTimeoutMs: this.config.requestTimeoutMs,
+      logFormat: this.config.logFormat,
+      onLog: (stream, line) => {
+        if (stream === 'stdout') {
+          this.logger.debug(`gatewayd: ${line}`)
+          return
+        }
+        // gatewayd 的 slog 全部写 stderr；只有真正的 WARN/ERROR 才升级为 warn。
+        if (line.includes('level=WARN') || line.includes('level=ERROR')) {
+          this.logger.warn(`gatewayd: ${line}`)
+        } else {
+          this.logger.info(`gatewayd: ${line}`)
+        }
+      },
+      onExit: (code, signal, error) => this.handleExit(gateway, code, signal, error),
+    })
+    this.gateway = gateway
+
+    try {
+      const started = await gateway.start()
+      if (this.stopping || this.disposing) {
+        await gateway.stop(1_000)
+        if (this.gateway === gateway) this.gateway = undefined
+        return
+      }
+
+      this.bridge = started.bridge
+      this.pid = started.ready.pid ?? started.pid
+      this.activeTransport = started.ready.transport
+      this.address = started.ready.address
+      this.startedAt = new Date().toISOString()
+      this.launches += 1
+      if (this.launches > 1) this.restarts += 1
+      this.restartDelay = this.config.restartDelayMs
+      this.setState('ready', null)
+      this.logger.info(
+        `gatewayd 已就绪：${started.ready.transport} ${started.ready.address}（pid ${String(this.pid)}）`,
+      )
+      await this.apply()
+    } catch (error) {
+      if (this.gateway === gateway) this.gateway = undefined
+      this.bridge = undefined
+      this.pid = null
+      await gateway.stop(1_000).catch(() => undefined)
+      const wrapped = isAccountPriorityError(error)
+        ? error
+        : new AccountPriorityError('ACCOUNT_PRIORITY_START_FAILED', describeError(error))
+      this.setState('failed', wrapped.message)
+      throw wrapped
+    }
+  }
+
+  private async stopProcess(): Promise<void> {
+    this.stopping = true
+    this.clearRestartTimer()
+    const gateway = this.gateway
+    this.gateway = undefined
+    if (gateway !== undefined) {
+      try {
+        await gateway.stop(this.config.stopTimeoutMs)
+      } catch (error) {
+        this.logger.warn(`停止 gatewayd 失败：${describeError(error)}`)
+      }
+    }
+    this.bridge = undefined
+    this.pid = null
+    this.revision = null
+    this.setState('stopped', null)
+  }
+
+  private handleExit(
+    source: GatewayProcess,
+    code: number | null,
+    signal: NodeJS.Signals | null,
+    error: Error | null,
+  ): void {
+    if (this.gateway !== source) return
+    if (this.stopping || this.disposing) return
+
+    this.gateway = undefined
+    this.bridge = undefined
+    this.pid = null
+    this.revision = null
+    const detail =
+      error !== null
+        ? describeError(error)
+        : `gatewayd 退出（code=${String(code)}, signal=${String(signal)}）`
+    this.setState(this.config.autoStart ? 'degraded' : 'failed', detail)
+    this.logger.warn(detail)
+    this.ctx.emit('account-priority/error', 'ACCOUNT_PRIORITY_CHILD_EXITED', detail)
+    this.scheduleRestart()
+  }
+
+  private scheduleRestart(): void {
+    if (this.disposing || !this.config.autoStart || this.restartTimer !== undefined) return
+    const delay = this.restartDelay
+    this.restartDelay = Math.min(this.restartDelay * 2, this.config.maxRestartDelayMs)
+    this.restartTimer = setTimeout(() => {
+      this.restartTimer = undefined
+      void this.exclusive(async () => {
+        if (this.disposing || this.gateway !== undefined) return
+        this.stopping = false
+        try {
+          await this.launch()
+        } catch (error) {
+          this.logger.warn(`重启 gatewayd 失败：${describeError(error)}`)
+          this.scheduleRestart()
+        }
+      })
+    }, delay)
+    this.restartTimer.unref?.()
+  }
+
+  private clearRestartTimer(): void {
+    if (this.restartTimer !== undefined) {
+      clearTimeout(this.restartTimer)
+      this.restartTimer = undefined
+    }
+  }
+
+  private async apply(): Promise<void> {
+    const bridge = this.bridge
+    if (bridge === undefined) return
+    try {
+      const result = await bridge.request<ReplaceStrategiesResult>(
+        'accountPriority.replaceStrategies',
+        this.buildConfig(),
+        this.config.requestTimeoutMs,
+      )
+      this.revision = result.revision
+      if (this.state !== 'ready') this.setState('ready', null)
+      this.ctx.emit('account-priority/applied', result.revision)
+    } catch (error) {
+      const message = describeError(error)
+      this.setState('degraded', message)
+      const code = isAccountPriorityError(error)
+        ? error.code
+        : 'ACCOUNT_PRIORITY_REQUEST_FAILED'
+      this.logger.warn(`推送策略失败：${message}`)
+      this.ctx.emit('account-priority/error', code, message)
+    }
+  }
+
+  private buildConfig(): { defaultStrategy?: string; strategies: readonly StrategyGroup[] } {
+    const strategies = [...this.strategies.values()]
+    return {
+      ...(this.defaultStrategy === null ? {} : { defaultStrategy: this.defaultStrategy }),
+      strategies,
+    }
+  }
+
+  private requireBridge(): BridgeClient {
+    if (this.bridge === undefined) {
+      throw new AccountPriorityError(
+        'ACCOUNT_PRIORITY_NOT_READY',
+        `gatewayd 未就绪（当前状态：${this.state}）`,
+      )
+    }
+    return this.bridge
+  }
+
+  private resolveExecutable(): string {
+    const configured = resolveLocalPath(this.ctx, this.config.binaryPath)
+    if (configured === undefined) {
+      throw new AccountPriorityError('ACCOUNT_PRIORITY_BINARY_MISSING', 'binaryPath 不能为空')
+    }
+    if (existsSync(configured)) return configured
+    if (process.platform === 'win32' && !configured.toLowerCase().endsWith('.exe')) {
+      const withExe = `${configured}.exe`
+      if (existsSync(withExe)) return withExe
+    }
+    throw new AccountPriorityError(
+      'ACCOUNT_PRIORITY_BINARY_MISSING',
+      `找不到 gatewayd：${configured}（先运行 pnpm build:go）`,
+    )
+  }
+
+  private resolveTransport(): 'unix' | 'tcp' {
+    if (this.config.transport === 'auto') {
+      return process.platform === 'win32' ? 'tcp' : 'unix'
+    }
+    return this.config.transport
+  }
+
+  private socketPath(): string {
+    return resolveLocalPath(this.ctx, this.config.socketPath) as string
+  }
+
+  private setState(state: ChildState, error: string | null): void {
+    this.state = state
+    this.lastError = error
+    this.ctx.emit('account-priority/child-state', state, error)
+  }
+
+  private assertReady(): void {
+    if (!this.ready) {
+      throw new AccountPriorityError('ACCOUNT_PRIORITY_NOT_READY', '账号优先级插件尚未装载完成')
+    }
+  }
+
+  private exclusive<T>(task: () => Promise<T>): Promise<T> {
+    const result = this.queue.then(task, task)
+    this.queue = result.then(
+      () => undefined,
+      () => undefined,
+    )
+    return result
+  }
+}
+
+function resolveConfig(
+  config: AccountPriorityConfig | ResolvedAccountPriorityConfig,
+): ResolvedAccountPriorityConfig {
+  const result = validateAccountPriorityConfig(config)
+  if (isIssueList(result)) {
+    throw new AccountPriorityError(
+      'ACCOUNT_PRIORITY_INVALID_ARGUMENT',
+      `账号优先级配置不合法：${result.map((item) => item.message).join('；')}`,
+    )
+  }
+  return result
+}
+
+function resolveLocalPath(ctx: Context, path: string | undefined): string | undefined {
+  if (path === undefined || isAbsolute(path)) return path
+  const base = ctx.baseUrl ? fileURLToPath(ctx.baseUrl) : process.cwd()
+  return resolve(base, path)
+}
+
+function chooseDefault(
+  strategies: Map<string, StrategyGroup>,
+  preferred: string | null,
+): string | null {
+  const firstEnabled =
+    [...strategies.values()].find((strategy) => strategy.enabled !== false)?.id ?? null
+  if (preferred !== null) {
+    const target = strategies.get(preferred)
+    if (target !== undefined && target.enabled !== false) return preferred
+  }
+  return firstEnabled
+}
