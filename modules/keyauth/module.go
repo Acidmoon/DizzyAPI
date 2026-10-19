@@ -1,11 +1,14 @@
-// Package keyauth 是 LLM 请求的 key-auth 最小占位实现。
+// Package keyauth 是 LLM 请求的 key-auth 阶段。
 //
-// 真正的 API key 签发 / 吊销 / key→user 映射归将来的 Go auth 模块（AGENTS.md §5）。
-// 本模块只做这一刀：
-//   - 从 Authorization: Bearer 解析调用方密钥；
-//   - 配置了静态密钥时做常量时间比对，否则接受任何非空密钥（明确标记为占位）；
-//   - 写 Ctx.Key 与 Ctx.Profile，供后续阶段使用；
-//   - 拒绝时返回 401，由 engine 统一渲染。
+// 两种模式，按「Go 侧是否已经收到过至少一份 keys.replace 快照」切换：
+//
+//  1. **动态 API key（生产路径）**：`Config.Verifier.Ready()` 为 true 时，只认
+//     快照里的 key；未命中直接 401，**永不回退**到环境变量或占位模式。
+//     合法的空快照（用户删光 key / 全部停用 / 用户封禁）同样是 Ready=true：
+//     此时拒绝全部 key，而不是放开（D7：fail-closed）。
+//  2. **静态 key / 占位（尚未收到快照的启动/降级路径）**：Ready=false 时沿用
+//     `DIZZYAPI_API_KEYS`；未配置时接受任何非空 Bearer，并在 Describe 里明确
+//     标注为占位。这只适合 gatewayd 刚启动、TS 还没来得及推送的时间窗。
 //
 // 它不记录、不回显、不向上游转发密钥。
 package keyauth
@@ -32,17 +35,20 @@ const (
 
 // Config 是 key-auth 的启动配置。
 //
-// Keys 为空表示占位模式：任何非空 Bearer 密钥都放行。这只适合开发；
-// 生产必须由真正的 auth 模块替换（见 AGENTS.md §5）。
+// Keys 是静态环境变量 key（尚未收到快照的启动/降级路径）；Verifier 是控制桥
+// 推来的动态哈希快照（生产路径）。一旦 Verifier.Ready() 为 true，即使快照为空，
+// 静态 key 也完全失效。
 type Config struct {
-	Keys    []string
-	Profile string
+	Keys     []string
+	Profile  string
+	Verifier contracts.APIKeyVerifier
 }
 
-// Stage 是 pre 相位的最小鉴权阶段。
+// Stage 是 pre 相位的鉴权阶段。
 type Stage struct {
-	keys    []string
-	profile string
+	keys     []string
+	profile  string
+	verifier contracts.APIKeyVerifier
 }
 
 // New 构造阶段。空密钥会被忽略。
@@ -57,11 +63,12 @@ func New(cfg Config) *Stage {
 			keys = append(keys, trimmed)
 		}
 	}
-	return &Stage{keys: keys, profile: profile}
+	return &Stage{keys: keys, profile: profile, verifier: cfg.Verifier}
 }
 
 // Placeholder 表示是否处于「接受任何非空密钥」的占位模式。
-func (s *Stage) Placeholder() bool { return len(s.keys) == 0 }
+// 只要收到过快照（即使为空），就永远不是占位模式。
+func (s *Stage) Placeholder() bool { return len(s.keys) == 0 && !s.hasSnapshot() }
 
 // Register 把 key-auth 阶段挂到组合根上。
 func Register(reg *contracts.Registry, cfg Config) *Stage {
@@ -86,6 +93,28 @@ func (s *Stage) Run(ctx *contracts.Ctx) (contracts.Decision, error) {
 		return contracts.Decision{}, err
 	}
 
+	// 动态快照优先，且绝不回退：只要收到过快照，环境变量 key 与占位模式都失效。
+	// 空快照同样走这里——Verify 必然 false，于是全部请求 401（fail-closed）。
+	if s.hasSnapshot() {
+		record, ok := s.verifier.Verify(token)
+		if !ok {
+			return contracts.Decision{}, contracts.Errorf(http.StatusUnauthorized, "INVALID_API_KEY", "API key 无效")
+		}
+		profile := strings.TrimSpace(record.Profile)
+		if profile == "" {
+			profile = s.profile
+		}
+		ctx.Key = &contracts.APIKey{
+			ID:      record.KeyID,
+			KeyID:   record.KeyID,
+			UserID:  record.UserID,
+			Name:    record.Name,
+			Profile: profile,
+		}
+		ctx.Profile = profile
+		return contracts.Decision{Action: contracts.ActionContinue}, nil
+	}
+
 	if len(s.keys) > 0 && !s.matches(token) {
 		return contracts.Decision{}, contracts.Errorf(http.StatusUnauthorized, "INVALID_API_KEY", "API key 无效")
 	}
@@ -93,6 +122,12 @@ func (s *Stage) Run(ctx *contracts.Ctx) (contracts.Decision, error) {
 	ctx.Key = &contracts.APIKey{ID: keyID(token), Profile: s.profile}
 	ctx.Profile = s.profile
 	return contracts.Decision{Action: contracts.ActionContinue}, nil
+}
+
+// hasSnapshot 表示动态模式是否已经接管。
+// 不能用 Count() > 0 判断：合法的空快照也必须 fail-closed。
+func (s *Stage) hasSnapshot() bool {
+	return s.verifier != nil && s.verifier.Ready()
 }
 
 func bearerToken(headers http.Header) (string, error) {
@@ -130,8 +165,24 @@ func keyID(token string) string {
 
 // Describe 是给人看的启动信息（不含密钥）。
 func (s *Stage) Describe() string {
-	if s.Placeholder() {
-		return fmt.Sprintf("key-auth 占位模式：接受任何非空 Bearer key，profile=%s", s.profile)
+	if s.hasSnapshot() {
+		count := s.verifier.Count()
+		if count == 0 {
+			return "key-auth：已收到空 API key 快照（控制桥）；合法地没有可用 key，拒绝全部请求"
+		}
+		return fmt.Sprintf(
+			"key-auth：动态 API key 快照（%d 个，来自控制桥）；静态 key / 占位模式已停用",
+			count,
+		)
 	}
-	return fmt.Sprintf("key-auth：%d 个静态 key，profile=%s", len(s.keys), s.profile)
+	if s.Placeholder() {
+		return fmt.Sprintf(
+			"key-auth 占位模式（尚未收到控制桥快照）：接受任何非空 Bearer key，profile=%s",
+			s.profile,
+		)
+	}
+	return fmt.Sprintf(
+		"key-auth：%d 个静态 key，profile=%s（尚未收到控制桥快照）",
+		len(s.keys), s.profile,
+	)
 }

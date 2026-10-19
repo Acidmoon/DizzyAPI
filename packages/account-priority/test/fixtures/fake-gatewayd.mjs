@@ -50,6 +50,9 @@ function run() {
   let defaultStrategy = 'default'
   let accounts = []
   let accountsRevision = 0
+  let keys = []
+  let keysRevision = 0
+  let keysGeneration = null
 
   const server = net.createServer((socket) => {
     let buffer = Buffer.alloc(0)
@@ -132,6 +135,8 @@ function run() {
           picked: 0,
           candidatesMax: 10_000,
           accounts: accounts.length,
+          keys: keys.length,
+          keysGeneration,
         })
         return
 
@@ -183,6 +188,41 @@ function run() {
           revision: `fake-accounts-${accountsRevision}`,
           generation: '',
           accounts: accounts.length,
+          updatedAt: new Date().toISOString(),
+        })
+        return
+
+      case 'keys.replace': {
+        const params = request.params ?? {}
+        keys = Array.isArray(params.keys) ? params.keys : []
+        keysGeneration = typeof params.generation === 'number' ? params.generation : null
+        // 测试替身也检查形状：TS 只能推最小字段，任何多余字段都算失败。
+        const allowed = ['keyId', 'userId', 'keyHash', 'profile', 'name']
+        for (const key of keys) {
+          for (const field of Object.keys(key)) {
+            if (!allowed.includes(field)) {
+              respondError(socket, request.id, 'KEYS_INVALID_KEY', `多余的字段 ${field}`)
+              return
+            }
+          }
+          if (typeof key.keyHash !== 'string' || key.keyHash.length !== 64) {
+            respondError(socket, request.id, 'KEYS_INVALID_KEY', 'keyHash 形状不对')
+            return
+          }
+        }
+        keysRevision += 1
+        respond(socket, request.id, {
+          revision: `fake-keys-${keysRevision}`,
+          keys: keys.length,
+          updatedAt: new Date().toISOString(),
+        })
+        return
+      }
+
+      case 'keys.status':
+        respond(socket, request.id, {
+          revision: `fake-keys-${keysRevision}`,
+          keys: keys.length,
           updatedAt: new Date().toISOString(),
         })
         return

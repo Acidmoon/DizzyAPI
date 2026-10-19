@@ -148,6 +148,40 @@ export interface GatewayAccountsResult {
   readonly updatedAt: string
 }
 
+/**
+ * api-key → Go 的只读哈希快照。
+ *
+ * 帧里只有 sha256 哈希，没有明文或掩码；响应、日志与状态查询都不得回显 keys。
+ * 权威数据仍在 TS 的 api-key 插件（SQLite）里。
+ */
+export interface GatewayKeySnapshot {
+  readonly version: 1
+  readonly generation: number
+  readonly keys: readonly GatewayKey[]
+}
+
+export interface GatewayKey {
+  readonly keyId: string
+  readonly userId: number
+  readonly keyHash: string
+  readonly profile: string
+  readonly name: string
+}
+
+/** Go 对 keys.replace 的确认：只有 revision / 计数 / 时间。 */
+export interface GatewayKeysResult {
+  readonly revision: string
+  readonly keys: number
+  readonly updatedAt: string
+}
+
+/** Go 的 keys.status 响应；同样不含哈希。 */
+export interface GatewayKeysStatus {
+  readonly revision: string
+  readonly keys: number
+  readonly updatedAt: string
+}
+
 export interface StrategyListResult {
   readonly revision: string
   readonly defaultStrategy: string
@@ -179,6 +213,10 @@ export interface AccountPriorityStatus {
   readonly accounts: number
   /** Go 侧账号快照的 revision（内容哈希）。 */
   readonly accountsRevision: string | null
+  /** 最近一次成功推送给 Go 的 API key 数量。 */
+  readonly keys: number
+  /** Go 侧 API key 快照的 revision（内容哈希）。 */
+  readonly keysRevision: string | null
   readonly restarts: number
   readonly lastError: string | null
   readonly startedAt: string | null
