@@ -19,3 +19,6 @@ tsconfig.tsbuildinfo
 *.ntvs*
 *.njsproj
 *.sln
+
+# 前端浏览器侧代码在 assets/lib/ 下；上面的 `lib` 规则会把它当构建产物忽略。
+!packages/console/assets/lib/

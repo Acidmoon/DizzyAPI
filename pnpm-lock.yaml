@@ -47,6 +47,9 @@ importers:
       '@dizzyapi/plugin-credentials':
         specifier: workspace:*
         version: link:packages/credentials
+      '@dizzyapi/plugin-frontend':
+        specifier: workspace:*
+        version: link:packages/console
       '@dizzyapi/plugin-identity':
         specifier: workspace:*
         version: link:packages/identity
@@ -118,6 +121,15 @@ importers:
       '@dizzyapi/plugin-user':
         specifier: workspace:*
         version: link:../user
+      cordis:
+        specifier: ^4.0.0-rc.11
+        version: 4.0.0-rc.11(@cordisjs/plugin-include@1.1.1)(@cordisjs/plugin-loader@1.0.0-rc.8)
+
+  packages/console:
+    dependencies:
+      '@dizzyapi/plugin-kit':
+        specifier: workspace:*
+        version: link:../kit
       cordis:
         specifier: ^4.0.0-rc.11
         version: 4.0.0-rc.11(@cordisjs/plugin-include@1.1.1)(@cordisjs/plugin-loader@1.0.0-rc.8)

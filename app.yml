@@ -96,6 +96,17 @@
     binaryPath: ./bin/gatewayd
     autoStart: true
 
+# 前端宿主：SPA 静态资源的版本化安装、原子切换与回滚，以及页面 / 设置卡 / 插槽清单。
+# 它不监听 HTTP：manifest.json 与版本目录由未来的 Go httpapi 或反向代理直接读盘发出去。
+# 开发时用 `pnpm preview:console` 看 mock 数据的预览（只绑 127.0.0.1，不经过这个 entry）。
+- id: frontend
+  name: '@dizzyapi/plugin-frontend'
+  config:
+    dataPath: ./data/frontend
+    publicBase: /assets/frontend
+    apiBase: /api
+    mode: rest
+
 # 设置插件：运行期可以改的配置由它管（本文件是「人写的基线」，它只覆盖，从不回写本文件）。
 # 必须排在它要管的目标后面：启动重放时它才看得见那些 entry。
 - id: settings

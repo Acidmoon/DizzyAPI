@@ -14,7 +14,8 @@
     "test": "node --import tsx --test \"packages/*/test/*.test.ts\"",
     "test:go": "go test ./...",
     "test:all": "pnpm test && pnpm test:go",
-    "typecheck": "tsc -p tsconfig.json"
+    "preview:console": "node --import tsx packages/console/src/preview-main.ts",
+    "typecheck": "tsc -p tsconfig.json && tsc -p packages/console/tsconfig.json"
   },
   "dependencies": {
     "@cordisjs/plugin-cli": "^1.1.2",
@@ -30,6 +31,7 @@
     "@dizzyapi/plugin-admin": "workspace:*",
     "@dizzyapi/plugin-auth": "workspace:*",
     "@dizzyapi/plugin-credentials": "workspace:*",
+    "@dizzyapi/plugin-frontend": "workspace:*",
     "@dizzyapi/plugin-identity": "workspace:*",
     "@dizzyapi/plugin-kit": "workspace:*",
     "@dizzyapi/plugin-mailer": "workspace:*",

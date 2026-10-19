@@ -9,8 +9,11 @@
 > 记录性的修正（现状、事实、坑）直接改；涉及设计判断的，先问 owner，
 > 不要凭本文件去推翻 owner 的决定或已在运行的代码。
 >
-> 当前状态：**控制面插件 + 第一个 Go 数据面模块**。cordis 侧已有八个插件包（外加共用底座 kit）
-> 并全部装载运行（§4）；Go 侧已有 `modules/accountpriority`、最小 `cmd/gatewayd` 与控制桥（§5.2）。
+> 当前状态：**控制面插件 + 第一个 Go 数据面模块 + 前端宿主骨架**。cordis 侧已有九个插件包
+> （外加共用底座 kit）并全部装载运行（§4）；Go 侧已有 `modules/accountpriority`、最小
+> `cmd/gatewayd` 与控制桥（§5.2）。前端 SPA 已落地路由、manifest、静态资源版本与 mock
+> 适配器；视觉层已按 owner 提取的参考页源码（DOM/CSS，未 vendor）换成源码派生 token，
+> 但亮色、账单页与个人资料页仍缺参考（§4.1、§11）。
 > 除这一块之外，本文件中 Go 侧的路径与接口仍是**目标**，不是现状；LLM 请求链路尚未实现。
 
 ---
@@ -336,6 +339,7 @@ sub2api 在拿到首个上游响应前把额度显示为 `unknown`，
 | `@dizzyapi/plugin-credentials` | `credentials` | 控制面 | 秘密（授权码之类）的唯一存放处；别的插件只持有引用名 |
 | `@dizzyapi/plugin-identity` | `identity` | 控制面 | 上游账号（订阅 OAuth / API-key）的唯一写者；唯一用 refresh_token 换新令牌的地方 |
 | `@dizzyapi/plugin-account-priority` | `accountPriority` | 控制面 + 数据面监管 | 策略组的唯一写者；拉起/监管 gatewayd；经控制桥推送策略、提供预览与选择查询 |
+| `@dizzyapi/plugin-frontend` | `frontend` | 前端宿主 | SPA 静态资源的版本 / 原子切换 / 回滚；页面、设置卡与插槽清单；按启用集过滤 |
 | `@dizzyapi/plugin-settings` | `settings` | 控制面 | 运行期可改的配置的唯一写者：`app.yml` 是基线，它写自己的覆盖文件 |
 | `@dizzyapi/plugin-admin` | `admin` | 开发者面板 | 插件 / 服务的静态依赖图、运行期概览、改设置、重启单个插件、退出整个进程 |
 | `@dizzyapi/plugin-kit` | — | 内部底座 | 配置 schema（手写 Standard Schema + 字段元数据）+ 原子写 JSON 存储；以上各包共用 |
@@ -442,6 +446,31 @@ tag、健康、冷却与并发饱和。`transport` 在 Windows 开发机自动�
 `maxRestartDelayMs`；`dataPath` / `binaryPath` / `args` / `socketPath` / `transport` /
 `logFormat` 不可运行期改。
 
+**`frontend`**（前端宿主：静态资源 + 清单）
+
+| 面 | 方法 | 说明 |
+|---|---|---|
+| 读 | `describe()` / `snapshot()` / `manifest()` / `pages(area?)` / `settingsCards()` / `slots(slot?)` / `findPage(path)` | 当前资源版本与可见清单；`manifest()` 含 `assets{version,base}` |
+| 资源 | `current()` / `assets()` / `readAsset(path, version?)` / `assetPath()` / `indexFile()` / `installBundledAssets()` / `install(bundle)` / `rollback()` | 版本目录 + `current.json` 原子指针；保留上一版 |
+| 清单 | `registerContributions(owner, bundle)` / `setEnabledPlugins(ids)` / `sync()` | owner 可以是 entry id 或包名；`sync()` 从 loader 重算启用集 |
+| 文件 | `<dataPath>/manifest.json` / `state.json` / `versions/<version>/*` | Go / 反代直接读盘发字节，不过桥 |
+
+包名取 `@dizzyapi/plugin-frontend`：D13 的角色就是「前端插件」，而 `console`
+在本项目里同时指 `/console` 用户站与开发者面板。目录仍是 `packages/console`。
+前端**不监听产品 HTTP**；`pnpm preview:console` 是明确标注的开发预览（mock 数据、
+只绑 127.0.0.1、不提供 `/api/*`）。页面清单是数据：插件被禁用时，它的页面 /
+设置卡 / 插槽自动消失，前端不做特判。设置卡只声明 namespace，用通用设置渲染器，
+所以新增可写命名空间不需要改前端代码。
+
+用户站的源码路由是 `/usage` / `/api_keys` / `/top_up` / `/transactions` / `/profile`，
+在 D13 的 `/console` 区域内落成 `/console/usage`、`/console/api_keys`、
+`/console/top_up`、`/console/transactions`、`/console/profile`；`/console` 是
+重定向到 `/console/usage` 的隐藏页。用量页已接 mock 的余额 / 指标 / 成本柱状图 /
+按模型区块；API keys 有创建（完整 key 只显示一次）、改名、删除；充值有金额 chips、
+支付方式与订单结果。账单与个人资料仍是占位。参考页是 React + Rspack + `ds-*`，
+我们**没有**复制它的 CSS / JS / 图片 / 字体或真实账户数据；token 与结构见
+`packages/console/DESIGN.md`。
+
 **`admin`**（开发者面板，HTTP 服务）
 
 | 面 | 方法 | 说明 |
@@ -469,7 +498,10 @@ tag、健康、冷却与并发饱和。`transport` 在 Windows 开发机自动�
 - `pnpm dev`：起 cordis（已带 `--import tsx`）。`pnpm start` 还没带，暂时跑不了 TS 源码。
   `dev` 之前会自动跑 `predev` → `pnpm build:go`，所以修改 Go 代码后直接重启 dev 即可。
 - `pnpm test`：`node --import tsx --test "packages/*/test/*.test.ts"`。
-- `pnpm typecheck`：`tsc -p tsconfig.json`。
+- `pnpm typecheck`：`tsc -p tsconfig.json && tsc -p packages/console/tsconfig.json`；
+  第二份配置用 `checkJs` 检查浏览器侧的原生 ESM（`packages/console/assets/**/*.js`）。
+- `pnpm preview:console`：开发预览（mock 数据、只绑 127.0.0.1、不提供 `/api/*`），
+  默认 `http://127.0.0.1:7790/console`。
 - `pnpm build:go`：`go build -trimpath -o bin/ ./cmd/gatewayd`；Windows 产出 `bin/gatewayd.exe`，
   其他平台产出 `bin/gatewayd`（`bin/` 已 gitignore）。TS 监管器会补 `.exe` 后缀。
 - `pnpm test:go`：`go test ./...`；`pnpm test:all` 跑 TS + Go 两套。
@@ -489,6 +521,11 @@ tag、健康、冷却与并发饱和。`transport` 在 Windows 开发机自动�
   Windows 开发机走回环 TCP，Linux 走 `./data/gatewayd.sock`。控制桥的地址由 gatewayd
   在 stdout 打一行 `{"type":"ready",...}`，TS 读到后才连接。用面板的
   `/api/settings` 可以看到 `account-priority` 命名空间与六个可写字段。
+- **前端宿主（2026-10-19）**：`frontend` 已装载，启动时把 `packages/console/assets`
+  安装到 `data/frontend/versions/<version>`，日志会打印资源版本与 manifest revision。
+  浏览器入口仍等 Go `httpapi` / 反代；本地看界面用 `pnpm preview:console`
+  （mock 数据，`http://127.0.0.1:7790/console`）。`/console` 会重定向到
+  `/console/usage`。
 
 ### 4.3 边界与已知偏离
 
@@ -527,6 +564,11 @@ tag、健康、冷却与并发饱和。`transport` 在 Windows 开发机自动�
 11. **cordis 异常退出时 gatewayd 可能留下**：正常卸载/重启会由插件优雅停止子进程；
     进程崩溃或被强杀时 Go 侧按 D9 继续存活，但也不会自动退出。重启后会起一个新的
     gatewayd（新端口），旧进程需要人工清理；孤儿检测尚未实现（§9）。
+12. **前端宿主的视觉层是自有实现**：owner 已提取参考页 DOM/CSS，我们只取 token、
+    尺寸与信息架构，没有复制参考项目的 CSS / JS / 图片 / 字体 / logo 或真实账户数据。
+    用户站与参考页的路径映射、页面清单与后端契约见 `packages/console/DESIGN.md`。
+    账单 / 个人资料页、亮色模式与按模型小图仍缺参考或后端序列；API key 完整值只在
+    创建对话框里出现一次，不落 localStorage / 日志 / URL。
 
 ---
 
@@ -857,6 +899,9 @@ CI 用 `go list -deps` 逐模块校验 `modules/*` 之间无相互 import，违�
 | API key 的签发与 key→user 映射 | 按 §5 归 Go 的 `auth` 模块（`key.*` 桥命令）；v1 没有 Go，所以 key 能力暂缺 |
 | `account-state` 与评分输入 | `account-priority` 已接受候选快照（`contracts.AccountCandidate`），但谁来填充 `Ctx.AccountCandidates` 还没定；短期由调用方/测试填，长期应由 `account-state` 提供 |
 | gatewayd 孤儿进程 | cordis 异常退出时 Go 进程按 D9 继续存活；是否需要父进程探测、外部守护或启动时清理旧实例尚未决定 |
+| 前端剩余参考 | 亮色模式、账单 / 发票页、个人资料页、按模型请求数面积图与 Tokens 柱状图的序列契约尚未提供 |
+| 前端真实接口 | 用量 / API keys / 充值 / 账号 / 目录 / 设置 / 健康目前只有 mock 与契约；Go `httpapi` 尚未实现 |
+| 前端静态资源集成 | `manifest.json` / `current.json` / 版本目录如何由 Go 或反代发字节已写进 DESIGN.md，但还没有在 Go 侧跑通过 |
 
 ---
 
@@ -1041,8 +1086,31 @@ CI 用 `go list -deps` 逐模块校验 `modules/*` 之间无相互 import，违�
   `gatewayd 已就绪：tcp 127.0.0.1:<port>（pid …）` 与策略 revision；面板
   `/api/settings` 能看到 `account-priority` 命名空间；Ctrl-C 退出后子进程
   `process.kill(pid, 0)` 报 ESRCH（已停止）。
-- 当前全量：`pnpm test` 164 个用例（163 通过 / 1 跳过），`pnpm typecheck` 干净；
-  `packages/account-priority` 自身 13 个用例全过，`go test ./...` 两个包全过。
+- 当前全量：`pnpm test` 190 个用例（189 通过 / 1 跳过），`pnpm typecheck` 干净；
+  `packages/account-priority` 自身 13 个用例全过，`packages/console` 26 个用例全过，
+  `go test ./...` 两个包全过。
+
+**前端宿主（本项目实测，2026-10-19）**
+
+- `packages/console` 自带 26 个用例：路由、manifest 过滤 / 贡献 / 校验、资源版本切换与
+  回滚、路径越界、HTTP 客户端、mock 适配器与真 Loader 集成；`pnpm typecheck` 同时跑
+  `checkJs` 检查 `assets/**/*.js`。
+- 参考页是 React + Rspack + `ds-*`，真实 DOM / CSS 在 `E:\vibecoding\DizzyAPI\temp\`；
+  **没有**复制进仓库。深色 token（bg-base `#151517`、卡片 `#353638`、active `#43454A`、
+  强调 `#FD8D3C`、文本 `#F9FAFB` / `#CFD3D6` / `#81858C`）与 260px 侧栏、42px 菜单项、
+  16px 卡片圆角等尺寸来自源码。
+- 图表系列色与 UI 强调色分开：深色柱色 `#E0702A`、亮色 `#E06A1F`；`#FD8D3C` 在深色
+  卡片上的 OKLCH 明度 0.752 超出图表明度带。两者都用 dataviz 校验器在卡片表面色上验过。
+- `pnpm preview:console` 已实测：`/console` 200、`/admin/accounts` history fallback 200、
+  `/assets/frontend/*` 200、`/api/*` 404，CSP 为 `script-src 'self'`；`index.html` 的
+  `<base>` 用 `__ASSET_BASE__`（本身带尾斜杠），不要再在模板里补 `/`，否则会出双斜杠。
+- 用户站路径按源码落成 `/console/usage`、`/console/api_keys`、`/console/top_up`、
+  `/console/transactions`、`/console/profile`；`/console` 是前端重定向页。API keys 的
+  完整值只在创建 dialog 的局部变量里出现一次，列表与 mock 状态都只存掩码。
+- Edge headless 已实际渲染 `/console/usage`、`/console/api_keys`、`/console/top_up`、
+  `/console/transactions`、`/admin/accounts`、`/admin/settings`，并验证 `/console`
+  会重定向到用量页；侧栏 260px、卡片 16px 圆角、橙色柱状图与暗色 token 均按源码
+  派生值生效。
 
 **本机环境**
 - `C:\Users\17740\.dsh\profiles\desktop` 是一个活的 cordis 应用实例：
@@ -1087,6 +1155,16 @@ CI 用 `go list -deps` 逐模块校验 `modules/*` 之间无相互 import，违�
   的字段，嵌套字段会还原成对象提交。仍未验证：SSE 断线重连的退避在真实网络抖动下的表现。
 - 面板没有经过反代 / TLS，只支持回环 `http://127.0.0.1`；`SameSite=Lax` 的 cookie
   在跨机访问场景下如何表现未验证（也刻意不支持）。
+- **前端还没有跑过真实 Go `httpapi`**：用量 / API keys / 充值 / 账号 / 目录 / 设置 /
+  健康全部是契约 + mock；真实会话 cookie、401、CORS / 同源、支付回调与 API key 吊销
+  均未在浏览器里验证。
+- **前端静态资源还没有在 Go / 反代里发过**：`current.json` / `manifest.json` 的文件
+  契约与缓存头只在 DESIGN.md 与单测里成立；history fallback、immutable 缓存、CSP
+  与禁用门禁（`state.json.enabled=false`）尚未端到端跑过。
+- **参考页只提供了深色 DOM/CSS**：亮色、账单页、个人资料页、按模型系列图仍缺参考；
+  当前亮色是镜像取值，按模型区块只有汇总卡，没有源码里的两张小图。
+- **API key 一次性展示流程只过了 mock**：浏览器剪贴板权限、dialog 关闭后清理与刷新
+  页面后的行为未做真实浏览器复验。
 - 控制面插件都是单进程假设：同一份 JSON 被两个 cordis 实例写会互相覆盖。
 - 契约包按「消费者定义接口」拆分的实际手感。
 - Go 侧配置 schema 上报给 cordis 渲染设置页的可行性。
