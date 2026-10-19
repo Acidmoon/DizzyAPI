@@ -163,6 +163,12 @@ export class AccountPriorityService extends Service {
   private accountsRevision: string | null = null
   private keysCount = 0
   private keysRevision: string | null = null
+  /** 是否曾经见过 active 的 apiKey 服务（用于区分「启动时就禁用」与「运行期被卸载」）。 */
+  private keysServiceSeen = false
+  /** apiKey 服务消失后，是否需要推一份空快照把 Go 的旧 key 撤销掉（D5）。 */
+  private keysRevokePending = false
+  /** 最近一次成功推送的 snapshot generation；撤销时用 last + 1，避免回退。 */
+  private lastKeysGeneration: number | null = null
   private startedAt: string | null = null
   private lastError: string | null = null
   private restarts = 0
@@ -762,11 +768,12 @@ export class AccountPriorityService extends Service {
    * api-key 是 key 的唯一写者；事件只是「该重新取一份快照」的提示。
    * 监听器挂在 root 上并带 global，跨插件子树也能收到。
    *
-   * 三类触发：
+   * 触发来源：
    *   - api-key/changed：key 本身被创建 / 修改 / 轮换 / 删除；
    *   - user/changed：用户被封禁 / 删除 / 改状态后，snapshot() 的过滤结果会变；
-   *   - internal/service(apiKey)：api-key 在 account-priority 之后才启用（HMR）时，
-   *     即使还没有任何 key 写入，也要先推一份空快照，让 Go 进入 fail-closed 的 Ready 状态。
+   *   - internal/service(apiKey)：服务出现时先推一份（HMR 后也能进入 Ready）；
+   *     服务消失时，若曾经成功推送过，就推一份空快照撤销旧 key（D5）。
+   *     启动时就从未出现过则不推——保留 Go 的 Ready=false 启动/降级路径。
    */
   private watchKeys(): () => void {
     const root = this.ctx.root as unknown as EventRoot
@@ -776,8 +783,19 @@ export class AccountPriorityService extends Service {
     const offService = root.on(
       'internal/service',
       (...args: unknown[]) => {
-        // 服务出现时 args[1] 是 impl；回收时是 undefined。
-        if (args[0] === 'apiKey' && args[1] !== undefined) trigger()
+        if (args[0] !== 'apiKey') return
+        if (args[1] !== undefined) {
+          // 服务出现。清掉可能残留的撤销意图：重新出现后应推真实快照。
+          this.keysServiceSeen = true
+          this.keysRevokePending = false
+          trigger()
+          return
+        }
+        // 服务消失。只有当它曾经推送过时才撤销；否则保留启动/降级路径。
+        if (this.keysServiceSeen && this.lastKeysGeneration !== null) {
+          this.keysRevokePending = true
+          trigger()
+        }
       },
       { global: true },
     )
@@ -820,9 +838,44 @@ export class AccountPriorityService extends Service {
     const bridge = this.bridge
     if (bridge === undefined || this.disposing) return
     const apiKey = this.apiKeySeam()
-    if (apiKey === undefined) return
+    if (apiKey === undefined && !this.keysRevokePending) return
+
     try {
-      const snapshot = await apiKey.snapshot()
+      let snapshot: GatewayKeySnapshot | undefined
+      let revoke = apiKey === undefined
+
+      if (apiKey !== undefined) {
+        // 正常启动时 apiKey 可能在 account-priority 之前就已 active，收不到
+        // internal/service 的「出现」事件；一次成功的取快照同样算「见过」。
+        this.keysServiceSeen = true
+        const observed = await apiKey.snapshot()
+        // 等待期间服务被卸载：不要推过期的非空快照，改为撤销。
+        if (this.keysRevokePending || this.apiKeySeam() === undefined) {
+          revoke = true
+        } else {
+          // 撤销时 generation 用了 last+1；服务重新出现后 DB generation 可能还停在
+          // 旧值。这里钳到不小于 last，避免 generation 回退。
+          const generation =
+            this.lastKeysGeneration === null
+              ? observed.generation
+              : Math.max(observed.generation, this.lastKeysGeneration)
+          snapshot =
+            generation === observed.generation ? observed : { ...observed, generation }
+        }
+      }
+
+      if (revoke) {
+        // D5：api-key 服务消失后撤销旧 key。只有曾经成功推送过才需要撤销；
+        // 启动时就从未出现过时不推，保留 Go 的 Ready=false 启动/降级路径。
+        if (!this.keysServiceSeen || this.lastKeysGeneration === null) return
+        snapshot = {
+          version: 1,
+          generation: this.lastKeysGeneration + 1,
+          keys: [],
+        }
+      }
+      if (snapshot === undefined) return
+
       if (this.bridge !== bridge || this.disposing) return
       const result = await bridge.request<GatewayKeysResult>(
         'keys.replace',
@@ -831,10 +884,25 @@ export class AccountPriorityService extends Service {
       )
       this.keysCount = result.keys
       this.keysRevision = result.revision
+      this.lastKeysGeneration = snapshot.generation
+
+      if (revoke) {
+        this.keysRevokePending = false
+        // 撤销期间服务又回来了：再推一份真实快照。
+        if (this.apiKeySeam() !== undefined) this.scheduleKeysPush()
+      } else if (this.keysRevokePending || this.apiKeySeam() === undefined) {
+        // 正常推送期间服务消失：保留撤销意图，下一轮推空快照。
+        this.keysRevokePending = true
+        this.scheduleKeysPush()
+      } else {
+        this.keysRevokePending = false
+      }
+
       // 只记计数与 generation；key / 哈希永不进日志。
       this.logger.debug(
         `API key 快照已推送：revision=${result.revision} keys=${String(result.keys)} ` +
-          `generation=${String(snapshot.generation)}`,
+          `generation=${String(snapshot.generation)}` +
+          (revoke ? '（api-key 已卸载，撤销旧快照）' : ''),
       )
     } catch (error) {
       const message = describeError(error)

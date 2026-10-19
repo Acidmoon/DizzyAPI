@@ -720,8 +720,9 @@ class Foo extends Service {
     `user/changed` 与 `internal/service(apiKey)`：key 变化、用户状态变化、api-key 插件
     后启用（HMR）都会防抖重推。`internal/apikeys` 用 `Ready()` 区分「尚未收到快照」
     与「已收到合法空快照」：后者是 fail-closed，拒绝全部 key，绝不回退 env / 占位。
-    `api-key` 被禁用 / 卸载时仍然跳过推送（避免启动竞态把快照清空），Go 里的旧快照
-    要等重启或下一次推送才更新——此时它仍在执行旧快照，不会 fail-open（§11）。
+    `api-key` 启动时就未启用时不推，保留 Go 的 Ready=false 启动/降级路径；运行期曾经
+    推送过、随后被禁用 / 卸载时，account-priority 会推一份空快照
+    （generation=last+1），Go 进入 Ready=true / Count=0，旧 key 立即失效（D5）。
 
 ---
 
@@ -934,7 +935,9 @@ expiresAt? / priority? / tags?`；过期或令牌为空的账号不会成为候�
 `keyId / userId / keyHash / profile / name` 经 `keys.replace` 推给 Go；Go 只缓存与校验，
 不读 TS 的 SQLite。`Ready()` 表示是否收到过至少一份合法快照（含空快照）：
 Ready=false 时才沿用 `DIZZYAPI_API_KEYS` / 占位；Ready=true 时只认快照，
-Count=0 也表示拒绝全部 key（fail-closed，D7）。`keys.status` 返回 revision / 计数 / 时间。
+Count=0 也表示拒绝全部 key（fail-closed，D7）。运行期 api-key 被禁用 / 卸载时
+account-priority 会推空快照撤销；启动时就禁用则不推，保留 Ready=false 的降级路径。
+`keys.status` 返回 revision / 计数 / 时间。
 `contracts.APIKey` 的 UserID 是十进制字符串，KeyID 与 ID 同义；静态 key 只填指纹与
 Profile，零值兼容。
 
@@ -1315,8 +1318,8 @@ CI 用 `go list -deps` 逐模块校验 `modules/*` 之间无相互 import，违�
   `gatewayd 已就绪：tcp 127.0.0.1:<port>（pid …）` 与策略 revision；面板
   `/api/settings` 能看到 `account-priority` 命名空间；Ctrl-C 退出后子进程
   `process.kill(pid, 0)` 报 ESRCH（已停止）。
-- 当前全量（2026-10-19，API key 修复后）：`pnpm test` 239 个用例（238 通过 / 1 跳过），
-  `pnpm typecheck` 干净；`packages/api-key` 16 个、`packages/account-priority` 21 个、
+- 当前全量（2026-10-19，API key D5 撤销后）：`pnpm test` 241 个用例（240 通过 / 1 跳过），
+  `pnpm typecheck` 干净；`packages/api-key` 16 个、`packages/account-priority` 23 个、
   `packages/account-admin` 16 个、`packages/catalog` 9 个、`packages/console` 26 个用例全过；
   `go test ./...` 的 9 个包全过，`go vet ./...` 干净。
 - **API key / node:sqlite（本项目实测，2026-10-19）**：Node 24.3.0 的 `node:sqlite`
@@ -1327,9 +1330,12 @@ CI 用 `go list -deps` 逐模块校验 `modules/*` 之间无相互 import，违�
   key-auth 的动态快照优先 / 空快照回退与 HTTP 动态 key 集成用例。
 - **空快照是 fail-closed**：`internal/apikeys` 的 `Ready()` 与 `Count()` 分开；
   `New()` ready=false，任何通过校验的 Replace（含空快照）ready=true；
-  空快照后 Verify 一律 false。keyauth 用例覆盖「先非空、后空」之后连
+  空快照后 Verify 一律 false。keyauth / httpapi 用例覆盖「先非空、后空」之后连
   `DIZZYAPI_API_KEYS` 里的 key 也必须 401；account-priority 监听
-  `api-key/changed` / `user/changed` / `internal/service(apiKey)`，服务后出现也会推一次。
+  `api-key/changed` / `user/changed` / `internal/service(apiKey)`，服务后出现会推一次，
+  运行期卸载会推空快照撤销（D5），启动时就从未出现则不推。撤销用
+  `lastGeneration + 1`；服务重新出现时把 snapshot generation 钳到不小于 last，
+  fake gatewayd 用例断言 generation 不回退。
 - **snapshot 时序**：`api-key` 的 rows 与 generation 在同一个同步块读取，
   `user.get` 放到其后；测试用挂起 `user.get` 的方式稳定覆盖「查询期间发生写入」。
 - **桥响应与日志不含 key 哈希**：`keys.replace` / `keys.status` 的响应只有
@@ -1412,8 +1418,8 @@ CI 用 `go list -deps` 逐模块校验 `modules/*` 之间无相互 import，违�
   `integrity_check` 的性能未验证。
 - **key 快照有时效缺口**：用户封禁 / 删除由 `user/changed` 触发重推（依赖
   feat/user-system 分支按约定发出该事件）；但直接改 SQLite 没有任何事件。
-  `api-key` 被禁用 / 卸载时按任务约定跳过推送，Go 里的旧快照不会被清空——
-  它仍按旧快照 fail-closed，而不是放开，但已删除的 key 会一直有效到重启 / 下一次推送。
+  `api-key` 运行期被禁用 / 卸载会推空快照撤销旧 key；启动时就禁用则不推，
+  Go 保持 Ready=false 的环境变量 / 占位路径。这两条路径都只在本机测试里验过。
 - **API key 没有真实前端闭环**：前端 API keys 页面仍用 mock；面向用户站的 REST
   由 api-http 分支实现，尚未与本插件联调。完整 key 的一次性展示只在单测与 mock 里验过。
 - **计费不存在**：没有 `quota-check` / `settle` / `usage-log`，请求不会扣费也不会落

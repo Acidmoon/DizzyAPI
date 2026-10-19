@@ -52,6 +52,7 @@ function run() {
   let accountsRevision = 0
   let keys = []
   let keysRevision = 0
+  let keysGeneration = null
 
   const server = net.createServer((socket) => {
     let buffer = Buffer.alloc(0)
@@ -135,6 +136,7 @@ function run() {
           candidatesMax: 10_000,
           accounts: accounts.length,
           keys: keys.length,
+          keysGeneration,
         })
         return
 
@@ -193,6 +195,7 @@ function run() {
       case 'keys.replace': {
         const params = request.params ?? {}
         keys = Array.isArray(params.keys) ? params.keys : []
+        keysGeneration = typeof params.generation === 'number' ? params.generation : null
         // 测试替身也检查形状：TS 只能推最小字段，任何多余字段都算失败。
         const allowed = ['keyId', 'userId', 'keyHash', 'profile', 'name']
         for (const key of keys) {

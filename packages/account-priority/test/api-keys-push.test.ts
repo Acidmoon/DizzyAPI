@@ -49,6 +49,7 @@ interface World {
   readonly ctx: Context
   readonly service: AccountPriorityService
   readonly apiKey: FakeApiKey | undefined
+  readonly apiKeyFiber: { dispose(): Promise<void> | void } | undefined
   readonly dispose: () => Promise<void>
 }
 
@@ -56,8 +57,9 @@ async function boot(t: TestContext, withApiKey = true): Promise<World> {
   const dir = await mkdtemp(join(tmpdir(), 'dizzyapi-keys-push-'))
   const ctx = new Context()
   let apiKey: FakeApiKey | undefined
+  let apiKeyFiber: { dispose(): Promise<void> | void } | undefined
   if (withApiKey) {
-    await ctx.plugin(FakeApiKey)
+    apiKeyFiber = await ctx.plugin(FakeApiKey)
     apiKey = ctx.get('apiKey') as unknown as FakeApiKey
   }
   const fiber = await ctx.plugin(AccountPriorityService, {
@@ -78,6 +80,7 @@ async function boot(t: TestContext, withApiKey = true): Promise<World> {
     ctx,
     service: ctx.get('accountPriority') as AccountPriorityService,
     apiKey,
+    apiKeyFiber,
     dispose: async () => {
       try {
         await fiber.dispose()
@@ -185,4 +188,61 @@ test('api-key 服务在 account-priority 之后出现时推送一次', async (t)
 
   await waitFor(() => world.service.status().keys === 1)
   assert.ok(world.service.status().keysRevision?.startsWith('fake-keys-'))
+})
+
+test('api-key 服务被卸载时推送空快照撤销旧 key（D5）', async (t) => {
+  const world = await boot(t)
+  assert.ok(world.apiKey)
+  assert.ok(world.apiKeyFiber)
+  world.apiKey.replace([key('revoked-key', 'e')])
+  await waitFor(() => world.service.status().keys === 1)
+  const before = world.service.status().keysRevision
+  const beforeGeneration = (
+    (await world.service.remoteStatus()) as { keysGeneration?: number }
+  ).keysGeneration
+
+  await world.apiKeyFiber.dispose()
+  await waitFor(
+    () =>
+      world.service.status().keys === 0 &&
+      world.service.status().keysRevision !== before,
+  )
+
+  const remote = (await world.service.remoteStatus()) as {
+    keys?: number
+    keysGeneration?: number
+  }
+  assert.equal(remote.keys, 0)
+  assert.equal(typeof beforeGeneration, 'number')
+  assert.equal(typeof remote.keysGeneration, 'number')
+  assert.ok((remote.keysGeneration ?? 0) > (beforeGeneration ?? 0))
+})
+
+test('api-key 服务撤销后重新出现，再推非空快照', async (t) => {
+  const world = await boot(t)
+  assert.ok(world.apiKey)
+  assert.ok(world.apiKeyFiber)
+  world.apiKey.replace([key('before-disable', 'a')])
+  await waitFor(() => world.service.status().keys === 1)
+
+  await world.apiKeyFiber.dispose()
+  await waitFor(() => world.service.status().keys === 0)
+  const revokedGeneration = (
+    (await world.service.remoteStatus()) as { keysGeneration?: number }
+  ).keysGeneration
+
+  await world.ctx.plugin(FakeApiKey)
+  const fake = world.ctx.get('apiKey') as unknown as FakeApiKey
+  fake.replace([key('after-enable', 'b')], false)
+  await waitFor(() => world.service.status().keys === 1)
+
+  const remote = (await world.service.remoteStatus()) as {
+    keys?: number
+    keysGeneration?: number
+  }
+  assert.equal(remote.keys, 1)
+  assert.equal(typeof revokedGeneration, 'number')
+  assert.equal(typeof remote.keysGeneration, 'number')
+  // 新实例的 generation 从 1 重新开始，但推送时必须钳到不小于撤销时的值。
+  assert.ok((remote.keysGeneration ?? 0) >= (revokedGeneration ?? 0))
 })

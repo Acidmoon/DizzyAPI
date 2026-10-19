@@ -331,3 +331,72 @@ func TestChatCompletionsAcceptsDynamicAPIKeyAndRejectsStaticFallback(t *testing.
 		t.Fatal("错误响应泄漏了 API key")
 	}
 }
+
+func TestEmptyKeySnapshotRevokesPreviouslyAcceptedKeys(t *testing.T) {
+	var seen []string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen = append(seen, r.Header.Get("Authorization"))
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"chatcmpl-revoked"}`)
+	}))
+	defer upstream.Close()
+
+	secret := "dz-revocable-key"
+	sum := sha256.Sum256([]byte(secret))
+	keyCache := apikeys.New()
+	if _, err := keyCache.Replace(apikeys.Snapshot{
+		Version: apikeys.SnapshotVersion,
+		Keys: []apikeys.Key{{
+			KeyID:   "key-revocable",
+			UserID:  42,
+			KeyHash: hex.EncodeToString(sum[:]),
+			Profile: "billed",
+			Name:    "revocable",
+		}},
+	}); err != nil {
+		t.Fatalf("Replace: %v", err)
+	}
+
+	world := newGateway(t, upstream.URL, keyauth.Config{
+		Keys:     []string{"gateway-key"},
+		Verifier: keyCache,
+	})
+	if _, err := world.accounts.Replace(snapshot(upstream.URL, accounts.Account{
+		AccountID: "acc-1", Provider: "openai", Kind: "api_key", Token: "token-1",
+	})); err != nil {
+		t.Fatalf("Replace: %v", err)
+	}
+
+	accepted := postChatWithKey(t, world.handler, `{"model":"gpt-test","messages":[]}`, secret)
+	if accepted.Code != http.StatusOK {
+		t.Fatalf("撤销前 key 应通过，得到 %d：%s", accepted.Code, accepted.Body.String())
+	}
+	if len(seen) != 1 {
+		t.Fatalf("撤销前请求应到达上游：%v", seen)
+	}
+
+	// api-key 服务被禁用/卸载后，account-priority 推空快照；Go 必须进入
+	// Ready=true / Count=0 的 fail-closed 状态，而不是回退 env 或占位。
+	if _, err := keyCache.Replace(apikeys.Snapshot{
+		Version:    apikeys.SnapshotVersion,
+		Generation: 2,
+		Keys:       []apikeys.Key{},
+	}); err != nil {
+		t.Fatalf("Replace empty: %v", err)
+	}
+	if !keyCache.Ready() || keyCache.Count() != 0 {
+		t.Fatalf("空快照后应为 Ready=true / Count=0：ready=%v count=%d",
+			keyCache.Ready(), keyCache.Count())
+	}
+
+	for _, key := range []string{secret, "gateway-key"} {
+		rejected := postChatWithKey(t, world.handler, `{"model":"gpt-test","messages":[]}`, key)
+		if rejected.Code != http.StatusUnauthorized {
+			t.Fatalf("空快照后 %q 必须 401，得到 %d：%s",
+				key, rejected.Code, rejected.Body.String())
+		}
+	}
+	if len(seen) != 1 {
+		t.Fatalf("被撤销的 key 不应到达上游：%v", seen)
+	}
+}
