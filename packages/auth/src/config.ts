@@ -1,9 +1,11 @@
 import {
   checkConfigObject,
   issue,
+  knownKeysOf,
   readPositiveInteger,
   readString,
   standardSchema,
+  type FieldSpec,
   type StandardIssue,
 } from '@dizzyapi/plugin-kit'
 
@@ -56,21 +58,28 @@ export interface ResolvedAuthConfig {
   readonly mailSubjectPrefix: string
 }
 
-const KNOWN_KEYS: readonly string[] = [
-  'dataPath',
-  'userActor',
-  'codeTtlMs',
-  'codeDigits',
-  'codeMaxAttempts',
-  'codeResendCooldownMs',
-  'codeRequestsPerHour',
-  'sessionTtlMs',
-  'passwordMinLength',
-  'passwordMaxLength',
-  'loginWindowMs',
-  'loginMaxFailures',
-  'mailSubjectPrefix',
+/**
+ * 字段元数据：鉴权参数全部**不可**运行期改。
+ * 这些值同时约束校验与安全边界（验证码次数、密码长度、会话寿命），
+ * 什么时候允许热改由 owner 决定，不在这轮目录里顺手放开。
+ */
+const AUTH_FIELDS: readonly FieldSpec[] = [
+  { key: 'dataPath', label: '鉴权数据文件位置', kind: 'string', writable: false },
+  { key: 'userActor', label: '用户插件调用身份', kind: 'string', writable: false },
+  { key: 'codeTtlMs', label: '验证码有效期', kind: 'integer', writable: false, min: 60_000, max: 86_400_000, unit: '毫秒' },
+  { key: 'codeDigits', label: '验证码位数', kind: 'integer', writable: false, min: 4, max: 10 },
+  { key: 'codeMaxAttempts', label: '验证码尝试上限', kind: 'integer', writable: false, min: 1, max: 20 },
+  { key: 'codeResendCooldownMs', label: '验证码重发冷却', kind: 'integer', writable: false, min: 0, max: 3_600_000, unit: '毫秒' },
+  { key: 'codeRequestsPerHour', label: '每小时验证码请求上限', kind: 'integer', writable: false, min: 1, max: 100 },
+  { key: 'sessionTtlMs', label: '会话有效期', kind: 'integer', writable: false, min: 60_000, max: 31_536_000_000, unit: '毫秒' },
+  { key: 'passwordMinLength', label: '密码长度下限', kind: 'integer', writable: false, min: 6, max: 128 },
+  { key: 'passwordMaxLength', label: '密码长度上限', kind: 'integer', writable: false, min: 16, max: 1024 },
+  { key: 'loginWindowMs', label: '登录失败计数窗口', kind: 'integer', writable: false, min: 60_000, max: 86_400_000, unit: '毫秒' },
+  { key: 'loginMaxFailures', label: '窗口内失败上限', kind: 'integer', writable: false, min: 1, max: 1000 },
+  { key: 'mailSubjectPrefix', label: '邮件主题前缀', kind: 'string', writable: false },
 ]
+
+const KNOWN_KEYS = knownKeysOf(AUTH_FIELDS)
 
 export function validateAuthConfig(value: unknown): ResolvedAuthConfig | readonly StandardIssue[] {
   const { raw, issues } = checkConfigObject(value, KNOWN_KEYS)
@@ -112,4 +121,8 @@ export function validateAuthConfig(value: unknown): ResolvedAuthConfig | readonl
   }
 }
 
-export const AUTH_CONFIG_SCHEMA = standardSchema<ResolvedAuthConfig>('dizzyapi', validateAuthConfig)
+export const AUTH_CONFIG_SCHEMA = standardSchema<ResolvedAuthConfig>(
+  'dizzyapi',
+  validateAuthConfig,
+  AUTH_FIELDS,
+)

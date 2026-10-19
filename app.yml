@@ -96,6 +96,15 @@
     binaryPath: ./bin/gatewayd
     autoStart: true
 
+# 插件能力目录：只读观察窗，汇总已装载插件提供什么、接受什么。
+# 它从活的插件树反射（服务 / 方法 / inject / 配置 schema），事件、桥命令、数据形状
+# 与存储用途由各插件可选的 static catalog 清单补齐；没有清单的面标 unknown。
+# 不起 HTTP、不写任何状态、永远不返回秘密。查询走进程内 catalog 服务。
+- id: catalog
+  name: '@dizzyapi/plugin-catalog'
+  config:
+    includeUnavailable: true
+
 # 设置插件：运行期可以改的配置由它管（本文件是「人写的基线」，它只覆盖，从不回写本文件）。
 # 必须排在它要管的目标后面：启动重放时它才看得见那些 entry。
 - id: settings

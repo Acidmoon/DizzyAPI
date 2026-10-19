@@ -54,6 +54,47 @@ import {
 export class AccountPriorityService extends Service {
   static Config = ACCOUNT_PRIORITY_CONFIG_SCHEMA
 
+  /**
+   * 能力清单：策略写入 + 进程监管，经控制桥向 Go 发查询。
+   * 桥命令在这里是 **outbound**（本插件发给 Go），不是 LLM 请求路径（D3）。
+   */
+  static catalog = {
+    capabilities: ['account-selection', 'strategy-management', 'gateway-supervision'],
+    events: [
+      {
+        name: 'account-priority/child-state',
+        description: 'gatewayd 监管状态变化',
+        payload: 'state: ChildState, detail: string | null',
+      },
+      {
+        name: 'account-priority/strategies-updated',
+        description: '策略组被写入或删除',
+        payload: "id: string, action: 'upsert' | 'remove'",
+      },
+      {
+        name: 'account-priority/applied',
+        description: 'Go 侧确认应用了一版策略',
+        payload: 'revision: string',
+      },
+      {
+        name: 'account-priority/error',
+        description: '子进程、桥或策略推送失败',
+        payload: 'code: string, message: string',
+      },
+    ],
+    bridge: [
+      { method: 'accountPriority.status', direction: 'outbound', responseShape: 'RemoteStatus' },
+      { method: 'accountPriority.listStrategies', direction: 'outbound', responseShape: 'StrategyListResult' },
+      { method: 'accountPriority.replaceStrategies', direction: 'outbound', responseShape: 'ReplaceStrategiesResult' },
+      { method: 'accountPriority.preview', direction: 'outbound', requestShape: 'ScoreRequest', responseShape: 'ScoreResult' },
+      { method: 'accountPriority.pick', direction: 'outbound', requestShape: 'ScoreRequest', responseShape: 'ScoredAccount' },
+    ],
+    storage: [
+      { key: 'dataPath', kind: 'file', description: '策略组 JSON（TS 是唯一写者）' },
+      { key: 'socketPath', kind: 'socket', description: '控制桥 Unix socket（Windows 用回环 TCP）' },
+    ],
+  } as const
+
   readonly config: ResolvedAccountPriorityConfig
   private readonly store: JsonStore<AccountPrioritySnapshot>
   private readonly logger: Logger

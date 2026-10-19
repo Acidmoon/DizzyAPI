@@ -71,6 +71,14 @@ export class AuthService extends Service {
    */
   static inject = ['user', 'mailer']
 
+  /** 能力清单：鉴权 / 会话是界面请求的入口，与 LLM 请求无关。 */
+  static catalog = {
+    capabilities: ['authentication', 'sessions', 'registration', 'password-reset'],
+    events: [],
+    bridge: [],
+    storage: [{ key: 'dataPath', kind: 'file', description: '会话 / 验证码 / 凭证 JSON' }],
+  } as const
+
   readonly config: ResolvedAuthConfig
   private store: JsonStore<ReturnType<typeof createAuthStore> extends JsonStore<infer T> ? T : never>
   private user: UserService

@@ -9,7 +9,7 @@
 > 记录性的修正（现状、事实、坑）直接改；涉及设计判断的，先问 owner，
 > 不要凭本文件去推翻 owner 的决定或已在运行的代码。
 >
-> 当前状态：**控制面插件 + 第一个 Go 数据面模块**。cordis 侧已有八个插件包（外加共用底座 kit）
+> 当前状态：**控制面插件 + 第一个 Go 数据面模块**。cordis 侧已有九个插件包（外加共用底座 kit）
 > 并全部装载运行（§4）；Go 侧已有 `modules/accountpriority`、最小 `cmd/gatewayd` 与控制桥（§5.2）。
 > 除这一块之外，本文件中 Go 侧的路径与接口仍是**目标**，不是现状；LLM 请求链路尚未实现。
 
@@ -336,6 +336,7 @@ sub2api 在拿到首个上游响应前把额度显示为 `unknown`，
 | `@dizzyapi/plugin-credentials` | `credentials` | 控制面 | 秘密（授权码之类）的唯一存放处；别的插件只持有引用名 |
 | `@dizzyapi/plugin-identity` | `identity` | 控制面 | 上游账号（订阅 OAuth / API-key）的唯一写者；唯一用 refresh_token 换新令牌的地方 |
 | `@dizzyapi/plugin-account-priority` | `accountPriority` | 控制面 + 数据面监管 | 策略组的唯一写者；拉起/监管 gatewayd；经控制桥推送策略、提供预览与选择查询 |
+| `@dizzyapi/plugin-catalog` | `catalog` | 控制面（只读） | 插件能力目录：反射 + 可选声明清单，汇总谁提供什么、谁接受什么；不含秘密、不起 HTTP |
 | `@dizzyapi/plugin-settings` | `settings` | 控制面 | 运行期可改的配置的唯一写者：`app.yml` 是基线，它写自己的覆盖文件 |
 | `@dizzyapi/plugin-admin` | `admin` | 开发者面板 | 插件 / 服务的静态依赖图、运行期概览、改设置、重启单个插件、退出整个进程 |
 | `@dizzyapi/plugin-kit` | — | 内部底座 | 配置 schema（手写 Standard Schema + 字段元数据）+ 原子写 JSON 存储；以上各包共用 |
@@ -442,6 +443,39 @@ tag、健康、冷却与并发饱和。`transport` 在 Windows 开发机自动�
 `maxRestartDelayMs`；`dataPath` / `binaryPath` / `args` / `socketPath` / `transport` /
 `logFormat` 不可运行期改。
 
+**`catalog` 是只读的插件能力目录**（2026-10-19）：它不是管理插件，不起 HTTP、不写状态、
+不调用被观察插件的方法。`snapshot()` 从活的插件树反射入口 / 状态 / 服务 / 方法 / inject /
+Config schema 字段 / 设置命名空间；事件、控制桥命令、数据形状与存储用途由各插件可选的
+声明清单补齐。清单是**声明，不是校验**：反射不到、清单也没写的面进 `unknown`，绝不猜。
+`available` 只在入口未被禁用且 fiber 是 ACTIVE 时为 true；`find()` 默认只返回 available
+（D5：禁用插件不得表现为可用）。配置只输出 schema 元数据（`writable` / `secret` /
+`credentialRef` / 取值域），存储只输出非秘密路径字段；两类都不带值。
+`user` / `auth` / `mailer` / `credentials` / `identity` / `account-priority` / `settings` /
+`admin` / `catalog` 自己都已带基础清单。
+
+清单的两种写法（目录优先读静态属性，其次才动态 import 模块读模块级导出）：
+
+```ts
+class Foo extends Service {
+  static catalog = {
+    capabilities: ['foo'],
+    events: [{ name: 'foo/changed', payload: 'id: string' }],
+    bridge: [{ method: 'foo.query', direction: 'outbound' }],
+    storage: [{ key: 'dataPath', kind: 'file', description: 'foo 数据' }],
+  } as const
+}
+```
+
+**`catalog`**（插件能力目录）
+
+| 面 | 方法 | 说明 |
+|---|---|---|
+| 快照 | `snapshot(options?)` | 整棵树的目录；`includeUnavailable` 默认取配置 |
+| 单个 | `describe(pluginId)` | 未知 id 报 `CATALOG_PLUGIN_NOT_FOUND` |
+| 查询 | `find({ capability?, plugin?, package?, includeUnavailable? })` | 能力标签或派生 facet（`service:` / `settings:` / `event:` / `bridge:` / `storage:`）；默认只返回 available |
+| 桥形状 | `query(params?)` | `{ generatedAt, count, plugins }`，JSON 可序列化，给前端 / 将来的桥直接转发 |
+| 事件 | — | 目录是纯读面，不发事件 |
+
 **`admin`**（开发者面板，HTTP 服务）
 
 | 面 | 方法 | 说明 |
@@ -489,6 +523,10 @@ tag、健康、冷却与并发饱和。`transport` 在 Windows 开发机自动�
   Windows 开发机走回环 TCP，Linux 走 `./data/gatewayd.sock`。控制桥的地址由 gatewayd
   在 stdout 打一行 `{"type":"ready",...}`，TS 读到后才连接。用面板的
   `/api/settings` 可以看到 `account-priority` 命名空间与六个可写字段。
+- **插件能力目录（2026-10-19）**：`catalog` 在 `settings` 之前装载，没有 HTTP 入口；
+  进程内用 `catalog.snapshot()` / `describe(id)` / `find({ capability })` 查询。
+  `packages/catalog/test` 覆盖清单三态（静态 / 模块级 / 无）、D5 禁用过滤、方法枚举、
+  秘密值不出现与稳定排序。
 
 ### 4.3 边界与已知偏离
 
@@ -503,8 +541,10 @@ tag、健康、冷却与并发饱和。`transport` 在 Windows 开发机自动�
    v1 没有 Go，所以 LLM 请求目前还无法真正鉴权。
 4. **`@dizzyapi/plugin-admin` 已经落地**，不再是占位：它就是 `user.adminPlugins` /
    `settings.adminPlugins` 里那个「指定插件」的实体。
-5. **设置插件的写入口现在是面板**：机制是通用的（任何插件的 schema 声明了可写字段就能改），
-   但真正声明了可写字段的仍只有 `mailer`（SMTP 那一组）；`user` / `auth` 的字段只读可见。
+5. **设置插件的写入口现在是面板**：机制是通用的（任何插件的 schema 声明了可写字段就能改）。
+   当前声明了可写字段的是 `mailer`（SMTP 那一组）、`identity`（刷新策略）、
+   `account-priority`（等待 / 退避参数）与 `catalog`（`includeUnavailable`）；
+   `user` / `auth` / `credentials` / `settings` / `admin` 的字段只读可见。
    `settings.adminPlugins` 里只有 `@dizzyapi/plugin-admin`，所以**只有面板能改**——
    新增写入口 = 往白名单加插件名，没有别的口子。
 6. **面板不是权限边界**：回环绑定 + cookie + 自定义头 + Host 校验挡的是「网页」与
@@ -527,6 +567,10 @@ tag、健康、冷却与并发饱和。`transport` 在 Windows 开发机自动�
 11. **cordis 异常退出时 gatewayd 可能留下**：正常卸载/重启会由插件优雅停止子进程；
     进程崩溃或被强杀时 Go 侧按 D9 继续存活，但也不会自动退出。重启后会起一个新的
     gatewayd（新端口），旧进程需要人工清理；孤儿检测尚未实现（§9）。
+12. **能力目录是反射 + 声明，不是类型系统**：TS 类型在运行期不存在。目录能给的是
+    方法名 / 参数个数、Config schema 的字段元数据，以及插件自己声明的事件、桥命令、
+    数据形状与存储用途；`unknown` 里的面表示「不知道」，不是「没有」。被禁用 / 未装载的
+    入口不会 import 模块，因此也读不到模块级清单，相关面一律 unknown。
 
 ---
 
@@ -993,6 +1037,10 @@ CI 用 `go list -deps` 逐模块校验 `modules/*` 之间无相互 import，违�
 - **`include` 生成的 entry id 带随机前缀**（`3ccf294d` 这种）：`entry.id` 只能当调试信息，
   稳定身份一律用 `entry.options.id`；`app.yml` 里的 entry 有显式 id，prelude / include
   自己创建的没有。
+- **`fiber.runtime.callback` 是 loader 解析后的插件本体**（类 / 函数 / `{ apply }`）：
+  类插件的 `static catalog` 直接从这里读；模块级 `export const catalog` 不在 callback 上，
+  要按 `entry.options.name` 动态 import（loader 已 import 过，命中模块缓存）。
+  `fiber.runtime` 在卸载途中可能是 null，读之前要判空。
 
 **sub2api**（LGPL-3.0，44k stars，Go + Vue 3）
 - `backend/` 3244 文件，`frontend/src/` 931 文件，`backend/internal/` 2561 文件
@@ -1041,7 +1089,7 @@ CI 用 `go list -deps` 逐模块校验 `modules/*` 之间无相互 import，违�
   `gatewayd 已就绪：tcp 127.0.0.1:<port>（pid …）` 与策略 revision；面板
   `/api/settings` 能看到 `account-priority` 命名空间；Ctrl-C 退出后子进程
   `process.kill(pid, 0)` 报 ESRCH（已停止）。
-- 当前全量：`pnpm test` 164 个用例（163 通过 / 1 跳过），`pnpm typecheck` 干净；
+- 当前全量：`pnpm test` 173 个用例（172 通过 / 1 跳过），`pnpm typecheck` 干净；
   `packages/account-priority` 自身 13 个用例全过，`go test ./...` 两个包全过。
 
 **本机环境**

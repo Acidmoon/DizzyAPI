@@ -84,6 +84,14 @@ export class SettingsService extends Service {
   /** 没有 loader 就没有插件树，也就没有可设的东西——直接不上马。 */
   static inject = ['loader']
 
+  /** 能力清单：运行期配置的唯一写者。它自己不暴露桥命令。 */
+  static catalog = {
+    capabilities: ['runtime-config'],
+    events: [{ name: 'settings/updated', description: '某个命名空间的覆盖变了', payload: 'ns: string' }],
+    bridge: [],
+    storage: [{ key: 'dataPath', kind: 'file', description: '设置覆盖 JSON（gitignored）' }],
+  } as const
+
   readonly config: ResolvedSettingsConfig
   private store: JsonStore<SettingsSnapshot>
   private adminPlugins: readonly string[]

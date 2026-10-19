@@ -235,6 +235,34 @@ export const MAILER_CONFIG_SCHEMA = standardSchema<ResolvedMailerConfig>(
 export class MailerService extends Service {
   static Config = MAILER_CONFIG_SCHEMA
 
+  /** 能力清单：只发消息，不落盘、不发事件、不暴露桥命令。 */
+  static catalog = {
+    capabilities: ['email'],
+    events: [],
+    bridge: [],
+    storage: [],
+    shapes: {
+      MailMessage: {
+        description: 'send() 的入参',
+        fields: {
+          to: { type: 'string' },
+          subject: { type: 'string' },
+          text: { type: 'string' },
+          kind: { type: 'string', optional: true, description: '用途标签，如 register-code' },
+        },
+      },
+      SendReceipt: {
+        description: 'send() 的回执',
+        fields: {
+          id: { type: 'string' },
+          to: { type: 'string' },
+          transport: { type: 'string' },
+          acceptedAt: { type: 'string' },
+        },
+      },
+    },
+  } as const
+
   readonly config: ResolvedMailerConfig
   private logger: Logger
 

@@ -36,6 +36,30 @@ const VALUE_MAX_LENGTH = 4096
 export class CredentialsService extends Service {
   static Config = CREDENTIALS_CONFIG_SCHEMA
 
+  /** 能力清单：秘密的写者。对外描述里结构上没有 value 字段。 */
+  static catalog = {
+    capabilities: ['secrets', 'credential-refs'],
+    events: [
+      {
+        name: 'credentials/reference-updated',
+        description: '某个引用名的值被写入或删除',
+        payload: 'ref: string',
+      },
+    ],
+    bridge: [],
+    storage: [{ key: 'dataPath', kind: 'file', description: '秘密本体 JSON（0600）' }],
+    shapes: {
+      CredentialDescription: {
+        description: 'describe() / list() 能对外说的话，不含值',
+        fields: {
+          configured: { type: 'boolean' },
+          createdAt: { type: 'string', optional: true },
+          updatedAt: { type: 'string', optional: true },
+        },
+      },
+    },
+  } as const
+
   readonly config: ResolvedCredentialsConfig
   private store: JsonStore<CredentialsSnapshot>
   private entries: Map<string, CredentialRecord> | undefined

@@ -79,6 +79,14 @@ export class AdminService extends Service {
   static Config = ADMIN_CONFIG_SCHEMA
   static inject = ['loader']
 
+  /** 能力清单：开发者面板。HTTP 面属于界面请求，不经过桥，也不进 LLM 链路。 */
+  static catalog = {
+    capabilities: ['developer-panel', 'plugin-introspection', 'process-shutdown'],
+    events: [],
+    bridge: [],
+    storage: [],
+  } as const
+
   readonly config: ResolvedAdminConfig
   private readonly logger: Logger
   private panel: PanelServer | undefined

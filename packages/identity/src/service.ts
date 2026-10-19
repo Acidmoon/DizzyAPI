@@ -55,6 +55,26 @@ const ID_PATTERN = /^acc-[a-f0-9]{12}$/
 export class IdentityService extends Service {
   static Config = IDENTITY_CONFIG_SCHEMA
 
+  /** 能力清单：账号元数据的唯一写者 + RT 刷新；令牌在 credentials 里。 */
+  static catalog = {
+    capabilities: ['upstream-accounts', 'token-refresh'],
+    events: [
+      {
+        name: 'identity/account-updated',
+        description: '账号记录或凭据发生写入',
+        payload: 'id: string, reason: created|updated|credentials|removed',
+      },
+      { name: 'identity/account-refreshed', description: '一次成功的 RT 交换', payload: 'id: string' },
+      {
+        name: 'identity/account-failed',
+        description: '一次失败的刷新尝试',
+        payload: 'id: string, code: string',
+      },
+    ],
+    bridge: [],
+    storage: [{ key: 'dataPath', kind: 'file', description: '账号元数据 JSON（不含任何令牌）' }],
+  } as const
+
   readonly config: ResolvedIdentityConfig
   private readonly store: JsonStore<IdentitySnapshot>
   private readonly logger: Logger

@@ -1,8 +1,10 @@
 import {
   checkConfigObject,
+  knownKeysOf,
   readString,
   readStringArray,
   standardSchema,
+  type FieldSpec,
   type StandardIssue,
 } from '@dizzyapi/plugin-kit'
 
@@ -43,7 +45,17 @@ export interface ResolvedUserConfig {
   readonly balanceWriters?: readonly string[] | undefined
 }
 
-const KNOWN_KEYS: readonly string[] = ['dataPath', 'adminPlugins', 'balanceWriters']
+/**
+ * 字段元数据：三个字段都**不可**运行期改。
+ * `dataPath` 换的是数据落点；两个白名单改的是写权限——让自己给自己提权，绝不能做。
+ */
+const USER_FIELDS: readonly FieldSpec[] = [
+  { key: 'dataPath', label: '用户数据文件位置', kind: 'string', writable: false },
+  { key: 'adminPlugins', label: '可管理用户的插件', kind: 'stringArray', writable: false },
+  { key: 'balanceWriters', label: '可改余额的插件', kind: 'stringArray', writable: false },
+]
+
+const KNOWN_KEYS = knownKeysOf(USER_FIELDS)
 
 export function validateUserConfig(value: unknown): ResolvedUserConfig | readonly StandardIssue[] {
   const { raw, issues } = checkConfigObject(value, KNOWN_KEYS)
@@ -57,4 +69,8 @@ export function validateUserConfig(value: unknown): ResolvedUserConfig | readonl
   return { dataPath, adminPlugins: adminPlugins ?? [], balanceWriters }
 }
 
-export const USER_CONFIG_SCHEMA = standardSchema<ResolvedUserConfig>('dizzyapi', validateUserConfig)
+export const USER_CONFIG_SCHEMA = standardSchema<ResolvedUserConfig>(
+  'dizzyapi',
+  validateUserConfig,
+  USER_FIELDS,
+)

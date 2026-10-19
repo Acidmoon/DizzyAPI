@@ -50,6 +50,14 @@ const MAX_LIST_LIMIT = 1000
 export class UserService extends Service {
   static Config = USER_CONFIG_SCHEMA
 
+  /** 能力清单：目录可见的部分。用户插件不发事件、不暴露桥命令。 */
+  static catalog = {
+    capabilities: ['users', 'balances'],
+    events: [],
+    bridge: [],
+    storage: [{ key: 'dataPath', kind: 'file', description: '用户与余额流水 JSON' }],
+  } as const
+
   readonly config: ResolvedUserConfig
   private store: JsonStore<UserSnapshot>
   private adminPlugins: readonly string[]
