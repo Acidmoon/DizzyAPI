@@ -16,6 +16,7 @@
  */
 import { createHash, randomBytes } from 'node:crypto'
 import {
+  cp,
   mkdir,
   mkdtemp,
   readFile,
@@ -149,12 +150,26 @@ export class AssetStore {
       }
       await writeFile(join(temp, METADATA_FILE), `${JSON.stringify(metadata, null, 2)}\n`, 'utf8')
       try {
-        await rename(temp, directory)
+        await renameWithRetry(temp, directory)
       } catch (error) {
         // 另一个进程/安装抢先创建了同版本：内容一致就复用，否则报错。
         const raced = await readMetadata(directory)
-        if (raced === undefined || raced.checksum !== checksum) throw error
-        await rm(temp, { recursive: true, force: true })
+        if (raced !== undefined && raced.checksum === checksum) {
+          await rm(temp, { recursive: true, force: true })
+        } else if (raced === undefined && isTransientRenameError(error)) {
+          // Windows 上目录 rename 可能被 Defender / 索引器长时间占用。
+          // 磁盘上的最终目录在 current.json 指向它之前不可见，所以复制也能保持
+          // 「读者只会看到完整版本」；原子性仍由指针切换保证。
+          try {
+            await cp(temp, directory, { recursive: true, force: false, errorOnExist: true })
+            await rm(temp, { recursive: true, force: true })
+          } catch (copyError) {
+            await rm(directory, { recursive: true, force: true }).catch(() => undefined)
+            throw copyError
+          }
+        } else {
+          throw error
+        }
       }
     } catch (error) {
       await rm(temp, { recursive: true, force: true }).catch(() => undefined)
@@ -448,6 +463,30 @@ function assertVersion(version: string): void {
       `版本号非法：${version}（允许字母、数字、点、下划线、加号、减号）`,
     )
   }
+}
+
+/**
+ * Windows 上目录 rename 偶尔会被 Defender / 索引器短暂占用而报 EPERM/EBUSY；
+ * 目录内容是刚写完的、尚未对外可见，重试是安全的。非瞬时错误照常抛出。
+ */
+async function renameWithRetry(source: string, target: string, attempts = 4): Promise<void> {
+  let lastError: unknown
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      await rename(source, target)
+      return
+    } catch (error) {
+      if (!isTransientRenameError(error)) throw error
+      lastError = error
+      await new Promise((resolve) => setTimeout(resolve, 25 * (attempt + 1)))
+    }
+  }
+  throw lastError
+}
+
+function isTransientRenameError(error: unknown): boolean {
+  const code = (error as { code?: unknown }).code
+  return code === 'EPERM' || code === 'EBUSY' || code === 'EACCES'
 }
 
 async function readMetadata(directory: string): Promise<AssetMetadata | undefined> {
