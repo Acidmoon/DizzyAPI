@@ -1,0 +1,21 @@
+{
+  "name": "@dizzyapi/plugin-api",
+  "version": "0.1.0",
+  "private": true,
+  "description": "DizzyAPI · 产品 HTTP 入口：同源提供 SPA 静态资源与 /api/*；进程内调用控制面服务，不走控制桥",
+  "type": "module",
+  "license": "MIT",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./package.json": "./package.json"
+  },
+  "scripts": {
+    "test": "node --import tsx --test \"test/*.test.ts\""
+  },
+  "dependencies": {
+    "@dizzyapi/plugin-kit": "workspace:*",
+    "cordis": "^4.0.0-rc.11"
+  }
+}

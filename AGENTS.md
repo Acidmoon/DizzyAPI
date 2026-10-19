@@ -9,13 +9,14 @@
 > 记录性的修正（现状、事实、坑）直接改；涉及设计判断的，先问 owner，
 > 不要凭本文件去推翻 owner 的决定或已在运行的代码。
 >
-> 当前状态：**控制面插件 + Go LLM 请求最小闭环 + 前端宿主骨架**。cordis 侧已有十一个插件包
-> （外加共用底座 kit）并全部装载运行（§4）；Go 侧已有 `modules/accountpriority`、
+> 当前状态：**控制面插件 + Go LLM 请求最小闭环 + 前端宿主 + 产品 HTTP 入口**。cordis 侧已有
+> 十二个插件包（外加共用底座 kit）并全部装载运行（§4）；Go 侧已有 `modules/accountpriority`、
 > `modules/transport`、`modules/keyauth`、最小 engine 与 HTTP 入口（§5.2 / §5.3）。
 > `cmd/gatewayd` 现在能接受 OpenAI 兼容的 `/v1/chat/completions`，按策略选账号并转发到
 > OpenAI 兼容上游。前端 SPA 已落地 `/console` 与 `/admin` 路由、静态资源版本与清单，
-> 视觉层按 owner 提取的参考页 DOM/CSS token 重写（未 vendor）。
-> 描述符／profile 编排、settle／usage-log、Go 的 auth／quota、前端真实 REST 仍是**目标**，
+> 视觉层按 owner 提取的参考页 DOM/CSS token 重写（未 vendor）；产品 HTTP 入口
+> （SPA 静态资源 + `/api/*`）由 TS 的 `api` 插件在 127.0.0.1:7791 同源提供（§4.1）。
+> 描述符／profile 编排、settle／usage-log、Go 的 auth／quota、API key 服务仍是**目标**，
 > 不是现状；本文件中这些部分不要当成已实现。
 
 ---
@@ -72,7 +73,7 @@ engine 不是给 Go 增加灵活性，而是让 Go **服从** cordis 的决定�
 |---|---|---|---|---|---|---|---|
 | 大模型请求 | **LLM 请求**（= 用户请求、推理请求） | 客户端 → 网关 → 上游 | 高 | 是（首字延迟） | 计费相关阶段 fail-closed | **是** | **是** |
 | 桥消息 | **控制消息** | cordis ↔ Go，经 UDS 桥 | 低 | 否 | 可重试、可排队，但不可静默丢弃 | 否 | 否 |
-| 界面调用 | **界面请求** | 用户站 / 管理台 → Go REST API | 中 | 否 | 常规 HTTP 语义 | 否 | 否 |
+| 界面调用 | **界面请求** | 用户站 / 管理台 → 产品 HTTP 入口（当前是 TS `api` 插件） | 中 | 否 | 常规 HTTP 语义 | 否 | 否 |
 
 **五条绑定规则：**
 
@@ -257,6 +258,10 @@ owner 决策：`quota-check` 只做「是否允许发起」的**门槛判断**�
 - 现成范例：本机 `dsh-model-fingerprint` 插件的 `dsh.client.inject`
   （`dsh-client-ui-settings` / `dsh-client-ui-slots`）+ `./client` 导出。
 
+> 现状（2026-10-19，owner 定）：界面请求的 HTTP 入口与静态字节由 TS 的 `api` 插件
+> 同源提供（`packages/api`，`/api/*` 进程内调用控制面服务）；D13 里「页面调 Go」
+> 在当前实现中尚未发生，Go 的 HTTP 入口仍只服务 LLM 请求。是否迁到 Go 由 owner 定。
+
 ### D14 · 许可证纪律
 
 状态：**生效**
@@ -347,6 +352,7 @@ sub2api 在拿到首个上游响应前把额度显示为 `unknown`，
 | `@dizzyapi/plugin-account-priority` | `accountPriority` | 控制面 + 数据面监管 | 策略组的唯一写者；拉起/监管 gatewayd；经控制桥推送策略与 identity 的只读账号/令牌快照；提供预览与选择查询 |
 | `@dizzyapi/plugin-catalog` | `catalog` | 控制面（只读） | 插件能力目录：反射 + 可选声明清单，汇总谁提供什么、谁接受什么；不含秘密、不起 HTTP |
 | `@dizzyapi/plugin-frontend` | `frontend` | 前端宿主 | SPA 静态资源的版本 / 原子切换 / 回滚；页面、设置卡与插槽清单；按启用集过滤 |
+| `@dizzyapi/plugin-api` | `api` | 产品 HTTP 入口 | 同源提供 SPA 静态资源与 `/api/*`；进程内调用控制面服务，不走控制桥；会话只进 HttpOnly cookie |
 | `@dizzyapi/plugin-settings` | `settings` | 控制面 | 运行期可改的配置的唯一写者：`app.yml` 是基线，它写自己的覆盖文件 |
 | `@dizzyapi/plugin-admin` | `admin` | 开发者面板 | 插件 / 服务的静态依赖图、运行期概览、改设置、重启单个插件、退出整个进程 |
 | `@dizzyapi/plugin-kit` | — | 内部底座 | 配置 schema（手写 Standard Schema + 字段元数据）+ 原子写 JSON 存储；以上各包共用 |
@@ -481,9 +487,10 @@ OpenAI `id_token` 只在内存里解出 `email` / `account_id`，不保存本体
 
 角色边界：本插件**没有存储、没有定时器、没有 HTTP 路由**，禁用时只是服务消失；
 账号与令牌仍由 identity / credentials 独占写入（D8）。写方法一律要求 actor 在
-`adminPlugins` 白名单里（默认空 = 全部拒绝），读方法不限权。`app.yml` 里当前只有
-`@dizzyapi/plugin-admin` 在名单里；将来接 HTTP 时，路由层要把认证后的管理员映射成
-白名单 actor，且不得把 `identity.getAccessToken` / `credentials.resolve` 暴露到路由。
+`adminPlugins` 白名单里（默认空 = 全部拒绝），读方法不限权。`app.yml` 里当前有
+`@dizzyapi/plugin-admin` 与 `@dizzyapi/plugin-api`；`api` 插件的 `/api/accounts*` 把认证后的
+管理员映射成 `@dizzyapi/plugin-api`，且不把 `identity.getAccessToken` /
+`credentials.resolve` 暴露到路由，响应也不含令牌与 `credentialRef`。
 
 **`catalog` 是只读的插件能力目录**（2026-10-19）：它不是管理插件，不起 HTTP、不写状态、
 不调用被观察插件的方法。`snapshot()` 从活的插件树反射入口 / 状态 / 服务 / 方法 / inject /
@@ -525,10 +532,11 @@ class Foo extends Service {
 | 读 | `describe()` / `snapshot()` / `manifest()` / `pages(area?)` / `settingsCards()` / `slots(slot?)` / `findPage(path)` | 当前资源版本与可见清单；`manifest()` 含 `assets{version,base}` |
 | 资源 | `current()` / `assets()` / `readAsset(path, version?)` / `assetPath()` / `indexFile()` / `installBundledAssets()` / `install(bundle)` / `rollback()` | 版本目录 + `current.json` 原子指针；保留上一版 |
 | 清单 | `registerContributions(owner, bundle)` / `setEnabledPlugins(ids)` / `sync()` | owner 可以是 entry id 或包名；`sync()` 从 loader 重算启用集 |
-| 文件 | `<dataPath>/manifest.json` / `state.json` / `versions/<version>/*` | Go / 反代直接读盘发字节，不过桥 |
+| 文件 | `<dataPath>/manifest.json` / `state.json` / `versions/<version>/*` | `api` 插件（或反代）直接读盘发字节，不过桥 |
 
 包名取 `@dizzyapi/plugin-frontend`：D13 的角色就是「前端插件」，而 `console` 在本项目里
-同时指 `/console` 用户站与开发者面板。前端**不监听产品 HTTP**；`pnpm preview:console`
+同时指 `/console` 用户站与开发者面板。前端宿主本身**不监听产品 HTTP**，字节由 `api`
+插件读盘发出；`pnpm preview:console`
 是明确标注的开发预览（mock 数据、只绑 127.0.0.1、不提供 `/api/*`）。页面清单是数据：
 插件被禁用时，它的页面 / 设置卡 / 插槽自动消失，前端不做特判。设置卡只声明 namespace，
 用通用设置渲染器，所以新增可写命名空间不需要改前端代码。
@@ -536,10 +544,34 @@ class Foo extends Service {
 用户站的源码路由是 `/usage` / `/api_keys` / `/top_up` / `/transactions` / `/profile`，
 在 D13 的 `/console` 区域内落成 `/console/usage`、`/console/api_keys`、
 `/console/top_up`、`/console/transactions`、`/console/profile`；`/console` 是重定向到
-`/console/usage` 的隐藏页。用量页已接 mock 的余额 / 指标 / 成本柱状图；API keys 有创建
-（完整 key 只显示一次）、改名、删除；充值有金额 chips、支付方式与订单结果。账单与个人资料
-仍是占位。参考页是 React + Rspack + `ds-*`，我们**没有**复制它的 CSS / JS / 图片 / 字体
-或真实账户数据；token 与结构见 `packages/console/DESIGN.md`。
+`/console/usage` 的隐藏页。用量页有余额 / 指标 / 成本柱状图；API keys 有创建
+（完整 key 只显示一次）、改名、启停、轮换、删除；充值有金额 chips、支付方式与订单结果；
+个人资料页有头像 / 用户名 / 改密码。账单仍是占位。参考页是 React + Rspack + `ds-*`，
+我们**没有**复制它的 CSS / JS / 图片 / 字体或真实账户数据；token 与结构见
+`packages/console/DESIGN.md`。
+
+**`api`**（产品 HTTP 入口：SPA + `/api/*`）
+
+| 面 | 方法 | 说明 |
+|---|---|---|
+| 公开 | `GET /api/health` / `GET /api/console/manifest` | 仍要求 Host 与 `X-Requested-With: dizzyapi`；health 汇总 user / frontend / catalog / accountPriority，拿不到 accountPriority 时 `state='degraded'`，不编造桥已连接 |
+| 注册 / 登录 | `POST /api/auth/register/request` / `confirm`、`login`、`logout`、`password/reset/request` / `confirm` | 登录与注册确认设置 HttpOnly + SameSite=Lax cookie；响应不含 token |
+| 会话 | `GET /api/session`、`PATCH /api/profile`、`POST /api/profile/password` | 用户视图不含密码哈希 / 令牌；余额只在 admin 或 `balanceEnabled` 时返回 |
+| API keys | `GET` / `POST /api/keys`、`PATCH` / `DELETE /api/keys/:id`、`POST /api/keys/:id/rotate` | 依赖可选的 `apiKey` 服务；本分支没有 → 503 `API_KEY_UNAVAILABLE`。secret 只在 create / rotate 响应里出现一次 |
+| 用量 / 充值 | `GET /api/usage`、`GET /api/topup/options`、`POST /api/topup/orders` | 没有 usage-log：余额按 BigInt 换算成分，历史为空；创建订单返回 501 `TOPUP_NOT_IMPLEMENTED` |
+| 管理台 | `GET /api/users`、`/api/users/:id`、`PATCH` / `DELETE /api/users/:id`、`POST /api/users/:id/balance`、`GET /api/accounts…`、`GET /api/catalog/modules`、`GET /api/settings`、`POST` / `DELETE /api/settings/:ns` | 需要 `session.user.role === 'admin'`；写操作的 actor 固定为 `@dizzyapi/plugin-api` |
+| 静态 | `GET /assets/frontend/<version>/<path>`、`GET /console/*`、`GET /admin/*`、`GET /` | 资源从 frontend 的版本目录读盘；immutable + nosniff；SPA 带 CSP 与 no-store；`state.json.enabled=false` 时静态 404 |
+
+配置（全部只读）：`port`（默认 7791，`0` = 系统分配）、`bodyLimitBytes`（默认 1 MiB，
+64 KiB..4 MiB）、`sessionCookieName`（默认 `dizzyapi_session`）、`trustProxy`（本轮不支持）、
+`enabled`（默认 true）。`static inject` 只有 `user` / `auth` / `loader`；
+`frontend` / `catalog` / `accountAdmin` / `settings` / `apiKey` / `accountPriority`
+**一律运行期解析**：`ctx.reflect._getImpl(name, false)` 取原始实例并要求 fiber 是 ACTIVE，
+缺谁就只让对应路由 503（`FRONTEND_UNAVAILABLE` / `CATALOG_UNAVAILABLE` /
+`ACCOUNT_ADMIN_UNAVAILABLE` / `API_SETTINGS_UNAVAILABLE` / `API_KEY_UNAVAILABLE`），
+入口本身照常存活，`/api/health` 也会把缺失能力标成 degraded。这样禁用前端宿主或目录
+不会让整个用户站跟着 PENDING 消失（D5）。所有 `/api/*` 的 Host / Origin / Sec-Fetch-Site /
+自定义头四道闸与开发者面板相同，并且不发任何 CORS 头。
 
 **`admin`**（开发者面板，HTTP 服务）
 
@@ -585,10 +617,11 @@ class Foo extends Service {
   再改 `app.yml` 里这些键不会生效——要先用面板「恢复基线」。
 - **账号保管（2026-10-19）**：`identity` 已装载，账号记录在 `data/accounts.json`（当前 0 个），
   令牌在 `credentials` 的 `identity/<账号 id>` 下；首期只有 Claude 与 OpenAI/Codex 两个 RT 适配器。
-- **账号管理（2026-10-19）**：`account-admin` 已装载，`adminPlugins` 只有面板。它是
-  identity 的门面，不新增存储文件；当前**没有 HTTP 入口**，管理操作只能由进程内消费者
-  （或测试）以白名单 actor 调用。面板 `/api/settings` 能看到 `account-admin` 命名空间：
-  `maxBatchSize` 可写，`adminPlugins` 只读。
+- **账号管理（2026-10-19）**：`account-admin` 已装载，`adminPlugins` 有面板与 `api`。它是
+  identity 的门面，不新增存储文件；HTTP 入口由 `api` 插件的 `/api/accounts*` 提供
+  （认证后的管理员映射成 `@dizzyapi/plugin-api`），响应不含令牌与 `credentialRef`。
+  面板 `/api/settings` 能看到 `account-admin` 命名空间：`maxBatchSize` 可写，
+  `adminPlugins` 只读。
 - **账号请求优先级（2026-10-19）**：`account-priority` 已装载，策略在
   `data/account-priority.json`（首次启动写入内置 `default`）；`pnpm dev` 会拉起 gatewayd，
   日志里能看到 `gatewayd 已就绪：tcp 127.0.0.1:<port>（pid …）` 与策略 revision。
@@ -597,8 +630,14 @@ class Foo extends Service {
   `/api/settings` 可以看到 `account-priority` 命名空间与六个可写字段。
 - **前端宿主（2026-10-19）**：`frontend` 已装载，启动时把 `packages/console/assets`
   安装到 `data/frontend/versions/<version>`，日志会打印资源版本与 manifest revision。
-  浏览器入口仍等 Go `httpapi` / 反代；本地看界面用 `pnpm preview:console`
+  浏览器入口由 `api` 插件提供（见下一条）；本地只看 mock 界面用 `pnpm preview:console`
   （mock 数据，`http://127.0.0.1:7790/console`），`/console` 会重定向到 `/console/usage`。
+- **产品 HTTP 入口（2026-10-19）**：`api` 已装载，默认 `http://127.0.0.1:7791/console`，
+  `/` 303 到 `/console/usage`。`/api/*` 全部要求 `X-Requested-With: dizzyapi`，Host / Origin /
+  Sec-Fetch-Site 与面板同一套闸，无 CORS 头。首次打开会调 `GET /api/session`，401 时渲染
+  登录 / 注册 / 找回密码页；登录成功后进入原目标路由。浏览器打开的是真实 REST，
+  `pnpm preview:console` 仍是 mock。`GET /api/keys` 在本分支返回 503
+  （`apiKey` 服务不存在）；`/api/usage` 只返回余额换算与空历史，充值订单 501。
 - **插件能力目录（2026-10-19）**：`catalog` 在 `settings` 之前装载，没有 HTTP 入口；
   进程内用 `catalog.snapshot()` / `describe(id)` / `find({ capability })` 查询。
   `packages/catalog/test` 覆盖清单三态（静态 / 模块级 / 无）、D5 禁用过滤、方法枚举、
@@ -629,8 +668,9 @@ class Foo extends Service {
    当前声明了可写字段的是 `mailer`（SMTP 那一组）、`identity`（刷新策略）、
    `account-priority`（等待 / 退避参数）与 `catalog`（`includeUnavailable`）；
    `user` / `auth` / `credentials` / `settings` / `admin` 的字段只读可见。
-   `settings.adminPlugins` 里只有 `@dizzyapi/plugin-admin`，所以**只有面板能改**——
-   新增写入口 = 往白名单加插件名，没有别的口子。
+   `settings.adminPlugins` 里现在是 `@dizzyapi/plugin-admin` 与 `@dizzyapi/plugin-api`：
+   面板能改，产品 HTTP 入口的 `/api/settings*` 也能改；新增写入口 = 往白名单加插件名，
+   没有别的口子。
 6. **面板不是权限边界**：回环绑定 + cookie + 自定义头 + Host 校验挡的是「网页」与
    DNS rebinding，挡不住本机同一用户的其他进程（它们可以自己发请求）。
    别把它当成「多用户隔离」或「生产远程管理台」。
@@ -668,8 +708,23 @@ class Foo extends Service {
 14. **前端宿主的视觉层是自有实现**：owner 已提取参考页 DOM/CSS，我们只取 token、
     尺寸与信息架构，没有复制参考项目的 CSS / JS / 图片 / 字体 / logo 或真实账户数据。
     用户站与参考页的路径映射、页面清单与后端契约见 `packages/console/DESIGN.md`。
-    账单 / 个人资料页、亮色模式与按模型小图仍缺参考或后端序列；API key 完整值只在
-    创建对话框里出现一次，不落 localStorage / 日志 / URL。
+    账单页、亮色模式与按模型小图仍缺参考或后端序列；个人资料页与管理台用户页已按
+    通用表单实现（没有参考版式）。API key 完整值只在创建 / 轮换对话框里出现一次，
+    不落 localStorage / 日志 / URL。
+15. **产品 HTTP 入口在 TS 侧**（owner 2026-10-19 定）：同源 SPA + `/api/*` 由 `packages/api`
+    直接调用控制面服务，不过桥；Go 的 HTTP 入口仍只服务 LLM 请求（`/v1/chat/completions`、
+    `/healthz`）。这不是 Go `modules/httpapi`；将来是否把界面请求迁到 Go 由 owner 定。
+16. **管理台的真实权限依赖 user-system 分支**：本分支的 user 记录没有 `role` /
+    `balanceEnabled` / `avatar`，`auth` 也没有 `getEmail`。`api` 已按这些字段 / 方法写好接缝；
+    合并前真实进程里没有 admin（`role` 一律按 user），管理台接口会 403，
+    `/api/session.email` 为 null，`PATCH /api/profile` 会 503（`updateProfile` 不存在）。
+17. **API keys 与用量仍是半成品**：`apiKey` 服务不存在 → `/api/keys*` 503；`usage-log`
+    不存在，`/api/usage` 只把当前余额换算成分并返回空的历史 / 模型数组；支付模块不存在，
+    `POST /api/topup/orders` 501。前端已按契约接好，服务就绪后不需要改页面。
+18. **`api` 不发事件、不落盘、无桥命令**：它是界面请求入口，日志只打印监听地址。
+    静态字节从 `frontend` 的版本目录读盘，不复制；`state.json.enabled=false` 时静态 404，
+    但 `/api/health` 仍可用。它只 inject `user` / `auth` / `loader`；其余服务运行期解析，
+    缺失时对应路由 503，入口本身与其它路由照常存活。
 
 ---
 
@@ -698,8 +753,10 @@ class Foo extends Service {
 
 > 现状（2026-10-19）：这张表仍是**目标**。已落地的是 `accountpriority`（阶段 +
 > 能力）、`transport`（阶段）、`keyauth`（最小占位阶段）与 `internal/httpapi`
-> （HTTP 入口，不是 `modules/httpapi`）。`auth` / `quota` / `settle` / `usage-log`
-> 等还没有 Go 实现；当前 key-auth 不做 key→user 映射，也不计费。
+> （LLM 请求入口，不是 `modules/httpapi`）。**界面请求**的 HTTP 入口是 TS 的
+> `packages/api`（同源 SPA + `/api/*`），它在进程内调用控制面服务，不走桥、也不走 Go。
+> `auth` / `quota` / `settle` / `usage-log` 等还没有 Go 实现；当前 key-auth 不做
+> key→user 映射，也不计费。
 
 契约包规则：
 
@@ -1048,16 +1105,16 @@ CI 用 `go list -deps` 逐模块校验 `modules/*` 之间无相互 import，违�
 | 上游模型来源范围 | 号池的**拆分方式已定**（D17）；待定的是 v1 是否就包含 OAuth 订阅账号池，还是先只做 API key 型频道 |
 | 包月 / 订阅 | 倾向 v2 再做（new-api 的 `subscription.go` 有 48KB） |
 | 控制面数据的存储归属 | 用户表单 / 余额 / 凭证 / 会话 / 上游账号现在都在 cordis 侧（§4.3）；Go 与桥就绪后迁到 Go，插件退化为门面 |
-| API key 的签发与 key→user 映射 | 按 §5 归 Go 的 `auth` 模块（`key.*` 桥命令）；当前只有 `modules/keyauth` 占位，没有签发/吊销/映射 |
+| API key 的签发与 key→user 映射 | 按 §5 归 Go 的 `auth` 模块（`key.*` 桥命令）；当前只有 `modules/keyauth` 占位，没有签发/吊销/映射。界面侧 `apiKey` 服务也不存在，`/api/keys*` 返回 503 |
 | `account-state` 与评分输入 | `Ctx.AccountCandidates` 现在由 `internal/accounts` 的 identity 快照填充；健康、限流、额度、并发等运行时状态仍应由 `account-state` 提供，尚未实现 |
 | 上游地址的归属 | 当前由 `account-priority` 的 `upstreamBaseUrls`（provider → base URL）决定；是否改为 identity 账号字段或独立路由配置，待 owner 定 |
 | 账号级 priority / 运行时状态 | identity 账号没有 priority 字段，`internal/accounts` 快照里的 priority 目前恒为 0；健康/额度/并发等也要等 `account-state`。多账号时默认按 accountId 决出同分顺序 |
 | 上游协议 | 当前只支持 OpenAI 兼容 `/chat/completions`；Claude / Gemini 协议与模型映射何时做、放在哪个模块，待定 |
 | gatewayd 孤儿进程 | cordis 异常退出时 Go 进程按 D9 继续存活；是否需要父进程探测、外部守护或启动时清理旧实例尚未决定 |
-| 前端剩余参考 | 亮色模式、账单 / 发票页、个人资料页、按模型请求数面积图与 Tokens 柱状图的序列契约尚未提供 |
-| 前端真实接口 | 用量 / API keys / 充值 / 账号 / 目录 / 设置 / 健康目前只有 mock 与契约；Go `httpapi` 尚未实现 |
-| 前端静态资源集成 | `manifest.json` / `current.json` / 版本目录如何由 Go 或反代发字节已写进 DESIGN.md，但还没有在 Go 侧跑通过 |
-| 前端与账号管理的接口面 | 账号管理目前只有进程内服务；面向管理台的 `/api/accounts` 等 REST 路由尚未实现，前端仍用 mock |
+| 前端剩余参考 | 亮色模式、账单 / 发票页、按模型请求数面积图与 Tokens 柱状图的序列契约尚未提供；个人资料页 / 管理台用户页已实现，但没有参考版式 |
+| 前端真实接口 | 用量 / API keys / 充值 / 账号 / 目录 / 设置 / 健康已由 `packages/api` 接上真实控制面服务；API keys 依赖尚未存在的 `apiKey` 服务（503），usage 没有历史，充值 501。是否迁到 Go `modules/httpapi` 待 owner 定 |
+| 前端静态资源集成 | `packages/api` 已按 DESIGN.md 的 `manifest.json` / `current.json` / 版本目录契约发字节（immutable / CSP / `state.json.enabled=false` 404）；尚未经反代或 Go 侧验证 |
+| 前端与账号管理的接口面 | `/api/accounts*`、`/api/users*`、`/api/catalog/modules`、`/api/settings*` 已实现，但要求 admin；本分支 user 没有 `role`，真实权限要等 user-system 分支 |
 
 ---
 
@@ -1246,9 +1303,10 @@ CI 用 `go list -deps` 逐模块校验 `modules/*` 之间无相互 import，违�
   `gatewayd 已就绪：tcp 127.0.0.1:<port>（pid …）` 与策略 revision；面板
   `/api/settings` 能看到 `account-priority` 命名空间；Ctrl-C 退出后子进程
   `process.kill(pid, 0)` 报 ESRCH（已停止）。
-- 当前全量（2026-10-19，前端合并后）：`pnpm test` 218 个用例（217 通过 / 1 跳过），
-  `pnpm typecheck` 干净；`packages/account-priority` 16 个、`packages/account-admin` 16 个、
-  `packages/catalog` 9 个、`packages/console` 26 个用例全过；`go test ./...` 的 8 个包全过，
+- 当前全量（2026-10-19，产品 HTTP 入口合并后）：`pnpm test` 247 个用例
+  （246 通过 / 1 跳过），`pnpm typecheck` 干净；`packages/api` 27 个、
+  `packages/account-priority` 16 个、`packages/account-admin` 16 个、
+  `packages/catalog` 9 个、`packages/console` 28 个用例全过；`go test ./...` 的 8 个包全过，
   `go vet ./...` 干净。
 - **LLM 请求闭环已做真机端到端**：`go build -o bin/gatewayd.exe ./cmd/gatewayd` 后，
   用回环 TCP 起进程，经控制桥 `accounts.replace` 推一个账号（含 baseUrl 与令牌），
@@ -1264,7 +1322,7 @@ CI 用 `go list -deps` 逐模块校验 `modules/*` 之间无相互 import，违�
 
 **前端宿主（本项目实测，2026-10-19）**
 
-- `packages/console` 自带 26 个用例：路由、manifest 过滤 / 贡献 / 校验、资源版本切换与
+- `packages/console` 自带 28 个用例：路由、manifest 过滤 / 贡献 / 校验、资源版本切换与
   回滚、路径越界、HTTP 客户端、mock 适配器与真 Loader 集成；`pnpm typecheck` 同时跑
   `checkJs` 检查 `assets/**/*.js`。
 - 参考页是 React + Rspack + `ds-*`，真实 DOM / CSS 在 `E:\vibecoding\DizzyAPI\temp\`；
@@ -1283,6 +1341,21 @@ CI 用 `go list -deps` 逐模块校验 `modules/*` 之间无相互 import，违�
   `/console/transactions`、`/admin/accounts`、`/admin/settings`，并验证 `/console`
   会重定向到用量页；侧栏 260px、卡片 16px 圆角、橙色柱状图与暗色 token 均按源码
   派生值生效。
+
+**产品 HTTP 入口（本项目实测，2026-10-19）**
+
+- `packages/api` 的 27 个用例覆盖：配置校验、端口 0 起停与幂等 stop、Host / 自定义头 /
+  Origin / Sec-Fetch-Site 四道闸、注册 / 登录 / 会话 cookie / 登出、admin 权限、
+  keys（缺失 503 与 fake 服务的 create/list/rotate/update/remove）、
+  accounts / catalog / settings 映射、静态 fallback / immutable / 路径穿越 /
+  `state.json.enabled=false`、usage 金额换算、topup 501、请求体 413 / 坏 JSON 400 / 方法 405，
+  以及 frontend / catalog / accountAdmin / settings / apiKey 缺失时的 503 与 fiber 仍 ACTIVE。
+- 全量 `pnpm test` 247 个用例（246 过 / 1 跳过），`pnpm typecheck` 干净
+  （含 `packages/console/assets/**/*.js` 的 `checkJs`）。`packages/api` 自身 27 个用例全过。
+- 静态字节读取走 `frontend.assetPath(path, version)` 与 `frontend.indexFile()`；
+  路径穿越由 frontend 的 `normalizeAssetPath` + API 层的 404 双重兜底。
+- 用例用假端口 + `ctx.provide` 假服务直接构造 `ApiService` / `ApiServer`；
+  真实 app.yml 树与真实控制面存储尚未在这一轮联调（见 §11）。
 
 **本机环境**
 - `C:\Users\17740\.dsh\profiles\desktop` 是一个活的 cordis 应用实例：
@@ -1337,23 +1410,36 @@ CI 用 `go list -deps` 逐模块校验 `modules/*` 之间无相互 import，违�
   （单进程假设），跨副本的令牌版本防回滚也没做。
 - **`account-admin` 的导入格式只对构造的样例验过**：Claude `.credentials.json` 与
   Codex `auth.json` 的实际字段会随上游 CLI 版本变化，没有用真实账号文件跑过；
-  `auto` 推断也只在测试样例上验过。它没有 HTTP 入口，真实管理台链路尚未验证。
-- **业务面的界面请求（会话令牌）仍没有 HTTP 入口**：现在的 Go HTTP 入口只服务 LLM 请求
-  （`/v1/chat/completions` 与 `/healthz`）；面板的 HTTP 只服务面板自己（看、改设置、退出），
-  不是用户站 / 管理台的 API。用户站 / 管理台的 REST 入口仍未实现。
+  `auto` 推断也只在测试样例上验过。HTTP 入口由 `api` 插件的 `/api/accounts*` 提供，
+  但还没有用真实账号文件跑过整条管理台链路。
+- **业务面的界面请求入口只对假端口验过**：`packages/api` 提供 `/api/*`，但用例用假端口 +
+  `ctx.provide` 假服务直接构造服务；真实 `app.yml` Loader 树、真实 user / auth 存储、
+  frontend 版本目录与浏览器 fetch 尚未在 `pnpm dev` 下联调。Go HTTP 入口仍只服务 LLM 请求
+  （`/v1/chat/completions` 与 `/healthz`）。
+- **首次登录 / 注册 / 找回密码只过了单测**：验证码用假 mailer 捕获；真实 log 传输下从
+  cordis 日志读码、浏览器表单、401 回登录页、退出登录后的 cookie 清除都未做浏览器复验。
+- **管理台用户页没有真实 admin 可测**：user-system 分支合并前 user 记录没有 `role`，
+  所有管理台 API 在真实进程里会 403；`updateProfile` / `setRole` / `setBalanceEnabled` /
+  `auth.getEmail` 的接缝只在 fake 服务上验过。
+- **API keys / usage / topup 仍是契约实现**：`apiKey` 服务不存在（503）、`usage-log`
+  不存在（历史为空）、支付模块不存在（501）。前端已完成对应界面，但没有真实数据联调。
+- **静态资源未在反代 / TLS / Go 下验证**：产品入口只绑 `127.0.0.1:7791`；`Secure` cookie、
+  多级反代、缓存头与 CSP 在真实部署下的表现未验证。
 - **面板前端已在真实浏览器里逐页签点过**（2026-10-18，重写后复验）：概览 / 依赖图 / 插件 /
   服务 / 设置都渲染正常，亮色与暗色、1000px 与 600px 两档宽度都看过；设置保存只提交改动过
   的字段，嵌套字段会还原成对象提交。仍未验证：SSE 断线重连的退避在真实网络抖动下的表现。
 - 面板没有经过反代 / TLS，只支持回环 `http://127.0.0.1`；`SameSite=Lax` 的 cookie
   在跨机访问场景下如何表现未验证（也刻意不支持）。
-- **前端还没有跑过真实 Go `httpapi`**：用量 / API keys / 充值 / 账号 / 目录 / 设置 /
-  健康全部是契约 + mock；真实会话 cookie、401、CORS / 同源、支付回调与 API key 吊销
-  均未在浏览器里验证。
-- **前端静态资源还没有在 Go / 反代里发过**：`current.json` / `manifest.json` 的文件
-  契约与缓存头只在 DESIGN.md 与单测里成立；history fallback、immutable 缓存、CSP
-  与禁用门禁（`state.json.enabled=false`）尚未端到端跑过。
-- **参考页只提供了深色 DOM/CSS**：亮色、账单页、个人资料页、按模型系列图仍缺参考；
-  当前亮色是镜像取值，按模型区块只有汇总卡，没有源码里的两张小图。
+- **前端还没有在浏览器里对着真实 `api` 插件点过**：用量 / API keys / 充值 / 账号 /
+  目录 / 设置 / 健康已接真实 TS REST，但会话 cookie、401、CORS / 同源、支付回调与
+  API key 吊销均未在真实浏览器里验证。
+- **前端静态资源还没有在 Go / 反代 / 真实部署里发过**：`current.json` /
+  `manifest.json` 的文件契约与缓存头在 DESIGN.md 与 `packages/api` 单测里成立；
+  history fallback、immutable 缓存、CSP 与禁用门禁（`state.json.enabled=false`）
+  尚未端到端跑过。
+- **参考页只提供了深色 DOM/CSS**：亮色、账单页、按模型系列图仍缺参考；
+  当前亮色是镜像取值，按模型区块只有汇总卡，没有源码里的两张小图。个人资料页 /
+  管理台用户页已实现，但没有参考版式。
 - **API key 一次性展示流程只过了 mock**：浏览器剪贴板权限、dialog 关闭后清理与刷新
   页面后的行为未做真实浏览器复验。
 - 控制面插件都是单进程假设：同一份 JSON 被两个 cordis 实例写会互相覆盖。

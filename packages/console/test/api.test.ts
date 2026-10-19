@@ -44,6 +44,11 @@ test('HTTP 客户端：路径、查询串、方法与 JSON body', async () => {
   assert.equal(calls[0]?.init.method, 'GET')
   assert.equal(calls[0]?.init.credentials, 'same-origin')
   assert.equal((calls[0]?.init.headers as Record<string, string>).Accept, 'application/json')
+  assert.equal(
+    (calls[0]?.init.headers as Record<string, string>)['X-Requested-With'],
+    'dizzyapi',
+    '所有请求都要带网关要求的自定义头',
+  )
 
   const settingsFetch = fakeFetch(response({ ns: 'mailer' }), calls)
   const settings = createHttpApis({ baseUrl: 'http://gw.test/api', fetchImpl: settingsFetch })
@@ -84,6 +89,57 @@ test('HTTP 客户端：keys / usage / topup 的路径与参数', async () => {
       'POST /api/topup/orders',
     ],
   )
+})
+
+test('HTTP 客户端：session / users / keys.rotate 的路径与参数', async () => {
+  const calls: Call[] = []
+  const apis = createHttpApis({
+    baseUrl: '/api',
+    fetchImpl: (async (url: string | URL | Request, init?: RequestInit) => {
+      calls.push({ url: String(url), init: init ?? {} })
+      return response({})
+    }) as unknown as typeof fetch,
+  })
+  await apis.session.get()
+  await apis.session.login({ email: 'a@example.com', password: 'p' })
+  await apis.session.logout()
+  await apis.session.registerRequest({ email: 'a@example.com', password: 'p', name: 'a' })
+  await apis.session.registerConfirm({ email: 'a@example.com', code: '123456' })
+  await apis.session.requestPasswordReset({ email: 'a@example.com' })
+  await apis.session.confirmPasswordReset({ email: 'a@example.com', code: '1', password: 'p' })
+  await apis.session.updateProfile({ name: 'renamed' })
+  await apis.session.changePassword({ currentPassword: 'old', newPassword: 'new' })
+  await apis.users.list({ status: 'enabled', offset: 2, limit: 5 })
+  await apis.users.get(7)
+  await apis.users.update(7, { role: 'admin' })
+  await apis.users.adjustBalance(7, { deltaMinor: '1000000', reason: 'top-up' })
+  await apis.users.remove(7)
+  await apis.keys.rotate('key_1')
+
+  assert.deepEqual(
+    calls.map((call) => `${call.init.method ?? 'GET'} ${call.url}`),
+    [
+      'GET /api/session',
+      'POST /api/auth/login',
+      'POST /api/auth/logout',
+      'POST /api/auth/register/request',
+      'POST /api/auth/register/confirm',
+      'POST /api/auth/password/reset/request',
+      'POST /api/auth/password/reset/confirm',
+      'PATCH /api/profile',
+      'POST /api/profile/password',
+      'GET /api/users?status=enabled&offset=2&limit=5',
+      'GET /api/users/7',
+      'PATCH /api/users/7',
+      'POST /api/users/7/balance',
+      'DELETE /api/users/7',
+      'POST /api/keys/key_1/rotate',
+    ],
+  )
+  assert.deepEqual(JSON.parse(String(calls[12]?.init.body)), {
+    delta: '1000000',
+    reason: 'top-up',
+  })
 })
 
 test('HTTP 客户端：错误映射保留 code、status 与 request id', async () => {
@@ -153,6 +209,8 @@ test('mock：用量、keys、充值都是契约形状', async () => {
   assert.match(created.secret, /^sk-dizzy-mock-/)
   assert.ok(!('secret' in (await mock.keys.list()).items[0]))
   assert.equal((await mock.keys.update(created.id, { name: 'ci-2' })).name, 'ci-2')
+  const rotated = await mock.keys.rotate(created.id)
+  assert.match(rotated.secret, /^sk-dizzy-mock-rotated-/)
   await mock.keys.remove(created.id)
   assert.equal((await mock.keys.list()).items.length, 3)
 
@@ -171,4 +229,37 @@ test('mock：用量、keys、充值都是契约形状', async () => {
   assert.ok(manifest.pages.some((page) => page.path === '/console'))
   assert.ok(manifest.pages.some((page) => page.path === '/console/api_keys'))
   assert.ok(manifest.pages.some((page) => page.path === '/console/top_up'))
+  assert.equal(manifest.pages.find((page) => page.path === '/console/profile')?.view.kind, 'profile')
+  assert.equal(manifest.pages.find((page) => page.path === '/admin/users')?.view.kind, 'users')
+})
+
+test('mock：会话、用户管理与 admin 权限形状', async () => {
+  const mock = createMockApis({ latencyMs: 0, now: () => new Date('2026-10-19T12:00:00.000Z') })
+
+  const session = await mock.session.get()
+  assert.equal(session.user.role, 'admin')
+  assert.equal(session.permissions.admin, true)
+  assert.equal(session.email, 'owner@example.com')
+  assert.ok(!('token' in session))
+  assert.ok(!('passwordHash' in session.user))
+
+  const users = await mock.users.list()
+  assert.equal(users.items.length, 3)
+  assert.equal(typeof users.items[0]?.balanceMinor, 'string')
+  assert.equal((await mock.users.update(2, { role: 'admin' })).role, 'admin')
+  assert.equal((await mock.users.update(2, { balanceEnabled: true })).balanceEnabled, true)
+  const adjusted = await mock.users.adjustBalance(2, { deltaMinor: '1000000', reason: 'test' })
+  assert.equal(adjusted.balanceMinor, String(500_000n + 1_000_000n))
+
+  await mock.session.logout()
+  await assert.rejects(
+    () => mock.session.get(),
+    (error: unknown) => error instanceof ApiError && error.status === 401,
+  )
+  await mock.session.login({ email: 'owner@example.com', password: 'anything' })
+  assert.equal((await mock.session.get()).permissions.admin, true)
+
+  await mock.session.registerRequest({ email: 'new@example.com', password: 'password', name: 'new' })
+  const registered = await mock.session.registerConfirm({ email: 'new@example.com', code: '123456' })
+  assert.equal(registered.user.id, 1)
 })

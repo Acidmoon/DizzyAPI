@@ -32,6 +32,8 @@ export type PageView =
   | { readonly kind: 'topup' }
   | { readonly kind: 'redirect'; readonly to: string }
   | { readonly kind: 'accounts' }
+  | { readonly kind: 'users' }
+  | { readonly kind: 'profile' }
   | { readonly kind: 'catalog' }
   | { readonly kind: 'settings' }
   | { readonly kind: 'placeholder'; readonly note: string }
@@ -198,10 +200,7 @@ export const BUILT_IN_CONTRIBUTIONS: readonly (ContributionBundle & { readonly o
         nav: '个人资料',
         hidden: true,
         order: 40,
-        view: {
-          kind: 'placeholder',
-          note: '参考页的用户行链接到 /profile；个人资料页的字段与版式尚未提供。',
-        },
+        view: { kind: 'profile' },
       },
       {
         id: 'core.admin.overview',
@@ -213,6 +212,17 @@ export const BUILT_IN_CONTRIBUTIONS: readonly (ContributionBundle & { readonly o
         description: '网关健康、模块目录与已启用插件的管理入口。',
         order: 0,
         view: { kind: 'overview', flavor: 'admin' },
+      },
+      {
+        id: 'core.admin.users',
+        area: 'admin',
+        path: '/admin/users',
+        title: '用户',
+        nav: '用户',
+        icon: 'user',
+        description: '用户状态、角色、余额显示与余额调整；余额按最小单位整数运算。',
+        order: 15,
+        view: { kind: 'users' },
       },
       {
         id: 'core.admin.catalog',
@@ -558,6 +568,8 @@ function assertView(page: { readonly id: string; readonly view: PageView }): voi
       }
       return
     case 'accounts':
+    case 'users':
+    case 'profile':
     case 'catalog':
     case 'settings':
       return

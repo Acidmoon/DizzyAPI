@@ -23,6 +23,9 @@ import { ApiError, createHttpApis, createMockApis } from './lib/api.js'
 /** @typedef {import('../src/contracts.ts').TopupOptions} TopupOptions */
 /** @typedef {import('../src/contracts.ts').TopupOrder} TopupOrder */
 /** @typedef {import('../src/contracts.ts').PaymentMethod} PaymentMethod */
+/** @typedef {import('../src/contracts.ts').SessionResponse} SessionResponse */
+/** @typedef {import('../src/contracts.ts').SessionUser} SessionUser */
+/** @typedef {import('../src/contracts.ts').AdminUserSummary} AdminUserSummary */
 /** @typedef {import('../src/manifest.ts').FrontendManifest} FrontendManifest */
 /** @typedef {import('../src/manifest.ts').FrontendPage} FrontendPage */
 /** @typedef {import('../src/manifest.ts').FrontendSettingsCard} FrontendSettingsCard */
@@ -60,6 +63,10 @@ let renderToken = 0
 let pageCleanup = null
 /** @type {number | undefined} */
 let healthTimer = undefined
+/** @type {SessionResponse | null} */
+let currentSession = null
+/** @type {(() => void) | null} */
+let routerStop = null
 
 // ─────────────────────────────── 小工具 ───────────────────────────────
 
@@ -297,6 +304,27 @@ function manifest() {
   return currentManifest
 }
 
+/** @returns {SessionResponse} */
+function session() {
+  if (currentSession === null) throw new Error('会话尚未加载')
+  return currentSession
+}
+
+/** 管理操作之后重读会话：改自己的角色 / 状态时权限要立刻反映到界面上。 */
+async function refreshCurrentSession() {
+  try {
+    currentSession = await api().session.get()
+  } catch (error) {
+    if (!isUnauthorized(error)) throw error
+    showLogin('会话已过期，请重新登录')
+  }
+}
+
+/** @param {unknown} error @returns {boolean} */
+function isUnauthorized(error) {
+  return error instanceof ApiError && error.status === 401
+}
+
 /** @returns {ReturnType<typeof createRouter>} */
 function routes() {
   if (router === null) throw new Error('router 尚未初始化')
@@ -387,6 +415,14 @@ function errorState(error, retry) {
     el('div', { class: 'error-code', text: code }),
     el('p', { class: 'error-message', text: errorMessage(error) }),
   ]
+  if (isUnauthorized(error)) {
+    children.push(el('p', { class: 'muted', text: '会话已失效，正在返回登录页…' }))
+    queueMicrotask(() => showLogin('会话已过期，请重新登录'))
+  } else if (error instanceof ApiError && error.status === 403) {
+    children.push(el('p', { class: 'muted', text: '当前账号没有这个操作的管理员权限。' }))
+  } else if (error instanceof ApiError && error.status === 503) {
+    children.push(el('p', { class: 'muted', text: '对应服务暂时不可用；这通常是功能尚未实现或插件未装载。' }))
+  }
   if (retry !== undefined) {
     children.push(el('button', { class: 'btn', text: '重试', attrs: { type: 'button' }, on: { click: retry } }))
   }
@@ -517,8 +553,18 @@ function renderShell(data, match) {
     ),
   )
 
-  const userLabel = boot.mode === 'mock' ? '预览用户' : '当前会话'
-  const userSub = boot.mode === 'mock' ? 'mock 数据 · 不接触真实账户' : '登录态由 Go 提供'
+  const activeUser = currentSession?.user
+  const userLabel = activeUser?.name ?? (boot.mode === 'mock' ? '预览用户' : '当前会话')
+  const userSub =
+    activeUser === undefined
+      ? boot.mode === 'mock'
+        ? 'mock 数据 · 不接触真实账户'
+        : '登录态由网关提供'
+      : `${activeUser.role === 'admin' ? '管理员' : '用户'}${currentSession?.email === null || currentSession?.email === undefined ? '' : ` · ${currentSession.email}`}`
+  const avatarNode =
+    activeUser?.avatar !== null && activeUser?.avatar !== undefined
+      ? el('img', { class: 'avatar avatar-image', attrs: { src: activeUser.avatar, alt: `${activeUser.name} 的头像` } })
+      : el('span', { class: 'avatar', text: initials(userLabel) })
 
   const main = el('main', { class: 'main', attrs: { id: 'main', tabindex: '-1' } })
   main.append(el('div', { class: 'page' }, loadingState('正在渲染页面…')))
@@ -551,7 +597,7 @@ function renderShell(data, match) {
           ),
           themeButton,
         ),
-        otherRoot === undefined
+        otherRoot === undefined || (area === 'console' && currentSession?.permissions.admin !== true)
           ? null
           : el(
               'a',
@@ -567,8 +613,18 @@ function renderShell(data, match) {
               href: routes().href(data.pages.find((item) => item.path === '/console/profile')?.path ?? '/console'),
             },
           },
-          el('span', { class: 'avatar', text: boot.mode === 'mock' ? 'DZ' : initials(userLabel) }),
+          avatarNode,
           el('span', {}, el('div', { class: 'user-name', text: userLabel }), el('div', { class: 'user-sub', text: userSub })),
+        ),
+        el(
+          'button',
+          {
+            class: 'secondary-link logout-link',
+            attrs: { type: 'button' },
+            on: { click: () => void logout() },
+          },
+          icon('arrow-left'),
+          el('span', { text: '退出登录' }),
         ),
       ),
       main,
@@ -615,6 +671,9 @@ function healthLabel(state) {
  * @returns {Promise<HTMLElement>}
  */
 async function renderPage(page, match) {
+  if (page.area === 'admin' && currentSession?.permissions.admin !== true) {
+    return renderForbidden(page)
+  }
   switch (page.view.kind) {
     case 'overview':
       return renderOverview(page)
@@ -628,6 +687,10 @@ async function renderPage(page, match) {
       return renderRedirect(page)
     case 'accounts':
       return renderAccounts(page)
+    case 'users':
+      return renderUsers(page)
+    case 'profile':
+      return renderProfile(page)
     case 'catalog':
       return renderCatalog(page)
     case 'settings':
@@ -639,6 +702,221 @@ async function renderPage(page, match) {
     default:
       return el('section', { class: 'page' }, pageHead(page), el('div', { class: 'empty', text: '未知页面类型' }))
   }
+}
+
+/**
+ * 非管理员访问 /admin/*：不渲染任何业务内容，也不假装页面不存在。
+ * @param {FrontendPage} page
+ * @returns {HTMLElement}
+ */
+function renderForbidden(page) {
+  return el(
+    'section',
+    { class: 'page' },
+    pageHead(page),
+    el(
+      'div',
+      { class: 'empty', attrs: { role: 'alert' } },
+      el('div', { class: 'error-code', text: 'API_FORBIDDEN' }),
+      el('p', { class: 'error-message', text: '当前账号不是管理员，不能访问管理台页面。' }),
+    ),
+  )
+}
+
+/**
+ * 个人资料：头像、用户名、邮箱 / 角色 / 余额，以及修改密码。
+ * 令牌、密码哈希永远不出现在这里；余额只在服务端允许时才返回。
+ * @param {FrontendPage} page
+ * @returns {Promise<HTMLElement>}
+ */
+async function renderProfile(page) {
+  const me = session()
+  const user = me.user
+  const section = el(
+    'section',
+    { class: 'page' },
+    pageHead(page, '资料与密码通过 /api/profile 修改；会话令牌只在 HttpOnly cookie 里，前端不保存。'),
+  )
+
+  const avatarHost = el('div', { class: 'profile-avatar' })
+  const renderAvatar = () => {
+    avatarHost.replaceChildren(
+      user.avatar === null
+        ? el('span', { class: 'avatar avatar-large', text: initials(user.name) })
+        : el('img', {
+            class: 'avatar avatar-large avatar-image',
+            attrs: { src: user.avatar, alt: `${user.name} 的头像` },
+          }),
+    )
+  }
+  renderAvatar()
+
+  const fileInput = /** @type {HTMLInputElement} */ (el('input', {
+    class: 'input',
+    attrs: { type: 'file', accept: 'image/png,image/jpeg,image/webp,image/gif' },
+  }))
+  fileInput.addEventListener('change', async () => {
+    const file = fileInput.files?.[0]
+    if (file === undefined) return
+    if (file.size > 256 * 1024) {
+      toast('头像不能超过 256 KiB', 'bad')
+      fileInput.value = ''
+      return
+    }
+    try {
+      const avatar = await readFileAsDataUrl(file)
+      const updated = await api().session.updateProfile({ avatar })
+      currentSession = currentSession === null ? null : { ...currentSession, user: updated }
+      toast('头像已更新')
+      await rerender()
+    } catch (error) {
+      toast(errorMessage(error), 'bad')
+    } finally {
+      fileInput.value = ''
+    }
+  })
+
+  const nameInput = /** @type {HTMLInputElement} */ (el('input', {
+    class: 'input',
+    attrs: { type: 'text', value: user.name, maxlength: '64' },
+  }))
+  const nameError = el('p', { class: 'error-message', attrs: { hidden: '' } })
+  const saveName = /** @type {HTMLButtonElement} */ (el('button', {
+    class: 'btn btn-light',
+    attrs: { type: 'submit' },
+    text: '保存用户名',
+  }))
+  const nameForm = el(
+    'form',
+    {},
+    el('div', { class: 'form-field' }, el('label', { text: '用户名' }), nameInput),
+    nameError,
+    el('div', { class: 'dialog-actions' }, saveName),
+  )
+  nameForm.addEventListener('submit', async (event) => {
+    event.preventDefault()
+    nameError.hidden = true
+    saveName.disabled = true
+    try {
+      const updated = await api().session.updateProfile({ name: nameInput.value })
+      currentSession = currentSession === null ? null : { ...currentSession, user: updated }
+      toast('用户名已更新')
+      await rerender()
+    } catch (error) {
+      nameError.textContent = errorMessage(error)
+      nameError.hidden = false
+      saveName.disabled = false
+    }
+  })
+
+  const currentPassword = /** @type {HTMLInputElement} */ (el('input', {
+    class: 'input',
+    attrs: { type: 'password', autocomplete: 'current-password' },
+  }))
+  const newPassword = /** @type {HTMLInputElement} */ (el('input', {
+    class: 'input',
+    attrs: { type: 'password', autocomplete: 'new-password' },
+  }))
+  const confirmPassword = /** @type {HTMLInputElement} */ (el('input', {
+    class: 'input',
+    attrs: { type: 'password', autocomplete: 'new-password' },
+  }))
+  const passwordError = el('p', { class: 'error-message', attrs: { hidden: '' } })
+  const savePassword = /** @type {HTMLButtonElement} */ (el('button', {
+    class: 'btn btn-light',
+    attrs: { type: 'submit' },
+    text: '修改密码',
+  }))
+  const passwordForm = /** @type {HTMLFormElement} */ (el(
+    'form',
+    {},
+    el(
+      'div',
+      { class: 'profile-form-grid' },
+      el('div', { class: 'form-field' }, el('label', { text: '当前密码' }), currentPassword),
+      el('div', { class: 'form-field' }, el('label', { text: '新密码' }), newPassword),
+      el('div', { class: 'form-field' }, el('label', { text: '确认新密码' }), confirmPassword),
+    ),
+    passwordError,
+    el('div', { class: 'dialog-actions' }, savePassword),
+  ))
+  passwordForm.addEventListener('submit', async (event) => {
+    event.preventDefault()
+    passwordError.hidden = true
+    if (newPassword.value !== confirmPassword.value) {
+      passwordError.textContent = '两次输入的新密码不一致'
+      passwordError.hidden = false
+      return
+    }
+    savePassword.disabled = true
+    try {
+      const result = await api().session.changePassword({
+        currentPassword: currentPassword.value,
+        newPassword: newPassword.value,
+      })
+      passwordForm.reset()
+      toast(`密码已修改；其它会话作废 ${result.revokedSessions} 个`)
+    } catch (error) {
+      passwordError.textContent = errorMessage(error)
+      passwordError.hidden = false
+    } finally {
+      savePassword.disabled = false
+    }
+  })
+
+  const facts = el(
+    'div',
+    { class: 'profile-facts' },
+    profileFact('邮箱', me.email ?? '—'),
+    profileFact('角色', user.role === 'admin' ? '管理员' : '普通用户'),
+    profileFact('用户 ID', `#${user.id}`),
+    user.balanceCents === null ? null : profileFact('余额', formatCny(user.balanceCents)),
+  )
+
+  section.append(
+    el(
+      'div',
+      { class: 'profile-grid' },
+      el(
+        'div',
+        { class: 'card profile-card' },
+        el('h2', { text: '头像' }),
+        avatarHost,
+        el('div', { class: 'form-field' }, el('label', { text: '上传图片（≤ 256 KiB）' }), fileInput),
+        el('p', { class: 'muted', text: '图片只在浏览器里转成 data URL 后提交，不经过第三方。' }),
+      ),
+      el('div', { class: 'card profile-card' }, el('h2', { text: '账户' }), facts, nameForm),
+    ),
+    el('div', { class: 'card profile-card section' }, el('h2', { text: '修改密码' }), passwordForm),
+  )
+  return section
+}
+
+/**
+ * @param {string} label
+ * @param {string} value
+ * @returns {HTMLElement}
+ */
+function profileFact(label, value) {
+  return el(
+    'div',
+    { class: 'profile-fact' },
+    el('span', { class: 'profile-fact-label', text: label }),
+    el('strong', { text: value }),
+  )
+}
+
+/** @param {File} file @returns {Promise<string>} */
+function readFileAsDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => {
+      if (typeof reader.result === 'string') resolve(reader.result)
+      else reject(new Error('读取图片失败'))
+    }
+    reader.onerror = () => reject(reader.error ?? new Error('读取图片失败'))
+    reader.readAsDataURL(file)
+  })
 }
 
 /** @param {FrontendPage} page @returns {Promise<HTMLElement>} */
@@ -1113,10 +1391,63 @@ function keyRow(key, reload) {
   }))
   remove.append(icon('trash'))
 
+  const rotate = /** @type {HTMLButtonElement} */ (el('button', {
+    class: 'btn btn-icon',
+    attrs: { type: 'button', title: key.appManaged ? 'App-managed key 不能轮换' : '轮换密钥（旧 secret 立刻失效）' },
+    on: {
+      click: () => {
+        if (!window.confirm(`轮换「${key.name}」？旧 secret 会立刻失效，正在使用它的客户端需要换成新 key。`)) return
+        const dialog = openDialog('轮换 API key', '正在生成新 secret…', el('div', {}))
+        void api()
+          .keys.rotate(key.id)
+          .then(async (created) => {
+            showCreatedKey(dialog, created)
+            await reload()
+          })
+          .catch((error) => {
+            dialog.close()
+            toast(errorMessage(error), 'bad')
+          })
+      },
+    },
+  }))
+  rotate.append(icon('refresh'))
+  rotate.disabled = key.appManaged
+
+  const enabled = key.enabled !== false
+  const toggle = /** @type {HTMLButtonElement} */ (el('button', {
+    class: 'btn btn-icon',
+    attrs: { type: 'button', title: key.appManaged ? 'App-managed key 不能启停' : enabled ? '停用' : '启用' },
+    on: {
+      click: async () => {
+        toggle.disabled = true
+        try {
+          await api().keys.update(key.id, { enabled: !enabled })
+          toast(enabled ? `${key.name} 已停用` : `${key.name} 已启用`)
+          await reload()
+        } catch (error) {
+          toggle.disabled = false
+          toast(errorMessage(error), 'bad')
+        }
+      },
+    },
+  }))
+  toggle.append(icon(enabled ? 'close' : 'check'))
+  toggle.disabled = key.appManaged
+
   return el(
     'tr',
-    { class: key.appManaged ? 'row-muted' : '' },
-    el('td', {}, el('div', { class: 'cell-title', text: key.name }), key.appManaged ? el('div', { class: 'cell-sub' }, badge('App-managed', 'accent')) : null),
+    { class: key.appManaged || !enabled ? 'row-muted' : '' },
+    el(
+      'td',
+      {},
+      el('div', { class: 'cell-title', text: key.name }),
+      key.appManaged
+        ? el('div', { class: 'cell-sub' }, badge('App-managed', 'accent'))
+        : enabled
+          ? null
+          : el('div', { class: 'cell-sub' }, badge('已停用', 'neutral')),
+    ),
     el('td', {}, el('code', { text: key.trackingId })),
     el(
       'td',
@@ -1145,7 +1476,7 @@ function keyRow(key, reload) {
     ),
     el('td', { text: formatTime(key.createdAt) }),
     el('td', { text: key.lastUsedAt === null ? '—' : formatTime(key.lastUsedAt) }),
-    el('td', { class: 'cell-actions' }, el('div', { class: 'table-actions' }, edit, remove)),
+    el('td', { class: 'cell-actions' }, el('div', { class: 'table-actions' }, edit, rotate, toggle, remove)),
   )
 }
 
@@ -1666,6 +1997,248 @@ function accountRow(account, reload) {
   )
 }
 
+/**
+ * 管理台用户页：列表、启用 / 封禁、设为 / 取消 admin、余额显示开关、调整余额、删除。
+ * 余额在界面上按「最小单位 → 分」换算显示；输入框明确要求最小单位。
+ * @param {FrontendPage} page
+ * @returns {Promise<HTMLElement>}
+ */
+async function renderUsers(page) {
+  const section = el(
+    'section',
+    { class: 'page' },
+    pageHead(page, '余额以最小单位整数存储：1 元 = 1,000,000，1 分 = 10,000。调整余额输入最小单位，负数表示扣减。'),
+  )
+  if (currentSession?.permissions.admin !== true) {
+    section.append(renderForbidden(page))
+    return section
+  }
+
+  const statusSelect = /** @type {HTMLSelectElement} */ (el(
+    'select',
+    { class: 'select', attrs: { 'aria-label': '用户状态筛选' } },
+    el('option', { text: '全部状态', attrs: { value: '' } }),
+    el('option', { text: '启用', attrs: { value: 'enabled' } }),
+    el('option', { text: '封禁', attrs: { value: 'banned' } }),
+  ))
+  const refresh = el('button', { class: 'btn btn-small', attrs: { type: 'button' } }, icon('refresh'), el('span', { text: '刷新' }))
+  const toolbar = el(
+    'div',
+    { class: 'toolbar' },
+    el('label', { class: 'field-inline' }, el('span', { text: '状态' }), statusSelect),
+    el('span', { class: 'toolbar-spacer' }),
+    refresh,
+  )
+  const results = el('div', { class: 'results' })
+  section.append(toolbar, results)
+
+  const load = async () => {
+    results.replaceChildren(loadingState('正在读取用户…'))
+    try {
+      const response = await api().users.list({
+        ...(statusSelect.value === ''
+          ? {}
+          : { status: /** @type {'enabled' | 'banned'} */ (statusSelect.value) }),
+        limit: 200,
+      })
+      if (response.items.length === 0) {
+        results.replaceChildren(el('div', { class: 'empty', text: '没有符合条件的用户。' }))
+        return
+      }
+      results.replaceChildren(
+        el(
+          'div',
+          { class: 'table-wrap table-card' },
+          el(
+            'table',
+            { class: 'data-table user-table' },
+            el(
+              'thead',
+              {},
+              el(
+                'tr',
+                {},
+                el('th', { text: '用户' }),
+                el('th', { text: '状态' }),
+                el('th', { text: '角色' }),
+                el('th', { text: '余额' }),
+                el('th', { text: '余额可见' }),
+                el('th', { text: '' }),
+              ),
+            ),
+            el('tbody', {}, ...response.items.map((user) => userRow(user, load))),
+          ),
+        ),
+      )
+    } catch (error) {
+      results.replaceChildren(errorState(error, () => void load()))
+    }
+  }
+
+  statusSelect.addEventListener('change', () => void load())
+  refresh.addEventListener('click', () => void load())
+  await load()
+  return section
+}
+
+/**
+ * @param {AdminUserSummary} user
+ * @param {() => Promise<void>} reload
+ * @returns {HTMLElement}
+ */
+function userRow(user, reload) {
+  const act = async (/** @type {() => Promise<unknown>} */ task, /** @type {string} */ message) => {
+    try {
+      await task()
+      await refreshCurrentSession()
+      toast(message)
+      await reload()
+    } catch (error) {
+      toast(errorMessage(error), 'bad')
+    }
+  }
+
+  const toggleStatus = el('button', {
+    class: 'btn btn-small',
+    attrs: { type: 'button' },
+    text: user.status === 'enabled' ? '封禁' : '启用',
+    on: {
+      click: () =>
+        void act(
+          () => api().users.update(user.id, { status: user.status === 'enabled' ? 'banned' : 'enabled' }),
+          user.status === 'enabled' ? '用户已封禁' : '用户已启用',
+        ),
+    },
+  })
+  const toggleRole = el('button', {
+    class: 'btn btn-small',
+    attrs: { type: 'button' },
+    text: user.role === 'admin' ? '取消管理员' : '设为管理员',
+    on: {
+      click: () =>
+        void act(
+          () => api().users.update(user.id, { role: user.role === 'admin' ? 'user' : 'admin' }),
+          user.role === 'admin' ? '已取消管理员' : '已设为管理员',
+        ),
+    },
+  })
+  const toggleBalance = el('button', {
+    class: 'btn btn-small',
+    attrs: { type: 'button' },
+    text: user.balanceEnabled ? '隐藏余额' : '显示余额',
+    on: {
+      click: () =>
+        void act(
+          () => api().users.update(user.id, { balanceEnabled: !user.balanceEnabled }),
+          user.balanceEnabled ? '余额已隐藏' : '余额已可见',
+        ),
+    },
+  })
+  const adjust = el('button', {
+    class: 'btn btn-small',
+    attrs: { type: 'button' },
+    text: '调整余额',
+    on: { click: () => openAdjustBalanceDialog(user, reload) },
+  })
+  const remove = el('button', {
+    class: 'btn btn-small btn-danger',
+    attrs: { type: 'button' },
+    text: '删除',
+    on: {
+      click: async () => {
+        if (!window.confirm(`删除用户「${user.name}」（#${user.id}）？余额不为零时服务端会拒绝。`)) return
+        await act(() => api().users.remove(user.id), '用户已删除')
+      },
+    },
+  })
+
+  return el(
+    'tr',
+    { class: user.status === 'banned' ? 'row-muted' : '' },
+    el('td', {}, el('div', { class: 'cell-title', text: user.name }), el('code', { class: 'cell-sub', text: `#${user.id}` })),
+    el('td', {}, badge(user.status, user.status === 'enabled' ? 'ok' : 'bad')),
+    el('td', {}, badge(user.role === 'admin' ? 'admin' : 'user', user.role === 'admin' ? 'accent' : 'neutral')),
+    el('td', {}, el('div', { text: formatMinor(user.balanceMinor) }), el('span', { class: 'cell-sub', text: `${user.balanceMinor} 最小单位` })),
+    el('td', { text: user.balanceEnabled ? '显示' : '隐藏' }),
+    el('td', { class: 'cell-actions' }, el('div', { class: 'table-actions' }, toggleStatus, toggleRole, toggleBalance, adjust, remove)),
+  )
+}
+
+/**
+ * @param {AdminUserSummary} user
+ * @param {() => Promise<void>} reload
+ */
+function openAdjustBalanceDialog(user, reload) {
+  const delta = /** @type {HTMLInputElement} */ (el('input', {
+    class: 'input',
+    attrs: { type: 'text', inputmode: 'numeric', placeholder: '例如 1000000（= 1 元）' },
+  }))
+  const reason = /** @type {HTMLInputElement} */ (el('input', {
+    class: 'input',
+    attrs: { type: 'text', placeholder: '例如 manual top-up' },
+  }))
+  const error = el('p', { class: 'error-message', attrs: { hidden: '' } })
+  const cancel = el('button', { class: 'btn', attrs: { type: 'button' }, text: '取消' })
+  const save = /** @type {HTMLButtonElement} */ (el('button', { class: 'btn btn-light', attrs: { type: 'submit' }, text: '应用' }))
+  const form = el(
+    'form',
+    {},
+    el(
+      'div',
+      { class: 'form-field' },
+      el('label', { text: '增量（最小单位；1 元 = 1,000,000，负数表示扣减）' }),
+      delta,
+    ),
+    el('div', { class: 'form-field' }, el('label', { text: '原因（必填，会写进余额流水）' }), reason),
+    error,
+    el('div', { class: 'dialog-actions' }, cancel, save),
+  )
+  const dialog = openDialog(`调整余额 · ${user.name}`, '余额按整数最小单位运算，不经过浮点。', form)
+  cancel.addEventListener('click', () => dialog.close())
+  delta.focus()
+  form.addEventListener('submit', async (event) => {
+    event.preventDefault()
+    error.hidden = true
+    const raw = delta.value.trim()
+    if (!/^-?\d+$/.test(raw)) {
+      error.textContent = '增量必须是十进制整数字符串（最小单位）'
+      error.hidden = false
+      return
+    }
+    if (reason.value.trim() === '') {
+      error.textContent = '必须填写原因'
+      error.hidden = false
+      return
+    }
+    save.disabled = true
+    try {
+      const result = await api().users.adjustBalance(user.id, {
+        deltaMinor: raw,
+        reason: reason.value.trim(),
+      })
+      toast(`余额已更新：${result.balanceMinor} 最小单位`)
+      dialog.close()
+      await refreshCurrentSession()
+      await reload()
+    } catch (caught) {
+      error.textContent = errorMessage(caught)
+      error.hidden = false
+      save.disabled = false
+    }
+  })
+}
+
+/** @param {string} minor @returns {string} */
+function formatMinor(minor) {
+  try {
+    const cents = BigInt(minor) / 10_000n
+    const value = Number(cents)
+    return Number.isSafeInteger(value) ? formatCny(value) : `${minor} 最小单位`
+  } catch {
+    return minor
+  }
+}
+
 /** @param {FrontendPage} page @returns {Promise<HTMLElement>} */
 async function renderCatalog(page) {
   const section = el('section', { class: 'page' }, pageHead(page, '禁用模块的页面与设置卡不会出现在导航里；它们仍列在这里，便于排障。'))
@@ -2092,6 +2665,331 @@ function renderNotFound(path) {
   )
 }
 
+// ─────────────────────────────── 登录 / 注册 / 找回 ───────────────────────────────
+
+/** 停掉外壳（路由、健康轮询、页面清理），回到登录界面时调用。 */
+function teardownShell() {
+  if (healthTimer !== undefined) {
+    window.clearInterval(healthTimer)
+    healthTimer = undefined
+  }
+  if (routerStop !== null) {
+    routerStop()
+    routerStop = null
+  }
+  if (pageCleanup !== null) {
+    const cleanup = pageCleanup
+    pageCleanup = null
+    try {
+      void cleanup()
+    } catch {
+      // 页面自己的清理失败不应阻断退出登录。
+    }
+  }
+  renderToken += 1
+  router = null
+}
+
+/** @param {string} message */
+function showLogin(message) {
+  teardownShell()
+  currentSession = null
+  if (appRoot === null) return
+  applyTheme(readTheme())
+  appRoot.replaceChildren(renderAuth('login', message))
+}
+
+async function logout() {
+  try {
+    await api().session.logout()
+  } catch (error) {
+    if (!isUnauthorized(error)) toast(errorMessage(error), 'bad')
+  }
+  showLogin('已退出登录')
+}
+
+/** 登录成功后读取完整会话（含权限与邮箱），再启动外壳。 */
+async function finishLogin() {
+  currentSession = await api().session.get()
+  await startShell()
+}
+
+/**
+ * @param {'login' | 'register' | 'reset'} [mode]
+ * @param {string} [message]
+ * @returns {HTMLElement}
+ */
+function renderAuth(mode = 'login', message) {
+  const shell = el('div', { class: 'auth-shell' })
+  const card = el('div', { class: 'auth-card card' })
+  shell.append(card)
+
+  const body = el('div', { class: 'auth-body' })
+  const title =
+    mode === 'register' ? '创建账号' : mode === 'reset' ? '找回密码' : '登录 DizzyAPI'
+  const lede =
+    mode === 'register'
+      ? '注册需要邮箱验证码；验证码通过后才创建用户。'
+      : mode === 'reset'
+        ? '验证码确认后可以设置新密码，现有会话会全部作废。'
+        : '会话保存在 HttpOnly cookie 里；前端不保存令牌。'
+  const tabs = el(
+    'div',
+    { class: 'auth-tabs', attrs: { role: 'tablist', 'aria-label': '登录方式' } },
+    authTab('登录', mode === 'login', () => appRoot?.replaceChildren(renderAuth('login'))),
+    authTab('注册', mode === 'register', () => appRoot?.replaceChildren(renderAuth('register'))),
+    authTab('找回密码', mode === 'reset', () => appRoot?.replaceChildren(renderAuth('reset'))),
+  )
+
+  /** @type {(Node | string)[]} */
+  const head = [
+    el(
+      'div',
+      { class: 'auth-head' },
+      el('span', { class: 'wordmark-mark' }, icon('mark')),
+      el('span', { class: 'auth-brand', text: 'DizzyAPI' }),
+    ),
+    el('h1', { class: 'auth-title', text: title }),
+    el('p', { class: 'auth-lede', text: lede }),
+    tabs,
+  ]
+  if (message !== undefined) {
+    head.push(el('p', { class: 'auth-message', attrs: { role: 'status' }, text: message }))
+  }
+  head.push(
+    body,
+    el('p', { class: 'auth-hint muted', text: boot.mode === 'mock' ? '开发预览：任意邮箱 / 密码即可登录；验证码为 123456。' : '开发环境 mailer 是 log 传输：验证码从 cordis 日志里读取。' }),
+  )
+  card.append(...head)
+
+  if (mode === 'login') renderLoginForm(body)
+  else if (mode === 'reset') renderResetForm(body)
+  else renderRegisterForm(body)
+  return shell
+}
+
+/**
+ * @param {string} label
+ * @param {boolean} active
+ * @param {() => void} onClick
+ * @returns {HTMLButtonElement}
+ */
+function authTab(label, active, onClick) {
+  return /** @type {HTMLButtonElement} */ (el('button', {
+    class: active ? 'auth-tab active' : 'auth-tab',
+    attrs: { type: 'button', role: 'tab', 'aria-selected': active ? 'true' : 'false' },
+    text: label,
+    on: { click: onClick },
+  }))
+}
+
+/**
+ * @param {HTMLElement} host
+ * @param {string} label
+ * @param {HTMLInputElement} input
+ * @returns {HTMLElement}
+ */
+function authField(host, label, input) {
+  host.append(el('div', { class: 'form-field' }, el('label', { text: label }), input))
+  return host
+}
+
+/** @param {HTMLElement} body */
+function renderLoginForm(body) {
+  const email = /** @type {HTMLInputElement} */ (el('input', {
+    class: 'input',
+    attrs: { type: 'email', autocomplete: 'username', required: '' },
+  }))
+  const password = /** @type {HTMLInputElement} */ (el('input', {
+    class: 'input',
+    attrs: { type: 'password', autocomplete: 'current-password', required: '' },
+  }))
+  const error = el('p', { class: 'error-message', attrs: { hidden: '' } })
+  const submit = /** @type {HTMLButtonElement} */ (el('button', {
+    class: 'btn btn-light auth-submit',
+    attrs: { type: 'submit' },
+    text: '登录',
+  }))
+  const form = el('form', { class: 'auth-form' })
+  authField(form, '邮箱', email)
+  authField(form, '密码', password)
+  form.append(error, submit)
+  body.append(form)
+  email.focus()
+
+  form.addEventListener('submit', async (event) => {
+    event.preventDefault()
+    error.hidden = true
+    submit.disabled = true
+    try {
+      await api().session.login({ email: email.value, password: password.value })
+      await finishLogin()
+    } catch (caught) {
+      error.textContent = errorMessage(caught)
+      error.hidden = false
+      submit.disabled = false
+    }
+  })
+}
+
+/** @param {HTMLElement} body */
+function renderRegisterForm(body) {
+  const email = /** @type {HTMLInputElement} */ (el('input', {
+    class: 'input',
+    attrs: { type: 'email', autocomplete: 'username', required: '' },
+  }))
+  const password = /** @type {HTMLInputElement} */ (el('input', {
+    class: 'input',
+    attrs: { type: 'password', autocomplete: 'new-password', required: '' },
+  }))
+  const name = /** @type {HTMLInputElement} */ (el('input', {
+    class: 'input',
+    attrs: { type: 'text', autocomplete: 'nickname', maxlength: '64', placeholder: '可选；默认取邮箱前缀' },
+  }))
+  const code = /** @type {HTMLInputElement} */ (el('input', {
+    class: 'input',
+    attrs: { type: 'text', inputmode: 'numeric', autocomplete: 'one-time-code', placeholder: '6 位验证码' },
+  }))
+  const requestError = el('p', { class: 'error-message', attrs: { hidden: '' } })
+  const confirmError = el('p', { class: 'error-message', attrs: { hidden: '' } })
+  const request = /** @type {HTMLButtonElement} */ (el('button', {
+    class: 'btn btn-light auth-submit',
+    attrs: { type: 'submit' },
+    text: '发送验证码',
+  }))
+  const confirm = /** @type {HTMLButtonElement} */ (el('button', {
+    class: 'btn btn-light auth-submit',
+    attrs: { type: 'submit' },
+    text: '验证并注册',
+  }))
+  const requestForm = el('form', { class: 'auth-form' })
+  authField(requestForm, '邮箱', email)
+  authField(requestForm, '密码（至少 8 位）', password)
+  authField(requestForm, '用户名', name)
+  requestForm.append(requestError, request)
+
+  const confirmForm = el('form', { class: 'auth-form', attrs: { hidden: '' } })
+  authField(confirmForm, '验证码', code)
+  confirmForm.append(
+    el('p', { class: 'muted', text: '验证码已发送；开发环境请从日志读取。' }),
+    confirmError,
+    confirm,
+  )
+  body.append(requestForm, confirmForm)
+
+  requestForm.addEventListener('submit', async (event) => {
+    event.preventDefault()
+    requestError.hidden = true
+    request.disabled = true
+    try {
+      await api().session.registerRequest({
+        email: email.value,
+        password: password.value,
+        ...(name.value.trim() === '' ? {} : { name: name.value }),
+      })
+      requestForm.hidden = true
+      confirmForm.hidden = false
+      code.focus()
+      toast('验证码已发送')
+    } catch (caught) {
+      requestError.textContent = errorMessage(caught)
+      requestError.hidden = false
+      request.disabled = false
+    }
+  })
+
+  confirmForm.addEventListener('submit', async (event) => {
+    event.preventDefault()
+    confirmError.hidden = true
+    confirm.disabled = true
+    try {
+      await api().session.registerConfirm({ email: email.value, code: code.value })
+      await finishLogin()
+    } catch (caught) {
+      confirmError.textContent = errorMessage(caught)
+      confirmError.hidden = false
+      confirm.disabled = false
+    }
+  })
+
+  email.focus()
+}
+
+/** @param {HTMLElement} body */
+function renderResetForm(body) {
+  const email = /** @type {HTMLInputElement} */ (el('input', {
+    class: 'input',
+    attrs: { type: 'email', autocomplete: 'username', required: '' },
+  }))
+  const code = /** @type {HTMLInputElement} */ (el('input', {
+    class: 'input',
+    attrs: { type: 'text', inputmode: 'numeric', autocomplete: 'one-time-code', placeholder: '6 位验证码' },
+  }))
+  const password = /** @type {HTMLInputElement} */ (el('input', {
+    class: 'input',
+    attrs: { type: 'password', autocomplete: 'new-password', required: '' },
+  }))
+  const requestError = el('p', { class: 'error-message', attrs: { hidden: '' } })
+  const confirmError = el('p', { class: 'error-message', attrs: { hidden: '' } })
+  const request = /** @type {HTMLButtonElement} */ (el('button', {
+    class: 'btn btn-light auth-submit',
+    attrs: { type: 'submit' },
+    text: '发送验证码',
+  }))
+  const confirm = /** @type {HTMLButtonElement} */ (el('button', {
+    class: 'btn btn-light auth-submit',
+    attrs: { type: 'submit' },
+    text: '重置密码',
+  }))
+  const requestForm = el('form', { class: 'auth-form' })
+  authField(requestForm, '邮箱', email)
+  requestForm.append(requestError, request)
+
+  const confirmForm = el('form', { class: 'auth-form', attrs: { hidden: '' } })
+  authField(confirmForm, '验证码', code)
+  authField(confirmForm, '新密码（至少 8 位）', password)
+  confirmForm.append(confirmError, confirm)
+
+  body.append(requestForm, confirmForm)
+
+  requestForm.addEventListener('submit', async (event) => {
+    event.preventDefault()
+    requestError.hidden = true
+    request.disabled = true
+    try {
+      await api().session.requestPasswordReset({ email: email.value })
+      requestForm.hidden = true
+      confirmForm.hidden = false
+      code.focus()
+      toast('验证码已发送')
+    } catch (caught) {
+      requestError.textContent = errorMessage(caught)
+      requestError.hidden = false
+      request.disabled = false
+    }
+  })
+
+  confirmForm.addEventListener('submit', async (event) => {
+    event.preventDefault()
+    confirmError.hidden = true
+    confirm.disabled = true
+    try {
+      await api().session.confirmPasswordReset({
+        email: email.value,
+        code: code.value,
+        password: password.value,
+      })
+      showLogin('密码已重置，请用新密码登录')
+    } catch (caught) {
+      confirmError.textContent = errorMessage(caught)
+      confirmError.hidden = false
+      confirm.disabled = false
+    }
+  })
+
+  email.focus()
+}
+
 // ─────────────────────────────── 路由 ───────────────────────────────
 
 async function rerender() {
@@ -2139,6 +3037,24 @@ async function routeTo(match) {
 
 // ─────────────────────────────── 启动 ───────────────────────────────
 
+/**
+ * 会话就绪后启动外壳。登录、注册、刷新页面最终都走这里。
+ * 先 teardown 再建路由，避免退出登录后残留的 popstate 监听器把界面又拉回旧页面。
+ */
+async function startShell() {
+  teardownShell()
+  if (currentManifest === null) throw new Error('manifest 尚未加载')
+  router = createRouter({
+    base: boot.basePath ?? '',
+    routes: currentManifest.pages.map((page) => ({ path: page.path, data: page })),
+  })
+  routerStop = router.start((match) => {
+    void routeTo(match)
+  })
+  await routeTo(router.resolve(window.location.pathname, window.location.search))
+  healthTimer = window.setInterval(() => void refreshHealth(), 30_000)
+}
+
 async function bootApp() {
   applyTheme(readTheme())
   apis = boot.mode === 'mock' ? createMockApis({ latencyMs: boot.mockLatencyMs ?? 120 }) : createHttpApis({ baseUrl: boot.apiBase ?? '/api' })
@@ -2153,24 +3069,37 @@ async function bootApp() {
         el('div', { class: 'fatal-mark' }, icon('mark')),
         el('h1', { text: '前端清单加载失败' }),
         errorState(error, () => window.location.reload()),
-        el('p', { class: 'muted', text: '清单由 Go httpapi 提供：GET /api/console/manifest。开发预览请用 pnpm preview:console。' }),
+        el('p', { class: 'muted', text: '清单由产品 HTTP 入口提供：GET /api/console/manifest。开发预览请用 pnpm preview:console。' }),
       ),
     )
     return
   }
 
-  router = createRouter({
-    base: boot.basePath ?? '',
-    routes: currentManifest.pages.map((page) => ({ path: page.path, data: page })),
-  })
-  router.start((match) => {
-    void routeTo(match)
-  })
-  await routeTo(router.resolve(window.location.pathname, window.location.search))
-  healthTimer = window.setInterval(() => void refreshHealth(), 30_000)
-  window.addEventListener('beforeunload', () => {
-    if (healthTimer !== undefined) window.clearInterval(healthTimer)
-  })
+  try {
+    currentSession = await api().session.get()
+  } catch (error) {
+    if (isUnauthorized(error)) {
+      appRoot.replaceChildren(renderAuth('login'))
+      return
+    }
+    appRoot.replaceChildren(
+      el(
+        'div',
+        { class: 'fatal' },
+        el('div', { class: 'fatal-mark' }, icon('mark')),
+        el('h1', { text: '会话加载失败' }),
+        errorState(error, () => window.location.reload()),
+        el('p', { class: 'muted', text: '会话接口：GET /api/session。开发预览请用 pnpm preview:console。' }),
+      ),
+    )
+    return
+  }
+
+  await startShell()
 }
+
+window.addEventListener('beforeunload', () => {
+  if (healthTimer !== undefined) window.clearInterval(healthTimer)
+})
 
 void bootApp()
