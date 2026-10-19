@@ -85,6 +85,18 @@
   config:
     dataPath: ./data/accounts.json
 
+# 账号管理门面：管理员导入 / 新建 / 修改 / 停用 / 删除上游账号。
+# 它自己不存任何数据：账号记录与令牌刷新由 identity 独占写入，秘密由 credentials 独占
+# （AGENTS.md D8）。写操作只对 adminPlugins 里的插件开放，默认拒绝；当前入口是开发者面板，
+# 面向用户站 / 管理台的 HTTP 路由尚未实现（届时把认证后的管理员映射成白名单 actor）。
+# 必须排在 identity 之后：它 inject identity，依赖不满足时不会构造。
+- id: account-admin
+  name: '@dizzyapi/plugin-account-admin'
+  config:
+    adminPlugins:
+      - '@dizzyapi/plugin-admin'
+    maxBatchSize: 100
+
 # 账号请求优先级：策略组的唯一写者 + gatewayd 的监管者。
 # 打分与排序发生在 Go 侧（modules/accountpriority）；本插件只持有策略、拉起进程、
 # 经控制桥推送策略并提供预览/选择查询。它不在 LLM 请求热路径上。
