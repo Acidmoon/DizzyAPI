@@ -25,6 +25,7 @@
     "@dizzyapi/plugin-admin": "workspace:*",
     "@dizzyapi/plugin-auth": "workspace:*",
     "@dizzyapi/plugin-credentials": "workspace:*",
+    "@dizzyapi/plugin-identity": "workspace:*",
     "@dizzyapi/plugin-kit": "workspace:*",
     "@dizzyapi/plugin-mailer": "workspace:*",
     "@dizzyapi/plugin-settings": "workspace:*",

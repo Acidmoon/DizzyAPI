@@ -77,6 +77,14 @@
   config:
     dataPath: ./data/credentials.json
 
+# 账号保管插件：上游账号（订阅 OAuth / 外部 API-key）的唯一写者，也是唯一用 RT 换新令牌的地方。
+# 账号记录在 ./data/accounts.json，令牌在 credentials 的 identity/<账号 id> 引用下。
+# 它不转发模型请求，不参与描述符；transport 就绪后通过进程内 getAccessToken 取用。
+- id: identity
+  name: '@dizzyapi/plugin-identity'
+  config:
+    dataPath: ./data/accounts.json
+
 # 设置插件：运行期可以改的配置由它管（本文件是「人写的基线」，它只覆盖，从不回写本文件）。
 # 必须排在它要管的目标后面：启动重放时它才看得见那些 entry。
 - id: settings

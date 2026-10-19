@@ -1,0 +1,21 @@
+{
+  "name": "@dizzyapi/plugin-identity",
+  "version": "0.1.0",
+  "private": true,
+  "description": "DizzyAPI · 账号保管插件：持久化上游账号（订阅 OAuth / API-key）并按时用 RT 换新令牌，不转发任何请求",
+  "type": "module",
+  "license": "MIT",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./package.json": "./package.json"
+  },
+  "scripts": {
+    "test": "node --import tsx --test \"test/*.test.ts\""
+  },
+  "dependencies": {
+    "@dizzyapi/plugin-kit": "workspace:*",
+    "cordis": "^4.0.0-rc.11"
+  }
+}

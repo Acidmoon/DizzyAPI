@@ -9,8 +9,8 @@
 > 记录性的修正（现状、事实、坑）直接改；涉及设计判断的，先问 owner，
 > 不要凭本文件去推翻 owner 的决定或已在运行的代码。
 >
-> 当前状态：**设计阶段 + 控制面插件起步**。cordis 侧已有四个包并全部装载运行（§4），
-> Go 侧尚无代码；本文件中 Go 侧的一切路径与接口都是**目标**，不是现状。
+> 当前状态：**设计阶段 + 控制面插件起步**。cordis 侧已有七个插件包（外加共用底座 kit）
+> 并全部装载运行（§4），Go 侧尚无代码；本文件中 Go 侧的一切路径与接口都是**目标**，不是现状。
 
 ---
 
@@ -327,6 +327,7 @@ sub2api 在拿到首个上游响应前把额度显示为 `unknown`，
 | `@dizzyapi/plugin-auth` | `auth` | 控制面 | 注册（邮箱验证码）、登录（密码校验）、会话签发与校验 |
 | `@dizzyapi/plugin-mailer` | `mailer` | 外部通讯模块 | 把消息发出去（邮件）；`log`（开发）与 `smtp` 两种投递 |
 | `@dizzyapi/plugin-credentials` | `credentials` | 控制面 | 秘密（授权码之类）的唯一存放处；别的插件只持有引用名 |
+| `@dizzyapi/plugin-identity` | `identity` | 控制面 | 上游账号（订阅 OAuth / API-key）的唯一写者；唯一用 refresh_token 换新令牌的地方 |
 | `@dizzyapi/plugin-settings` | `settings` | 控制面 | 运行期可改的配置的唯一写者：`app.yml` 是基线，它写自己的覆盖文件 |
 | `@dizzyapi/plugin-admin` | `admin` | 开发者面板 | 插件 / 服务的静态依赖图、运行期概览、改设置、重启单个插件、退出整个进程 |
 | `@dizzyapi/plugin-kit` | — | 内部底座 | 配置 schema（手写 Standard Schema + 字段元数据）+ 原子写 JSON 存储；以上各包共用 |
@@ -342,6 +343,13 @@ sub2api 在拿到首个上游响应前把额度显示为 `unknown`，
 `/api/*` 还要 `X-Panel-Request: 1` 与 `Host` 校验（挡 DNS rebinding 与跨站表单）。
 它同时能重启单个插件、退出整个进程。**关页面不等于退出**——这是网关，要在后台挂着；
 退出只认页面上的「退出并关闭」。
+
+**`identity` 是上游账号的唯一写者**：账号记录（provider / 状态 / 过期时间 / 刷新退避，
+**不含任何令牌**）落在 `data/accounts.json`，令牌放在 `credentials` 的
+`identity/<账号 id>` 引用下。它按 `refreshLeadMs` 提前用 RT 换新令牌；可重试错误走
+指数退避，`invalid_grant` 这类不可重试错误把账号转为 `needs_reauth`。它**不转发任何请求**
+（D17），transport 就绪后通过进程内 `getAccessToken(id)` 取用——该方法是秘密读口，
+不得挂到 HTTP 上。首期适配器：Claude 与 OpenAI/Codex；`custom` provider 只用于 API-key 账号。
 
 ### 4.1 接口面
 
@@ -386,6 +394,20 @@ sub2api 在拿到首个上游响应前把额度显示为 `unknown`，
 `patch` 里某键为 `null` **表示删除该键**（用来把基线里的 `smtp.passEnv` 换成 `passRef`）。
 `revision` 是合并结果的 sha256 前 16 位，带上过期的指纹写就报 `SETTINGS_CONFLICT`（乐观锁）。
 
+**`identity`**（上游账号保管）
+
+| 面 | 方法 | 说明 |
+|---|---|---|
+| 读 | `get(id)` / `list()` / `credentialStatus(id)` | 只返回账号元数据与「凭据配没配」，没有令牌字段 |
+| 写 | `create()` / `update()` / `importCredentials()` / `remove()` | 账号记录的唯一写入口；删除时同时清凭据 |
+| 令牌 | `getAccessToken(id)` / `refreshNow(id)` | 进程内 seam；`getAccessToken` **不得**挂 HTTP，等 transport 用 |
+| 调度 | `runRefreshPass(now?)` | 跑一轮扫描；定时器与测试共用同一个入口 |
+| 事件 | `identity/account-updated` / `account-refreshed` / `account-failed` | 通知性质，不承载正确性 |
+
+配置里可写的是刷新策略（`refreshLeadMs` / `pollIntervalMs` / `refreshConcurrency` /
+`retryBaseMs` / `retryMaxMs` / `requestTimeoutMs`）；`dataPath` 与 `credentialPrefix`
+不可运行期改。刷新策略一改，identity 会软重启，账号与令牌从文件恢复，不需要额外处理。
+
 **`admin`**（开发者面板，HTTP 服务）
 
 | 面 | 方法 | 说明 |
@@ -417,6 +439,12 @@ sub2api 在拿到首个上游响应前把额度显示为 `unknown`，
 - 面板：`pnpm dev` 之后打开日志里的 `面板已启动：http://127.0.0.1:7788/?t=…`。
   token 一次性；已经换到 cookie 的浏览器再点原地址仍然进得去（刷新页面的场景）。
   改端口只会让它换个地址，所以 `port` 在字段元数据里是只读的；`port: 0` = 系统分配（测试用）。
+- **当前开发配置（2026-10-18）**：`mailer` 已切到 `smtp`，投递走 `smtp.163.com:465`（直连 TLS），
+  授权码存在 `credentials` 的 `dizzyapi/smtp-sub2api`；`data/settings.json` 里已有
+  `transport / from / heloDomain / timeoutMs / rejectUnauthorized / allowPlaintext / smtp.*` 的覆盖。
+  再改 `app.yml` 里这些键不会生效——要先用面板「恢复基线」。
+- **账号保管（2026-10-19）**：`identity` 已装载，账号记录在 `data/accounts.json`（当前 0 个），
+  令牌在 `credentials` 的 `identity/<账号 id>` 下；首期只有 Claude 与 OpenAI/Codex 两个 RT 适配器。
 
 ### 4.3 边界与已知偏离
 
@@ -440,6 +468,9 @@ sub2api 在拿到首个上游响应前把额度显示为 `unknown`，
    别把它当成「多用户隔离」或「生产远程管理台」。
 7. **面板不碰秘密**：它只转述 `settings.describe()`，秘密字段只有「配没配」；
    它既没有读 `credentials.resolve` 的代码，也没有把值带进任何 HTTP 响应。
+8. **`identity` 先以 cordis 插件落地**（owner 2026-10-19 决定）：D17 把 `identity` 定为 Go 能力模块，
+   但 Go 侧尚未开工；当前 TS 实现只覆盖「账号保管 + RT 刷新」，账号落 `./data/accounts.json`。
+   Go 与桥就绪后按 D8 迁到 Go，插件退化为门面；`getAccessToken` 是届时唯一的接缝。
 
 ---
 
@@ -670,7 +701,7 @@ CI 用 `go list -deps` 逐模块校验 `modules/*` 之间无相互 import，违�
 | 支付渠道 | 倾向：兑换码 + 易支付打底，之后再接支付宝/微信/Stripe |
 | 上游模型来源范围 | 号池的**拆分方式已定**（D17）；待定的是 v1 是否就包含 OAuth 订阅账号池，还是先只做 API key 型频道 |
 | 包月 / 订阅 | 倾向 v2 再做（new-api 的 `subscription.go` 有 48KB） |
-| 控制面数据的存储归属 | 用户表单 / 余额 / 凭证 / 会话现在都在 cordis 侧（§4.3）；Go 与桥就绪后迁到 Go，插件退化为门面 |
+| 控制面数据的存储归属 | 用户表单 / 余额 / 凭证 / 会话 / 上游账号现在都在 cordis 侧（§4.3）；Go 与桥就绪后迁到 Go，插件退化为门面 |
 | API key 的签发与 key→user 映射 | 按 §5 归 Go 的 `auth` 模块（`key.*` 桥命令）；v1 没有 Go，所以 key 能力暂缺 |
 
 ---
@@ -770,6 +801,9 @@ CI 用 `go list -deps` 逐模块校验 `modules/*` 之间无相互 import，违�
   断言「文件没被改」必须先把 `includeEntry.subtree.flush()` 等掉，否则读文件会
   **抢在写之前**，用例就成了永远绿的摆设（本项目先写成过这样，改完把 `noSave` 故意改成
   `false` 才验出它有牙齿）。
+- **设置插件的 patch 只认嵌套对象**：写 `{ "smtp.host": "x" }` 会把它原样存成一个带点的键，
+  必须写 `{ smtp: { host: "x" } }` 才会和基线里的 `smtp` 合并。`describe()` 返回的点分路径
+  是给人看的，提交前要还原成嵌套对象。
 
 **cordis 内省与停机（本项目实测，2026-10-17，做开发者面板时踩的）**
 
@@ -843,11 +877,13 @@ CI 用 `go list -deps` 逐模块校验 `modules/*` 之间无相互 import，违�
 
 - **数据面性能**：本项目未做任何压测。TS 单进程能扛多少并发流、UDS 每次往返延迟、
   描述符落盘 + push 双通道的冷启动顺序，全部未实测。
-- **SMTP 只对一家真实服务器测过一次**：2026-10-16，走 mailer 插件对 163（465 直连 TLS +
-  授权码认证）投递成功，服务器接收（DATA 得到 250）——**是否真的进了收件箱还没确认**，
-  250 只说明被接受。**但**：STARTTLS（587）那条分支仍未对真实服务器测过；其余错误路径
-  （认证失败、被拒收、超时）也仍只到「对本机假服务器核对命令序列」这一层。
-  别把这一次成功当成投产就绪。
+- **SMTP 已做过两次真实投递**：2026-10-16 对 163（465 直连 TLS + 授权码认证）投递，
+  服务器接收（250）但未确认进箱；2026-10-18 用同一配置（`smtp.163.com:465`）向 owner 邮箱
+  实发测试邮件，**已确认收到**。仍未验证：STARTTLS（587）分支、认证失败 / 被拒收 / 超时
+  等错误路径（只到「对本机假服务器核对命令序列」这一层）。别把这两次成功当成投产就绪。
+- **`identity` 的 RT 交换只对假端点验过**：请求形状、RT 轮换、单飞、退避、`invalid_grant`
+  分类都有测试，但还没用真实 Claude / OpenAI 订阅账号跑过一次刷新。多进程/分布式锁未实现
+  （单进程假设），跨副本的令牌版本防回滚也没做。
 - **业务面的界面请求（会话令牌）仍没有 HTTP 入口**：面板的 HTTP 只服务面板自己
   （看、改设置、退出），不是用户站 / 管理台的 API；那个入口要等 Go 的 `httpapi` 或桥。
 - **面板前端已在真实浏览器里逐页签点过**（2026-10-18，重写后复验）：概览 / 依赖图 / 插件 /

@@ -1,0 +1,686 @@
+/**
+ * 账号保管插件（服务名 `identity`）。
+ *
+ * 职责只有两件（AGENTS.md D17 / D18）：
+ * 1. 持久化上游账号记录（订阅 OAuth / 外部 API-key），不碰请求转发与计费；
+ * 2. 在访问令牌快过期时，用 refresh_token 向上游换一对新令牌。
+ *
+ * 秘密的边界：账号文件里**没有**令牌；令牌放在 credentials 插件的
+ * `<credentialPrefix>/<account.id>` 引用下。刷新成功时先写凭据、再写账号记录：
+ * 反过来的话，账号记录会宣称「已刷新」，而凭据里还是旧令牌，下一次刷新窗口
+ * 就要再等一个周期；先写凭据最多只是多刷一次（新 RT 仍然有效）。
+ */
+import { randomBytes } from 'node:crypto'
+import { isAbsolute, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { Service, type Context, type Logger } from 'cordis'
+import { describeError, nowIso, type JsonStore } from '@dizzyapi/plugin-kit'
+import {
+  IDENTITY_CONFIG_SCHEMA,
+  IDENTITY_DEFAULTS,
+  type IdentityConfig,
+  type ResolvedIdentityConfig,
+} from './config.ts'
+import { IdentityError, isIdentityError } from './errors.ts'
+import { exchangeRefreshToken, ProviderExchangeError, supportsRefresh } from './providers.ts'
+import { createIdentityStore, SNAPSHOT_VERSION, type IdentitySnapshot } from './store.ts'
+import type {
+  CreateIdentityAccountInput,
+  IdentityAccount,
+  IdentityAccountKind,
+  IdentityProvider,
+  IdentityRefreshResult,
+  IdentityTokenBundle,
+  UpdateIdentityAccountInput,
+} from './types.ts'
+
+/** credentials 的结构性视图：只声明本插件用到的四个方法，不 import 它的实现。 */
+interface CredentialsSeam {
+  set(ref: string, value: string): Promise<void>
+  unset(ref: string): Promise<void>
+  resolve(ref: string): string | undefined
+  describe(ref: string): { readonly configured: boolean }
+}
+
+interface RefreshOutcome {
+  readonly account: IdentityAccount
+  readonly refreshed: boolean
+  readonly error: string | null
+}
+
+const MIN_DUE_DELAY_MS = 30_000
+const ACCESS_TOKEN_SAFETY_MS = 60_000
+const ID_PATTERN = /^acc-[a-f0-9]{12}$/
+
+export class IdentityService extends Service {
+  static Config = IDENTITY_CONFIG_SCHEMA
+
+  readonly config: ResolvedIdentityConfig
+  private readonly store: JsonStore<IdentitySnapshot>
+  private readonly logger: Logger
+  private accounts = new Map<string, IdentityAccount>()
+  private ready = false
+  private queue: Promise<unknown> = Promise.resolve()
+  private readonly inflight = new Map<string, Promise<RefreshOutcome>>()
+  private pass: Promise<void> | undefined
+
+  constructor(ctx: Context, config: IdentityConfig | ResolvedIdentityConfig = {}) {
+    super(ctx, 'identity')
+    this.config = resolveConfig(config)
+    this.store = createIdentityStore(resolveDataPath(ctx, this.config.dataPath))
+    this.logger = ctx.logger('identity')
+  }
+
+  async *[Service.init](): AsyncGenerator<() => void> {
+    await this.load()
+    this.logger.info(
+      `账号保管插件已装载：存储 ${this.store.describe}；${this.accounts.size} 个账号；` +
+        `轮询 ${this.config.pollIntervalMs}ms；RT 刷新 claude / openai`,
+    )
+    const stopScheduler = this.startScheduler()
+    // 启动就先跑一轮，别等到第一个轮询间隔。
+    void this.runRefreshPass().catch((error) => {
+      this.logger.warn(`启动刷新扫描失败：${describeError(error)}`)
+    })
+    yield () => {
+      stopScheduler()
+    }
+  }
+
+  // ───────────────────────────────── 读
+
+  get(id: string): IdentityAccount {
+    this.assertReady()
+    return copyAccount(this.requireAccount(id))
+  }
+
+  list(): IdentityAccount[] {
+    this.assertReady()
+    return [...this.accounts.values()]
+      .sort((a, b) => (a.createdAt === b.createdAt ? a.id.localeCompare(b.id) : a.createdAt.localeCompare(b.createdAt)))
+      .map(copyAccount)
+  }
+
+  /** 只回答「配没配」，不返回值——与 credentials.describe 的口径一致。 */
+  credentialStatus(id: string): { readonly ref: string; readonly configured: boolean } {
+    this.assertReady()
+    const account = this.requireAccount(id)
+    const credentials = this.credentials()
+    return {
+      ref: account.credentialRef,
+      configured: credentials?.describe(account.credentialRef).configured ?? false,
+    }
+  }
+
+  // ───────────────────────────────── 写
+
+  create(input: CreateIdentityAccountInput): Promise<IdentityAccount> {
+    this.assertReady()
+    return this.exclusive(async () => {
+      const label = input.label.trim()
+      if (label === '') throw new IdentityError('IDENTITY_ACCOUNT_INVALID', 'label 不能为空')
+      if (input.kind !== 'oauth' && input.kind !== 'api_key') {
+        throw new IdentityError('IDENTITY_ACCOUNT_INVALID', `不认识的账号类型：${String(input.kind)}`)
+      }
+      this.assertProvider(input.provider, input.kind)
+
+      const id = this.newId()
+      const credentialRef = `${this.config.credentialPrefix}/${id}`
+      const bundle = normalizeBundle(input.kind, input.secret)
+      const now = nowIso()
+
+      if (bundle !== undefined) await this.writeBundle(credentialRef, bundle)
+
+      const account: IdentityAccount = {
+        id,
+        provider: input.provider,
+        kind: input.kind,
+        label,
+        enabled: input.enabled ?? true,
+        status: 'active',
+        credentialRef,
+        email: emptyToNull(input.email),
+        subject: emptyToNull(input.subject),
+        accessExpiresAt: bundle?.expiresAt ?? null,
+        refreshDueAt: input.kind === 'oauth' ? dueIso(bundle?.expiresAt, this.config.refreshLeadMs) : null,
+        lastRefreshAt: null,
+        lastError: null,
+        failureCount: 0,
+        backoffUntil: null,
+        createdAt: now,
+        updatedAt: now,
+      }
+
+      const next = new Map(this.accounts)
+      next.set(id, account)
+      try {
+        await this.commit(next)
+      } catch (error) {
+        // 账号没落盘就别留下一个孤儿秘密。
+        if (bundle !== undefined) {
+          await this.credentials()?.unset(credentialRef).catch(() => undefined)
+        }
+        throw error
+      }
+      this.ctx.emit('identity/account-updated', id, 'created')
+      return copyAccount(account)
+    })
+  }
+
+  update(id: string, patch: UpdateIdentityAccountInput): Promise<IdentityAccount> {
+    this.assertReady()
+    return this.exclusive(async () => {
+      const account = this.requireAccount(id)
+      const updated: IdentityAccount = {
+        ...account,
+        label: patch.label === undefined ? account.label : requireLabel(patch.label),
+        email: patch.email === undefined ? account.email : emptyToNull(patch.email ?? undefined),
+        subject: patch.subject === undefined ? account.subject : emptyToNull(patch.subject ?? undefined),
+        enabled: patch.enabled === undefined ? account.enabled : patch.enabled,
+        updatedAt: nowIso(),
+      }
+      const next = new Map(this.accounts)
+      next.set(id, updated)
+      await this.commit(next)
+      this.ctx.emit('identity/account-updated', id, 'updated')
+      return copyAccount(updated)
+    })
+  }
+
+  /**
+   * 导入 / 重新授权：写入一对新令牌。
+   * 新包缺 refresh_token 时保留旧的（刷新响应常常不轮换 RT）。
+   */
+  importCredentials(id: string, secret: IdentityTokenBundle): Promise<IdentityAccount> {
+    this.assertReady()
+    return this.exclusive(async () => {
+      const account = this.requireAccount(id)
+      const incoming = normalizeBundle(account.kind, secret)
+      if (incoming === undefined) {
+        throw new IdentityError('IDENTITY_CREDENTIAL_INVALID', '没有可写入的令牌字段')
+      }
+      const previous = this.tryReadBundle(account)
+      const merged: IdentityTokenBundle = {
+        ...(previous ?? {}),
+        ...incoming,
+        ...(incoming.refreshToken !== undefined
+          ? {}
+          : previous?.refreshToken !== undefined
+            ? { refreshToken: previous.refreshToken }
+            : {}),
+        ...(incoming.clientId !== undefined
+          ? {}
+          : previous?.clientId !== undefined
+            ? { clientId: previous.clientId }
+            : {}),
+      }
+      await this.writeBundle(account.credentialRef, merged)
+
+      const updated: IdentityAccount = {
+        ...account,
+        status: 'active',
+        accessExpiresAt: merged.expiresAt ?? account.accessExpiresAt,
+        refreshDueAt:
+          account.kind === 'oauth'
+            ? dueIso(merged.expiresAt ?? account.accessExpiresAt ?? undefined, this.config.refreshLeadMs)
+            : null,
+        lastError: null,
+        failureCount: 0,
+        backoffUntil: null,
+        updatedAt: nowIso(),
+      }
+      const next = new Map(this.accounts)
+      next.set(id, updated)
+      await this.commit(next)
+      this.ctx.emit('identity/account-updated', id, 'credentials')
+      return copyAccount(updated)
+    })
+  }
+
+  remove(id: string): Promise<void> {
+    this.assertReady()
+    return this.exclusive(async () => {
+      const account = this.requireAccount(id)
+      const next = new Map(this.accounts)
+      next.delete(id)
+      await this.commit(next)
+      try {
+        await this.credentials()?.unset(account.credentialRef)
+      } catch (error) {
+        // 记录已经删掉，孤儿秘密不影响调度；留一条可供人工清理的日志。
+        this.logger.warn(`删除账号 ${id} 后清理凭据 ${account.credentialRef} 失败：${describeError(error)}`)
+      }
+      this.ctx.emit('identity/account-updated', id, 'removed')
+    })
+  }
+
+  // ───────────────────────────────── 令牌
+
+  /**
+   * 给未来的 transport 用的进程内 seam：返回可用的 access token。
+   * **不得**挂到任何 HTTP 路由上（与 credentials.resolve 同一条纪律）。
+   */
+  async getAccessToken(id: string): Promise<string> {
+    this.assertReady()
+    const account = this.requireAccount(id)
+    if (!account.enabled) {
+      throw new IdentityError('IDENTITY_ACCOUNT_DISABLED', `账号 ${id} 已被停用`)
+    }
+
+    let bundle = this.readBundle(account)
+    if (account.kind === 'api_key') {
+      if (bundle.apiKey === undefined || bundle.apiKey === '') {
+        throw new IdentityError('IDENTITY_CREDENTIAL_MISSING', `账号 ${id} 没有 API key`)
+      }
+      return bundle.apiKey
+    }
+
+    const expiresAt = bundle.expiresAt === undefined ? undefined : Date.parse(bundle.expiresAt)
+    const stillFresh =
+      bundle.accessToken !== undefined && expiresAt !== undefined && Number.isFinite(expiresAt)
+        ? expiresAt - Date.now() > ACCESS_TOKEN_SAFETY_MS
+        : false
+    if (stillFresh) return bundle.accessToken as string
+
+    const outcome = await this.refreshAccount(account, 'on-demand')
+    if (!outcome.refreshed) {
+      throw new IdentityError(
+        outcome.account.status === 'needs_reauth' ? 'IDENTITY_ACCOUNT_NEEDS_REAUTH' : 'IDENTITY_REFRESH_FAILED',
+        outcome.error ?? `账号 ${id} 刷新失败`,
+      )
+    }
+    bundle = this.readBundle(outcome.account)
+    if (bundle.accessToken === undefined || bundle.accessToken === '') {
+      throw new IdentityError('IDENTITY_CREDENTIAL_INVALID', `账号 ${id} 刷新后没有 access token`)
+    }
+    return bundle.accessToken
+  }
+
+  /** 手动触发一次刷新；失败会 reject，便于面板/运维脚本拿到明确原因。 */
+  async refreshNow(id: string): Promise<IdentityAccount> {
+    this.assertReady()
+    const account = this.requireAccount(id)
+    if (account.kind !== 'oauth') {
+      throw new IdentityError('IDENTITY_REFRESH_NOT_SUPPORTED', `账号 ${id} 是 ${account.kind}，没有可刷新的令牌`)
+    }
+    const outcome = await this.refreshAccount(account, 'manual')
+    if (!outcome.refreshed) {
+      throw new IdentityError(
+        outcome.account.status === 'needs_reauth' ? 'IDENTITY_ACCOUNT_NEEDS_REAUTH' : 'IDENTITY_REFRESH_FAILED',
+        outcome.error ?? `账号 ${id} 刷新失败`,
+      )
+    }
+    return copyAccount(outcome.account)
+  }
+
+  // ───────────────────────────────── 调度
+
+  /**
+   * 跑一轮刷新扫描。公开出来是为了测试与运维手动触发；
+   * 定时器只是按 `pollIntervalMs` 重复调用它。
+   */
+  async runRefreshPass(now = Date.now()): Promise<void> {
+    this.assertReady()
+    if (this.pass !== undefined) {
+      await this.pass
+      return
+    }
+    const task = this.doRefreshPass(now).finally(() => {
+      this.pass = undefined
+    })
+    this.pass = task
+    await task
+  }
+
+  private async doRefreshPass(now: number): Promise<void> {
+    const due = [...this.accounts.values()].filter((account) => this.isDue(account, now))
+    if (due.length === 0) return
+
+    const workers = Math.min(this.config.refreshConcurrency, due.length)
+    let cursor = 0
+    const worker = async (): Promise<void> => {
+      for (;;) {
+        const index = cursor
+        cursor += 1
+        if (index >= due.length) return
+        try {
+          await this.refreshAccount(due[index], 'scheduled')
+        } catch (error) {
+          // refreshAccount 自己会把失败写进账号状态；这里只兜底意外异常。
+          this.logger.warn(`账号 ${due[index].id} 刷新异常：${describeError(error)}`)
+        }
+      }
+    }
+    await Promise.all(Array.from({ length: workers }, worker))
+  }
+
+  private isDue(account: IdentityAccount, now: number): boolean {
+    if (account.kind !== 'oauth' || !account.enabled || account.status !== 'active') return false
+    if (account.backoffUntil !== null && Date.parse(account.backoffUntil) > now) return false
+    if (account.refreshDueAt === null) return true
+    return Date.parse(account.refreshDueAt) <= now
+  }
+
+  private refreshAccount(account: IdentityAccount, trigger: 'scheduled' | 'manual' | 'on-demand'): Promise<RefreshOutcome> {
+    const existing = this.inflight.get(account.id)
+    if (existing !== undefined) return existing
+    const task = this.doRefresh(account, trigger).finally(() => {
+      this.inflight.delete(account.id)
+    })
+    this.inflight.set(account.id, task)
+    return task
+  }
+
+  private async doRefresh(
+    account: IdentityAccount,
+    trigger: 'scheduled' | 'manual' | 'on-demand',
+  ): Promise<RefreshOutcome> {
+    let bundle: IdentityTokenBundle
+    try {
+      bundle = this.readBundle(account)
+    } catch (error) {
+      return this.markFailure(account, error, false)
+    }
+
+    if (bundle.refreshToken === undefined || bundle.refreshToken === '') {
+      return this.markFailure(
+        account,
+        new IdentityError('IDENTITY_ACCOUNT_NEEDS_REAUTH', '没有 refresh_token，需要重新导入凭据'),
+        false,
+      )
+    }
+
+    let result
+    try {
+      result = await exchangeRefreshToken(account.provider, bundle, {
+        timeoutMs: this.config.requestTimeoutMs,
+        fetch: globalThis.fetch,
+      })
+    } catch (error) {
+      const retryable = error instanceof ProviderExchangeError ? error.retryable : true
+      return this.markFailure(account, error, retryable)
+    }
+
+    const merged: IdentityTokenBundle = {
+      ...bundle,
+      accessToken: result.accessToken,
+      ...(result.refreshToken !== undefined ? { refreshToken: result.refreshToken } : {}),
+      ...(result.tokenType !== undefined ? { tokenType: result.tokenType } : {}),
+      ...(result.scope !== undefined ? { scope: result.scope } : {}),
+      expiresAt: result.expiresAt,
+    }
+
+    try {
+      await this.writeBundle(account.credentialRef, merged)
+    } catch (error) {
+      return this.markFailure(account, error, true)
+    }
+
+    const updated: IdentityAccount = {
+      ...account,
+      status: 'active',
+      accessExpiresAt: result.expiresAt,
+      refreshDueAt: dueIso(result.expiresAt, this.config.refreshLeadMs),
+      lastRefreshAt: nowIso(),
+      lastError: null,
+      failureCount: 0,
+      backoffUntil: null,
+      updatedAt: nowIso(),
+    }
+    try {
+      await this.commitAccount(updated)
+    } catch (error) {
+      // 凭据已经更新；账号记录写失败只影响下一个刷新窗口，不让令牌白白丢掉。
+      this.logger.warn(`账号 ${account.id} 刷新成功但账号记录写入失败：${describeError(error)}（${trigger}）`)
+      return { account: account, refreshed: true, error: null }
+    }
+    this.ctx.emit('identity/account-refreshed', account.id)
+    return { account: updated, refreshed: true, error: null }
+  }
+
+  private async markFailure(account: IdentityAccount, error: unknown, retryable: boolean): Promise<RefreshOutcome> {
+    const message = redactMessage(error)
+    const failureCount = account.failureCount + 1
+    const now = Date.now()
+    const updated: IdentityAccount = {
+      ...account,
+      status: retryable ? account.status : 'needs_reauth',
+      failureCount,
+      backoffUntil: retryable ? new Date(now + this.backoffMs(failureCount)).toISOString() : null,
+      lastError: message,
+      updatedAt: nowIso(),
+    }
+    try {
+      await this.commitAccount(updated)
+    } catch (commitError) {
+      this.logger.warn(`账号 ${account.id} 失败状态写入失败：${describeError(commitError)}`)
+    }
+    const code = isIdentityError(error) ? error.code : error instanceof ProviderExchangeError ? 'PROVIDER_ERROR' : 'REFRESH_FAILED'
+    this.ctx.emit('identity/account-failed', account.id, code)
+    return { account: updated, refreshed: false, error: message }
+  }
+
+  private backoffMs(failureCount: number): number {
+    const exponential = this.config.retryBaseMs * 2 ** Math.max(0, failureCount - 1)
+    const capped = Math.min(exponential, this.config.retryMaxMs)
+    const jitter = 0.75 + Math.random() * 0.5
+    return Math.max(250, Math.round(capped * jitter))
+  }
+
+  // ───────────────────────────────── 存储与凭据
+
+  private async load(): Promise<void> {
+    let snapshot: IdentitySnapshot
+    try {
+      snapshot = await this.store.read()
+    } catch (error) {
+      if (isIdentityError(error)) throw error
+      throw new IdentityError('IDENTITY_STORE_CORRUPT', `账号存储损坏：${describeError(error)}`)
+    }
+    this.accounts = new Map(Object.entries(snapshot.accounts))
+    this.ready = true
+  }
+
+  private async commit(next: Map<string, IdentityAccount>): Promise<void> {
+    try {
+      await this.store.write({ version: SNAPSHOT_VERSION, accounts: Object.fromEntries(next) })
+    } catch (error) {
+      throw new IdentityError('IDENTITY_STORE_WRITE_FAILED', `账号文件写入失败：${describeError(error)}`)
+    }
+    this.accounts = next
+  }
+
+  private commitAccount(account: IdentityAccount): Promise<void> {
+    return this.exclusive(async () => {
+      const next = new Map(this.accounts)
+      next.set(account.id, account)
+      await this.commit(next)
+    })
+  }
+
+  private exclusive<T>(task: () => Promise<T>): Promise<T> {
+    const result = this.queue.then(task, task)
+    this.queue = result.then(
+      () => undefined,
+      () => undefined,
+    )
+    return result
+  }
+
+  private writeBundle(ref: string, bundle: IdentityTokenBundle): Promise<void> {
+    const credentials = this.credentials()
+    if (credentials === undefined) {
+      throw new IdentityError('IDENTITY_CREDENTIAL_MISSING', 'credentials 服务不可用，无法保存令牌')
+    }
+    return credentials.set(ref, JSON.stringify(bundle))
+  }
+
+  private readBundle(account: IdentityAccount): IdentityTokenBundle {
+    const credentials = this.credentials()
+    if (credentials === undefined) {
+      throw new IdentityError('IDENTITY_CREDENTIAL_MISSING', 'credentials 服务不可用，读不到令牌')
+    }
+    const raw = credentials.resolve(account.credentialRef)
+    if (raw === undefined) {
+      throw new IdentityError('IDENTITY_CREDENTIAL_MISSING', `凭据 ${account.credentialRef} 尚未配置`)
+    }
+    return parseBundle(raw, account.credentialRef)
+  }
+
+  private tryReadBundle(account: IdentityAccount): IdentityTokenBundle | undefined {
+    const credentials = this.credentials()
+    if (credentials === undefined) return undefined
+    const raw = credentials.resolve(account.credentialRef)
+    if (raw === undefined) return undefined
+    return parseBundle(raw, account.credentialRef)
+  }
+
+  private credentials(): CredentialsSeam | undefined {
+    return this.ctx.get('credentials', false) as CredentialsSeam | undefined
+  }
+
+  // ───────────────────────────────── 杂项
+
+  private startScheduler(): () => void {
+    const timer = setInterval(() => {
+      void this.runRefreshPass().catch((error) => {
+        this.logger.warn(`刷新扫描失败：${describeError(error)}`)
+      })
+    }, this.config.pollIntervalMs)
+    timer.unref()
+    return () => clearInterval(timer)
+  }
+
+  private requireAccount(id: string): IdentityAccount {
+    const account = this.accounts.get(id)
+    if (account === undefined) {
+      throw new IdentityError('IDENTITY_ACCOUNT_NOT_FOUND', `没有账号 ${id}`)
+    }
+    return account
+  }
+
+  private assertReady(): void {
+    if (!this.ready) throw new IdentityError('IDENTITY_NOT_READY', '账号存储尚未加载完成')
+  }
+
+  private assertProvider(provider: IdentityProvider, kind: IdentityAccountKind): void {
+    if (provider !== 'claude' && provider !== 'openai' && provider !== 'custom') {
+      throw new IdentityError('IDENTITY_PROVIDER_UNSUPPORTED', `不支持的 provider：${String(provider)}`)
+    }
+    if (kind === 'oauth' && !supportsRefresh(provider)) {
+      throw new IdentityError('IDENTITY_PROVIDER_UNSUPPORTED', `${provider} 没有订阅账号的 RT 交换适配器`)
+    }
+  }
+
+  private newId(): string {
+    for (;;) {
+      const id = `acc-${randomBytes(6).toString('hex')}`
+      if (ID_PATTERN.test(id) && !this.accounts.has(id)) return id
+    }
+  }
+}
+
+// ───────────────────────────────── 工具
+
+function resolveConfig(config: IdentityConfig): ResolvedIdentityConfig {
+  // 仅用于构造函数默认参数；正常路径由 schema 校验后传入完整配置。
+  return {
+    dataPath: config.dataPath,
+    credentialPrefix: config.credentialPrefix ?? IDENTITY_DEFAULTS.credentialPrefix,
+    refreshLeadMs: config.refreshLeadMs ?? IDENTITY_DEFAULTS.refreshLeadMs,
+    pollIntervalMs: config.pollIntervalMs ?? IDENTITY_DEFAULTS.pollIntervalMs,
+    refreshConcurrency: config.refreshConcurrency ?? IDENTITY_DEFAULTS.refreshConcurrency,
+    retryBaseMs: config.retryBaseMs ?? IDENTITY_DEFAULTS.retryBaseMs,
+    retryMaxMs: config.retryMaxMs ?? IDENTITY_DEFAULTS.retryMaxMs,
+    requestTimeoutMs: config.requestTimeoutMs ?? IDENTITY_DEFAULTS.requestTimeoutMs,
+  }
+}
+
+function resolveDataPath(ctx: Context, path: string | undefined): string | undefined {
+  if (path === undefined || isAbsolute(path)) return path
+  const base = ctx.baseUrl ? fileURLToPath(ctx.baseUrl) : process.cwd()
+  return resolve(base, path)
+}
+
+function dueIso(expiresAt: string | undefined, leadMs: number, now = Date.now()): string {
+  const expires = expiresAt === undefined ? Number.NaN : Date.parse(expiresAt)
+  // 已经过期：立刻到期，别让新导入的旧令牌白等一个最小间隔。
+  if (Number.isFinite(expires) && expires <= now) return new Date(now).toISOString()
+  const target = Number.isFinite(expires) ? expires - leadMs : now
+  return new Date(Math.max(now + MIN_DUE_DELAY_MS, target)).toISOString()
+}
+
+function normalizeBundle(kind: IdentityAccountKind, secret: IdentityTokenBundle | undefined): IdentityTokenBundle | undefined {
+  if (secret === undefined) return undefined
+  const bundle: IdentityTokenBundle = {
+    ...(clean(secret.accessToken) !== undefined ? { accessToken: clean(secret.accessToken) } : {}),
+    ...(clean(secret.refreshToken) !== undefined ? { refreshToken: clean(secret.refreshToken) } : {}),
+    ...(clean(secret.tokenType) !== undefined ? { tokenType: clean(secret.tokenType) } : {}),
+    ...(clean(secret.scope) !== undefined ? { scope: clean(secret.scope) } : {}),
+    ...(clean(secret.clientId) !== undefined ? { clientId: clean(secret.clientId) } : {}),
+    ...(clean(secret.apiKey) !== undefined ? { apiKey: clean(secret.apiKey) } : {}),
+    ...(secret.expiresAt !== undefined && Number.isFinite(Date.parse(secret.expiresAt))
+      ? { expiresAt: new Date(Date.parse(secret.expiresAt)).toISOString() }
+      : {}),
+  }
+  if (kind === 'api_key' && bundle.apiKey === undefined) {
+    throw new IdentityError('IDENTITY_CREDENTIAL_INVALID', 'api_key 账号必须提供 apiKey')
+  }
+  if (kind === 'oauth' && bundle.accessToken === undefined && bundle.refreshToken === undefined) {
+    throw new IdentityError('IDENTITY_CREDENTIAL_INVALID', 'oauth 账号至少要提供 accessToken 或 refreshToken')
+  }
+  return Object.keys(bundle).length === 0 ? undefined : bundle
+}
+
+function parseBundle(raw: string, ref: string): IdentityTokenBundle {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(raw)
+  } catch {
+    throw new IdentityError('IDENTITY_CREDENTIAL_INVALID', `凭据 ${ref} 不是合法 JSON`)
+  }
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    throw new IdentityError('IDENTITY_CREDENTIAL_INVALID', `凭据 ${ref} 必须是 JSON 对象`)
+  }
+  const source = parsed as Record<string, unknown>
+  const bundle: Record<string, string> = {}
+  for (const key of ['accessToken', 'refreshToken', 'tokenType', 'scope', 'clientId', 'apiKey', 'expiresAt']) {
+    const value = source[key]
+    if (value === undefined) continue
+    if (typeof value !== 'string') {
+      throw new IdentityError('IDENTITY_CREDENTIAL_INVALID', `凭据 ${ref} 的 ${key} 不是字符串`)
+    }
+    bundle[key] = value
+  }
+  return bundle as IdentityTokenBundle
+}
+
+function clean(value: string | undefined): string | undefined {
+  if (value === undefined) return undefined
+  const trimmed = value.trim()
+  return trimmed === '' ? undefined : trimmed
+}
+
+function emptyToNull(value: string | undefined): string | null {
+  if (value === undefined) return null
+  const trimmed = value.trim()
+  return trimmed === '' ? null : trimmed
+}
+
+function requireLabel(value: string): string {
+  const trimmed = value.trim()
+  if (trimmed === '') throw new IdentityError('IDENTITY_ACCOUNT_INVALID', 'label 不能为空')
+  return trimmed
+}
+
+function copyAccount(account: IdentityAccount): IdentityAccount {
+  return { ...account }
+}
+
+/** 错误信息里不带令牌；ProviderExchangeError 本身只包含状态码与 OAuth 错误码。 */
+function redactMessage(error: unknown): string {
+  if (isIdentityError(error)) return error.message
+  if (error instanceof ProviderExchangeError) return error.message
+  if (error instanceof Error) return error.message
+  return String(error)
+}
