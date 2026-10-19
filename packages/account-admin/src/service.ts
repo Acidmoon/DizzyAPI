@@ -90,6 +90,45 @@ export class AccountAdminService extends Service {
   /** identity 是唯一的数据写者；它不在运行时，本插件也不该在（D16 的「依赖是否满足」）。 */
   static inject = ['identity']
 
+  /** 能力清单：管理门面本身不落盘、不发事件、不暴露桥命令。 */
+  static catalog = {
+    capabilities: ['account-management', 'credential-import', 'upstream-account-admin'],
+    events: [],
+    bridge: [],
+    storage: [],
+    shapes: {
+      AccountView: {
+        description: '管理面返回的账号元数据（不含令牌）',
+        fields: {
+          id: { type: 'string' },
+          provider: { type: 'string' },
+          kind: { type: 'string' },
+          label: { type: 'string' },
+          enabled: { type: 'boolean' },
+          status: { type: 'string' },
+          credentialRef: { type: 'string' },
+          credentialConfigured: { type: 'boolean' },
+          email: { type: 'string', optional: true },
+          subject: { type: 'string', optional: true },
+        },
+      },
+      CredentialImportPreview: {
+        description: '导入预检结果：只有识别信息与布尔位，没有令牌',
+        fields: {
+          format: { type: 'string' },
+          provider: { type: 'string' },
+          kind: { type: 'string' },
+          email: { type: 'string', optional: true },
+          subject: { type: 'string', optional: true },
+          expiresAt: { type: 'string', optional: true },
+          hasAccessToken: { type: 'boolean' },
+          hasRefreshToken: { type: 'boolean' },
+          hasApiKey: { type: 'boolean' },
+        },
+      },
+    },
+  } as const
+
   readonly config: ResolvedAccountAdminConfig
   private readonly adminPlugins: readonly string[]
   private readonly maxBatchSize: number

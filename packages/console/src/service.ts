@@ -59,6 +59,35 @@ export class FrontendService extends Service {
   static Config = FRONTEND_CONFIG_SCHEMA
   static inject = ['loader']
 
+  /** 能力清单：静态资源版本化 + 可见页面清单。它不起产品 HTTP、不发事件、不暴露桥命令。 */
+  static catalog = {
+    capabilities: ['frontend-host', 'versioned-assets', 'page-manifest'],
+    events: [],
+    bridge: [],
+    storage: [{ key: 'dataPath', kind: 'directory', description: '版本目录、manifest.json 与 state.json' }],
+    shapes: {
+      FrontendManifest: {
+        description: '页面 / 设置卡 / 插槽的可见清单',
+        fields: {
+          revision: { type: 'string' },
+          pages: { type: 'array', shape: 'FrontendPage' },
+          settingsCards: { type: 'array', shape: 'FrontendSettingsCard' },
+          slots: { type: 'array', shape: 'FrontendSlot' },
+        },
+      },
+      FrontendPage: {
+        description: '一个由插件贡献的页面',
+        fields: {
+          id: { type: 'string' },
+          area: { type: 'string' },
+          path: { type: 'string' },
+          title: { type: 'string' },
+          owner: { type: 'string' },
+        },
+      },
+    },
+  } as const
+
   readonly config: ResolvedFrontendConfig
   private readonly logger: Logger
   private readonly dataPath: string

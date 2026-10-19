@@ -492,8 +492,8 @@ Config schema 字段 / 设置命名空间；事件、控制桥命令、数据形
 `available` 只在入口未被禁用且 fiber 是 ACTIVE 时为 true；`find()` 默认只返回 available
 （D5：禁用插件不得表现为可用）。配置只输出 schema 元数据（`writable` / `secret` /
 `credentialRef` / 取值域），存储只输出非秘密路径字段；两类都不带值。
-`user` / `auth` / `mailer` / `credentials` / `identity` / `account-priority` / `settings` /
-`admin` / `catalog` 自己都已带基础清单。
+`user` / `auth` / `mailer` / `credentials` / `identity` / `account-admin` /
+`account-priority` / `settings` / `admin` / `catalog` / `frontend` 自己都已带基础清单。
 
 清单的两种写法（目录优先读静态属性，其次才动态 import 模块读模块级导出）：
 

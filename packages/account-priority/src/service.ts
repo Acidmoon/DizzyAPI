@@ -110,6 +110,11 @@ export class AccountPriorityService extends Service {
         description: '子进程、桥或策略推送失败',
         payload: 'code: string, message: string',
       },
+      {
+        name: 'account-priority/accounts-applied',
+        description: 'Go 侧确认缓存了一版账号/令牌快照（不含秘密）',
+        payload: 'revision: string, accounts: number',
+      },
     ],
     bridge: [
       { method: 'accountPriority.status', direction: 'outbound', responseShape: 'RemoteStatus' },
@@ -117,6 +122,8 @@ export class AccountPriorityService extends Service {
       { method: 'accountPriority.replaceStrategies', direction: 'outbound', responseShape: 'ReplaceStrategiesResult' },
       { method: 'accountPriority.preview', direction: 'outbound', requestShape: 'ScoreRequest', responseShape: 'ScoreResult' },
       { method: 'accountPriority.pick', direction: 'outbound', requestShape: 'ScoreRequest', responseShape: 'ScoredAccount' },
+      { method: 'accounts.replace', direction: 'outbound', requestShape: 'GatewayAccountSnapshot', responseShape: 'GatewayAccountsResult' },
+      { method: 'accounts.status', direction: 'outbound', responseShape: 'accounts.State' },
     ],
     storage: [
       { key: 'dataPath', kind: 'file', description: '策略组 JSON（TS 是唯一写者）' },
