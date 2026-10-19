@@ -194,6 +194,7 @@ export interface AccountAdminQueryLike {
 export interface AccountAdminPort {
   list(query?: AccountAdminQueryLike): readonly AccountViewLike[] | Promise<readonly AccountViewLike[]>
   get(id: string): AccountViewLike | Promise<AccountViewLike>
+  create?(actor: string, input: unknown): Promise<unknown>
   update(
     actor: string,
     id: string,

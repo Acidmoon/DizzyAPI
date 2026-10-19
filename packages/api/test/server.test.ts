@@ -480,6 +480,30 @@ test('管理员账号：列表 / 详情剥掉 credentialRef，PATCH enabled 走 
   assert.equal(one.status, 200)
   assert.ok(!one.text.includes('credentialRef'))
 
+  const created = await call(server, '/api/accounts', {
+    method: 'POST',
+    cookie,
+    body: JSON.stringify({
+      provider: 'openai',
+      kind: 'api_key',
+      label: 'new account',
+      credential: { payload: 'sk-upstream', format: 'auto' },
+    }),
+  })
+  assert.equal(created.status, 200, created.text)
+  assert.equal(created.json.label, 'new account')
+  assert.ok(!created.text.includes('credentialRef'))
+  const createCall = accountAdmin.calls.find((entry) => entry.method === 'create')
+  assert.deepEqual(createCall?.args, [
+    API_ACTOR,
+    {
+      provider: 'openai',
+      kind: 'api_key',
+      label: 'new account',
+      credential: { payload: 'sk-upstream', format: 'auto' },
+    },
+  ])
+
   const patched = await call(server, '/api/accounts/acc_1', {
     method: 'PATCH',
     cookie,

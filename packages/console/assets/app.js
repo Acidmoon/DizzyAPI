@@ -416,12 +416,7 @@ function errorState(error, retry) {
     el('p', { class: 'error-message', text: errorMessage(error) }),
   ]
   if (isUnauthorized(error)) {
-    children.push(el('p', { class: 'muted', text: '会话已失效，正在返回登录页…' }))
     queueMicrotask(() => showLogin('会话已过期，请重新登录'))
-  } else if (error instanceof ApiError && error.status === 403) {
-    children.push(el('p', { class: 'muted', text: '当前账号没有这个操作的管理员权限。' }))
-  } else if (error instanceof ApiError && error.status === 503) {
-    children.push(el('p', { class: 'muted', text: '对应服务暂时不可用；这通常是功能尚未实现或插件未装载。' }))
   }
   if (retry !== undefined) {
     children.push(el('button', { class: 'btn', text: '重试', attrs: { type: 'button' }, on: { click: retry } }))
@@ -429,30 +424,19 @@ function errorState(error, retry) {
   return el('div', { class: 'error-state', attrs: { role: 'alert' } }, ...children)
 }
 
-/** @param {string} label @param {string} value @param {string} [note] @returns {HTMLElement} */
-function metric(label, value, note) {
+/** @param {string} label @param {string} value @returns {HTMLElement} */
+function metric(label, value) {
   return el(
     'div',
     { class: 'metric' },
     el('div', { class: 'metric-label', text: label }),
     el('div', { class: 'metric-value', text: value }),
-    note === undefined ? null : el('div', { class: 'metric-note', text: note }),
   )
 }
 
-/**
- * @param {FrontendPage} page
- * @param {string} [extra]
- * @returns {HTMLElement}
- */
-function pageHead(page, extra) {
-  return el(
-    'header',
-    { class: 'page-head' },
-    el('h1', { text: page.title }),
-    page.description === undefined ? null : el('p', { class: 'lede', text: page.description }),
-    extra === undefined ? null : el('p', { class: 'section-note', text: extra }),
-  )
+/** @param {FrontendPage} page @returns {HTMLElement} */
+function pageHead(page) {
+  return el('header', { class: 'page-head' }, el('h1', { text: page.title }))
 }
 
 /**
@@ -469,7 +453,6 @@ function slotList(slots) {
         'div',
         { class: 'slot-body' },
         el('div', { class: 'slot-title', text: slot.title }),
-        slot.body === undefined ? null : el('p', { text: slot.body }),
       )
       if (slot.href !== undefined) {
         return el(
@@ -735,7 +718,7 @@ async function renderProfile(page) {
   const section = el(
     'section',
     { class: 'page' },
-    pageHead(page, '资料与密码通过 /api/profile 修改；会话令牌只在 HttpOnly cookie 里，前端不保存。'),
+    pageHead(page),
   )
 
   const avatarHost = el('div', { class: 'profile-avatar' })
@@ -883,7 +866,6 @@ async function renderProfile(page) {
         el('h2', { text: '头像' }),
         avatarHost,
         el('div', { class: 'form-field' }, el('label', { text: '上传图片（≤ 256 KiB）' }), fileInput),
-        el('p', { class: 'muted', text: '图片只在浏览器里转成 data URL 后提交，不经过第三方。' }),
       ),
       el('div', { class: 'card profile-card' }, el('h2', { text: '账户' }), facts, nameForm),
     ),
@@ -928,7 +910,7 @@ async function renderUsage(page) {
   /** @type {readonly ApiKeySummary[]} */
   let keys = []
 
-  const section = el('section', { class: 'page' }, pageHead(page, '所有日期按 GMT+8 显示；数据可能有 5 分钟延迟。金额以整数分存储、显示时换算；mock 数据不来自真实账户。'))
+  const section = el('section', { class: 'page' }, pageHead(page))
   const balancesHost = el('div', { class: 'stat-grid' })
   const metricsHost = el('div', { class: 'metrics' })
   const chartHost = el('div', {})
@@ -986,9 +968,9 @@ async function renderUsage(page) {
   const renderMetrics = () => {
     if (usage === null) return
     metricsHost.replaceChildren(
-      metric('消费金额', formatCny(usage.totals.costCents), `近 ${usage.daily.length} 天`),
-      metric('API 请求次数', formatInteger(usage.totals.requests), `近 ${usage.daily.length} 天`),
-      metric('Tokens', formatInteger(usage.totals.tokens), `近 ${usage.daily.length} 天`),
+      metric('消费金额', formatCny(usage.totals.costCents)),
+      metric('API 请求次数', formatInteger(usage.totals.requests)),
+      metric('Tokens', formatInteger(usage.totals.tokens)),
     )
   }
 
@@ -1027,7 +1009,7 @@ async function renderUsage(page) {
       el(
         'div',
         { class: 'section' },
-        el('div', { class: 'section-head' }, el('h2', { text: '按模型' }), el('span', { class: 'section-note', text: `近 ${usage.daily.length} 天` })),
+        el('div', { class: 'section-head' }, el('h2', { text: '按模型' })),
         grid,
       ),
       slotList(manifest().slots.filter((slot) => slot.slot === 'console.overview.after')) ?? el('span'),
@@ -1397,7 +1379,7 @@ function keyRow(key, reload) {
     on: {
       click: () => {
         if (!window.confirm(`轮换「${key.name}」？旧 secret 会立刻失效，正在使用它的客户端需要换成新 key。`)) return
-        const dialog = openDialog('轮换 API key', '正在生成新 secret…', el('div', {}))
+        const dialog = openDialog('轮换 API key', el('div', {}))
         void api()
           .keys.rotate(key.id)
           .then(async (created) => {
@@ -1495,7 +1477,7 @@ function openCreateKeyDialog(reload) {
     error,
     el('div', { class: 'dialog-actions' }, cancel, create),
   )
-  const dialog = openDialog('创建 API key', '创建后完整 key 只显示一次；前端不会把它写进 localStorage 或日志。', form)
+  const dialog = openDialog('创建 API key', form)
   cancel.addEventListener('click', () => dialog.close())
   input.focus()
   form.addEventListener('submit', async (event) => {
@@ -1558,7 +1540,7 @@ function openEditKeyDialog(key, reload) {
     error,
     el('div', { class: 'dialog-actions' }, cancel, save),
   )
-  const dialog = openDialog('重命名 API key', '只改显示名称，不会轮换密钥。', form)
+  const dialog = openDialog('重命名 API key', form)
   cancel.addEventListener('click', () => dialog.close())
   input.focus()
   form.addEventListener('submit', async (event) => {
@@ -1580,16 +1562,13 @@ function openEditKeyDialog(key, reload) {
 
 /**
  * @param {string} title
- * @param {string} description
  * @param {HTMLElement} form
  * @returns {HTMLDialogElement}
  */
-function openDialog(title, description, form) {
+function openDialog(title, form) {
   const dialog = /** @type {HTMLDialogElement} */ (document.createElement('dialog'))
   dialog.className = 'dialog'
-  dialog.append(
-    el('div', { class: 'dialog-body' }, el('h2', { text: title }), el('p', { text: description }), form),
-  )
+  dialog.append(el('div', { class: 'dialog-body' }, el('h2', { text: title }), form))
   dialog.addEventListener('close', () => dialog.remove())
   document.body.append(dialog)
   dialog.showModal()
@@ -1671,7 +1650,7 @@ async function renderTopup(page) {
       { class: radio.checked ? 'pay-method active' : 'pay-method' },
       radio,
       el('span', { class: 'pay-icon', text: method.id === 'alipay' ? '支' : '微' }),
-      el('span', {}, el('div', { class: 'pay-method-label', text: method.label }), method.note === undefined ? null : el('div', { class: 'pay-method-note', text: method.note })),
+      el('span', {}, el('div', { class: 'pay-method-label', text: method.label })),
     )
     radio.addEventListener('change', () => {
       state.method = method.id
@@ -1738,7 +1717,6 @@ async function renderTopup(page) {
         el(
           'div',
           { class: 'filters tight' },
-          el('span', { class: 'muted', text: `单笔 ${formatCny(options.minCents)} – ${formatCny(options.maxCents)}` }),
           el('span', { class: 'spacer' }),
           el('button', {
             class: 'btn btn-small',
@@ -1750,7 +1728,7 @@ async function renderTopup(page) {
       ),
       el('div', { class: 'topup-field' }, el('span', { class: 'topup-label', text: '支付方式' }), methods),
       pay,
-      el('div', { class: 'topup-field' }, amountHint, el('p', { class: 'topup-note', text: options.notice })),
+      el('div', { class: 'topup-field' }, amountHint),
       resultHost,
     ),
   )
@@ -1773,7 +1751,6 @@ function renderTopupOrder(order) {
     { class: 'topup-result' },
     el('h3', { text: '订单已创建' }),
     rows,
-    order.message === undefined ? null : el('p', { class: 'topup-note', text: order.message }),
     order.payUrl === null
       ? null
       : el('a', { class: 'btn btn-light', attrs: { href: order.payUrl, target: '_blank', rel: 'noopener noreferrer' }, text: '前往支付' }),
@@ -1803,17 +1780,17 @@ async function renderOverview(page) {
     el(
       'div',
       { class: 'metrics' },
-      metric('状态', healthLabel(health.state), `gatewayd ${health.version}`),
-      metric('已运行', formatDuration(health.uptimeSec), `检查于 ${formatTime(health.at)}`),
-      metric('描述符', health.descriptorRevision ?? '—', '当前应用的链路版本'),
-      metric('控制桥', health.bridge.connected ? '已连接' : '未连接', health.bridge.transport === null ? '尚未建立' : `${health.bridge.transport} ${health.bridge.address ?? ''}`.trim()),
+      metric('状态', healthLabel(health.state)),
+      metric('已运行', formatDuration(health.uptimeSec)),
+      metric('描述符', health.descriptorRevision ?? '—'),
+      metric('控制桥', health.bridge.connected ? '已连接' : '未连接'),
     ),
   )
 
   const components = el(
     'div',
     { class: 'section' },
-    el('div', { class: 'section-head' }, el('h2', { text: '组件' }), el('span', { class: 'section-note', text: '来自 /api/health 的只读状态' })),
+    el('div', { class: 'section-head' }, el('h2', { text: '组件' })),
     el(
       'div',
       { class: 'table-wrap table-card' },
@@ -1856,7 +1833,6 @@ async function renderOverview(page) {
             'div',
             { class: 'section-head' },
             el('h2', { text: '模块' }),
-            el('span', { class: 'section-note', text: `${active} 个运行中 · ${disabled} 个禁用` }),
             el('a', { class: 'btn btn-small', attrs: { href: routes().href('/admin/catalog') }, text: '查看目录' }),
           ),
           el(
@@ -1884,7 +1860,7 @@ async function renderOverview(page) {
 
 /** @param {FrontendPage} page @returns {Promise<HTMLElement>} */
 async function renderAccounts(page) {
-  const section = el('section', { class: 'page' }, pageHead(page, '只读元数据；令牌、授权码与密钥永远不经过前端。'))
+  const section = el('section', { class: 'page' }, pageHead(page))
   const results = el('div', { class: 'results' })
   const provider = /** @type {HTMLSelectElement} */ (el(
     'select',
@@ -1902,6 +1878,7 @@ async function renderAccounts(page) {
     el('option', { text: 'needs_reauth', attrs: { value: 'needs_reauth' } }),
   ))
   const refresh = el('button', { class: 'btn btn-small', attrs: { type: 'button' } }, icon('refresh'), el('span', { text: '刷新' }))
+  const add = el('button', { class: 'btn btn-light', attrs: { type: 'button' } }, icon('plus'), el('span', { text: '添加账号' }))
   const toolbar = el(
     'div',
     { class: 'toolbar' },
@@ -1909,6 +1886,7 @@ async function renderAccounts(page) {
     el('label', { class: 'field-inline' }, el('span', { text: '状态' }), status),
     el('span', { class: 'toolbar-spacer' }),
     refresh,
+    add,
   )
   section.append(toolbar, results)
 
@@ -1930,7 +1908,18 @@ async function renderAccounts(page) {
           { class: 'table-wrap table-card' },
           el(
             'table',
-            { class: 'data-table' },
+            { class: 'data-table account-table' },
+            el(
+              'colgroup',
+              {},
+              el('col', { class: 'col-account' }),
+              el('col', { class: 'col-upstream' }),
+              el('col', { class: 'col-state' }),
+              el('col', { class: 'col-expires' }),
+              el('col', { class: 'col-refresh' }),
+              el('col', { class: 'col-failure' }),
+              el('col', { class: 'col-actions' }),
+            ),
             el(
               'thead',
               {},
@@ -1948,6 +1937,7 @@ async function renderAccounts(page) {
   provider.addEventListener('change', () => void load())
   status.addEventListener('change', () => void load())
   refresh.addEventListener('click', () => void load())
+  add.addEventListener('click', () => openCreateAccountDialog(load))
   void load()
   return section
 }
@@ -1961,9 +1951,8 @@ function accountRow(account, reload) {
   const toggle = /** @type {HTMLButtonElement} */ (el(
     'button',
     {
-      class: account.enabled ? 'btn btn-small' : 'btn btn-small btn-primary',
-      attrs: { type: 'button' },
-      text: account.enabled ? '停用' : '启用',
+      class: account.enabled ? 'btn btn-icon' : 'btn btn-icon btn-primary',
+      attrs: { type: 'button', title: account.enabled ? '停用' : '启用' },
       on: {
         click: async () => {
           toggle.disabled = true
@@ -1979,22 +1968,136 @@ function accountRow(account, reload) {
       },
     },
   ))
+  toggle.append(icon(account.enabled ? 'close' : 'check'))
+  const credential = /** @type {HTMLButtonElement} */ (el('button', {
+    class: 'btn btn-icon',
+    attrs: { type: 'button', title: '导入凭据' },
+    on: { click: () => openImportCredentialsDialog(account, reload) },
+  }))
+  credential.append(icon('lock'))
   return el(
     'tr',
     { class: account.enabled ? '' : 'row-muted' },
-    el(
-      'td',
-      {},
-      el('div', { class: 'cell-title', text: account.label }),
-      el('code', { class: 'cell-sub', text: account.id }),
-    ),
+    el('td', {}, el('div', { class: 'cell-title', text: account.label })),
     el('td', {}, el('div', { text: account.provider }), el('span', { class: 'muted', text: account.kind })),
-    el('td', {}, badge(account.status, accountTone(account.status)), el('div', { class: 'cell-sub', text: account.enabled ? 'enabled' : 'disabled' })),
-    el('td', {}, el('div', { text: formatRelative(account.accessExpiresAt) }), el('span', { class: 'cell-sub', text: formatTime(account.accessExpiresAt ?? '') })),
+    el('td', {}, badge(account.status, accountTone(account.status))),
+    el('td', {}, el('div', { text: formatRelative(account.accessExpiresAt) })),
     el('td', { text: formatRelative(account.refreshDueAt) }),
-    el('td', {}, el('div', { text: String(account.failureCount) }), account.lastError === null ? null : el('code', { class: 'cell-sub tone-bad-text', text: account.lastError })),
-    el('td', { class: 'cell-actions' }, toggle),
+    el('td', {}, el('div', { text: String(account.failureCount) }), account.lastError === null ? null : el('code', { class: 'tone-bad-text', text: account.lastError })),
+    el('td', { class: 'cell-actions' }, el('div', { class: 'table-actions' }, credential, toggle)),
   )
+}
+
+/**
+ * 新增账号：凭据可留空，稍后再用「导入凭据」补上。
+ * @param {() => Promise<void>} reload
+ */
+function openCreateAccountDialog(reload) {
+  const label = /** @type {HTMLInputElement} */ (el('input', { attrs: { type: 'text', maxlength: '200', required: '' } }))
+  const provider = /** @type {HTMLSelectElement} */ (el(
+    'select',
+    { class: 'select' },
+    el('option', { text: 'OpenAI / Codex', attrs: { value: 'openai' } }),
+    el('option', { text: 'Claude', attrs: { value: 'claude' } }),
+    el('option', { text: 'custom', attrs: { value: 'custom' } }),
+  ))
+  const oauth = /** @type {HTMLOptionElement} */ (el('option', { text: 'OAuth（订阅账号）', attrs: { value: 'oauth' } }))
+  const kind = /** @type {HTMLSelectElement} */ (el(
+    'select',
+    { class: 'select' },
+    oauth,
+    el('option', { text: 'API Key', attrs: { value: 'api_key' } }),
+  ))
+  kind.value = 'api_key'
+  const credential = /** @type {HTMLTextAreaElement} */ (el('textarea', {
+    class: 'input',
+    attrs: { rows: '5', placeholder: 'API Key 或 OAuth JSON（可留空）' },
+  }))
+  const error = el('p', { class: 'error-message', attrs: { hidden: '' } })
+  const cancel = el('button', { class: 'btn', attrs: { type: 'button' }, text: '取消' })
+  const create = /** @type {HTMLButtonElement} */ (el('button', { class: 'btn btn-light', attrs: { type: 'submit' }, text: '添加' }))
+  const form = el(
+    'form',
+    {},
+    el('div', { class: 'form-field' }, el('label', { text: '名称' }), label),
+    el('div', { class: 'form-field' }, el('label', { text: '上游' }), provider),
+    el('div', { class: 'form-field' }, el('label', { text: '类型' }), kind),
+    el('div', { class: 'form-field' }, el('label', { text: '凭据' }), credential),
+    error,
+    el('div', { class: 'dialog-actions' }, cancel, create),
+  )
+  const dialog = openDialog('添加账号', form)
+  cancel.addEventListener('click', () => dialog.close())
+  provider.addEventListener('change', () => {
+    const custom = provider.value === 'custom'
+    oauth.disabled = custom
+    if (custom) kind.value = 'api_key'
+  })
+  label.focus()
+  form.addEventListener('submit', async (event) => {
+    event.preventDefault()
+    error.hidden = true
+    create.disabled = true
+    try {
+      /** @type {import('../src/contracts.ts').CreateAccountInput} */
+      const input = {
+        provider: /** @type {import('../src/contracts.ts').AccountProvider} */ (provider.value),
+        kind: /** @type {import('../src/contracts.ts').AccountKind} */ (kind.value),
+        label: label.value,
+        ...(credential.value.trim() === ''
+          ? {}
+          : { credential: { payload: credential.value, format: 'auto' } }),
+      }
+      await api().accounts.create(input)
+      toast('账号已添加')
+      dialog.close()
+      await reload()
+    } catch (caught) {
+      error.textContent = errorMessage(caught)
+      error.hidden = false
+      create.disabled = false
+    }
+  })
+}
+
+/**
+ * 给已有账号导入 / 重新授权凭据。
+ * @param {AccountSummary} account
+ * @param {() => Promise<void>} reload
+ */
+function openImportCredentialsDialog(account, reload) {
+  const credential = /** @type {HTMLTextAreaElement} */ (el('textarea', {
+    class: 'input',
+    attrs: { rows: '6', placeholder: 'API Key 或 OAuth JSON', required: '' },
+  }))
+  const error = el('p', { class: 'error-message', attrs: { hidden: '' } })
+  const cancel = el('button', { class: 'btn', attrs: { type: 'button' }, text: '取消' })
+  const save = /** @type {HTMLButtonElement} */ (el('button', { class: 'btn btn-light', attrs: { type: 'submit' }, text: '导入' }))
+  const form = el(
+    'form',
+    {},
+    el('div', { class: 'form-field' }, el('label', { text: '凭据' }), credential),
+    error,
+    el('div', { class: 'dialog-actions' }, cancel, save),
+  )
+  const dialog = openDialog(`导入凭据 · ${account.label}`, form)
+  cancel.addEventListener('click', () => dialog.close())
+  credential.focus()
+  form.addEventListener('submit', async (event) => {
+    event.preventDefault()
+    error.hidden = true
+    save.disabled = true
+    try {
+      await api().accounts.importCredentials(account.id, { payload: credential.value, format: 'auto' })
+      toast('凭据已导入')
+      dialog.close()
+      await reload()
+    } catch (caught) {
+      error.textContent = errorMessage(caught)
+      error.hidden = false
+      save.disabled = false
+    }
+  })
 }
 
 /**
@@ -2007,7 +2110,7 @@ async function renderUsers(page) {
   const section = el(
     'section',
     { class: 'page' },
-    pageHead(page, '余额以最小单位整数存储：1 元 = 1,000,000，1 分 = 10,000。调整余额输入最小单位，负数表示扣减。'),
+    pageHead(page),
   )
   if (currentSession?.permissions.admin !== true) {
     section.append(renderForbidden(page))
@@ -2155,10 +2258,10 @@ function userRow(user, reload) {
   return el(
     'tr',
     { class: user.status === 'banned' ? 'row-muted' : '' },
-    el('td', {}, el('div', { class: 'cell-title', text: user.name }), el('code', { class: 'cell-sub', text: `#${user.id}` })),
+    el('td', {}, el('div', { class: 'cell-title', text: user.name })),
     el('td', {}, badge(user.status, user.status === 'enabled' ? 'ok' : 'bad')),
     el('td', {}, badge(user.role === 'admin' ? 'admin' : 'user', user.role === 'admin' ? 'accent' : 'neutral')),
-    el('td', {}, el('div', { text: formatMinor(user.balanceMinor) }), el('span', { class: 'cell-sub', text: `${user.balanceMinor} 最小单位` })),
+    el('td', {}, el('div', { text: formatMinor(user.balanceMinor) })),
     el('td', { text: user.balanceEnabled ? '显示' : '隐藏' }),
     el('td', { class: 'cell-actions' }, el('div', { class: 'table-actions' }, toggleStatus, toggleRole, toggleBalance, adjust, remove)),
   )
@@ -2193,7 +2296,7 @@ function openAdjustBalanceDialog(user, reload) {
     error,
     el('div', { class: 'dialog-actions' }, cancel, save),
   )
-  const dialog = openDialog(`调整余额 · ${user.name}`, '余额按整数最小单位运算，不经过浮点。', form)
+  const dialog = openDialog(`调整余额 · ${user.name}`, form)
   cancel.addEventListener('click', () => dialog.close())
   delta.focus()
   form.addEventListener('submit', async (event) => {
@@ -2241,7 +2344,7 @@ function formatMinor(minor) {
 
 /** @param {FrontendPage} page @returns {Promise<HTMLElement>} */
 async function renderCatalog(page) {
-  const section = el('section', { class: 'page' }, pageHead(page, '禁用模块的页面与设置卡不会出现在导航里；它们仍列在这里，便于排障。'))
+  const section = el('section', { class: 'page' }, pageHead(page))
   const results = el('div', { class: 'results' })
   section.append(results)
   results.replaceChildren(loadingState('正在读取模块目录…'))
@@ -2253,7 +2356,7 @@ async function renderCatalog(page) {
       el(
         'div',
         { class: 'metrics compact' },
-        ...[...counts.entries()].map(([state, count]) => metric(state, String(count), '个模块')),
+        ...[...counts.entries()].map(([state, count]) => metric(state, String(count))),
       ),
       el(
         'div',
@@ -2269,7 +2372,7 @@ async function renderCatalog(page) {
               el(
                 'tr',
                 { class: module.state === 'disabled' ? 'row-muted' : '' },
-                el('td', {}, el('div', { class: 'cell-title', text: module.id }), module.description === null ? null : el('div', { class: 'cell-sub', text: module.description })),
+                el('td', {}, el('div', { class: 'cell-title', text: module.id })),
                 el('td', {}, el('code', { text: module.package })),
                 el('td', { text: module.kind }),
                 el('td', {}, badge(module.state, module.state === 'active' ? 'ok' : module.state === 'disabled' ? 'neutral' : 'warn')),
@@ -2293,7 +2396,7 @@ async function renderCatalog(page) {
  * @returns {Promise<HTMLElement>}
  */
 async function renderSettings(page, match) {
-  const section = el('section', { class: 'page' }, pageHead(page, 'app.yml 是基线；这里写的是覆盖文件。秘密字段只显示「配没配」。'))
+  const section = el('section', { class: 'page' }, pageHead(page))
   const cards = manifest().settingsCards
   if (cards.length === 0) {
     section.append(el('div', { class: 'empty', text: '当前没有已启用插件贡献设置卡。' }))
@@ -2367,7 +2470,7 @@ async function renderSettings(page, match) {
         el(
           'div',
           { class: 'settings-head' },
-          el('div', {}, el('h2', { text: card.title }), el('p', { class: 'muted', text: card.description ?? '' })),
+          el('div', {}, el('h2', { text: card.title })),
           badge('未装载', 'warn'),
         ),
         el('div', { class: 'empty', text: `命名空间 ${card.namespace} 当前不在设置接口的返回里。` }),
@@ -2452,7 +2555,6 @@ function settingsDetail(card, view, reload) {
         'div',
         {},
         el('h2', { text: card.title }),
-        card.description === undefined ? null : el('p', { class: 'muted', text: card.description }),
         el('div', { class: 'settings-meta' }, el('code', { text: view.ns }), el('span', { class: 'muted', text: view.plugin }), ...flags),
       ),
       el('div', { class: 'settings-actions' }, el('span', { class: 'revision', text: view.revision === null ? '未覆盖' : `revision ${view.revision}` }), save, reset),
@@ -2492,17 +2594,12 @@ function addFields(host, fields, inputs, nested) {
       valueNode = el('code', { class: 'field-value', text: field.kind === 'object' ? '（对象）' : display(field.value) })
     }
 
-    const meta = [field.writable ? '可写' : null, field.secret ? '秘密' : null, field.credentialRef ? '凭据引用' : null]
-      .filter((item) => item !== null)
-      .join(' · ')
-
     host.append(
       el(
         'div',
         { class: nested ? 'field-row nested' : 'field-row' },
         el('div', { class: 'field-key' }, el('span', { class: 'field-label', text: field.label }), el('code', { class: 'field-path', text: field.path })),
         el('div', { class: 'field-control' }, valueNode),
-        el('div', { class: 'field-meta', text: meta }),
       ),
     )
   }
@@ -2591,8 +2688,6 @@ function renderRedirect(page) {
 
 /** @param {FrontendPage} page @returns {HTMLElement} */
 function renderPlaceholder(page) {
-  const view = page.view
-  const note = view.kind === 'placeholder' ? view.note : ''
   return el(
     'section',
     { class: 'page' },
@@ -2601,19 +2696,6 @@ function renderPlaceholder(page) {
       'div',
       { class: 'placeholder', attrs: { 'data-placeholder': 'reference-design-missing' } },
       el('div', { class: 'placeholder-label', text: '等待参考设计' }),
-      el('p', { class: 'placeholder-note', text: note }),
-      el(
-        'div',
-        { class: 'requirements' },
-        el('div', { class: 'requirements-title', text: '这个页面还需要 owner 提供' }),
-        el('ul', {},
-          el('li', { text: '参考页面 URL 或截图（桌面 / 窄屏各一）' }),
-          el('li', { text: '设计 token：字体、颜色、间距、圆角与线宽' }),
-          el('li', { text: '页面清单与信息层级（哪些数据在上、哪些可下钻）' }),
-          el('li', { text: '对应的后端接口与权限边界' }),
-        ),
-        el('p', { class: 'muted', text: '详细契约见 packages/console/DESIGN.md。' }),
-      ),
     ),
   )
 }
@@ -2659,7 +2741,6 @@ function renderNotFound(path) {
       { class: 'page-head' },
       el('div', { class: 'eyebrow' }, el('span', { class: 'eyebrow-path', text: path })),
       el('h1', { text: '没有这个页面' }),
-      el('p', { class: 'lede', text: '路径不在当前 manifest 里。可能对应插件被禁用了，或者链接写错了。' }),
     ),
     el('div', { class: 'not-found-actions' }, ...links),
   )
@@ -2727,12 +2808,6 @@ function renderAuth(mode = 'login', message) {
   const body = el('div', { class: 'auth-body' })
   const title =
     mode === 'register' ? '创建账号' : mode === 'reset' ? '找回密码' : '登录 DizzyAPI'
-  const lede =
-    mode === 'register'
-      ? '注册需要邮箱验证码；验证码通过后才创建用户。'
-      : mode === 'reset'
-        ? '验证码确认后可以设置新密码，现有会话会全部作废。'
-        : '会话保存在 HttpOnly cookie 里；前端不保存令牌。'
   const tabs = el(
     'div',
     { class: 'auth-tabs', attrs: { role: 'tablist', 'aria-label': '登录方式' } },
@@ -2750,16 +2825,12 @@ function renderAuth(mode = 'login', message) {
       el('span', { class: 'auth-brand', text: 'DizzyAPI' }),
     ),
     el('h1', { class: 'auth-title', text: title }),
-    el('p', { class: 'auth-lede', text: lede }),
     tabs,
   ]
   if (message !== undefined) {
     head.push(el('p', { class: 'auth-message', attrs: { role: 'status' }, text: message }))
   }
-  head.push(
-    body,
-    el('p', { class: 'auth-hint muted', text: boot.mode === 'mock' ? '开发预览：任意邮箱 / 密码即可登录；验证码为 123456。' : '开发环境 mailer 是 log 传输：验证码从 cordis 日志里读取。' }),
-  )
+  head.push(body)
   card.append(...head)
 
   if (mode === 'login') renderLoginForm(body)
@@ -2870,11 +2941,7 @@ function renderRegisterForm(body) {
 
   const confirmForm = el('form', { class: 'auth-form', attrs: { hidden: '' } })
   authField(confirmForm, '验证码', code)
-  confirmForm.append(
-    el('p', { class: 'muted', text: '验证码已发送；开发环境请从日志读取。' }),
-    confirmError,
-    confirm,
-  )
+  confirmForm.append(confirmError, confirm)
   body.append(requestForm, confirmForm)
 
   requestForm.addEventListener('submit', async (event) => {
@@ -3069,7 +3136,6 @@ async function bootApp() {
         el('div', { class: 'fatal-mark' }, icon('mark')),
         el('h1', { text: '前端清单加载失败' }),
         errorState(error, () => window.location.reload()),
-        el('p', { class: 'muted', text: '清单由产品 HTTP 入口提供：GET /api/console/manifest。开发预览请用 pnpm preview:console。' }),
       ),
     )
     return
@@ -3089,7 +3155,6 @@ async function bootApp() {
         el('div', { class: 'fatal-mark' }, icon('mark')),
         el('h1', { text: '会话加载失败' }),
         errorState(error, () => window.location.reload()),
-        el('p', { class: 'muted', text: '会话接口：GET /api/session。开发预览请用 pnpm preview:console。' }),
       ),
     )
     return

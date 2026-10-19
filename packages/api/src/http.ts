@@ -743,7 +743,36 @@ export class ApiServer {
     const accountAdmin = this.requireAccountAdmin()
 
     if (parts.length === 1) {
-      if (!this.allowRead(req, res)) return
+      if (req.method === 'POST') {
+        const create = accountAdmin.create
+        if (typeof create !== 'function') {
+          throw new ApiError('API_ACCOUNT_CREATE_UNAVAILABLE', 503, '账号管理服务不支持新建账号')
+        }
+        const body = await this.jsonBody(req)
+        assertOnlyKeys(body, ['provider', 'kind', 'label', 'email', 'subject', 'enabled', 'credential'])
+        const provider = requiredString(body, 'provider')
+        const kind = requiredString(body, 'kind')
+        const label = requiredString(body, 'label')
+        const email = optionalString(body, 'email')
+        const subject = optionalString(body, 'subject')
+        const enabled = body.enabled === undefined ? undefined : requiredBoolean(body, 'enabled')
+        const credential = accountCredentialOf(body.credential)
+        const input = {
+          provider,
+          kind,
+          label,
+          ...(email === undefined ? {} : { email }),
+          ...(subject === undefined ? {} : { subject }),
+          ...(enabled === undefined ? {} : { enabled }),
+          ...(credential === undefined ? {} : { credential }),
+        }
+        this.sendJson(req, res, 200, accountOf(await create.call(accountAdmin, API_ACTOR, input)))
+        return
+      }
+      if (req.method !== 'GET' && req.method !== 'HEAD') {
+        this.sendMethodNotAllowed(req, res, ['GET', 'HEAD', 'POST'])
+        return
+      }
       const url = new URL(req.url ?? '/', 'http://127.0.0.1')
       const provider = url.searchParams.get('provider') ?? undefined
       const status = url.searchParams.get('status') ?? undefined
@@ -1365,6 +1394,32 @@ function nullableString(body: Record<string, unknown>, key: string): string | nu
   if (value === null) return null
   if (typeof value !== 'string' || value.trim() === '') throw badRequest(`${key} 必须是非空字符串或 null`)
   return value
+}
+
+/**
+ * 新建账号时的可选凭据。只做形状校验；格式识别与秘密落库由 account-admin /
+ * identity 负责，HTTP 层不解析、不回显 payload。
+ */
+function accountCredentialOf(value: unknown): Record<string, unknown> | undefined {
+  if (value === undefined) return undefined
+  if (!isPlainObject(value)) throw badRequest('credential 必须是对象')
+  assertOnlyKeys(value, ['payload', 'format', 'provider', 'kind'])
+  const payload = value.payload
+  if (typeof payload !== 'string' && !isPlainObject(payload)) {
+    throw badRequest('credential.payload 必须是字符串或 JSON 对象')
+  }
+  if (typeof payload === 'string' && payload.trim() === '') {
+    throw badRequest('credential.payload 不能为空')
+  }
+  const format = optionalString(value, 'format')
+  const provider = optionalString(value, 'provider')
+  const kind = optionalString(value, 'kind')
+  return {
+    payload,
+    ...(format === undefined ? {} : { format }),
+    ...(provider === undefined ? {} : { provider }),
+    ...(kind === undefined ? {} : { kind }),
+  }
 }
 
 function requiredBoolean(body: Record<string, unknown>, key: string): boolean {

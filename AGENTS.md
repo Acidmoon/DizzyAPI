@@ -609,7 +609,7 @@ class Foo extends Service {
 | 会话 | `GET /api/session`、`PATCH /api/profile`、`POST /api/profile/password` | 用户视图不含密码哈希 / 令牌；余额只在 admin 或 `balanceEnabled` 时返回。头像接受 `http(s)://` URL（≤2048）或 png/jpeg/webp/gif data URL（**解码后** ≤256 KiB） |
 | API keys | `GET` / `POST /api/keys`、`PATCH` / `DELETE /api/keys/:id`、`POST /api/keys/:id/rotate` | 依赖可选的 `apiKey` 服务；本分支没有 → 503 `API_KEY_UNAVAILABLE`。真实服务 `list` 返回数组、`create` / `rotate` 返回 `{ key, secret }`，HTTP 层分别包成 `{ items }` 与扁平 `CreatedApiKey`；secret 只出现一次 |
 | 用量 / 充值 | `GET /api/usage`、`GET /api/topup/options`、`POST /api/topup/orders` | 没有 usage-log：余额按 BigInt 换算成分，历史为空；创建订单返回 501 `TOPUP_NOT_IMPLEMENTED` |
-| 管理台 | `GET /api/users`、`/api/users/:id`、`PATCH` / `DELETE /api/users/:id`、`POST /api/users/:id/balance`、`GET /api/accounts…`、`GET /api/catalog/modules`、`GET /api/settings`、`POST` / `DELETE /api/settings/:ns` | 需要 `session.user.role === 'admin'`；写操作的 actor 固定为 `@dizzyapi/plugin-api` |
+| 管理台 | `GET /api/users`、`/api/users/:id`、`PATCH` / `DELETE /api/users/:id`、`POST /api/users/:id/balance`、`GET` / `POST /api/accounts`、`GET` / `PATCH` / `DELETE /api/accounts/:id`、`POST /api/accounts/:id/credentials`、`POST /api/accounts/import`、`POST /api/accounts/import/preview`、`GET /api/catalog/modules`、`GET /api/settings`、`POST` / `DELETE /api/settings/:ns` | 需要 `session.user.role === 'admin'`；写操作的 actor 固定为 `@dizzyapi/plugin-api`；账号响应逐字段挑选，不含 `credentialRef` / token |
 | 静态 | `GET /assets/frontend/<version>/<path>`、`GET /console/*`、`GET /admin/*`、`GET /` | 资源从 frontend 的版本目录读盘；immutable + nosniff；SPA 带 CSP 与 no-store；`state.json.enabled=false` 时静态 404 |
 
 配置（全部只读）：`port`（默认 7791，`0` = 系统分配）、`bodyLimitBytes`（默认 1 MiB，
@@ -679,6 +679,8 @@ SPA 的 CSP 是 `img-src 'self' data: https:`：允许 data URL 与 https 外链
 - **账号管理（2026-10-19）**：`account-admin` 已装载，`adminPlugins` 有面板与 `api`。它是
   identity 的门面，不新增存储文件；HTTP 入口由 `api` 插件的 `/api/accounts*` 提供
   （认证后的管理员映射成 `@dizzyapi/plugin-api`），响应不含令牌与 `credentialRef`。
+  管理台账号池页可以新建账号（`POST /api/accounts`，凭据可留空）、导入 / 重新授权凭据、
+  启停与删除；凭据只上行，前端不保存、不回显。
   面板 `/api/settings` 能看到 `account-admin` 命名空间：`maxBatchSize` 可写，
   `adminPlugins` 只读。
 - **账号请求优先级（2026-10-19）**：`account-priority` 已装载，策略在
@@ -755,14 +757,14 @@ SPA 的 CSP 是 `img-src 'self' data: https:`：允许 data URL 与 https 外链
    写者是 TS 插件，Go 只接收只读快照；它**不写**账号运行时状态。LLM 请求 engine 已实现，
    阶段会在真实请求里被调用；`Ctx.AccountCandidates` 现在由 `internal/accounts` 的 identity
    快照填充，健康/额度等运行时状态仍待 `account-state`。
-10. **`account-admin` 只有进程内服务面**：它没有自己的 HTTP 路由，面板目前只能看/改它的
-    设置，不能管理账号。前端 / 管理台需要的 HTTP 面是：`GET /admin/accounts`、
-    `GET /admin/accounts/:id`、`POST /admin/accounts`、`PATCH /admin/accounts/:id`、
-    `DELETE /admin/accounts/:id`、`POST /admin/accounts/:id/enable|disable`、
-    `POST /admin/accounts/:id/credentials`、`POST /admin/accounts/import`、
-    `POST /admin/accounts/import/preview`。实现时必须复用面板的 loopback + cookie +
-    `X-Panel-Request` + Host 四道闸，并把认证后的管理员映射成白名单 actor；
-    **任何路由都不得返回令牌**。
+10. **`account-admin` 自己不起 HTTP**：它是进程内门面，HTTP 面由 `api` 插件的
+    `/api/accounts*` 提供，复用 `/api/*` 的 Host / Origin / Sec-Fetch-Site /
+    `X-Requested-With` 四道闸，并把认证后的管理员映射成 `@dizzyapi/plugin-api`。
+    已实现：`GET` / `POST /api/accounts`、`GET` / `PATCH` / `DELETE /api/accounts/:id`
+    （PATCH 的 `enabled` 内部走 enable / disable）、`POST /api/accounts/:id/credentials`、
+    `POST /api/accounts/import`、`POST /api/accounts/import/preview`。
+    **任何路由都不得返回令牌**；账号 DTO 逐字段挑选，`credentialRef` 与
+    `credentialConfigured` 都不外露。
 11. **Windows 开发机走 TCP，不是 UDS**：Node 的 `net` 在 Windows 上只支持命名管道，
     连不上 Go 的 AF_UNIX socket；`transport: auto` 因此在 Windows 选回环 TCP
     （`127.0.0.1:<系统分配端口>`），Linux/macOS 选 UDS。生产目标是 UDS；TCP 分支只在
@@ -779,7 +781,9 @@ SPA 的 CSP 是 `img-src 'self' data: https:`：允许 data URL 与 https 外链
     用户站与参考页的路径映射、页面清单与后端契约见 `packages/console/DESIGN.md`。
     账单页、亮色模式与按模型小图仍缺参考或后端序列；个人资料页与管理台用户页已按
     通用表单实现（没有参考版式）。API key 完整值只在创建 / 轮换对话框里出现一次，
-    不落 localStorage / 日志 / URL。
+    不落 localStorage / 日志 / URL。2026-10-19 owner 要求去掉说明式小字并把全站字号
+    整体 +2px：页面标题下不渲染 manifest 描述，设置卡 / 对话框 / 提示区只保留数据与操作，
+    数据表的次级技术字段（账号 id、精确时间、`enabled` 文案等）也不再显示。
 15. **API key 的存储是 SQLite，不是 JSON**：`packages/api-key` 用 Node 24 内置的
     `node:sqlite`（`DatabaseSync`），零第三方依赖。表里只有 sha256 哈希与掩码；
     完整 key 只在 `create` / `rotate` 返回一次。写操作走 `BEGIN IMMEDIATE`，

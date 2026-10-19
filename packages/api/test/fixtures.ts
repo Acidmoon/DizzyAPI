@@ -481,6 +481,30 @@ export class FakeAccountAdmin implements AccountAdminPort {
     return { ...account, ...this.extraSecret } as AccountViewLike
   }
 
+  async create(actor: string, input: Record<string, unknown>): Promise<unknown> {
+    this.calls.push({ method: 'create', args: [actor, input] })
+    const account = {
+      id: 'acc_new',
+      provider: String(input.provider),
+      kind: String(input.kind),
+      label: String(input.label),
+      enabled: input.enabled !== false,
+      status: 'active',
+      email: null,
+      subject: null,
+      accessExpiresAt: null,
+      refreshDueAt: null,
+      lastRefreshAt: null,
+      lastError: null,
+      failureCount: 0,
+      backoffUntil: null,
+      createdAt: '2026-10-03T00:00:00.000Z',
+      updatedAt: '2026-10-03T00:00:00.000Z',
+    }
+    this.accounts.push(account)
+    return { ...account, ...this.extraSecret } as AccountViewLike
+  }
+
   async update(actor: string, id: string, patch: Record<string, unknown>): Promise<unknown> {
     this.calls.push({ method: 'update', args: [actor, id, patch] })
     return this.replace(id, patch)

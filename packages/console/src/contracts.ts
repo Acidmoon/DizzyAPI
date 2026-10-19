@@ -47,12 +47,58 @@ export interface AccountListResponse {
   readonly nextCursor: string | null
 }
 
-/** 只允许改非秘密元数据；令牌导入不走前端。 */
+/** 只允许改非秘密元数据；令牌导入走独立的凭据接口。 */
 export interface AccountUpdateInput {
   readonly label?: string
   readonly email?: string | null
   readonly subject?: string | null
   readonly enabled?: boolean
+}
+
+/** 凭据格式；`auto` 让服务端按 payload 形状推断。 */
+export type AccountCredentialFormat =
+  | 'auto'
+  | 'claude-oauth'
+  | 'openai-codex'
+  | 'api-key'
+  | 'identity-bundle'
+
+/** 一段待导入的凭据。payload 只上行、不回显。 */
+export interface AccountCredentialInput {
+  readonly format?: AccountCredentialFormat
+  readonly payload: string | Record<string, unknown>
+  readonly provider?: AccountProvider
+  readonly kind?: AccountKind
+}
+
+/** 新建账号；credential 省略时创建一个尚未导入凭据的账号。 */
+export interface CreateAccountInput {
+  readonly provider: AccountProvider
+  readonly kind: AccountKind
+  readonly label: string
+  readonly email?: string
+  readonly subject?: string
+  readonly enabled?: boolean
+  readonly credential?: AccountCredentialInput
+}
+
+/** 向已有账号导入 / 重新授权一份凭据。 */
+export interface ImportAccountCredentialsInput {
+  readonly format?: AccountCredentialFormat
+  readonly payload: string | Record<string, unknown>
+}
+
+/** 导入预检：只回答识别结果，不返回令牌本体。 */
+export interface CredentialImportPreview {
+  readonly format: Exclude<AccountCredentialFormat, 'auto'>
+  readonly provider: AccountProvider
+  readonly kind: AccountKind
+  readonly email: string | null
+  readonly subject: string | null
+  readonly expiresAt: string | null
+  readonly hasAccessToken: boolean
+  readonly hasRefreshToken: boolean
+  readonly hasApiKey: boolean
 }
 
 export type CatalogModuleKind = 'plugin' | 'module' | 'group'
@@ -372,8 +418,13 @@ export interface TopupOrder {
 export interface AccountsApi {
   list(query?: AccountListQuery): Promise<AccountListResponse>
   get(id: string): Promise<AccountSummary>
+  create(input: CreateAccountInput): Promise<AccountSummary>
   update(id: string, patch: AccountUpdateInput): Promise<AccountSummary>
   remove(id: string): Promise<{ readonly removed: true }>
+  /** 只上行凭据，不回显；成功返回账号元数据。 */
+  importCredentials(id: string, input: ImportAccountCredentialsInput): Promise<AccountSummary>
+  /** 导入预检：识别格式与元数据，不落盘。 */
+  previewImport(input: ImportAccountCredentialsInput): Promise<CredentialImportPreview>
 }
 
 export interface CatalogApi {

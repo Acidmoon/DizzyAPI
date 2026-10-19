@@ -14,6 +14,9 @@
 /** @typedef {import('../../src/contracts.ts').AccountListQuery} AccountListQuery */
 /** @typedef {import('../../src/contracts.ts').AccountListResponse} AccountListResponse */
 /** @typedef {import('../../src/contracts.ts').AccountUpdateInput} AccountUpdateInput */
+/** @typedef {import('../../src/contracts.ts').CreateAccountInput} CreateAccountInput */
+/** @typedef {import('../../src/contracts.ts').ImportAccountCredentialsInput} ImportAccountCredentialsInput */
+/** @typedef {import('../../src/contracts.ts').CredentialImportPreview} CredentialImportPreview */
 /** @typedef {import('../../src/contracts.ts').CatalogResponse} CatalogResponse */
 /** @typedef {import('../../src/contracts.ts').SettingsDescribeResponse} SettingsDescribeResponse */
 /** @typedef {import('../../src/contracts.ts').SettingsNamespaceView} SettingsNamespaceView */
@@ -246,10 +249,24 @@ export function createHttpApis(options = {}) {
         }),
       /** @param {string} id @returns {Promise<AccountSummary>} */
       get: (id) => request(`/accounts/${encodeURIComponent(id)}`),
+      /** @param {CreateAccountInput} input @returns {Promise<AccountSummary>} */
+      create: (input) => request('/accounts', { method: 'POST', body: input }),
       /** @param {string} id @param {AccountUpdateInput} patch @returns {Promise<AccountSummary>} */
       update: (id, patch) => request(`/accounts/${encodeURIComponent(id)}`, { method: 'PATCH', body: patch }),
       /** @param {string} id @returns {Promise<{ removed: true }>} */
       remove: (id) => request(`/accounts/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+      /**
+       * @param {string} id
+       * @param {ImportAccountCredentialsInput} input
+       * @returns {Promise<AccountSummary>}
+       */
+      importCredentials: (id, input) =>
+        request(`/accounts/${encodeURIComponent(id)}/credentials`, { method: 'POST', body: input }),
+      /**
+       * @param {ImportAccountCredentialsInput} input
+       * @returns {Promise<CredentialImportPreview>}
+       */
+      previewImport: (input) => request('/accounts/import/preview', { method: 'POST', body: input }),
     },
     catalog: {
       /** @returns {Promise<CatalogResponse>} */
@@ -549,6 +566,36 @@ export function createMockApis(options = {}) {
         if (account === undefined) throw new ApiError(`没有这个账号：${id}`, { status: 404, code: 'ACCOUNT_NOT_FOUND' })
         return clone(account)
       },
+      async create(input) {
+        await wait()
+        if (typeof input.label !== 'string' || input.label.trim() === '') {
+          throw new ApiError('label 不能为空', { status: 400, code: 'ACCOUNT_ADMIN_INPUT_INVALID' })
+        }
+        if (input.provider === 'custom' && input.kind === 'oauth') {
+          throw new ApiError('custom provider 只能用于 api_key 账号', { status: 400, code: 'ACCOUNT_ADMIN_INPUT_INVALID' })
+        }
+        const now = stamp()
+        const account = /** @type {AccountSummary} */ ({
+          id: `acc_mock_${state.accounts.length + 1}_${Math.random().toString(36).slice(2, 8)}`,
+          provider: input.provider,
+          kind: input.kind,
+          label: input.label.trim(),
+          enabled: input.enabled ?? true,
+          status: 'active',
+          email: input.email ?? null,
+          subject: input.subject ?? null,
+          accessExpiresAt: null,
+          refreshDueAt: null,
+          lastRefreshAt: null,
+          lastError: null,
+          failureCount: 0,
+          backoffUntil: null,
+          createdAt: now,
+          updatedAt: now,
+        })
+        state.accounts.unshift(account)
+        return clone(account)
+      },
       async update(id, patch) {
         await wait()
         const account = state.accounts.find((item) => item.id === id)
@@ -565,6 +612,33 @@ export function createMockApis(options = {}) {
         if (index < 0) throw new ApiError(`没有这个账号：${id}`, { status: 404, code: 'ACCOUNT_NOT_FOUND' })
         state.accounts.splice(index, 1)
         return { removed: true }
+      },
+      async importCredentials(id, input) {
+        await wait()
+        const account = state.accounts.find((item) => item.id === id)
+        if (account === undefined) throw new ApiError(`没有这个账号：${id}`, { status: 404, code: 'ACCOUNT_NOT_FOUND' })
+        if (input.payload === undefined || input.payload === null || input.payload === '') {
+          throw new ApiError('payload 不能为空', { status: 400, code: 'ACCOUNT_ADMIN_INPUT_INVALID' })
+        }
+        Object.assign(account, { updatedAt: stamp() })
+        return clone(account)
+      },
+      async previewImport(input) {
+        await wait()
+        if (input.payload === undefined || input.payload === null || input.payload === '') {
+          throw new ApiError('payload 不能为空', { status: 400, code: 'ACCOUNT_ADMIN_INPUT_INVALID' })
+        }
+        return {
+          format: 'api-key',
+          provider: 'openai',
+          kind: 'api_key',
+          email: null,
+          subject: null,
+          expiresAt: null,
+          hasAccessToken: false,
+          hasRefreshToken: false,
+          hasApiKey: true,
+        }
       },
     },
     catalog: {
