@@ -114,7 +114,8 @@
 # 它不在 LLM 请求热路径上。binaryPath 由 pnpm build:go 产出（bin/ 已 gitignore）。
 #
 # LLM 请求入口只绑回环地址。API key 有两种来源：生产路径是 api-key 插件经本插件把
-# 只读哈希快照推给 Go，Go 只认快照、不回退；快照为空（刚启动 / api-key 被禁用）时
+# 只读哈希快照推给 Go。Go 一旦收到过快照（包括合法的空快照）就只认快照、永不回退：
+# 空快照意味着拒绝全部 key（fail-closed）。只有在「尚未收到任何快照」的启动窗口里，
 # 才用环境变量 DIZZYAPI_API_KEYS（逗号/空白分隔），再没有就是接受任何非空 Bearer 的
 # 占位模式。生产前不要把占位模式当成鉴权（AGENTS.md §4.3 / §11）。
 - id: account-priority

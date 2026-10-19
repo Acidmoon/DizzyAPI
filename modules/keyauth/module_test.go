@@ -64,10 +64,11 @@ func TestRejectsMissingOrMalformedHeader(t *testing.T) {
 	}
 }
 
-// fakeVerifier 只实现 keyauth 需要的两个方法；真实实现在 internal/apikeys。
+// fakeVerifier 只实现 keyauth 需要的三个方法；真实实现在 internal/apikeys。
 type fakeVerifier struct {
 	records map[string]contracts.APIKeyRecord
 	count   int
+	ready   bool
 }
 
 func (f *fakeVerifier) Verify(presented string) (contracts.APIKeyRecord, bool) {
@@ -75,11 +76,13 @@ func (f *fakeVerifier) Verify(presented string) (contracts.APIKeyRecord, bool) {
 	return record, ok
 }
 
-func (f *fakeVerifier) Count() int { return f.count }
+func (f *fakeVerifier) Count() int  { return f.count }
+func (f *fakeVerifier) Ready() bool { return f.ready }
 
 func TestDynamicKeysTakePrecedenceAndFillIdentity(t *testing.T) {
 	verifier := &fakeVerifier{
 		count: 1,
+		ready: true,
 		records: map[string]contracts.APIKeyRecord{
 			"dz-live-key": {KeyID: "key-id-1", UserID: "42", Name: "production", Profile: "free"},
 		},
@@ -116,13 +119,14 @@ func TestDynamicKeysTakePrecedenceAndFillIdentity(t *testing.T) {
 	}
 }
 
-func TestEmptySnapshotFallsBackToStaticKeys(t *testing.T) {
-	verifier := &fakeVerifier{count: 0, records: map[string]contracts.APIKeyRecord{}}
+func TestNotReadyFallsBackToStaticKeys(t *testing.T) {
+	// ready=false 表示「尚未收到快照」，不是「收到空快照」。
+	verifier := &fakeVerifier{count: 0, ready: false, records: map[string]contracts.APIKeyRecord{}}
 	stage := New(Config{Keys: []string{"env-key"}, Verifier: verifier})
 
 	ctx := ctxWithAuthorization("Bearer env-key")
 	if _, err := stage.Run(ctx); err != nil {
-		t.Fatalf("快照为空时应接受静态 key：%v", err)
+		t.Fatalf("尚未收到快照时应接受静态 key：%v", err)
 	}
 	if ctx.Key == nil || ctx.Key.ID == "" {
 		t.Fatal("静态 key 也应写入指纹")
@@ -135,6 +139,7 @@ func TestEmptySnapshotFallsBackToStaticKeys(t *testing.T) {
 	}
 
 	// 快照到达后同一 stage 立刻切换模式。
+	verifier.ready = true
 	verifier.count = 1
 	verifier.records["env-key"] = contracts.APIKeyRecord{
 		KeyID: "key-static-upgraded", UserID: "7", Profile: "billed",
@@ -148,10 +153,43 @@ func TestEmptySnapshotFallsBackToStaticKeys(t *testing.T) {
 	}
 }
 
+func TestReceivedEmptySnapshotRejectsEverything(t *testing.T) {
+	verifier := &fakeVerifier{
+		ready: true,
+		count: 1,
+		records: map[string]contracts.APIKeyRecord{
+			"dz-old-key": {KeyID: "key-old", UserID: "42", Profile: "billed"},
+		},
+	}
+	stage := New(Config{Keys: []string{"env-key"}, Verifier: verifier})
+	if _, err := stage.Run(ctxWithAuthorization("Bearer dz-old-key")); err != nil {
+		t.Fatalf("非空快照应接受旧 key：%v", err)
+	}
+
+	// 合法空快照：用户删光 key / 全部停用 / 用户封禁后会推这个形状。
+	verifier.count = 0
+	verifier.records = map[string]contracts.APIKeyRecord{}
+
+	if stage.Placeholder() {
+		t.Fatal("收到空快照后不能回到占位模式")
+	}
+	for _, key := range []string{"dz-old-key", "env-key", "any-other-key"} {
+		_, err := stage.Run(ctxWithAuthorization("Bearer " + key))
+		var stageErr *contracts.StageError
+		if !errors.As(err, &stageErr) || stageErr.Status != http.StatusUnauthorized || stageErr.Code != "INVALID_API_KEY" {
+			t.Fatalf("空快照后 %q 必须 401 INVALID_API_KEY，得到 %v", key, err)
+		}
+	}
+	if !strings.Contains(stage.Describe(), "空 API key 快照") {
+		t.Fatalf("Describe 应明确说明收到空快照：%s", stage.Describe())
+	}
+}
+
 func TestEmptySnapshotAndNoStaticKeysStayPlaceholder(t *testing.T) {
-	stage := New(Config{Verifier: &fakeVerifier{count: 0}})
+	// 注意：ready=false 表示「尚未收到快照」，不是「收到空快照」。
+	stage := New(Config{Verifier: &fakeVerifier{count: 0, ready: false}})
 	if !stage.Placeholder() {
-		t.Fatal("空快照 + 无静态 key 应为占位模式")
+		t.Fatal("尚未收到快照 + 无静态 key 应为占位模式")
 	}
 	ctx := ctxWithAuthorization("Bearer any-dev-key")
 	if _, err := stage.Run(ctx); err != nil {
@@ -164,7 +202,7 @@ func TestEmptySnapshotAndNoStaticKeysStayPlaceholder(t *testing.T) {
 
 func TestDynamicRejectionDoesNotLeakKey(t *testing.T) {
 	stage := New(Config{
-		Verifier: &fakeVerifier{count: 1, records: map[string]contracts.APIKeyRecord{}},
+		Verifier: &fakeVerifier{count: 1, ready: true, records: map[string]contracts.APIKeyRecord{}},
 	})
 	secret := "dz-unknown-secret-key"
 	_, err := stage.Run(ctxWithAuthorization("Bearer " + secret))

@@ -304,6 +304,9 @@ export class ApiKeyService extends Service {
           'WHERE enabled = 1 ORDER BY rowid ASC',
       )
       .all()
+    // rows 与 generation 必须在同一个同步块里读：两者之间不 await，才不会出现
+    //「旧 keys + 新 generation」的错配。user.get 是异步的，放到这之后再查。
+    const generation = readGeneration(this.db)
 
     const userIds = new Set<number>()
     for (const raw of rows) {
@@ -329,7 +332,7 @@ export class ApiKeyService extends Service {
       })
     }
 
-    return { version: 1, generation: readGeneration(this.db), keys }
+    return { version: 1, generation, keys }
   }
 
   /** 运行期计数（不含任何秘密）。 */

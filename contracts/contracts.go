@@ -143,10 +143,17 @@ type APIKeyRecord struct {
 }
 
 // APIKeyVerifier 是 key-auth 对只读 key 快照的最小依赖。
-// 接口由消费者定义；实现（internal/apikeys）只提供校验与计数。
+// 接口由消费者定义；实现（internal/apikeys）只提供校验、计数与就绪状态。
 type APIKeyVerifier interface {
 	Verify(presented string) (APIKeyRecord, bool)
+	// Count 是当前快照里的 key 数，只用于展示与日志，不用于判断是否启用动态模式。
 	Count() int
+	// Ready 表示是否已经收到过至少一份 keys.replace 快照。
+	//
+	// 它必须与 Count 分开：合法的空快照（用户删光 key / 全部停用 / 用户封禁）
+	// 也意味着「动态模式已接管」，此时 Count==0 必须拒绝全部 key，
+	// 绝不能退回静态 key 或占位模式（D7：默认 deny，fail-closed）。
+	Ready() bool
 }
 
 // AccountAttempt 是一次上游派发尝试的事实记录。

@@ -110,9 +110,9 @@ engine 不是给 Go 增加灵活性，而是让 Go **服从** cordis 的决定�
   非法插入点在**描述符校验阶段**就拒绝，而不是等到线上才发现。
 - 出站审计只能**截断 + 报错**，无法撤回已发给用户的内容；流式下边流边审，直接计入首字延迟。
 
-> 现状（2026-10-19）：这条规范形态只落地了 `key-auth`（动态 API key 哈希快照；快照为空时
-> 回退静态 key / 占位）→ `account-priority` → `transport` 三个环节；`quota-check`、
-> `content-audit`、`settle`、`usage-log` 尚未实现。
+> 现状（2026-10-19）：这条规范形态只落地了 `key-auth`（动态 API key 哈希快照；尚未收到
+> 快照时才回退静态 key / 占位；已收到空快照则拒绝全部）→ `account-priority` →
+> `transport` 三个环节；`quota-check`、`content-audit`、`settle`、`usage-log` 尚未实现。
 
 ---
 
@@ -642,7 +642,8 @@ class Foo extends Service {
 - **LLM 请求入口（2026-10-19）**：`httpListen` 默认 `127.0.0.1:8080`，只绑回环。
   `GET /healthz` 返回 `{status, accounts, revision, requests, uptimeSec}`；
   `POST /v1/chat/completions` 走 engine。动态 API key 由 `api-key` 插件经控制桥推
-  哈希快照，Go 只认快照、不回退；快照为空（刚启动 / api-key 被禁用）时才用环境变量
+  哈希快照。Go 收到过任何一份快照（含合法空快照）后就只认快照、永不回退；空快照
+  表示拒绝全部 key。只有「尚未收到任何快照」的启动窗口才用环境变量
   `DIZZYAPI_API_KEYS`（逗号/空白分隔），再没有就是占位模式（接受任何非空
   `Authorization: Bearer`）。请求体上限默认 32 MiB。
   示例：`curl -s http://127.0.0.1:8080/v1/chat/completions -H 'Authorization: Bearer x' -H 'content-type: application/json' -d '{"model":"gpt-4o-mini","messages":[]}'`。
@@ -715,11 +716,12 @@ class Foo extends Service {
     完整 key 只在 `create` / `rotate` 返回一次。写操作走 `BEGIN IMMEDIATE`，
     `generation` 元数据在同一个事务里递增。`lastUsedAt` 已预留，但 Go 尚未回报用量。
 16. **key 快照的权威写者仍是 TS**：`api-key` 是唯一写者，account-priority 只是转发；
-    Go 的 `internal/apikeys` 只缓存与校验。用户封禁 / 删除、或 key 被另一进程直接改
-    时都没有事件触发重推，要等下一次 key 写入、`sync()` 或 gatewayd 重启，快照才更新；
-    这段时间 Go 仍可能接受已封禁用户的 key。`api-key` 被禁用 / 卸载时 account-priority
-    按设计跳过推送（避免启动竞态把快照清空），Go 里的旧快照同样要等重启或下一次推送
-    才更新。这些都是当前已知缺口（§11）。
+    Go 的 `internal/apikeys` 只缓存与校验。account-priority 监听 `api-key/changed`、
+    `user/changed` 与 `internal/service(apiKey)`：key 变化、用户状态变化、api-key 插件
+    后启用（HMR）都会防抖重推。`internal/apikeys` 用 `Ready()` 区分「尚未收到快照」
+    与「已收到合法空快照」：后者是 fail-closed，拒绝全部 key，绝不回退 env / 占位。
+    `api-key` 被禁用 / 卸载时仍然跳过推送（避免启动竞态把快照清空），Go 里的旧快照
+    要等重启或下一次推送才更新——此时它仍在执行旧快照，不会 fail-open（§11）。
 
 ---
 
@@ -909,7 +911,7 @@ priority 10、capacity 10、success 5、latency 3（asc）、cost 2（asc）。
 | `contracts/` | `Ctx` 增加 `Headers` / `Body` / `Key` / `Profile` / `Attempts` / `AccountCredential` / `CredentialSource` / `StageError`；`Decision` 增加流式 `Stream` |
 | `internal/engine/` | 显式 pre → dispatch → post 调度；dispatch 内做账号失败转移；post 在所有出口恰好一次；统一渲染 OpenAI 错误 |
 | `modules/transport/` | dispatch 阶段：按选中账号发 HTTP、透传非流式与 SSE、映射上游错误、按令牌脱敏 |
-| `modules/keyauth/` | pre 阶段：优先校验控制桥推来的 API key 哈希快照（写 UserID / KeyID / Name / Profile）；快照为空时回退环境变量静态 key / 开发占位 |
+| `modules/keyauth/` | pre 阶段：优先校验控制桥推来的 API key 哈希快照（写 UserID / KeyID / Name / Profile）；尚未收到快照时回退环境变量静态 key / 开发占位，收到空快照则拒绝全部 |
 | `internal/accounts/` | 账号/令牌只读快照缓存；`Replace` 整份校验后原子替换；`Candidates()` / `Credential()` 读路径无锁 |
 | `internal/apikeys/` | API key 只读哈希快照缓存；`Replace` 整份校验后原子替换；`Verify` 用常量时间比较，`Status` 不含哈希 |
 | `internal/httpapi/` | `POST /v1/chat/completions`、`GET /healthz`；请求体上限、SSE flush、错误信封 |
@@ -930,8 +932,9 @@ expiresAt? / priority? / tags?`；过期或令牌为空的账号不会成为候�
 
 **API key 快照**：TS 的 api-key 插件把「enabled 且用户可用」的 key 的
 `keyId / userId / keyHash / profile / name` 经 `keys.replace` 推给 Go；Go 只缓存与校验，
-不读 TS 的 SQLite。快照非空时 key-auth 只认快照、不回退环境变量；快照为空时沿用
-`DIZZYAPI_API_KEYS`，再没有就是占位模式。`keys.status` 返回 revision / 计数 / 时间。
+不读 TS 的 SQLite。`Ready()` 表示是否收到过至少一份合法快照（含空快照）：
+Ready=false 时才沿用 `DIZZYAPI_API_KEYS` / 占位；Ready=true 时只认快照，
+Count=0 也表示拒绝全部 key（fail-closed，D7）。`keys.status` 返回 revision / 计数 / 时间。
 `contracts.APIKey` 的 UserID 是十进制字符串，KeyID 与 ID 同义；静态 key 只填指纹与
 Profile，零值兼容。
 
@@ -1064,7 +1067,9 @@ cordis 据此校验后再下发，使管理台在结构上就无法生成非法�
   `revision / accounts / updatedAt`，**绝不回显快照内容**。
   `keys.replace` 的 params 是 `{"version":1,"generation","keys":[…]}`，每个 key 只含
   `keyId / userId / keyHash / profile / name`；Go 校验不过整份拒绝，响应只含
-  `revision / keys / updatedAt`，**绝不回显哈希**。`keys.status` 只回同样三个字段。
+  `revision / keys / updatedAt`，**绝不回显哈希**。收到一份通过校验的快照（包括
+  空快照）后 key-auth 进入动态模式（`Ready=true`），不再回退环境变量。
+  `keys.status` 只回同样三个字段。
 - **并发**：同一连接上的请求由 Go 侧 goroutine 并发处理（全局信号量 16），
   响应按连接写锁串行化；控制消息不绑定客户端生命周期，不使用 `contracts.Ctx`。
 - **关闭**：TS 先发 `shutdown`（1 秒超时），Go 回 ack 后 100 ms 关闭监听并退出；
@@ -1310,8 +1315,8 @@ CI 用 `go list -deps` 逐模块校验 `modules/*` 之间无相互 import，违�
   `gatewayd 已就绪：tcp 127.0.0.1:<port>（pid …）` 与策略 revision；面板
   `/api/settings` 能看到 `account-priority` 命名空间；Ctrl-C 退出后子进程
   `process.kill(pid, 0)` 报 ESRCH（已停止）。
-- 当前全量（2026-10-19，API key 合并后）：`pnpm test` 236 个用例（235 通过 / 1 跳过），
-  `pnpm typecheck` 干净；`packages/api-key` 15 个、`packages/account-priority` 19 个、
+- 当前全量（2026-10-19，API key 修复后）：`pnpm test` 239 个用例（238 通过 / 1 跳过），
+  `pnpm typecheck` 干净；`packages/api-key` 16 个、`packages/account-priority` 21 个、
   `packages/account-admin` 16 个、`packages/catalog` 9 个、`packages/console` 26 个用例全过；
   `go test ./...` 的 9 个包全过，`go vet ./...` 干净。
 - **API key / node:sqlite（本项目实测，2026-10-19）**：Node 24.3.0 的 `node:sqlite`
@@ -1320,6 +1325,13 @@ CI 用 `go list -deps` 逐模块校验 `modules/*` 之间无相互 import，违�
   快照过滤 / generation / 事件 / 持久化 / 损坏检测 / 配置 / D5。
   Go 侧新增 `internal/apikeys` 的校验、原子替换、常量时间 verify、并发读写，以及
   key-auth 的动态快照优先 / 空快照回退与 HTTP 动态 key 集成用例。
+- **空快照是 fail-closed**：`internal/apikeys` 的 `Ready()` 与 `Count()` 分开；
+  `New()` ready=false，任何通过校验的 Replace（含空快照）ready=true；
+  空快照后 Verify 一律 false。keyauth 用例覆盖「先非空、后空」之后连
+  `DIZZYAPI_API_KEYS` 里的 key 也必须 401；account-priority 监听
+  `api-key/changed` / `user/changed` / `internal/service(apiKey)`，服务后出现也会推一次。
+- **snapshot 时序**：`api-key` 的 rows 与 generation 在同一个同步块读取，
+  `user.get` 放到其后；测试用挂起 `user.get` 的方式稳定覆盖「查询期间发生写入」。
 - **桥响应与日志不含 key 哈希**：`keys.replace` / `keys.status` 的响应只有
   revision / 计数 / 时间；`cmd/gatewayd` 的用例断言响应与错误信息不含 keyHash；
   keyauth 的错误信息不含 key。
@@ -1389,19 +1401,19 @@ CI 用 `go list -deps` 逐模块校验 `modules/*` 之间无相互 import，违�
   模型映射、路径映射都没有实现。`claude` 账号默认不会进快照（没有配 upstreamBaseUrls）；
   `openai` 的默认映射面向 API-key 账号，OpenAI/Codex 订阅 OAuth 账号虽会被推送，
   但其端点与协议未适配，实际很可能被上游拒绝。
-- **key-auth 的动态快照只验过单测与假上游**：缓存校验、常量时间比较、快照非空
-  不回退环境变量都有单测；`api-key` SQLite → account-priority → Go 桥 → HTTP 的链路
-  只在测试里跑过（假上游），没有在 `pnpm dev` 下用前端创建的 key 做过真实请求。
-  快照为空且未配置 `DIZZYAPI_API_KEYS` 时仍接受任何非空 Bearer；每密钥并发上限与
-  key 级限流未实现。不要把它当生产鉴权。
+- **key-auth 的动态快照只验过单测与假上游**：缓存校验、常量时间比较、收到过快照
+  （含空快照）后不回退环境变量都有单测；`api-key` SQLite → account-priority → Go 桥 →
+  HTTP 的链路只在测试里跑过（假上游），没有在 `pnpm dev` 下用前端创建的 key 做过真实请求。
+  尚未收到任何快照且未配置 `DIZZYAPI_API_KEYS` 时仍接受任何非空 Bearer；收到空快照
+  后则拒绝全部（fail-closed）。每密钥并发上限与 key 级限流未实现。不要把它当生产鉴权。
 - **API key 存储是 Node 24 实验性 SQLite**：`node:sqlite` 会打 ExperimentalWarning；
   只在本机 Windows / Node 24.3.0 验过。多进程写同一文件靠 `BEGIN IMMEDIATE` 与
   busy_timeout，但没有跨实例的端到端测试；WAL 文件在 Windows 上的清理、备份与
   `integrity_check` 的性能未验证。
-- **key 快照有时效缺口**：用户被封禁 / 删除、或 key 被直接改 SQLite 时没有
-  `api-key/changed` 事件；在下一次 key 写入 / `sync()` / gatewayd 重启之前，
-  Go 仍会接受旧快照里的 key。`api-key` 被禁用 / 卸载时按任务约定跳过推送，
-  Go 里的旧快照也不会被清空。
+- **key 快照有时效缺口**：用户封禁 / 删除由 `user/changed` 触发重推（依赖
+  feat/user-system 分支按约定发出该事件）；但直接改 SQLite 没有任何事件。
+  `api-key` 被禁用 / 卸载时按任务约定跳过推送，Go 里的旧快照不会被清空——
+  它仍按旧快照 fail-closed，而不是放开，但已删除的 key 会一直有效到重启 / 下一次推送。
 - **API key 没有真实前端闭环**：前端 API keys 页面仍用 mock；面向用户站的 REST
   由 api-http 分支实现，尚未与本插件联调。完整 key 的一次性展示只在单测与 mock 里验过。
 - **计费不存在**：没有 `quota-check` / `settle` / `usage-log`，请求不会扣费也不会落

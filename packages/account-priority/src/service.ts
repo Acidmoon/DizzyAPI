@@ -761,10 +761,31 @@ export class AccountPriorityService extends Service {
   /**
    * api-key 是 key 的唯一写者；事件只是「该重新取一份快照」的提示。
    * 监听器挂在 root 上并带 global，跨插件子树也能收到。
+   *
+   * 三类触发：
+   *   - api-key/changed：key 本身被创建 / 修改 / 轮换 / 删除；
+   *   - user/changed：用户被封禁 / 删除 / 改状态后，snapshot() 的过滤结果会变；
+   *   - internal/service(apiKey)：api-key 在 account-priority 之后才启用（HMR）时，
+   *     即使还没有任何 key 写入，也要先推一份空快照，让 Go 进入 fail-closed 的 Ready 状态。
    */
   private watchKeys(): () => void {
     const root = this.ctx.root as unknown as EventRoot
-    return root.on('api-key/changed', () => this.scheduleKeysPush(), { global: true })
+    const trigger = (): void => this.scheduleKeysPush()
+    const offChanged = root.on('api-key/changed', trigger, { global: true })
+    const offUserChanged = root.on('user/changed', trigger, { global: true })
+    const offService = root.on(
+      'internal/service',
+      (...args: unknown[]) => {
+        // 服务出现时 args[1] 是 impl；回收时是 undefined。
+        if (args[0] === 'apiKey' && args[1] !== undefined) trigger()
+      },
+      { global: true },
+    )
+    return () => {
+      offChanged()
+      offUserChanged()
+      offService()
+    }
   }
 
   private scheduleKeysPush(): void {

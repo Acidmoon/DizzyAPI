@@ -91,16 +91,20 @@ type cacheSnapshot struct {
 	revision   string
 	generation int64
 	updatedAt  time.Time
-	keys       []Key
-	byHash     map[string]Key
+	// ready 表示是否已经收到过至少一份合法的 keys.replace 快照。
+	// 它与 len(keys) 分开：合法的空快照也是 ready，必须 fail-closed。
+	ready  bool
+	keys   []Key
+	byHash map[string]Key
 }
 
-// New 创建一个空缓存。
+// New 创建一个尚未收到快照的空缓存。
 func New() *Cache {
 	cache := &Cache{}
 	cache.snap.Store(&cacheSnapshot{
 		revision:  emptyRevision,
 		updatedAt: time.Now().UTC(),
+		ready:     false,
 		keys:      []Key{},
 		byHash:    map[string]Key{},
 	})
@@ -128,9 +132,17 @@ func (c *Cache) Replace(snapshot Snapshot) (Result, error) {
 	}, nil
 }
 
-// Count 返回当前快照里的 key 数。key-auth 用它判断是否启用动态 key 模式。
+// Count 返回当前快照里的 key 数，只用于展示与日志。
 func (c *Cache) Count() int {
 	return len(c.snap.Load().keys)
+}
+
+// Ready 表示是否已经收到过至少一份合法的 keys.replace 快照。
+//
+// key-auth 用它判断是否启用动态 key 模式。合法的空快照也是 Ready，
+// 此时 Count==0 且 Verify 永远 false——不允许退回静态 key / 占位模式。
+func (c *Cache) Ready() bool {
+	return c.snap.Load().ready
 }
 
 // Status 返回不含秘密的计数与版本。
@@ -152,9 +164,18 @@ func (c *Cache) Verify(presented string) (contracts.APIKeyRecord, bool) {
 		return contracts.APIKeyRecord{}, false
 	}
 
+	snap := c.snap.Load()
+	// 还没收到过快照时不做任何猜测；调用方会走启动/降级路径。
+	if !snap.ready {
+		return contracts.APIKeyRecord{}, false
+	}
+	// 已收到合法空快照：明确拒绝全部 key（fail-closed），不是「谁都能进」。
+	if len(snap.keys) == 0 {
+		return contracts.APIKeyRecord{}, false
+	}
+
 	sum := sha256.Sum256([]byte(presented))
 	digest := hex.EncodeToString(sum[:])
-	snap := c.snap.Load()
 	key, found := snap.byHash[digest]
 
 	// 未命中时也与一串 0 做同样长度的比较，避免「是否存在」在比较耗时上明显不同。
@@ -190,8 +211,11 @@ func compile(snapshot Snapshot) (*cacheSnapshot, error) {
 	compiled := &cacheSnapshot{
 		generation: snapshot.Generation,
 		updatedAt:  time.Now().UTC(),
-		keys:       make([]Key, 0, len(snapshot.Keys)),
-		byHash:     make(map[string]Key, len(snapshot.Keys)),
+		// 任何通过校验的快照（包括空快照）都算「已收到」，
+		// 从这一刻起 key-auth 只认快照，拒绝回退。
+		ready:  true,
+		keys:   make([]Key, 0, len(snapshot.Keys)),
+		byHash: make(map[string]Key, len(snapshot.Keys)),
 	}
 	ids := make(map[string]struct{}, len(snapshot.Keys))
 	for _, key := range snapshot.Keys {

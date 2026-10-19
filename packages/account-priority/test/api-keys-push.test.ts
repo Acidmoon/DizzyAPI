@@ -110,6 +110,12 @@ function key(id: string, hashChar: string): GatewayKey {
   }
 }
 
+/** user/changed 的事件类型由 feat/user-system 分支声明；这里按字符串发。 */
+function emitUserChanged(ctx: Context): void {
+  const emitEvent = ctx.emit as unknown as (name: string, event: unknown) => void
+  emitEvent.call(ctx, 'user/changed', { userId: 1, action: 'updated', fields: ['status'] })
+}
+
 test('启动后推送空 key 快照，事件触发重推且只带最小字段', async (t) => {
   const world = await boot(t)
   assert.ok(world.apiKey)
@@ -153,4 +159,30 @@ test('没有 api-key 服务时跳过推送，不阻塞 gatewayd 就绪', async (
   await waitFor(() => world.service.status().accountsRevision !== null)
   assert.equal(world.service.status().keys, 0)
   assert.equal(world.service.status().keysRevision, null)
+})
+
+test('user/changed 触发 key 快照重推', async (t) => {
+  const world = await boot(t)
+  await waitFor(() => world.service.status().keysRevision !== null)
+  const before = world.service.status().keysRevision
+
+  emitUserChanged(world.ctx)
+  await waitFor(() => world.service.status().keysRevision !== before)
+  assert.notEqual(world.service.status().keysRevision, before)
+})
+
+test('api-key 服务在 account-priority 之后出现时推送一次', async (t) => {
+  const world = await boot(t, false)
+  await waitFor(() => world.service.status().state === 'ready')
+  await waitFor(() => world.service.status().accountsRevision !== null)
+  assert.equal(world.service.status().keysRevision, null)
+
+  // HMR 场景：服务出现 -> internal/service(apiKey, impl) -> 防抖推送。
+  await world.ctx.plugin(FakeApiKey)
+  const fake = world.ctx.get('apiKey') as unknown as FakeApiKey
+  // 不触发 api-key/changed；能否推送完全取决于服务出现时的 watcher。
+  fake.replace([key('late-key', 'd')], false)
+
+  await waitFor(() => world.service.status().keys === 1)
+  assert.ok(world.service.status().keysRevision?.startsWith('fake-keys-'))
 })

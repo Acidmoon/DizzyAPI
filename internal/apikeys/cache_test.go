@@ -29,6 +29,19 @@ func snapshot(keys ...Key) Snapshot {
 	return Snapshot{Version: SnapshotVersion, Generation: 1, Keys: keys}
 }
 
+func TestNewCacheIsNotReady(t *testing.T) {
+	cache := New()
+	if cache.Ready() {
+		t.Fatal("从未收到快照时 Ready 必须为 false")
+	}
+	if cache.Count() != 0 {
+		t.Fatalf("初始 Count 应为 0：%d", cache.Count())
+	}
+	if _, ok := cache.Verify("anything"); ok {
+		t.Fatal("未就绪时 Verify 不应命中")
+	}
+}
+
 func TestReplaceAndVerify(t *testing.T) {
 	cache := New()
 	result, err := cache.Replace(snapshot(keyRecord("key-1", "dz-key-one"), keyRecord("key-2", "dz-key-two")))
@@ -37,6 +50,9 @@ func TestReplaceAndVerify(t *testing.T) {
 	}
 	if result.Keys != 2 || result.Revision == "" || result.Revision == emptyRevision {
 		t.Fatalf("结果不对：%+v", result)
+	}
+	if !cache.Ready() {
+		t.Fatal("收到非空快照后 Ready 必须为 true")
 	}
 	if cache.Count() != 2 {
 		t.Fatalf("Count 不对：%d", cache.Count())
@@ -204,19 +220,35 @@ func TestStatusAndResultDoNotContainHashes(t *testing.T) {
 	}
 }
 
-func TestEmptySnapshotFallsBackToCountZero(t *testing.T) {
+func TestEmptySnapshotIsReadyAndRejectsAll(t *testing.T) {
 	cache := New()
-	if cache.Count() != 0 {
-		t.Fatalf("初始 Count 应为 0：%d", cache.Count())
+	// 先放一份非空快照，确认空快照会把它原子替换掉。
+	if _, err := cache.Replace(snapshot(keyRecord("key-1", "dz-old"))); err != nil {
+		t.Fatalf("Replace: %v", err)
 	}
-	if _, err := cache.Replace(Snapshot{Version: SnapshotVersion, Keys: []Key{}}); err != nil {
+	if _, ok := cache.Verify("dz-old"); !ok {
+		t.Fatal("替换前旧 key 应命中")
+	}
+
+	result, err := cache.Replace(Snapshot{Version: SnapshotVersion, Keys: []Key{}})
+	if err != nil {
 		t.Fatalf("空快照应被接受：%v", err)
 	}
-	if cache.Count() != 0 {
-		t.Fatalf("空快照 Count 应为 0：%d", cache.Count())
+	if !cache.Ready() {
+		t.Fatal("合法空快照也必须让 Ready 为 true（fail-closed）")
+	}
+	if result.Keys != 0 || cache.Count() != 0 || cache.Status().Keys != 0 {
+		t.Fatalf("空快照计数应为 0：result=%+v count=%d status=%+v",
+			result, cache.Count(), cache.Status())
 	}
 	if cache.Status().Revision == "" {
 		t.Fatal("空快照也应有 revision")
+	}
+	if _, ok := cache.Verify("dz-old"); ok {
+		t.Fatal("收到空快照后旧 key 必须失效")
+	}
+	if _, ok := cache.Verify("anything"); ok {
+		t.Fatal("收到空快照后任何 key 都必须被拒绝")
 	}
 }
 

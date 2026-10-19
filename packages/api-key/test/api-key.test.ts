@@ -22,12 +22,27 @@ interface FakeUserRecord {
 /** 只声明 api-key 插件用到的 user 面：get(id)。 */
 class FakeUser extends Service {
   private users = new Map<number, FakeUserRecord>()
+  private gate: Promise<void> | undefined
 
   constructor(ctx: Context) {
     super(ctx, 'user')
   }
 
+  /** 让下一次 get() 挂起，用于稳定复现「异步查询期间发生写入」的时序。 */
+  holdNextGet(): () => void {
+    let release!: () => void
+    this.gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    return release
+  }
+
   async get(id: number): Promise<FakeUserRecord | undefined> {
+    const gate = this.gate
+    if (gate !== undefined) {
+      this.gate = undefined
+      await gate
+    }
     const user = this.users.get(id)
     return user === undefined ? undefined : { ...user }
   }
@@ -316,6 +331,25 @@ test('快照：只含 enabled 且用户可用的 key；只有哈希，没有明�
   assert.equal(after.users, 3)
   assert.ok(after.generation >= before.generation)
   assert.notEqual(after.updatedAt, null)
+})
+
+test('snapshot 的 generation 与 keys 来自同一同步时刻', async (t) => {
+  const { service, user } = await boot(t)
+  user.add(1)
+  const first = await service.create(1, { name: 'first' })
+  const generationBefore = service.status().generation
+
+  // snapshot 先同步读 rows + generation，然后才 await user.get。
+  const release = user.holdNextGet()
+  const pending = service.snapshot()
+  // 在 user.get 挂起期间写入第二个 key：它只能出现在下一份快照里。
+  await service.create(1, { name: 'second' })
+  assert.ok(service.status().generation > generationBefore)
+  release()
+
+  const snapshot = await pending
+  assert.equal(snapshot.generation, generationBefore)
+  assert.deepEqual(snapshot.keys.map((key) => key.keyId), [first.key.id])
 })
 
 test('每次写操作递增 generation；事件载荷只有 userId/keyId/action', async (t) => {
