@@ -9,9 +9,12 @@
 > 记录性的修正（现状、事实、坑）直接改；涉及设计判断的，先问 owner，
 > 不要凭本文件去推翻 owner 的决定或已在运行的代码。
 >
-> 当前状态：**控制面插件 + 第一个 Go 数据面模块**。cordis 侧已有十个插件包（外加共用底座 kit）
-> 并全部装载运行（§4）；Go 侧已有 `modules/accountpriority`、最小 `cmd/gatewayd` 与控制桥（§5.2）。
-> 除这一块之外，本文件中 Go 侧的路径与接口仍是**目标**，不是现状；LLM 请求链路尚未实现。
+> 当前状态：**控制面插件 + Go LLM 请求最小闭环**。cordis 侧已有十个插件包（外加共用底座 kit）
+> 并全部装载运行（§4）；Go 侧已有 `modules/accountpriority`、`modules/transport`、
+> `modules/keyauth`、最小 engine 与 HTTP 入口（§5.2 / §5.3）。
+> `cmd/gatewayd` 现在能接受 OpenAI 兼容的 `/v1/chat/completions`，按策略选账号并转发到
+> OpenAI 兼容上游。描述符／profile 编排、settle／usage-log、Go 的 auth／quota 仍是**目标**，
+> 不是现状；本文件中这些部分不要当成已实现。
 
 ---
 
@@ -103,6 +106,9 @@ engine 不是给 Go 增加灵活性，而是让 Go **服从** cordis 的决定�
 - **合法插入点是有限的**：以审计类模块为例，插在 `quota-check` 之前或之后语义不同，
   非法插入点在**描述符校验阶段**就拒绝，而不是等到线上才发现。
 - 出站审计只能**截断 + 报错**，无法撤回已发给用户的内容；流式下边流边审，直接计入首字延迟。
+
+> 现状（2026-10-19）：这条规范形态只落地了 `key-auth`（占位）→ `account-priority` →
+> `transport` 三个环节；`quota-check`、`content-audit`、`settle`、`usage-log` 尚未实现。
 
 ---
 
@@ -336,7 +342,7 @@ sub2api 在拿到首个上游响应前把额度显示为 `unknown`，
 | `@dizzyapi/plugin-credentials` | `credentials` | 控制面 | 秘密（授权码之类）的唯一存放处；别的插件只持有引用名 |
 | `@dizzyapi/plugin-identity` | `identity` | 控制面 | 上游账号（订阅 OAuth / API-key）的唯一写者；唯一用 refresh_token 换新令牌的地方 |
 | `@dizzyapi/plugin-account-admin` | `accountAdmin` | 控制面 | identity 的管理门面：账号导入 / 新建 / 修改 / 停用 / 删除；不存数据、不刷新令牌 |
-| `@dizzyapi/plugin-account-priority` | `accountPriority` | 控制面 + 数据面监管 | 策略组的唯一写者；拉起/监管 gatewayd；经控制桥推送策略、提供预览与选择查询 |
+| `@dizzyapi/plugin-account-priority` | `accountPriority` | 控制面 + 数据面监管 | 策略组的唯一写者；拉起/监管 gatewayd；经控制桥推送策略与 identity 的只读账号/令牌快照；提供预览与选择查询 |
 | `@dizzyapi/plugin-catalog` | `catalog` | 控制面（只读） | 插件能力目录：反射 + 可选声明清单，汇总谁提供什么、谁接受什么；不含秘密、不起 HTTP |
 | `@dizzyapi/plugin-settings` | `settings` | 控制面 | 运行期可改的配置的唯一写者：`app.yml` 是基线，它写自己的覆盖文件 |
 | `@dizzyapi/plugin-admin` | `admin` | 开发者面板 | 插件 / 服务的静态依赖图、运行期概览、改设置、重启单个插件、退出整个进程 |
@@ -369,6 +375,13 @@ Go 的 `modules/accountpriority` 在请求链路里并发打分、排序、选�
 headroom / priority / capacity / success / latency / cost；硬过滤处理禁用、provider/kind/
 tag、健康、冷却与并发饱和。`transport` 在 Windows 开发机自动走回环 TCP，Linux 走 UDS
 （Node 的 `net` 连不上 Go 的 AF_UNIX socket）。
+
+它同时是 **identity → Go 的账号快照推送者**：从 `identity.list()` 取启用且 active 的账号，
+对每个账号调 `identity.getAccessToken(id)` 取令牌，按 `upstreamBaseUrls` 补上上游地址，
+整份经控制桥 `accounts.replace` 推给 Go；Go 只缓存，不落盘。identity 的
+`account-updated` / `account-refreshed` / `account-failed` 事件会触发防抖重推。
+令牌只存在于桥帧与 Go 内存里：不写日志、不进状态、不出现在桥响应。没有配上游地址的
+provider（默认只有 `openai`）不会进入快照。
 
 ### 4.1 接口面
 
@@ -433,16 +446,17 @@ tag、健康、冷却与并发饱和。`transport` 在 Windows 开发机自动�
 |---|---|---|
 | 读 | `status()` / `listStrategies()` / `getStrategy(id)` | 监管状态与策略组副本；不含任何秘密 |
 | 写 | `upsertStrategy()` / `removeStrategy()` | 策略组的唯一写入口；先校验、再落盘、再推送 |
-| 进程 | `start()` / `stop()` / `restart()` / `sync()` | 拉起/停止 gatewayd；`sync()` 重推当前策略 |
+| 进程 | `start()` / `stop()` / `restart()` / `sync()` | 拉起/停止 gatewayd；`sync()` 重推当前策略与账号快照 |
 | 查询 | `preview()` / `pick()` / `remoteStatus()` | **管理面**查询，经控制桥交给 Go；不是 LLM 请求路径 |
-| 事件 | `account-priority/child-state` / `strategies-updated` / `applied` / `error` | 通知性质，不承载正确性 |
+| 事件 | `account-priority/child-state` / `strategies-updated` / `applied` / `accounts-applied` / `error` | 通知性质，不承载正确性 |
 
 策略写入是「先落盘、后推送」：推送失败不会回滚已经保存的策略，但会把状态标成
 `degraded` 并发 `error` 事件；下一次启动或 `sync()` 会再推。`preview` 的候选上限是
 10000，`seed` 只影响 `weighted-random` 的可复现选择。可运行期改的是 `autoStart`、
 `startTimeoutMs` / `requestTimeoutMs` / `stopTimeoutMs`、`restartDelayMs` /
 `maxRestartDelayMs`；`dataPath` / `binaryPath` / `args` / `socketPath` / `transport` /
-`logFormat` 不可运行期改。
+`logFormat` / `httpListen` / `upstreamBaseUrls` 不可运行期改。`httpListen` 只接受回环地址
+（默认 `127.0.0.1:8080`）；`upstreamBaseUrls` 是 provider → OpenAI 兼容 base URL 的映射。
 
 **`accountAdmin`**（账号管理门面）
 
@@ -556,6 +570,13 @@ class Foo extends Service {
   进程内用 `catalog.snapshot()` / `describe(id)` / `find({ capability })` 查询。
   `packages/catalog/test` 覆盖清单三态（静态 / 模块级 / 无）、D5 禁用过滤、方法枚举、
   秘密值不出现与稳定排序。
+- **LLM 请求入口（2026-10-19）**：`httpListen` 默认 `127.0.0.1:8080`，只绑回环。
+  `GET /healthz` 返回 `{status, accounts, revision, requests, uptimeSec}`；
+  `POST /v1/chat/completions` 走 engine。静态 API key 从环境变量
+  `DIZZYAPI_API_KEYS` 读取（逗号/空白分隔）；不设置时 key-auth 是占位模式，
+  接受任何非空 `Authorization: Bearer`。请求体上限默认 32 MiB。
+  示例：`curl -s http://127.0.0.1:8080/v1/chat/completions -H 'Authorization: Bearer x' -H 'content-type: application/json' -d '{"model":"gpt-4o-mini","messages":[]}'`。
+  没有可用账号时返回 503 `NO_ELIGIBLE_ACCOUNT`。
 
 ### 4.3 边界与已知偏离
 
@@ -563,11 +584,12 @@ class Foo extends Service {
    按 D8，这些数据最终的唯一写者是 Go；当前实现只是可替换的存储适配器，
    桥与 Go 就绪后换适配器，插件对外接口一字不改。
 2. **LLM 请求不加第二层认证**：对外协议只有 `Authorization: Bearer <key>`，
-   没有放会话令牌的位置；key → user 在 Go 的 `key-auth` 阶段解析（数据面、不过桥），
+   没有放会话令牌的位置；key → user 应由 Go 的 `key-auth` 阶段解析（数据面、不过桥），
    `usage_log` 与 `settle` 据此关联用户。界面请求才用会话令牌。
+   当前 `modules/keyauth` 只是占位：它只生成密钥指纹，不做 key→user 映射。
    因此本节这些插件**不得**演变成 LLM 请求热路径上的查询点。
 3. **API key 的签发 / 吊销不在这些插件里**，按 §5 归 Go 的 `auth` 模块（`key.*`）。
-   v1 没有 Go，所以 LLM 请求目前还无法真正鉴权。
+   该模块尚未实现；LLM 请求目前只有占位鉴权（见上一条）。
 4. **`@dizzyapi/plugin-admin` 已经落地**，不再是占位：它就是 `user.adminPlugins` /
    `settings.adminPlugins` 里那个「指定插件」的实体。
 5. **设置插件的写入口现在是面板**：机制是通用的（任何插件的 schema 声明了可写字段就能改）。
@@ -582,13 +604,15 @@ class Foo extends Service {
 7. **面板不碰秘密**：它只转述 `settings.describe()`，秘密字段只有「配没配」；
    它既没有读 `credentials.resolve` 的代码，也没有把值带进任何 HTTP 响应。
 8. **`identity` 先以 cordis 插件落地**（owner 2026-10-19 决定）：D17 把 `identity` 定为 Go 能力模块，
-   但 Go 侧尚未开工；当前 TS 实现只覆盖「账号保管 + RT 刷新」，账号落 `./data/accounts.json`。
-   Go 与桥就绪后按 D8 迁到 Go，插件退化为门面；`getAccessToken` 是届时唯一的接缝。
+   当前 TS 实现覆盖「账号保管 + RT 刷新」，账号落 `./data/accounts.json`。
+   Go 侧现在有只读快照缓存（`internal/accounts`）与 transport 取令牌的接缝，但**权威写者仍是 TS**；
+   `getAccessToken` 仍是唯一令牌读口，由 account-priority 在推送快照时调用。按 D8 迁到 Go 时，
+   插件退化为门面，这个接缝不变。
 9. **`account-priority` 是第一个 Go 数据面模块**（owner 2026-10-19 决定）：打分与排序在
-   `modules/accountpriority`，TS 只做策略写入、进程监管与控制桥推送。策略组的唯一写者是
-   TS 插件，Go 只接收只读快照；它**不写**账号运行时状态。LLM 请求链路与 engine 尚未实现，
-   阶段目前只在 Go 单测里被直接调用，`Ctx.AccountCandidates` 还没有真正的生产者
-   （将来由 `account-state` 填）。
+   `modules/accountpriority`，TS 只做策略写入、进程监管、账号快照推送与控制桥查询。策略组的唯一
+   写者是 TS 插件，Go 只接收只读快照；它**不写**账号运行时状态。LLM 请求 engine 已实现，
+   阶段会在真实请求里被调用；`Ctx.AccountCandidates` 现在由 `internal/accounts` 的 identity
+   快照填充，健康/额度等运行时状态仍待 `account-state`。
 10. **`account-admin` 只有进程内服务面**：它没有自己的 HTTP 路由，面板目前只能看/改它的
     设置，不能管理账号。前端 / 管理台需要的 HTTP 面是：`GET /admin/accounts`、
     `GET /admin/accounts/:id`、`POST /admin/accounts`、`PATCH /admin/accounts/:id`、
@@ -604,7 +628,7 @@ class Foo extends Service {
 12. **cordis 异常退出时 gatewayd 可能留下**：正常卸载/重启会由插件优雅停止子进程；
     进程崩溃或被强杀时 Go 侧按 D9 继续存活，但也不会自动退出。重启后会起一个新的
     gatewayd（新端口），旧进程需要人工清理；孤儿检测尚未实现（§9）。
-12. **能力目录是反射 + 声明，不是类型系统**：TS 类型在运行期不存在。目录能给的是
+13. **能力目录是反射 + 声明，不是类型系统**：TS 类型在运行期不存在。目录能给的是
     方法名 / 参数个数、Config schema 的字段元数据，以及插件自己声明的事件、桥命令、
     数据形状与存储用途；`unknown` 里的面表示「不知道」，不是「没有」。被禁用 / 未装载的
     入口不会 import 模块，因此也读不到模块级清单，相关面一律 unknown。
@@ -633,6 +657,11 @@ class Foo extends Service {
 | `proxy` | 能力 | `ProxyFor` | — | db |
 | `payment` | 能力 | `Payment`：`CreateOrder` / `HandleCallback` | `order.list` | db |
 | `httpapi` | 入口 | 路由注册 | — | 上面若干 |
+
+> 现状（2026-10-19）：这张表仍是**目标**。已落地的是 `accountpriority`（阶段 +
+> 能力）、`transport`（阶段）、`keyauth`（最小占位阶段）与 `internal/httpapi`
+> （HTTP 入口，不是 `modules/httpapi`）。`auth` / `quota` / `settle` / `usage-log`
+> 等还没有 Go 实现；当前 key-auth 不做 key→user 映射，也不计费。
 
 契约包规则：
 
@@ -716,6 +745,8 @@ func Register(reg *contracts.Registry) {
 
 ### 5.2 Go 侧现状：账号优先级模块与最小 gatewayd（2026-10-19）
 
+> LLM 请求闭环见 §5.3；本节记录的是号池打分模块本身。
+
 这是 Go 侧的第一块代码，也是第一次真正使用 D4 / D16 的形态。
 
 **目录**
@@ -746,7 +777,8 @@ stage := accountpriority.NewStage(service)      // contracts.Stage：pre / requi
 `contracts.Registry` 是最小注册表：`Service(name, impl)` + `Stage(stage)`；
 其他模块用 `reg.Lookup("account-priority")` 取实例，再断言成
 `contracts.AccountScorer`（`Score` / `Pick`）——这条路径只依赖 `contracts`，
-不需要 import 实现包。engine 尚未实现，所以没有按描述符调度阶段的代码。
+不需要 import 实现包。engine 已实现固定的阶段集；描述符调度尚未实现，所以没有
+「按 profile 选择阶段」的代码。
 
 **打分模型（配置驱动，策略组）**
 
@@ -779,14 +811,51 @@ priority 10、capacity 10、success 5、latency 3（asc）、cost 2（asc）。
 `_NO_ELIGIBLE_ACCOUNT` / `_INVALID_REQUEST` / `_TOO_MANY_CANDIDATES` /
 `_DUPLICATE_CANDIDATE`。桥会原样转发为 `error.code`。
 
+### 5.3 Go LLM 请求最小闭环（2026-10-19）
+
+**目录**
+
+| 路径 | 职责 |
+|---|---|
+| `contracts/` | `Ctx` 增加 `Headers` / `Body` / `Key` / `Profile` / `Attempts` / `AccountCredential` / `CredentialSource` / `StageError`；`Decision` 增加流式 `Stream` |
+| `internal/engine/` | 显式 pre → dispatch → post 调度；dispatch 内做账号失败转移；post 在所有出口恰好一次；统一渲染 OpenAI 错误 |
+| `modules/transport/` | dispatch 阶段：按选中账号发 HTTP、透传非流式与 SSE、映射上游错误、按令牌脱敏 |
+| `modules/keyauth/` | pre 阶段占位：解析 `Authorization: Bearer`，写 `Ctx.Key` / `Ctx.Profile`；静态 key 缺失时接受任何非空 key |
+| `internal/accounts/` | 账号/令牌只读快照缓存；`Replace` 整份校验后原子替换；`Candidates()` / `Credential()` 读路径无锁 |
+| `internal/httpapi/` | `POST /v1/chat/completions`、`GET /healthz`；请求体上限、SSE flush、错误信封 |
+| `cmd/gatewayd/` | 组合根：注册 key-auth → account-priority → transport，拉起 HTTP 入口与控制桥 |
+
+**阶段装配**：`contracts.Registry.Stages()` 的注册顺序就是执行顺序。engine 构造时校验
+相位不能回退，并要求至少一个 dispatch 阶段。当前没有描述符，因此阶段集是固定的；
+`key-auth`、`account-priority` 是 pre，`transport` 是 dispatch，post 为空。
+
+**失败转移**：transport 返回可重试的 `StageError`（429 / 5xx / 网络失败 / 账号无凭据）时，
+engine 按 `AccountRoute.Ranked` 换下一个账号；不可重试错误直接返回。`Ctx.Attempts` 记录
+每次尝试的账号 id、状态码与错误码，不含令牌。
+
+**账号快照**：TS 的 account-priority 插件把 identity 的可用账号与令牌整份推给 Go
+（`accounts.replace`），Go 只缓存。快照含 `accountId / provider / kind / baseUrl / token /
+expiresAt? / priority? / tags?`；过期或令牌为空的账号不会成为候选。Go **不读**
+`credentials.json`，也不刷新令牌。
+
+**HTTP 入口**：默认 `127.0.0.1:8080`，只允许回环。`/v1/chat/completions` 要求 JSON 与
+`model`，把原始 body 原样转发；不转发客户端的 `Authorization`。健康检查返回账号计数与
+快照 revision，不含秘密。`--http-listen` 可改端口；非回环地址直接拒绝启动。
+
+**已知边界**：只支持 OpenAI 兼容上游（Claude 协议翻译未实现）；没有模型映射；
+没有 quota / settle / usage-log，所以请求不计费；post 相位在响应写出前执行，
+流式响应的 usage 尚未在流结束后解析。
+
 ---
 
 ## 6. 链路描述符
 
 **唯一写者：cordis。** Go 只校验与应用，绝不反向修改。
 
-> 现状（2026-10-19）：Go 侧只注册了 `account-priority` 一个阶段，engine、描述符校验
-> 与应用都还没实现；下面的 YAML 仍是**目标**，不是当前可运行的东西。
+> 现状（2026-10-19）：engine 已实现固定阶段集（`key-auth` → `account-priority` →
+> `transport`，post 为空），**描述符下发、校验与 profile 编排尚未实现**。
+> 下面的 YAML 仍是**目标**；当前不接受描述符，也不按 profile 切换阶段。
+> 因为只有一套固定链路，`billed` / `free` 的语义以及 settle / usage-log 都不存在。
 
 ```yaml
 version: 8
@@ -879,8 +948,9 @@ cordis 据此校验后再下发，使管理台在结构上就无法生成非法�
 - **传输**：Unix domain socket（Linux/macOS）；Windows 开发机用回环 TCP
   （`127.0.0.1:0`，系统分配端口）。`bridge.NewServer` 拒绝非回环 TCP。
 - **就绪握手**：gatewayd 在 stdout 打印**一行** JSON
-  `{"type":"ready","transport":"unix|tcp","address":"…","pid":…,"protocolVersion":1}`；
-  TS 读到这行才知道该连哪里。日志全部走 stderr，stdout 只留 ready 行。
+  `{"type":"ready","transport":"unix|tcp","address":"…","httpAddress":"…","pid":…,"protocolVersion":1}`；
+  TS 读到这行才知道该连哪里；`httpAddress` 是 LLM 请求入口（`unix` 传输时它仍是回环 TCP）。
+  日志全部走 stderr，stdout 只留 ready 行。
 - **帧**：4 字节大端长度 + UTF-8 JSON，单帧上限 16 MiB。
   连接建立后 Go 先发 `{"type":"event","event":"hello","data":{"protocolVersion":1,…}}`；
   TS 校验版本后才算连接成功。
@@ -888,8 +958,11 @@ cordis 据此校验后再下发，使管理台在结构上就无法生成非法�
   `{"id","type":"response","ok":true,"result":…}` 或
   `{"id","type":"response","ok":false,"error":{"code","message"}}`。
 - **方法**：`accountPriority.status` / `listStrategies` / `replaceStrategies` /
-  `preview` / `pick`，以及 `shutdown`。`replaceStrategies` 的 params 就是
-  `{"defaultStrategy"?, "strategies"}`；Go 校验不过就整份拒绝，返回稳定错误码。
+  `preview` / `pick`，`accounts.replace` / `accounts.status`，以及 `shutdown`。
+  `replaceStrategies` 的 params 就是 `{"defaultStrategy"?, "strategies"}`；
+  `accounts.replace` 的 params 是 `{"version":1,"generation","accounts":[…]}`，
+  其中每个账号含令牌；Go 校验不过就整份拒绝，返回稳定错误码，响应只含
+  `revision / accounts / updatedAt`，**绝不回显快照内容**。
 - **并发**：同一连接上的请求由 Go 侧 goroutine 并发处理（全局信号量 16），
   响应按连接写锁串行化；控制消息不绑定客户端生命周期，不使用 `contracts.Ctx`。
 - **关闭**：TS 先发 `shutdown`（1 秒超时），Go 回 ack 后 100 ms 关闭监听并退出；
@@ -916,6 +989,8 @@ CI 用 `go list -deps` 逐模块校验 `modules/*` 之间无相互 import，违�
 4. 被禁用模块的**四个入口全部关闭**（链路阶段、HTTP 路由、后台任务、桥命令）。
 
 **在上述测试跑绿之前，不得声称「解耦已实现」。**
+现状（2026-10-19）：描述符与 profile 尚未实现，因此这个 boot 矩阵还没有条件跑；
+目前只有「固定阶段集 + 组合根去掉一行」的单元/集成测试。
 
 ### 8.3 语言与写作
 
@@ -935,8 +1010,11 @@ CI 用 `go list -deps` 逐模块校验 `modules/*` 之间无相互 import，违�
 | 上游模型来源范围 | 号池的**拆分方式已定**（D17）；待定的是 v1 是否就包含 OAuth 订阅账号池，还是先只做 API key 型频道 |
 | 包月 / 订阅 | 倾向 v2 再做（new-api 的 `subscription.go` 有 48KB） |
 | 控制面数据的存储归属 | 用户表单 / 余额 / 凭证 / 会话 / 上游账号现在都在 cordis 侧（§4.3）；Go 与桥就绪后迁到 Go，插件退化为门面 |
-| API key 的签发与 key→user 映射 | 按 §5 归 Go 的 `auth` 模块（`key.*` 桥命令）；v1 没有 Go，所以 key 能力暂缺 |
-| `account-state` 与评分输入 | `account-priority` 已接受候选快照（`contracts.AccountCandidate`），但谁来填充 `Ctx.AccountCandidates` 还没定；短期由调用方/测试填，长期应由 `account-state` 提供 |
+| API key 的签发与 key→user 映射 | 按 §5 归 Go 的 `auth` 模块（`key.*` 桥命令）；当前只有 `modules/keyauth` 占位，没有签发/吊销/映射 |
+| `account-state` 与评分输入 | `Ctx.AccountCandidates` 现在由 `internal/accounts` 的 identity 快照填充；健康、限流、额度、并发等运行时状态仍应由 `account-state` 提供，尚未实现 |
+| 上游地址的归属 | 当前由 `account-priority` 的 `upstreamBaseUrls`（provider → base URL）决定；是否改为 identity 账号字段或独立路由配置，待 owner 定 |
+| 账号级 priority / 运行时状态 | identity 账号没有 priority 字段，`internal/accounts` 快照里的 priority 目前恒为 0；健康/额度/并发等也要等 `account-state`。多账号时默认按 accountId 决出同分顺序 |
+| 上游协议 | 当前只支持 OpenAI 兼容 `/chat/completions`；Claude / Gemini 协议与模型映射何时做、放在哪个模块，待定 |
 | gatewayd 孤儿进程 | cordis 异常退出时 Go 进程按 D9 继续存活；是否需要父进程探测、外部守护或启动时清理旧实例尚未决定 |
 
 ---
@@ -1126,9 +1204,20 @@ CI 用 `go list -deps` 逐模块校验 `modules/*` 之间无相互 import，违�
   `gatewayd 已就绪：tcp 127.0.0.1:<port>（pid …）` 与策略 revision；面板
   `/api/settings` 能看到 `account-priority` 命名空间；Ctrl-C 退出后子进程
   `process.kill(pid, 0)` 报 ESRCH（已停止）。
-- 当前全量：`pnpm test` 189 个用例（188 通过 / 1 跳过），`pnpm typecheck` 干净；
-  `packages/account-priority` 13 个、`packages/account-admin` 16 个、`packages/catalog` 9 个
-  用例全过，`go test ./...` 两个包全过。
+- 当前全量（2026-10-19，LLM 闭环之后）：`pnpm test` 192 个用例（191 通过 / 1 跳过），
+  `pnpm typecheck` 干净；`packages/account-priority` 16 个、`packages/account-admin` 16 个、
+  `packages/catalog` 9 个用例全过；`go test ./...` 的 8 个包全过，`go vet ./...` 干净。
+- **LLM 请求闭环已做真机端到端**：`go build -o bin/gatewayd.exe ./cmd/gatewayd` 后，
+  用回环 TCP 起进程，经控制桥 `accounts.replace` 推一个账号（含 baseUrl 与令牌），
+  `POST /v1/chat/completions` 返回 200；假上游收到的是账号令牌而不是网关密钥，
+  请求 body 的 `model` 原样到达。`GET /healthz` 返回 200 且账号计数正确。
+- **账号快照的 JSON 形状两边已对齐**：TS 的 `GatewayAccountSnapshot`（version / generation /
+  accounts，账号字段 accountId / provider / kind / baseUrl / token / expiresAt）能被 Go
+  的 `accounts.Snapshot` 严格解码；Go 的响应只有 revision / accounts / updatedAt。
+- **桥响应与日志不含令牌**：Go 侧有专门用例断言 `accounts.replace` / `accounts.status`
+  的响应与错误信息不含令牌；transport 对上游错误正文按账号令牌脱敏并截断。
+- **engine 的 post 恰好一次**：单测覆盖成功、pre 拒绝、dispatch 失败、dispatch panic
+  四种出口；dispatch 单测覆盖可重试错误的账号转移与不可重试错误的立即停止。
 
 **本机环境**
 - `C:\Users\17740\.dsh\profiles\desktop` 是一个活的 cordis 应用实例：
@@ -1145,13 +1234,28 @@ CI 用 `go list -deps` 逐模块校验 `modules/*` 之间无相互 import，违�
 
 - **数据面性能**：本项目未做任何压测。TS 单进程能扛多少并发流、UDS 每次往返延迟、
   描述符落盘 + push 双通道的冷启动顺序，全部未实测。
-- **`account-priority` 还没有跑过真实号池**：`Ctx.AccountCandidates` 目前只有测试和
-  管理面预览会填；`account-state` 尚未实现，LLM 请求 engine 也尚未实现，所以阶段还
-  没有被真实请求调用过。默认权重是首版取舍，没有用真实账号数据校准过。
+- **LLM 链路只跑过假上游**：engine 已被真实 HTTP 请求调用，但 transport 只对
+  `httptest` 假上游与一次本机回环假上游做过端到端；没有对真实 OpenAI/兼容服务发过请求，
+  TLS、代理、真实错误码与限流行为都未验证。`Ctx.AccountCandidates` 现在来自
+  `internal/accounts` 的内存快照（由 identity 推送），`account-state` 仍未实现；
+  health / quota / rateLimit / 并发等因子当前都是未知或 0，默认权重没有用真实账号校准过。
   **粘性会话映射尚未实现**（D17 把它归在 account-select 的职责里）：当前每次评分都是
   无状态的，同一个会话两次请求可能选中不同账号。
   `MaxCandidates = 10000` 只是校验上限，不是压测结论；`weighted-random` 只验过
   可复现性，没验过长期分布是否均匀。
+- **LLM 链路未压测**：并发用例只验证正确性（缓存替换与 HTTP 请求），没有 QPS、
+  首字延迟、长流内存占用或上游连接池饱和的数据。SSE 透传是按块 flush 的直通实现，
+  没有背压策略。
+- **只有 OpenAI 兼容上游**：transport 固定追加 `/chat/completions` 并用
+  `Authorization: Bearer` 发账号令牌；Claude / Codex 的原生协议、OAuth 专属头、
+  模型映射、路径映射都没有实现。`claude` 账号默认不会进快照（没有配 upstreamBaseUrls）；
+  `openai` 的默认映射面向 API-key 账号，OpenAI/Codex 订阅 OAuth 账号虽会被推送，
+  但其端点与协议未适配，实际很可能被上游拒绝。
+- **key-auth 是占位**：没有 key→user 映射、签发、吊销、每密钥并发上限；
+  未配置 `DIZZYAPI_API_KEYS` 时接受任何非空 Bearer。不要把它当生产鉴权。
+- **计费不存在**：没有 `quota-check` / `settle` / `usage-log`，请求不会扣费也不会落
+  usage_log。post 相位目前是空集；engine 在响应写出前执行 post，流式响应结束后
+  再解析 usage 的能力尚未实现。
 - **控制桥只验证了单实例**：两个 cordis 实例会各自拉起 gatewayd，并同时写
   `data/account-priority.json`（同一份 JSON 没有跨进程锁）。Windows 的 TCP 分支是
   开发机妥协；Linux 上 Node ↔ Go 的 UDS 分支（含长路径、权限、残留 socket 清理）
@@ -1169,8 +1273,9 @@ CI 用 `go list -deps` 逐模块校验 `modules/*` 之间无相互 import，违�
 - **`account-admin` 的导入格式只对构造的样例验过**：Claude `.credentials.json` 与
   Codex `auth.json` 的实际字段会随上游 CLI 版本变化，没有用真实账号文件跑过；
   `auto` 推断也只在测试样例上验过。它没有 HTTP 入口，真实管理台链路尚未验证。
-- **业务面的界面请求（会话令牌）仍没有 HTTP 入口**：面板的 HTTP 只服务面板自己
-  （看、改设置、退出），不是用户站 / 管理台的 API；那个入口要等 Go 的 `httpapi` 或桥。
+- **业务面的界面请求（会话令牌）仍没有 HTTP 入口**：现在的 Go HTTP 入口只服务 LLM 请求
+  （`/v1/chat/completions` 与 `/healthz`）；面板的 HTTP 只服务面板自己（看、改设置、退出），
+  不是用户站 / 管理台的 API。用户站 / 管理台的 REST 入口仍未实现。
 - **面板前端已在真实浏览器里逐页签点过**（2026-10-18，重写后复验）：概览 / 依赖图 / 插件 /
   服务 / 设置都渲染正常，亮色与暗色、1000px 与 600px 两档宽度都看过；设置保存只提交改动过
   的字段，嵌套字段会还原成对象提交。仍未验证：SSE 断线重连的退避在真实网络抖动下的表现。

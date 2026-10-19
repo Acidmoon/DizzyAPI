@@ -23,6 +23,13 @@ export interface AccountPriorityConfig {
   readonly socketPath?: string
   /** 控制桥传输：auto（Windows=TCP，其他=Unix）/ unix / tcp。 */
   readonly transport?: 'auto' | 'unix' | 'tcp'
+  /** LLM 请求 HTTP 入口；只允许回环地址。 */
+  readonly httpListen?: string
+  /**
+   * 各 provider 的上游 OpenAI 兼容 base URL。
+   * 只有配了映射的 provider 会被推给 Go；快照里不含没有上游地址的账号。
+   */
+  readonly upstreamBaseUrls?: Readonly<Record<string, string>>
   /** 从 spawn 到收到 ready 行并完成握手的超时。 */
   readonly startTimeoutMs?: number
   /** 单次桥请求超时。 */
@@ -44,6 +51,8 @@ export interface ResolvedAccountPriorityConfig {
   readonly autoStart: boolean
   readonly socketPath: string
   readonly transport: 'auto' | 'unix' | 'tcp'
+  readonly httpListen: string
+  readonly upstreamBaseUrls: Readonly<Record<string, string>>
   readonly startTimeoutMs: number
   readonly requestTimeoutMs: number
   readonly stopTimeoutMs: number
@@ -58,6 +67,10 @@ export const ACCOUNT_PRIORITY_DEFAULTS = {
   autoStart: true,
   socketPath: './data/gatewayd.sock',
   transport: 'auto',
+  httpListen: '127.0.0.1:8080',
+  upstreamBaseUrls: {
+    openai: 'https://api.openai.com/v1',
+  } as Readonly<Record<string, string>>,
   startTimeoutMs: 10_000,
   requestTimeoutMs: 5_000,
   stopTimeoutMs: 5_000,
@@ -83,6 +96,13 @@ const ACCOUNT_PRIORITY_FIELDS: readonly FieldSpec[] = [
     label: '控制桥传输',
     kind: 'enum',
     values: ['auto', 'unix', 'tcp'],
+    writable: false,
+  },
+  { key: 'httpListen', label: 'LLM 请求监听地址', kind: 'string', writable: false },
+  {
+    key: 'upstreamBaseUrls',
+    label: '上游 OpenAI 兼容地址（按 provider）',
+    kind: 'object',
     writable: false,
   },
   {
@@ -155,6 +175,11 @@ export function validateAccountPriorityConfig(
   if (transport !== undefined && !['auto', 'unix', 'tcp'].includes(transport)) {
     issues.push({ message: 'transport 只能是 auto / unix / tcp' })
   }
+  const httpListen = readString(raw, 'httpListen', issues)
+  if (httpListen !== undefined && !isLoopbackListen(httpListen)) {
+    issues.push({ message: 'httpListen 必须是回环地址，如 127.0.0.1:8080' })
+  }
+  const upstreamBaseUrls = readBaseUrls(raw['upstreamBaseUrls'], issues)
   const startTimeoutMs = readPositiveInteger(raw, 'startTimeoutMs', issues, { min: 1_000, max: 120_000 })
   const requestTimeoutMs = readPositiveInteger(raw, 'requestTimeoutMs', issues, { min: 100, max: 120_000 })
   const stopTimeoutMs = readPositiveInteger(raw, 'stopTimeoutMs', issues, { min: 500, max: 60_000 })
@@ -185,6 +210,11 @@ export function validateAccountPriorityConfig(
     socketPath: socketPath ?? ACCOUNT_PRIORITY_DEFAULTS.socketPath,
     transport: (transport as ResolvedAccountPriorityConfig['transport'] | undefined) ??
       ACCOUNT_PRIORITY_DEFAULTS.transport,
+    httpListen: httpListen ?? ACCOUNT_PRIORITY_DEFAULTS.httpListen,
+    upstreamBaseUrls: {
+      ...ACCOUNT_PRIORITY_DEFAULTS.upstreamBaseUrls,
+      ...(upstreamBaseUrls ?? {}),
+    },
     startTimeoutMs: startTimeoutMs ?? ACCOUNT_PRIORITY_DEFAULTS.startTimeoutMs,
     requestTimeoutMs: requestTimeoutMs ?? ACCOUNT_PRIORITY_DEFAULTS.requestTimeoutMs,
     stopTimeoutMs: stopTimeoutMs ?? ACCOUNT_PRIORITY_DEFAULTS.stopTimeoutMs,
@@ -193,6 +223,50 @@ export function validateAccountPriorityConfig(
     logFormat: (logFormat as ResolvedAccountPriorityConfig['logFormat'] | undefined) ??
       ACCOUNT_PRIORITY_DEFAULTS.logFormat,
   }
+}
+
+function readBaseUrls(
+  value: unknown,
+  issues: StandardIssue[],
+): Record<string, string> | undefined {
+  if (value === undefined) return undefined
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    issues.push({ message: 'upstreamBaseUrls 必须是 provider → URL 的对象' })
+    return undefined
+  }
+  const out: Record<string, string> = {}
+  for (const [provider, rawUrl] of Object.entries(value)) {
+    if (provider.trim() === '') {
+      issues.push({ message: 'upstreamBaseUrls 的 provider 不能为空' })
+      continue
+    }
+    if (typeof rawUrl !== 'string' || !isHttpUrl(rawUrl)) {
+      issues.push({ message: `upstreamBaseUrls.${provider} 必须是 http(s) URL` })
+      continue
+    }
+    out[provider] = rawUrl.trim()
+  }
+  return out
+}
+
+function isHttpUrl(value: string): boolean {
+  try {
+    const parsed = new URL(value)
+    return (parsed.protocol === 'http:' || parsed.protocol === 'https:') && parsed.hostname !== ''
+  } catch {
+    return false
+  }
+}
+
+/** 只接受 127.0.0.1 / ::1 / localhost，端口允许 0（测试时由系统分配）。 */
+function isLoopbackListen(value: string): boolean {
+  const separator = value.lastIndexOf(':')
+  if (separator <= 0) return false
+  let host = value.slice(0, separator)
+  if (host.startsWith('[') && host.endsWith(']')) host = host.slice(1, -1)
+  if (host !== '127.0.0.1' && host !== '::1' && host !== 'localhost') return false
+  const port = Number(value.slice(separator + 1))
+  return Number.isInteger(port) && port >= 0 && port <= 65_535
 }
 
 export const ACCOUNT_PRIORITY_CONFIG_SCHEMA = standardSchema<ResolvedAccountPriorityConfig>(

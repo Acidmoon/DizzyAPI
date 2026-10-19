@@ -99,14 +99,24 @@
 
 # 账号请求优先级：策略组的唯一写者 + gatewayd 的监管者。
 # 打分与排序发生在 Go 侧（modules/accountpriority）；本插件只持有策略、拉起进程、
-# 经控制桥推送策略并提供预览/选择查询。它不在 LLM 请求热路径上。
-# binaryPath 由 pnpm build:go 产出（bin/ 已 gitignore）。
+# 经控制桥推送策略与 identity 的只读账号快照，并提供预览/选择查询。
+# 它不在 LLM 请求热路径上。binaryPath 由 pnpm build:go 产出（bin/ 已 gitignore）。
+#
+# LLM 请求入口只绑回环地址；静态 API key 从环境变量 DIZZYAPI_API_KEYS 读取
+# （逗号/空白分隔）。不设置时 key-auth 处于占位模式：接受任何非空 Bearer key，
+# 生产前必须换成 Go 的 auth 模块（AGENTS.md §5）。
 - id: account-priority
   name: '@dizzyapi/plugin-account-priority'
   config:
     dataPath: ./data/account-priority.json
     binaryPath: ./bin/gatewayd
     autoStart: true
+    httpListen: 127.0.0.1:8080
+    # 只有在这里配了地址的 provider 才会被推给 Go；默认已含 openai。
+    # custom 需要显式配置，例如：
+    #   custom: https://your-upstream.example.com/v1
+    upstreamBaseUrls:
+      openai: https://api.openai.com/v1
 
 # 插件能力目录：只读观察窗，汇总已装载插件提供什么、接受什么。
 # 它从活的插件树反射（服务 / 方法 / inject / 配置 schema），事件、桥命令、数据形状

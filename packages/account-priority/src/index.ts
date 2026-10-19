@@ -19,6 +19,8 @@ declare module 'cordis' {
     'account-priority/strategies-updated'(id: string, action: 'upsert' | 'remove'): void
     /** Go 侧确认应用了一版策略；`revision` 由 Go 计算。 */
     'account-priority/applied'(revision: string): void
+    /** Go 侧确认缓存了一版账号/令牌快照；不含秘密。 */
+    'account-priority/accounts-applied'(revision: string, accounts: number): void
     /** 子进程、桥或策略推送失败。 */
     'account-priority/error'(code: string, message: string): void
   }
@@ -54,6 +56,9 @@ export {
   type ChildState,
   type ExcludedAccount,
   type FactorRule,
+  type GatewayAccount,
+  type GatewayAccountSnapshot,
+  type GatewayAccountsResult,
   type RemoteStatus,
   type ScoreFactor,
   type ScoreRequest,

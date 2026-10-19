@@ -24,6 +24,27 @@ func (e *Error) Error() string {
 	return fmt.Sprintf("%s: %s", e.Code, e.Message)
 }
 
+// ErrorCode / HTTPStatus / PublicMessage 让 engine 能把模块错误安全地渲染成
+// 用户可见的 HTTP 错误，而不必 import 本包的实现（AGENTS.md §2.4）。
+func (e *Error) ErrorCode() string { return string(e.Code) }
+
+func (e *Error) HTTPStatus() int {
+	switch e.Code {
+	case CodeInvalidRequest, CodeDuplicateCandidate, CodeTooManyCandidates:
+		return 400
+	case CodeNoEligibleAccount:
+		return 503
+	case CodeStrategyNotFound:
+		return 500
+	case CodeInvalidConfig:
+		return 500
+	default:
+		return 500
+	}
+}
+
+func (e *Error) PublicMessage() string { return e.Message }
+
 func newError(code ErrorCode, format string, args ...any) *Error {
 	return &Error{Code: code, Message: fmt.Sprintf(format, args...)}
 }
