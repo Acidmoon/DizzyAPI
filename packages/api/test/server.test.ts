@@ -467,6 +467,8 @@ test('管理员账号：列表 / 详情剥掉 credentialRef，PATCH enabled 走 
       'label',
       'lastError',
       'lastRefreshAt',
+      'models',
+      'modelMap',
       'priority',
       'protocol',
       'provider',
@@ -493,6 +495,8 @@ test('管理员账号：列表 / 详情剥掉 credentialRef，PATCH enabled 走 
       label: 'new account',
       baseUrl: 'https://api.openai.com/v1',
       protocol: 'openai-chat',
+      models: ['gpt-5', 'gpt-5-codex'],
+      modelMap: { 'gpt-5-codex': 'gpt-5-codex-2025-01-01' },
       priority: 7,
       credential: { payload: 'sk-upstream', format: 'auto' },
     }),
@@ -500,6 +504,8 @@ test('管理员账号：列表 / 详情剥掉 credentialRef，PATCH enabled 走 
   assert.equal(created.status, 200, created.text)
   assert.equal(created.json.label, 'new account')
   assert.equal(created.json.protocol, 'openai-chat')
+  assert.deepEqual(created.json.models, ['gpt-5', 'gpt-5-codex'])
+  assert.deepEqual(created.json.modelMap, { 'gpt-5-codex': 'gpt-5-codex-2025-01-01' })
   assert.ok(!created.text.includes('credentialRef'))
   const createCall = accountAdmin.calls.find((entry) => entry.method === 'create')
   assert.deepEqual(createCall?.args, [
@@ -510,6 +516,8 @@ test('管理员账号：列表 / 详情剥掉 credentialRef，PATCH enabled 走 
       label: 'new account',
       baseUrl: 'https://api.openai.com/v1',
       protocol: 'openai-chat',
+      models: ['gpt-5', 'gpt-5-codex'],
+      modelMap: { 'gpt-5-codex': 'gpt-5-codex-2025-01-01' },
       priority: 7,
       credential: { payload: 'sk-upstream', format: 'auto' },
     },
@@ -522,6 +530,8 @@ test('管理员账号：列表 / 详情剥掉 credentialRef，PATCH enabled 走 
       label: 'renamed',
       baseUrl: 'https://new.example.com/v1',
       protocol: 'anthropic',
+      models: ['o3'],
+      modelMap: { o3: 'o3-mini' },
       priority: 9,
       enabled: false,
     }),
@@ -530,13 +540,22 @@ test('管理员账号：列表 / 详情剥掉 credentialRef，PATCH enabled 走 
   assert.equal(patched.json.label, 'renamed')
   assert.equal(patched.json.baseUrl, 'https://new.example.com/v1')
   assert.equal(patched.json.protocol, 'anthropic')
+  assert.deepEqual(patched.json.models, ['o3'])
+  assert.deepEqual(patched.json.modelMap, { o3: 'o3-mini' })
   assert.equal(patched.json.priority, 9)
   assert.equal(patched.json.enabled, false)
   const updateCall = accountAdmin.calls.find((entry) => entry.method === 'update')
   assert.deepEqual(updateCall?.args, [
     API_ACTOR,
     'acc_1',
-    { label: 'renamed', baseUrl: 'https://new.example.com/v1', protocol: 'anthropic', priority: 9 },
+    {
+      label: 'renamed',
+      baseUrl: 'https://new.example.com/v1',
+      protocol: 'anthropic',
+      models: ['o3'],
+      modelMap: { o3: 'o3-mini' },
+      priority: 9,
+    },
   ])
   assert.ok(accountAdmin.calls.some((entry) => entry.method === 'disable'))
   assert.ok(!accountAdmin.calls.some((entry) => entry.method === 'enable'), 'enabled 不能被塞进 update')

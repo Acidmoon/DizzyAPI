@@ -164,6 +164,8 @@ export class IdentityService extends Service {
         subject: emptyToNull(input.subject),
         baseUrl: normalizeBaseUrl(input.baseUrl),
         protocol: normalizeProtocol(input.protocol),
+        models: normalizeModels(input.models),
+        modelMap: normalizeModelMap(input.modelMap),
         priority: normalizePriority(input.priority, 0),
         accessExpiresAt: bundle?.expiresAt ?? null,
         refreshDueAt: input.kind === 'oauth' ? dueIso(bundle?.expiresAt, this.config.refreshLeadMs) : null,
@@ -202,6 +204,8 @@ export class IdentityService extends Service {
         subject: patch.subject === undefined ? account.subject : emptyToNull(patch.subject ?? undefined),
         baseUrl: patch.baseUrl === undefined ? account.baseUrl : normalizeBaseUrl(patch.baseUrl),
         protocol: patch.protocol === undefined ? account.protocol : normalizeProtocol(patch.protocol),
+        models: patch.models === undefined ? account.models : normalizeModels(patch.models),
+        modelMap: patch.modelMap === undefined ? account.modelMap : normalizeModelMap(patch.modelMap),
         priority: patch.priority === undefined ? account.priority : normalizePriority(patch.priority, account.priority),
         enabled: patch.enabled === undefined ? account.enabled : patch.enabled,
         updatedAt: nowIso(),
@@ -726,6 +730,77 @@ function normalizePriority(value: number | undefined, fallback: number): number 
     throw new IdentityError('IDENTITY_ACCOUNT_INVALID', 'priority 必须是 0–1000 的整数')
   }
   return value
+}
+
+const MODELS_MAX_ENTRIES = 200
+const MODEL_NAME_MAX_LENGTH = 200
+
+/**
+ * 对外模型名列表。`undefined` / `null` → `null`；逐个 trim、丢弃空串、去重、保序；
+ * 空数组归一成 `null`（「没声明」与「声明了个空的」是同一件事）。非法值明确失败。
+ */
+function normalizeModels(value: unknown): string[] | null {
+  if (value === undefined || value === null) return null
+  if (!Array.isArray(value)) {
+    throw new IdentityError('IDENTITY_ACCOUNT_INVALID', 'models 必须是字符串数组或 null')
+  }
+  if (value.length > MODELS_MAX_ENTRIES) {
+    throw new IdentityError('IDENTITY_ACCOUNT_INVALID', `models 最多 ${MODELS_MAX_ENTRIES} 个`)
+  }
+  const result: string[] = []
+  const seen = new Set<string>()
+  for (const item of value) {
+    if (typeof item !== 'string') {
+      throw new IdentityError('IDENTITY_ACCOUNT_INVALID', 'models 的元素必须是字符串')
+    }
+    const name = item.trim()
+    if (name === '') continue
+    if (name.length > MODEL_NAME_MAX_LENGTH) {
+      throw new IdentityError('IDENTITY_ACCOUNT_INVALID', `模型名最长 ${MODEL_NAME_MAX_LENGTH} 个字符`)
+    }
+    rejectControlCharacters(name, '模型名')
+    if (seen.has(name)) continue
+    seen.add(name)
+    result.push(name)
+  }
+  return result.length === 0 ? null : result
+}
+
+/**
+ * 对外模型名 → 上游真实模型名。`undefined` / `null` → `null`；键值都 trim 且非空；
+ * 空对象归一成 `null`。非对象 / 非字符串值 / 控制字符 / 超长明确失败。
+ */
+function normalizeModelMap(value: unknown): Record<string, string> | null {
+  if (value === undefined || value === null) return null
+  if (typeof value !== 'object' || Array.isArray(value)) {
+    throw new IdentityError('IDENTITY_ACCOUNT_INVALID', 'modelMap 必须是字符串映射或 null')
+  }
+  const entries = Object.entries(value as Record<string, unknown>)
+  if (entries.length > MODELS_MAX_ENTRIES) {
+    throw new IdentityError('IDENTITY_ACCOUNT_INVALID', `modelMap 最多 ${MODELS_MAX_ENTRIES} 项`)
+  }
+  const result: Record<string, string> = {}
+  for (const [rawKey, rawValue] of entries) {
+    if (typeof rawValue !== 'string') {
+      throw new IdentityError('IDENTITY_ACCOUNT_INVALID', 'modelMap 的值必须是字符串')
+    }
+    const key = rawKey.trim()
+    const mapped = rawValue.trim()
+    if (key === '' || mapped === '') continue
+    if (key.length > MODEL_NAME_MAX_LENGTH || mapped.length > MODEL_NAME_MAX_LENGTH) {
+      throw new IdentityError('IDENTITY_ACCOUNT_INVALID', `modelMap 的键与值最长 ${MODEL_NAME_MAX_LENGTH} 个字符`)
+    }
+    rejectControlCharacters(key, 'modelMap 的键')
+    rejectControlCharacters(mapped, 'modelMap 的值')
+    result[key] = mapped
+  }
+  return Object.keys(result).length === 0 ? null : result
+}
+
+function rejectControlCharacters(value: string, field: string): void {
+  if (/[\u0000-\u001f\u007f]/.test(value)) {
+    throw new IdentityError('IDENTITY_ACCOUNT_INVALID', `${field}不得包含控制字符`)
+  }
 }
 
 function requireLabel(value: string): string {

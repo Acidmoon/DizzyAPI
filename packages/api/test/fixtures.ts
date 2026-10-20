@@ -435,6 +435,8 @@ export class FakeAccountAdmin implements AccountAdminPort {
       subject: 'org-1',
       baseUrl: 'https://api.openai.com/v1',
       protocol: 'openai-chat',
+      models: ['gpt-5', 'gpt-5-codex'],
+      modelMap: { 'gpt-5-codex': 'gpt-5-codex-2025-01-01' },
       priority: 5,
       accessExpiresAt: null,
       refreshDueAt: null,
@@ -456,6 +458,8 @@ export class FakeAccountAdmin implements AccountAdminPort {
       subject: null,
       baseUrl: null,
       protocol: null,
+      models: null,
+      modelMap: null,
       priority: 0,
       accessExpiresAt: null,
       refreshDueAt: null,
@@ -500,6 +504,11 @@ export class FakeAccountAdmin implements AccountAdminPort {
       subject: null,
       baseUrl: typeof input.baseUrl === 'string' ? input.baseUrl : null,
       protocol: typeof input.protocol === 'string' ? input.protocol : null,
+      models: Array.isArray(input.models) ? input.models : null,
+      modelMap:
+        typeof input.modelMap === 'object' && input.modelMap !== null
+          ? (input.modelMap as Record<string, string>)
+          : null,
       priority: typeof input.priority === 'number' ? input.priority : 0,
       accessExpiresAt: null,
       refreshDueAt: null,

@@ -69,6 +69,8 @@ interface IdentitySeam {
     readonly status: string
     readonly baseUrl: string | null
     readonly protocol?: string | null
+    readonly models?: readonly string[] | null
+    readonly modelMap?: Readonly<Record<string, string>> | null
     readonly priority: number
     readonly accessExpiresAt: string | null
   }[]
@@ -754,6 +756,8 @@ export class AccountPriorityService extends Service {
             kind: account.kind,
             baseUrl,
             ...(account.protocol === null || account.protocol === undefined ? {} : { protocol: account.protocol }),
+            ...(account.models === null || account.models === undefined ? {} : { models: account.models }),
+            ...(account.modelMap === null || account.modelMap === undefined ? {} : { modelMap: account.modelMap }),
             token,
             priority: account.priority,
             ...(account.accessExpiresAt === null ? {} : { expiresAt: account.accessExpiresAt }),

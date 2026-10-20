@@ -180,6 +180,82 @@ test('protocol：update 可改可清空，非法值明确失败', async (t) => {
   assert.equal(world.identity.get(account.id).protocol, null)
 })
 
+test('models / modelMap：创建落库；旧快照缺字段读出 null（不拒绝整份文件）', async (t) => {
+  const first = await boot(t)
+  const account = await first.identity.create({
+    provider: 'openai',
+    kind: 'api_key',
+    label: '模型账号',
+    models: ['gpt-5', 'gpt-5-codex', 'gpt-5'],
+    modelMap: { 'gpt-5-codex': 'gpt-5-codex-2025-01-01' },
+    secret: { apiKey: 'sk-models' },
+  })
+  assert.deepEqual(account.models, ['gpt-5', 'gpt-5-codex'], '去重且保序')
+  assert.deepEqual(account.modelMap, { 'gpt-5-codex': 'gpt-5-codex-2025-01-01' })
+  await first.fiber.dispose()
+
+  // 抹掉两个字段，模拟升级前的旧快照。
+  const path = join(first.dir, 'accounts.json')
+  const snapshot = JSON.parse(await readFile(path, 'utf8')) as {
+    accounts: Record<string, Record<string, unknown>>
+  }
+  delete snapshot.accounts[account.id]?.models
+  delete snapshot.accounts[account.id]?.modelMap
+  await writeFile(path, JSON.stringify(snapshot), 'utf8')
+
+  const ctx = new Context()
+  await ctx.plugin(CredentialsService, { dataPath: join(first.dir, 'credentials.json') })
+  const fiber = await ctx.plugin(IdentityService, { dataPath: path })
+  t.after(() => fiber.dispose())
+
+  const identity = ctx.get('identity') as IdentityService
+  assert.equal(identity.get(account.id).models, null, '缺 models 的旧快照按 null 读出')
+  assert.equal(identity.get(account.id).modelMap, null, '缺 modelMap 的旧快照按 null 读出')
+})
+
+test('models / modelMap：update 可改可清空，空数组 / 空对象归一成 null，非法值被拒', async (t) => {
+  const world = await boot(t)
+  const account = await world.identity.create({
+    provider: 'custom',
+    kind: 'api_key',
+    label: 'x',
+    secret: { apiKey: 'sk-1' },
+  })
+  assert.equal(account.models, null, '未声明时默认 null')
+  assert.equal(account.modelMap, null)
+
+  const changed = await world.identity.update(account.id, {
+    models: ['  gpt-5 ', '', 'gpt-5', 'o3'],
+    modelMap: { 'gpt-5': 'gpt-5-2025', '  ': 'skip', empty: '   ' },
+  })
+  assert.deepEqual(changed.models, ['gpt-5', 'o3'], 'trim、丢弃空串、去重')
+  assert.deepEqual(changed.modelMap, { 'gpt-5': 'gpt-5-2025' }, '空键 / 空值被丢弃')
+
+  const cleared = await world.identity.update(account.id, { models: [], modelMap: {} })
+  assert.equal(cleared.models, null, '空数组归一成 null')
+  assert.equal(cleared.modelMap, null, '空对象归一成 null')
+
+  const invalid = (error: unknown): boolean =>
+    isIdentityError(error) && error.code === 'IDENTITY_ACCOUNT_INVALID'
+  await assert.rejects(
+    world.identity.create({ provider: 'custom', kind: 'api_key', label: 'y', models: [1] as never }),
+    invalid,
+  )
+  await assert.rejects(
+    world.identity.create({ provider: 'custom', kind: 'api_key', label: 'z', models: ['bad\nname'] }),
+    invalid,
+  )
+  await assert.rejects(
+    world.identity.create({ provider: 'custom', kind: 'api_key', label: 'w', models: ['x'.repeat(201)] }),
+    invalid,
+  )
+  await assert.rejects(
+    world.identity.update(account.id, { modelMap: { key: 1 } as never }),
+    invalid,
+  )
+  assert.equal(world.identity.get(account.id).models, null, '非法值不会写进账号')
+})
+
 test('Claude RT 刷新：请求正确，轮换后的两个令牌都落盘', async (t) => {
   const calls = mockFetch(t, async () =>
     ok({ access_token: 'new-access', refresh_token: 'new-refresh', expires_in: 3600, token_type: 'Bearer' }),

@@ -83,7 +83,16 @@ const SUBJECT_MAX_LENGTH = 200
 const SEARCH_MAX_LENGTH = 200
 
 const QUERY_KEYS = ['provider', 'kind', 'enabled', 'status', 'search'] as const
-const UPDATE_KEYS = ['label', 'email', 'subject', 'baseUrl', 'protocol', 'priority'] as const
+const UPDATE_KEYS = [
+  'label',
+  'email',
+  'subject',
+  'baseUrl',
+  'protocol',
+  'models',
+  'modelMap',
+  'priority',
+] as const
 const BULK_DEFAULT_KEYS = ['format', 'provider', 'kind', 'enabled', 'labelPrefix'] as const
 
 export class AccountAdminService extends Service {
@@ -113,6 +122,8 @@ export class AccountAdminService extends Service {
           subject: { type: 'string', optional: true },
           baseUrl: { type: 'string', optional: true },
           protocol: { type: 'string', optional: true },
+          models: { type: 'array<string>', optional: true },
+          modelMap: { type: 'map<string, string>', optional: true },
           priority: { type: 'number' },
         },
       },
@@ -197,6 +208,8 @@ export class AccountAdminService extends Service {
     const label = normalizeLabel(input.label)
     const baseUrl = normalizeOptionalBaseUrl(input.baseUrl)
     const protocol = normalizeOptionalProtocol(input.protocol)
+    const models = normalizeOptionalModels(input.models)
+    const modelMap = normalizeOptionalModelMap(input.modelMap)
     const priority = normalizeOptionalPriority(input.priority)
     const enabled = normalizeOptionalBoolean(input.enabled, 'enabled')
 
@@ -233,6 +246,8 @@ export class AccountAdminService extends Service {
       ...(subject !== undefined ? { subject } : {}),
       ...(baseUrl !== undefined ? { baseUrl } : {}),
       ...(protocol !== undefined ? { protocol } : {}),
+      ...(models !== undefined ? { models } : {}),
+      ...(modelMap !== undefined ? { modelMap } : {}),
       ...(priority !== undefined ? { priority } : {}),
       ...(enabled !== undefined ? { enabled } : {}),
       ...(parsed !== undefined ? { secret: parsed.bundle } : {}),
@@ -260,6 +275,8 @@ export class AccountAdminService extends Service {
       subject?: string | null
       baseUrl?: string | null
       protocol?: AccountProtocol | null
+      models?: string[] | null
+      modelMap?: Record<string, string> | null
       priority?: number
     } = {}
     if ('label' in patch) normalized.label = normalizeLabel(patch.label)
@@ -267,6 +284,8 @@ export class AccountAdminService extends Service {
     if ('subject' in patch) normalized.subject = normalizeNullableText(patch.subject, 'subject', SUBJECT_MAX_LENGTH)
     if ('baseUrl' in patch) normalized.baseUrl = normalizeNullableBaseUrl(patch.baseUrl)
     if ('protocol' in patch) normalized.protocol = normalizeNullableProtocol(patch.protocol)
+    if ('models' in patch) normalized.models = normalizeNullableModels(patch.models)
+    if ('modelMap' in patch) normalized.modelMap = normalizeNullableModelMap(patch.modelMap)
     if ('priority' in patch) normalized.priority = normalizeRequiredPriority(patch.priority)
 
     // 空 patch 是幂等的读：不制造一次无意义的写盘与 updatedAt 变化。
@@ -468,6 +487,8 @@ function toView(account: AccountRecord, credentialConfigured: boolean): AccountV
     subject: account.subject,
     baseUrl: account.baseUrl,
     protocol: account.protocol,
+    models: account.models,
+    modelMap: account.modelMap,
     priority: account.priority,
     accessExpiresAt: account.accessExpiresAt,
     refreshDueAt: account.refreshDueAt,
@@ -608,6 +629,73 @@ function requireProtocol(value: unknown): AccountProtocol {
 function normalizeOptionalPriority(value: unknown): number | undefined {
   if (value === undefined) return undefined
   return normalizeRequiredPriority(value)
+}
+
+const MODELS_MAX_ENTRIES = 200
+const MODEL_NAME_MAX_LENGTH = 200
+
+function normalizeOptionalModels(value: unknown): string[] | undefined {
+  if (value === undefined || value === null) return undefined
+  const models = requireModels(value)
+  return models === null ? undefined : models
+}
+
+function normalizeNullableModels(value: unknown): string[] | null {
+  if (value === null) return null
+  return requireModels(value)
+}
+
+/** trim、丢弃空串、去重、保序；空数组归一成 `null`；非法值明确失败。 */
+function requireModels(value: unknown): string[] | null {
+  if (!Array.isArray(value)) failInput('models 必须是字符串数组或 null')
+  if (value.length > MODELS_MAX_ENTRIES) failInput(`models 最多 ${MODELS_MAX_ENTRIES} 个`)
+  const result: string[] = []
+  const seen = new Set<string>()
+  for (const item of value) {
+    if (typeof item !== 'string') failInput('models 的元素必须是字符串')
+    const name = item.trim()
+    if (name === '') continue
+    if (name.length > MODEL_NAME_MAX_LENGTH) failInput(`模型名最长 ${MODEL_NAME_MAX_LENGTH} 个字符`)
+    rejectControlCharacters(name, '模型名')
+    if (seen.has(name)) continue
+    seen.add(name)
+    result.push(name)
+  }
+  return result.length === 0 ? null : result
+}
+
+function normalizeOptionalModelMap(value: unknown): Record<string, string> | undefined {
+  if (value === undefined || value === null) return undefined
+  const modelMap = requireModelMap(value)
+  return modelMap === null ? undefined : modelMap
+}
+
+function normalizeNullableModelMap(value: unknown): Record<string, string> | null {
+  if (value === null) return null
+  return requireModelMap(value)
+}
+
+/** 键值都 trim 且非空；空对象归一成 `null`；非对象 / 非字符串值 / 控制字符 / 超长明确失败。 */
+function requireModelMap(value: unknown): Record<string, string> | null {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    failInput('modelMap 必须是字符串映射或 null')
+  }
+  const entries = Object.entries(value as Record<string, unknown>)
+  if (entries.length > MODELS_MAX_ENTRIES) failInput(`modelMap 最多 ${MODELS_MAX_ENTRIES} 项`)
+  const result: Record<string, string> = {}
+  for (const [rawKey, rawValue] of entries) {
+    if (typeof rawValue !== 'string') failInput('modelMap 的值必须是字符串')
+    const key = rawKey.trim()
+    const mapped = rawValue.trim()
+    if (key === '' || mapped === '') continue
+    if (key.length > MODEL_NAME_MAX_LENGTH || mapped.length > MODEL_NAME_MAX_LENGTH) {
+      failInput(`modelMap 的键与值最长 ${MODEL_NAME_MAX_LENGTH} 个字符`)
+    }
+    rejectControlCharacters(key, 'modelMap 的键')
+    rejectControlCharacters(mapped, 'modelMap 的值')
+    result[key] = mapped
+  }
+  return Object.keys(result).length === 0 ? null : result
 }
 
 function normalizeRequiredPriority(value: unknown): number {

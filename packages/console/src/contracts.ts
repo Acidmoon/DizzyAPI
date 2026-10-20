@@ -29,6 +29,10 @@ export interface AccountSummary {
   readonly subject: string | null
   readonly baseUrl: string | null
   readonly protocol: AccountProtocol | null
+  /** 这个账号服务的对外模型名；null / 空 = 未声明。 */
+  readonly models: string[] | null
+  /** 对外模型名 → 上游真实模型名；null / 空 = 不改写。 */
+  readonly modelMap: Record<string, string> | null
   readonly priority: number
   readonly accessExpiresAt: string | null
   readonly refreshDueAt: string | null
@@ -59,6 +63,10 @@ export interface AccountUpdateInput {
   readonly subject?: string | null
   readonly baseUrl?: string | null
   readonly protocol?: AccountProtocol | null
+  /** `undefined` = 不改；`null` 或空数组 = 清空为未声明。 */
+  readonly models?: string[] | null
+  /** `undefined` = 不改；`null` 或空对象 = 清空为不改写。 */
+  readonly modelMap?: Record<string, string> | null
   readonly priority?: number
   readonly enabled?: boolean
 }
@@ -88,6 +96,10 @@ export interface CreateAccountInput {
   readonly subject?: string
   readonly baseUrl?: string
   readonly protocol?: AccountProtocol
+  /** 这个账号服务的对外模型名；空数组与未声明等价。 */
+  readonly models?: string[]
+  /** 对外模型名 → 上游真实模型名；空对象与未声明等价。 */
+  readonly modelMap?: Record<string, string>
   readonly priority?: number
   readonly enabled?: boolean
   readonly credential?: AccountCredentialInput

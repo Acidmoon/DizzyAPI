@@ -178,6 +178,7 @@ function run() {
         accounts = Array.isArray(params.accounts) ? params.accounts : []
         accountsRevision += 1
         // 测试替身：把收到的原始账号快照写盘，供用例断言形状（如 protocol 键的有无）。
+        // 测试替身：把收到的原始账号快照写盘，供用例断言形状（如 models / modelMap 键的有无）。
         if (options.accountsLog) {
           try {
             writeFileSync(options.accountsLog, JSON.stringify(accounts))

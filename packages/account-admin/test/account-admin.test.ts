@@ -181,6 +181,45 @@ test('protocol：create 透传、UPDATE_KEYS 接受、toView 与 catalog shapes 
   assert.ok('protocol' in AccountAdminService.catalog.shapes.AccountView.fields)
 })
 
+test('models / modelMap：create 透传、UPDATE_KEYS 接受、toView 与 catalog shapes 都含它们', async (t) => {
+  const world = await boot(t)
+  const view = await world.admin.create(ACTOR, {
+    provider: 'openai',
+    kind: 'api_key',
+    label: '模型账号',
+    models: ['gpt-5', 'gpt-5-codex'],
+    modelMap: { 'gpt-5-codex': 'gpt-5-codex-2025-01-01' },
+  })
+  assert.deepEqual(view.models, ['gpt-5', 'gpt-5-codex'])
+  assert.deepEqual(view.modelMap, { 'gpt-5-codex': 'gpt-5-codex-2025-01-01' })
+  assert.deepEqual(world.identity.get(view.id).models, ['gpt-5', 'gpt-5-codex'], 'identity 是唯一写者')
+
+  const updated = await world.admin.update(ACTOR, view.id, { models: ['o3'], modelMap: { o3: 'o3-mini' } })
+  assert.deepEqual(updated.models, ['o3'])
+  assert.deepEqual(updated.modelMap, { o3: 'o3-mini' })
+  const cleared = await world.admin.update(ACTOR, view.id, { models: null, modelMap: null })
+  assert.equal(cleared.models, null)
+  assert.equal(cleared.modelMap, null)
+
+  // 未声明时 toView 给 null。
+  const plain = await world.admin.create(ACTOR, { provider: 'custom', kind: 'api_key', label: '无模型' })
+  assert.equal(plain.models, null)
+  assert.equal(plain.modelMap, null)
+
+  // 非法值明确失败，不静默降级。
+  await assert.rejects(
+    world.admin.create(ACTOR, { provider: 'custom', kind: 'api_key', label: 'z', models: [1] as never }),
+    hasCode('ACCOUNT_ADMIN_INPUT_INVALID'),
+  )
+  await assert.rejects(
+    world.admin.update(ACTOR, view.id, { modelMap: { key: 1 } as never }),
+    hasCode('ACCOUNT_ADMIN_INPUT_INVALID'),
+  )
+
+  assert.ok('models' in AccountAdminService.catalog.shapes.AccountView.fields)
+  assert.ok('modelMap' in AccountAdminService.catalog.shapes.AccountView.fields)
+})
+
 test('Claude .credentials.json：嵌套 claudeAiOauth、毫秒 expiresAt、scopes 拼成 scope', async (t) => {
   const world = await boot(t)
   const expiresAt = Date.now() + 3_600_000
