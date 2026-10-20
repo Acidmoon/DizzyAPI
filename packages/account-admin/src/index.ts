@@ -36,6 +36,7 @@ export type {
   AccountKind,
   AccountListQuery,
   AccountProvider,
+  AccountProtocol,
   AccountRecord,
   AccountStatus,
   AccountView,

@@ -235,6 +235,27 @@ test('mock：用量、keys、充值都是契约形状', async () => {
   assert.equal(manifest.pages.find((page) => page.path === '/admin/users')?.view.kind, 'users')
 })
 
+test('mock：账号 create / update 回填 protocol', async () => {
+  const mock = createMockApis({ latencyMs: 0, now: () => new Date('2026-10-19T12:00:00.000Z') })
+
+  const created = await mock.accounts.create({
+    provider: 'openai',
+    kind: 'api_key',
+    label: 'protocol 账号',
+    protocol: 'openai-responses',
+  })
+  assert.equal(created.protocol, 'openai-responses')
+
+  const updated = await mock.accounts.update(created.id, { protocol: 'anthropic' })
+  assert.equal(updated.protocol, 'anthropic')
+
+  const cleared = await mock.accounts.update(created.id, { protocol: null })
+  assert.equal(cleared.protocol, null)
+
+  const plain = await mock.accounts.create({ provider: 'custom', kind: 'api_key', label: '无协议' })
+  assert.equal(plain.protocol, null)
+})
+
 test('mock：会话、用户管理与 admin 权限形状', async () => {
   const mock = createMockApis({ latencyMs: 0, now: () => new Date('2026-10-19T12:00:00.000Z') })
 

@@ -13,6 +13,12 @@
  */
 export type IdentityProvider = 'claude' | 'openai' | 'custom'
 
+/**
+ * 上游端点说哪种协议；协议转换中间件按它决定怎么翻译请求。
+ * `null` = 未声明，走旧行为（兼容存量账号）。
+ */
+export type IdentityProtocol = 'openai-chat' | 'openai-responses' | 'anthropic'
+
 /** 订阅账号（OAuth，可以刷新）与外部 API（只有静态 key）。 */
 export type IdentityAccountKind = 'oauth' | 'api_key'
 
@@ -51,6 +57,8 @@ export interface IdentityAccount {
   readonly subject: string | null
   /** 该账号自己的 OpenAI 兼容 base URL；`null` = 用 account-priority 的 provider 默认值。 */
   readonly baseUrl: string | null
+  /** 上游端点的协议；`null` = 未声明（走旧行为）。 */
+  readonly protocol: IdentityProtocol | null
   /** 该账号在 account-priority 评分里的 priority 因子；默认 0。 */
   readonly priority: number
   /** 访问令牌过期时间（ISO）；`null` = 尚未导入令牌。 */
@@ -74,6 +82,7 @@ export interface CreateIdentityAccountInput {
   readonly email?: string
   readonly subject?: string
   readonly baseUrl?: string
+  readonly protocol?: IdentityProtocol
   readonly priority?: number
   readonly enabled?: boolean
   readonly secret?: IdentityTokenBundle
@@ -85,6 +94,8 @@ export interface UpdateIdentityAccountInput {
   readonly email?: string | null
   readonly subject?: string | null
   readonly baseUrl?: string | null
+  /** `undefined` = 不改；`null` = 清空为未声明。 */
+  readonly protocol?: IdentityProtocol | null
   readonly priority?: number
   readonly enabled?: boolean
 }

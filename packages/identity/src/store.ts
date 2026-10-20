@@ -83,6 +83,7 @@ function decodeAccount(raw: unknown, key: string): IdentityAccount {
     email: readNullableString(source, 'email', where),
     subject: readNullableString(source, 'subject', where),
     baseUrl: readOptionalNullableString(source, 'baseUrl', where),
+    protocol: readOptionalNullableString(source, 'protocol', where) as IdentityAccount['protocol'],
     priority: readOptionalInteger(source, 'priority', where),
     accessExpiresAt: readNullableString(source, 'accessExpiresAt', where),
     refreshDueAt: readNullableString(source, 'refreshDueAt', where),

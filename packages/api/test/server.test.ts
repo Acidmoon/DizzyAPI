@@ -468,6 +468,7 @@ test('管理员账号：列表 / 详情剥掉 credentialRef，PATCH enabled 走 
       'lastError',
       'lastRefreshAt',
       'priority',
+      'protocol',
       'provider',
       'refreshDueAt',
       'status',
@@ -491,12 +492,14 @@ test('管理员账号：列表 / 详情剥掉 credentialRef，PATCH enabled 走 
       kind: 'api_key',
       label: 'new account',
       baseUrl: 'https://api.openai.com/v1',
+      protocol: 'openai-chat',
       priority: 7,
       credential: { payload: 'sk-upstream', format: 'auto' },
     }),
   })
   assert.equal(created.status, 200, created.text)
   assert.equal(created.json.label, 'new account')
+  assert.equal(created.json.protocol, 'openai-chat')
   assert.ok(!created.text.includes('credentialRef'))
   const createCall = accountAdmin.calls.find((entry) => entry.method === 'create')
   assert.deepEqual(createCall?.args, [
@@ -506,6 +509,7 @@ test('管理员账号：列表 / 详情剥掉 credentialRef，PATCH enabled 走 
       kind: 'api_key',
       label: 'new account',
       baseUrl: 'https://api.openai.com/v1',
+      protocol: 'openai-chat',
       priority: 7,
       credential: { payload: 'sk-upstream', format: 'auto' },
     },
@@ -517,6 +521,7 @@ test('管理员账号：列表 / 详情剥掉 credentialRef，PATCH enabled 走 
     body: JSON.stringify({
       label: 'renamed',
       baseUrl: 'https://new.example.com/v1',
+      protocol: 'anthropic',
       priority: 9,
       enabled: false,
     }),
@@ -524,13 +529,14 @@ test('管理员账号：列表 / 详情剥掉 credentialRef，PATCH enabled 走 
   assert.equal(patched.status, 200, patched.text)
   assert.equal(patched.json.label, 'renamed')
   assert.equal(patched.json.baseUrl, 'https://new.example.com/v1')
+  assert.equal(patched.json.protocol, 'anthropic')
   assert.equal(patched.json.priority, 9)
   assert.equal(patched.json.enabled, false)
   const updateCall = accountAdmin.calls.find((entry) => entry.method === 'update')
   assert.deepEqual(updateCall?.args, [
     API_ACTOR,
     'acc_1',
-    { label: 'renamed', baseUrl: 'https://new.example.com/v1', priority: 9 },
+    { label: 'renamed', baseUrl: 'https://new.example.com/v1', protocol: 'anthropic', priority: 9 },
   ])
   assert.ok(accountAdmin.calls.some((entry) => entry.method === 'disable'))
   assert.ok(!accountAdmin.calls.some((entry) => entry.method === 'enable'), 'enabled 不能被塞进 update')

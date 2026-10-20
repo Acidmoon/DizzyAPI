@@ -2066,6 +2066,25 @@ function openCreateAccountDialog(reload) {
     baseUrl.dataset.touched = '1'
   })
 
+  const defaultProtocols = {
+    openai: 'openai-chat',
+    claude: 'anthropic',
+    custom: '',
+  }
+  const protocol = /** @type {HTMLSelectElement} */ (el('select', { class: 'input' }))
+  for (const [value, text] of [
+    ['', '未声明'],
+    ['openai-chat', 'OpenAI Chat'],
+    ['openai-responses', 'OpenAI Responses'],
+    ['anthropic', 'Anthropic'],
+  ]) {
+    protocol.append(el('option', { attrs: { value }, text }))
+  }
+  protocol.value = defaultProtocols.openai
+  protocol.addEventListener('change', () => {
+    protocol.dataset.touched = '1'
+  })
+
   const apiKey = /** @type {HTMLInputElement} */ (el('input', {
     attrs: { type: 'password', autocomplete: 'off', placeholder: 'sk-...' },
   }))
@@ -2145,6 +2164,7 @@ function openCreateAccountDialog(reload) {
     }
     baseUrl.placeholder =
       defaultBaseUrls[next] || (next === 'custom' ? 'https://your-upstream.example/v1' : '')
+    if (protocol.dataset.touched !== '1') protocol.value = defaultProtocols[next]
     if (next === 'custom' && kind === 'oauth') kind = 'api_key'
     renderChoices()
   }
@@ -2199,6 +2219,7 @@ function openCreateAccountDialog(reload) {
       'div',
       { class: 'form-grid' },
       el('div', { class: 'form-field' }, el('label', { text: 'Base URL' }), baseUrl),
+      el('div', { class: 'form-field' }, el('label', { text: '上游协议' }), protocol),
       el('div', { class: 'form-field' }, el('label', { text: '优先级' }), priority),
       credentialField,
       el(
@@ -2236,6 +2257,9 @@ function openCreateAccountDialog(reload) {
         priority: Number(priority.value === '' ? '0' : priority.value),
         enabled: enabled.checked,
         ...(baseUrl.value.trim() === '' ? {} : { baseUrl: baseUrl.value.trim() }),
+        ...(protocol.value === ''
+          ? {}
+          : { protocol: /** @type {import('../src/contracts.ts').AccountProtocol} */ (protocol.value) }),
         ...(payload === ''
           ? {}
           : {
@@ -2276,6 +2300,16 @@ function openEditAccountDialog(account, reload) {
   const priority = /** @type {HTMLInputElement} */ (el('input', {
     attrs: { type: 'number', min: '0', max: '1000', step: '1', value: String(account.priority) },
   }))
+  const protocol = /** @type {HTMLSelectElement} */ (el('select', { class: 'input' }))
+  for (const [value, text] of [
+    ['', '未声明'],
+    ['openai-chat', 'OpenAI Chat'],
+    ['openai-responses', 'OpenAI Responses'],
+    ['anthropic', 'Anthropic'],
+  ]) {
+    protocol.append(el('option', { attrs: { value }, text }))
+  }
+  protocol.value = account.protocol ?? ''
   const error = el('p', { class: 'error-message', attrs: { hidden: '' } })
   const cancel = el('button', { class: 'btn', attrs: { type: 'button' }, text: '取消' })
   const save = /** @type {HTMLButtonElement} */ (el('button', {
@@ -2289,6 +2323,7 @@ function openEditAccountDialog(account, reload) {
     el('div', { class: 'form-grid' },
       el('div', { class: 'form-field span-2' }, el('label', { text: '名称' }), label),
       el('div', { class: 'form-field span-2' }, el('label', { text: 'Base URL' }), baseUrl),
+      el('div', { class: 'form-field' }, el('label', { text: '上游协议' }), protocol),
       el('div', { class: 'form-field' }, el('label', { text: '优先级' }), priority),
     ),
     error,
@@ -2305,6 +2340,7 @@ function openEditAccountDialog(account, reload) {
       await api().accounts.update(account.id, {
         label: label.value,
         baseUrl: baseUrl.value.trim() === '' ? null : baseUrl.value.trim(),
+        protocol: protocol.value === '' ? null : /** @type {import('../src/contracts.ts').AccountProtocol} */ (protocol.value),
         priority: Number(priority.value === '' ? '0' : priority.value),
       })
       toast('账号已更新')
