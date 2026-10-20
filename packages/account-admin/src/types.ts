@@ -9,6 +9,9 @@
 /** 与 identity 的 provider 保持一致。 */
 export type AccountProvider = 'claude' | 'openai' | 'custom'
 
+/** 与 identity 的 protocol 保持一致：上游端点说哪种协议。 */
+export type AccountProtocol = 'openai-chat' | 'openai-responses' | 'anthropic'
+
 /** 订阅账号（OAuth，可刷新）与静态 API key。 */
 export type AccountKind = 'oauth' | 'api_key'
 
@@ -29,6 +32,8 @@ export interface AccountRecord {
   readonly subject: string | null
   /** 账号自己的 OpenAI 兼容 base URL；null = 用 provider 默认映射。 */
   readonly baseUrl: string | null
+  /** 上游端点协议；null = 未声明（走旧行为）。 */
+  readonly protocol: AccountProtocol | null
   readonly priority: number
   readonly accessExpiresAt: string | null
   readonly refreshDueAt: string | null
@@ -98,6 +103,7 @@ export interface CreateAccountInput {
   readonly email?: string
   readonly subject?: string
   readonly baseUrl?: string
+  readonly protocol?: AccountProtocol
   readonly priority?: number
   readonly enabled?: boolean
   /** 可选的凭据；解析后的值只交给 identity，永不回显。 */
@@ -110,6 +116,8 @@ export interface UpdateAccountInput {
   readonly email?: string | null
   readonly subject?: string | null
   readonly baseUrl?: string | null
+  /** `undefined` = 不改；`null` = 清空为未声明。 */
+  readonly protocol?: AccountProtocol | null
   readonly priority?: number
 }
 

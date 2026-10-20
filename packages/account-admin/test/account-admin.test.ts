@@ -147,6 +147,40 @@ test('创建 API-key 账号：返回元数据，凭据尚未配置', async (t) =
   assert.equal(updated.priority, 2)
 })
 
+test('protocol：create 透传、UPDATE_KEYS 接受、toView 与 catalog shapes 都含它', async (t) => {
+  const world = await boot(t)
+  const view = await world.admin.create(ACTOR, {
+    provider: 'openai',
+    kind: 'api_key',
+    label: '协议账号',
+    protocol: 'openai-responses',
+  })
+  assert.equal(view.protocol, 'openai-responses')
+  assert.equal(world.identity.get(view.id).protocol, 'openai-responses')
+
+  const updated = await world.admin.update(ACTOR, view.id, { protocol: 'anthropic' })
+  assert.equal(updated.protocol, 'anthropic')
+  const cleared = await world.admin.update(ACTOR, view.id, { protocol: null })
+  assert.equal(cleared.protocol, null)
+
+  // 未声明时 toView 给 null。
+  const plain = await world.admin.create(ACTOR, { provider: 'custom', kind: 'api_key', label: '无协议' })
+  assert.equal(plain.protocol, null)
+
+  // 非法值明确失败，不静默降级。
+  await assert.rejects(
+    world.admin.create(ACTOR, {
+      provider: 'custom',
+      kind: 'api_key',
+      label: 'z',
+      protocol: 'bogus' as never,
+    }),
+    hasCode('ACCOUNT_ADMIN_INPUT_INVALID'),
+  )
+
+  assert.ok('protocol' in AccountAdminService.catalog.shapes.AccountView.fields)
+})
+
 test('Claude .credentials.json：嵌套 claudeAiOauth、毫秒 expiresAt、scopes 拼成 scope', async (t) => {
   const world = await boot(t)
   const expiresAt = Date.now() + 3_600_000

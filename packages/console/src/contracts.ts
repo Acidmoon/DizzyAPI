@@ -12,6 +12,8 @@
 import type { FrontendManifest, FrontendPage, FrontendSettingsCard, FrontendSlot } from './manifest.ts'
 
 export type AccountProvider = 'claude' | 'openai' | 'custom'
+/** 上游端点说哪种协议；`null` = 未声明，走旧行为。 */
+export type AccountProtocol = 'openai-chat' | 'openai-responses' | 'anthropic'
 export type AccountKind = 'oauth' | 'api_key'
 export type AccountStatus = 'active' | 'needs_reauth'
 
@@ -26,6 +28,7 @@ export interface AccountSummary {
   readonly email: string | null
   readonly subject: string | null
   readonly baseUrl: string | null
+  readonly protocol: AccountProtocol | null
   readonly priority: number
   readonly accessExpiresAt: string | null
   readonly refreshDueAt: string | null
@@ -55,6 +58,7 @@ export interface AccountUpdateInput {
   readonly email?: string | null
   readonly subject?: string | null
   readonly baseUrl?: string | null
+  readonly protocol?: AccountProtocol | null
   readonly priority?: number
   readonly enabled?: boolean
 }
@@ -83,6 +87,7 @@ export interface CreateAccountInput {
   readonly email?: string
   readonly subject?: string
   readonly baseUrl?: string
+  readonly protocol?: AccountProtocol
   readonly priority?: number
   readonly enabled?: boolean
   readonly credential?: AccountCredentialInput

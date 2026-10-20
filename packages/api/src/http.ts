@@ -756,6 +756,7 @@ export class ApiServer {
           'email',
           'subject',
           'baseUrl',
+          'protocol',
           'priority',
           'enabled',
           'credential',
@@ -766,6 +767,7 @@ export class ApiServer {
         const email = optionalString(body, 'email')
         const subject = optionalString(body, 'subject')
         const baseUrl = optionalString(body, 'baseUrl')
+        const protocol = optionalString(body, 'protocol')
         const priority = optionalInteger(body, 'priority', 0, 1000)
         const enabled = body.enabled === undefined ? undefined : requiredBoolean(body, 'enabled')
         const credential = accountCredentialOf(body.credential)
@@ -776,6 +778,7 @@ export class ApiServer {
           ...(email === undefined ? {} : { email }),
           ...(subject === undefined ? {} : { subject }),
           ...(baseUrl === undefined ? {} : { baseUrl }),
+          ...(protocol === undefined ? {} : { protocol }),
           ...(priority === undefined ? {} : { priority }),
           ...(enabled === undefined ? {} : { enabled }),
           ...(credential === undefined ? {} : { credential }),
@@ -836,12 +839,13 @@ export class ApiServer {
       }
       if (req.method === 'PATCH') {
         const body = await this.jsonBody(req)
-        assertOnlyKeys(body, ['label', 'email', 'subject', 'baseUrl', 'priority', 'enabled'])
+        assertOnlyKeys(body, ['label', 'email', 'subject', 'baseUrl', 'protocol', 'priority', 'enabled'])
         const hasMeta =
           Object.hasOwn(body, 'label') ||
           Object.hasOwn(body, 'email') ||
           Object.hasOwn(body, 'subject') ||
           Object.hasOwn(body, 'baseUrl') ||
+          Object.hasOwn(body, 'protocol') ||
           Object.hasOwn(body, 'priority')
         const hasEnabled = Object.hasOwn(body, 'enabled')
         if (!hasMeta && !hasEnabled) throw badRequest('没有可修改的字段')
@@ -852,12 +856,14 @@ export class ApiServer {
             email?: string | null
             subject?: string | null
             baseUrl?: string | null
+            protocol?: string | null
             priority?: number
           } = {}
           if (Object.hasOwn(body, 'label')) patch.label = requiredString(body, 'label')
           if (Object.hasOwn(body, 'email')) patch.email = nullableString(body, 'email')
           if (Object.hasOwn(body, 'subject')) patch.subject = nullableString(body, 'subject')
           if (Object.hasOwn(body, 'baseUrl')) patch.baseUrl = nullableString(body, 'baseUrl')
+          if (Object.hasOwn(body, 'protocol')) patch.protocol = nullableString(body, 'protocol')
           if (Object.hasOwn(body, 'priority')) patch.priority = optionalInteger(body, 'priority', 0, 1000)
           await accountAdmin.update(API_ACTOR, id, patch)
         }
@@ -1692,6 +1698,7 @@ function accountOf(value: unknown): AccountViewLike {
     email: typeof record.email === 'string' ? record.email : null,
     subject: typeof record.subject === 'string' ? record.subject : null,
     baseUrl: typeof record.baseUrl === 'string' ? record.baseUrl : null,
+    protocol: typeof record.protocol === 'string' ? record.protocol : null,
     priority: typeof record.priority === 'number' ? record.priority : 0,
     accessExpiresAt: typeof record.accessExpiresAt === 'string' ? record.accessExpiresAt : null,
     refreshDueAt: typeof record.refreshDueAt === 'string' ? record.refreshDueAt : null,

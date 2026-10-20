@@ -175,6 +175,7 @@ export interface AccountViewLike {
   readonly email: string | null
   readonly subject: string | null
   readonly baseUrl: string | null
+  readonly protocol: string | null
   readonly priority: number
   readonly accessExpiresAt: string | null
   readonly refreshDueAt: string | null
@@ -205,6 +206,7 @@ export interface AccountAdminPort {
       email?: string | null
       subject?: string | null
       baseUrl?: string | null
+      protocol?: string | null
       priority?: number
     },
   ): Promise<unknown>

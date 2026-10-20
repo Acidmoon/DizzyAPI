@@ -136,6 +136,8 @@ export interface GatewayAccount {
   readonly kind: string
   /** 上游 OpenAI 兼容 base URL（不含 /chat/completions）。 */
   readonly baseUrl: string
+  /** 上游端点协议；账号没声明时不带这个键，保持旧快照形状。 */
+  readonly protocol?: string
   readonly token: string
   readonly expiresAt?: string
   readonly priority?: number

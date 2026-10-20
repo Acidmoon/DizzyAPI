@@ -29,6 +29,7 @@ import type {
   IdentityAccount,
   IdentityAccountKind,
   IdentityProvider,
+  IdentityProtocol,
   IdentityRefreshResult,
   IdentityTokenBundle,
   UpdateIdentityAccountInput,
@@ -162,6 +163,7 @@ export class IdentityService extends Service {
         email: emptyToNull(input.email),
         subject: emptyToNull(input.subject),
         baseUrl: normalizeBaseUrl(input.baseUrl),
+        protocol: normalizeProtocol(input.protocol),
         priority: normalizePriority(input.priority, 0),
         accessExpiresAt: bundle?.expiresAt ?? null,
         refreshDueAt: input.kind === 'oauth' ? dueIso(bundle?.expiresAt, this.config.refreshLeadMs) : null,
@@ -199,6 +201,7 @@ export class IdentityService extends Service {
         email: patch.email === undefined ? account.email : emptyToNull(patch.email ?? undefined),
         subject: patch.subject === undefined ? account.subject : emptyToNull(patch.subject ?? undefined),
         baseUrl: patch.baseUrl === undefined ? account.baseUrl : normalizeBaseUrl(patch.baseUrl),
+        protocol: patch.protocol === undefined ? account.protocol : normalizeProtocol(patch.protocol),
         priority: patch.priority === undefined ? account.priority : normalizePriority(patch.priority, account.priority),
         enabled: patch.enabled === undefined ? account.enabled : patch.enabled,
         updatedAt: nowIso(),
@@ -705,6 +708,16 @@ function normalizeBaseUrl(value: string | null | undefined): string | null {
     throw new IdentityError('IDENTITY_ACCOUNT_INVALID', 'baseUrl 只支持 http / https')
   }
   return trimmed.replace(/\/+$/, '')
+}
+
+/** 只接受三个枚举值或 `null` / `undefined`；非法值明确失败，不静默降级。 */
+function normalizeProtocol(value: string | null | undefined): IdentityProtocol | null {
+  if (value === undefined || value === null) return null
+  if (value === 'openai-chat' || value === 'openai-responses' || value === 'anthropic') return value
+  throw new IdentityError(
+    'IDENTITY_ACCOUNT_INVALID',
+    'protocol 只能是 openai-chat / openai-responses / anthropic',
+  )
 }
 
 function normalizePriority(value: number | undefined, fallback: number): number {

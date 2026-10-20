@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -16,6 +16,7 @@ interface FakeAccount {
   readonly enabled: boolean
   readonly status: string
   readonly baseUrl?: string | null
+  readonly protocol?: string | null
   readonly priority?: number
   readonly accessExpiresAt: string | null
 }
@@ -162,6 +163,49 @@ test('identity 事件触发增量重推', async (t) => {
 
   world.identity.remove('acc-one')
   await waitFor(() => world.service.status().accounts === 1)
+})
+
+test('账号快照带 protocol；未声明时不带这个键', async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), 'dizzyapi-accounts-protocol-'))
+  const logPath = join(dir, 'accounts.json')
+  const ctx = new Context()
+  await ctx.plugin(FakeIdentity)
+  const identity = ctx.get('identity') as unknown as FakeIdentity
+  const fiber = await ctx.plugin(AccountPriorityService, {
+    dataPath: join(dir, 'strategies.json'),
+    binaryPath: process.execPath,
+    args: [FAKE, `--accounts-log=${logPath}`],
+    transport: 'tcp',
+    autoStart: true,
+    startTimeoutMs: 5_000,
+    requestTimeoutMs: 2_000,
+    stopTimeoutMs: 2_000,
+    httpListen: '127.0.0.1:0',
+    upstreamBaseUrls: { openai: 'https://api.openai.com/v1' },
+  })
+  t.after(async () => {
+    try {
+      await fiber.dispose()
+    } catch {
+      // ignore
+    }
+    await rm(dir, { recursive: true, force: true })
+  })
+  const service = ctx.get('accountPriority') as AccountPriorityService
+  await waitFor(() => service.status().state === 'ready')
+
+  identity.add(account('acc-with', { protocol: 'openai-chat' }), 'sk-with')
+  identity.add(account('acc-without'), 'sk-without')
+  await waitFor(() => service.status().accounts === 2)
+
+  const captured = JSON.parse(await readFile(logPath, 'utf8')) as {
+    accountId: string
+    protocol?: string
+  }[]
+  const withProtocol = captured.find((item) => item.accountId === 'acc-with')
+  const withoutProtocol = captured.find((item) => item.accountId === 'acc-without')
+  assert.equal(withProtocol?.protocol, 'openai-chat')
+  assert.ok(withoutProtocol !== undefined && !('protocol' in withoutProtocol), '未声明时快照里不该有 protocol 键')
 })
 
 test('没有 identity 时推送空快照，不阻塞 gatewayd 就绪', async (t) => {

@@ -10,6 +10,7 @@
  *   exit-before-ready | hang | crash-after-ready | reject-config | no-shutdown
  */
 import net from 'node:net'
+import { writeFileSync } from 'node:fs'
 
 const options = {
   transport: 'tcp',
@@ -17,6 +18,7 @@ const options = {
   listen: '127.0.0.1:0',
   logFormat: 'text',
   mode: 'ok',
+  accountsLog: '',
 }
 
 const argv = process.argv.slice(2)
@@ -32,6 +34,7 @@ for (let index = 0; index < argv.length; index += 1) {
   else if (key === 'listen') options.listen = value
   else if (key === 'log-format') options.logFormat = value
   else if (key === 'mode') options.mode = value
+  else if (key === 'accounts-log') options.accountsLog = value
 }
 
 if (options.mode === 'exit-before-ready') {
@@ -174,6 +177,14 @@ function run() {
         const params = request.params ?? {}
         accounts = Array.isArray(params.accounts) ? params.accounts : []
         accountsRevision += 1
+        // 测试替身：把收到的原始账号快照写盘，供用例断言形状（如 protocol 键的有无）。
+        if (options.accountsLog) {
+          try {
+            writeFileSync(options.accountsLog, JSON.stringify(accounts))
+          } catch {
+            // 写盘失败不影响桥协议。
+          }
+        }
         respond(socket, request.id, {
           revision: `fake-accounts-${accountsRevision}`,
           accounts: accounts.length,

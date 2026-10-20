@@ -31,6 +31,7 @@ import type {
   AccountKind,
   AccountListQuery,
   AccountProvider,
+  AccountProtocol,
   AccountRecord,
   AccountStatus,
   AccountView,
@@ -82,7 +83,7 @@ const SUBJECT_MAX_LENGTH = 200
 const SEARCH_MAX_LENGTH = 200
 
 const QUERY_KEYS = ['provider', 'kind', 'enabled', 'status', 'search'] as const
-const UPDATE_KEYS = ['label', 'email', 'subject', 'baseUrl', 'priority'] as const
+const UPDATE_KEYS = ['label', 'email', 'subject', 'baseUrl', 'protocol', 'priority'] as const
 const BULK_DEFAULT_KEYS = ['format', 'provider', 'kind', 'enabled', 'labelPrefix'] as const
 
 export class AccountAdminService extends Service {
@@ -111,6 +112,7 @@ export class AccountAdminService extends Service {
           email: { type: 'string', optional: true },
           subject: { type: 'string', optional: true },
           baseUrl: { type: 'string', optional: true },
+          protocol: { type: 'string', optional: true },
           priority: { type: 'number' },
         },
       },
@@ -194,6 +196,7 @@ export class AccountAdminService extends Service {
     assertProviderKind(provider, kind)
     const label = normalizeLabel(input.label)
     const baseUrl = normalizeOptionalBaseUrl(input.baseUrl)
+    const protocol = normalizeOptionalProtocol(input.protocol)
     const priority = normalizeOptionalPriority(input.priority)
     const enabled = normalizeOptionalBoolean(input.enabled, 'enabled')
 
@@ -229,6 +232,7 @@ export class AccountAdminService extends Service {
       ...(email !== undefined ? { email } : {}),
       ...(subject !== undefined ? { subject } : {}),
       ...(baseUrl !== undefined ? { baseUrl } : {}),
+      ...(protocol !== undefined ? { protocol } : {}),
       ...(priority !== undefined ? { priority } : {}),
       ...(enabled !== undefined ? { enabled } : {}),
       ...(parsed !== undefined ? { secret: parsed.bundle } : {}),
@@ -255,12 +259,14 @@ export class AccountAdminService extends Service {
       email?: string | null
       subject?: string | null
       baseUrl?: string | null
+      protocol?: AccountProtocol | null
       priority?: number
     } = {}
     if ('label' in patch) normalized.label = normalizeLabel(patch.label)
     if ('email' in patch) normalized.email = normalizeNullableText(patch.email, 'email', EMAIL_MAX_LENGTH)
     if ('subject' in patch) normalized.subject = normalizeNullableText(patch.subject, 'subject', SUBJECT_MAX_LENGTH)
     if ('baseUrl' in patch) normalized.baseUrl = normalizeNullableBaseUrl(patch.baseUrl)
+    if ('protocol' in patch) normalized.protocol = normalizeNullableProtocol(patch.protocol)
     if ('priority' in patch) normalized.priority = normalizeRequiredPriority(patch.priority)
 
     // 空 patch 是幂等的读：不制造一次无意义的写盘与 updatedAt 变化。
@@ -461,6 +467,7 @@ function toView(account: AccountRecord, credentialConfigured: boolean): AccountV
     email: account.email,
     subject: account.subject,
     baseUrl: account.baseUrl,
+    protocol: account.protocol,
     priority: account.priority,
     accessExpiresAt: account.accessExpiresAt,
     refreshDueAt: account.refreshDueAt,
@@ -579,6 +586,23 @@ function normalizeBaseUrlText(value: string): string | null {
     failInput('baseUrl 只支持 http / https')
   }
   return trimmed.replace(/\/+$/, '')
+}
+
+function normalizeOptionalProtocol(value: unknown): AccountProtocol | undefined {
+  if (value === undefined || value === null) return undefined
+  return requireProtocol(value)
+}
+
+function normalizeNullableProtocol(value: unknown): AccountProtocol | null {
+  if (value === null) return null
+  return requireProtocol(value)
+}
+
+function requireProtocol(value: unknown): AccountProtocol {
+  if (value !== 'openai-chat' && value !== 'openai-responses' && value !== 'anthropic') {
+    failInput('protocol 只能是 openai-chat / openai-responses / anthropic')
+  }
+  return value
 }
 
 function normalizeOptionalPriority(value: unknown): number | undefined {
