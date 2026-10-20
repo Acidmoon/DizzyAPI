@@ -221,7 +221,7 @@ pnpm test:go
 
 - 新增插件必须有 `test/*.test.ts`；新增 Go 模块必须有单测。
 - 测试失败先修实现，不允许删断言或放宽断言来变绿。
-- 当前基线：`pnpm test` 302 个用例（301 通过 / 1 跳过），`pnpm typecheck` 干净，
+- 当前基线：`pnpm test` 310 个用例（309 通过 / 1 跳过），`pnpm typecheck` 干净，
   `go test ./...` 全绿，`gofmt -l .` 与 `go vet ./...` 无输出。这个数字会变，以实际输出为准。
 
 ### 5.5 前端
@@ -335,5 +335,7 @@ pnpm build:go         # 产出 bin/gatewayd(.exe)
   `PROTOCOL_CODEC_UNAVAILABLE` fail-closed 拒绝）
 - 跨协议转换的**有损面**：`thinking.signature` 不回传、`cache_control` 丢弃、OpenAI 专有采样
   参数丢弃——都记 `LossyNote` 日志，但不保证语义等价
+- 模型映射只改**请求**里的模型名：响应里的 `model` 保持上游原名，不映射回对外名。
+  另有 `models` 与 `modelMap` 之间不做交叉校验（可以给没列进 `models` 的模型配映射）
 - 每密钥并发上限、key 级限流、`lastUsedAt` 回报
 - 前端视觉打磨（等 owner 的参考设计）
