@@ -39,6 +39,45 @@ const (
 	DefaultPath             = "/chat/completions"
 )
 
+// AuthStyle 是上游鉴权头的写法。URL 与鉴权头本来就是 transport 的职责。
+type AuthStyle uint8
+
+const (
+	// AuthBearer 写 Authorization: Bearer <token>（OpenAI 兼容）。
+	AuthBearer AuthStyle = iota
+	// AuthXAPIKey 写 x-api-key: <token>（Anthropic）。
+	AuthXAPIKey
+)
+
+// Dialect 是一种上游协议的方言：路径后缀、鉴权方式与固定附加头。
+//
+// 路径约定：baseUrl 自带版本前缀（openai 默认 https://api.openai.com/v1），
+// 这里的 Path 是版本之后的后缀（如 /chat/completions、/messages）。
+type Dialect struct {
+	Path         string
+	Auth         AuthStyle
+	ExtraHeaders map[string]string
+}
+
+// DefaultDialects 是内置方言表。调用方可在 Config.Dialects 覆盖单个协议。
+var DefaultDialects = map[contracts.Protocol]Dialect{
+	contracts.ProtocolOpenAIChat: {
+		Path: "/chat/completions",
+		Auth: AuthBearer,
+	},
+	contracts.ProtocolOpenAIResponses: {
+		Path: "/responses",
+		Auth: AuthBearer,
+	},
+	contracts.ProtocolAnthropic: {
+		Path: "/messages",
+		Auth: AuthXAPIKey,
+		ExtraHeaders: map[string]string{
+			"anthropic-version": "2023-06-01",
+		},
+	},
+}
+
 // Config 是 transport 的运行参数。
 type Config struct {
 	// RequestTimeoutMs 只约束非流式请求；流式请求靠客户端取消与 HeaderTimeout。
@@ -49,8 +88,10 @@ type Config struct {
 	MaxResponseBytes int64
 	// MaxErrorBytes 是上游错误正文最多读取的字节数。
 	MaxErrorBytes int64
-	// Path 是追加在账号 baseUrl 后面的 OpenAI 兼容路径。
+	// Path 是协议未知时的回退路径（追加在账号 baseUrl 后面）。
 	Path string
+	// Dialects 按协议覆盖方言表；为空（或某协议缺失）时用 DefaultDialects。
+	Dialects map[contracts.Protocol]Dialect
 	// UserAgent 为空时使用 gatewayd/0.1。
 	UserAgent string
 }
@@ -77,18 +118,39 @@ func (c Config) resolved() Config {
 	if c.UserAgent == "" {
 		c.UserAgent = "gatewayd/0.1"
 	}
+	c.Dialects = mergedDialects(c.Dialects)
 	return c
+}
+
+// mergedDialects 在内置方言表之上叠加调用方覆盖，返回一份新表。
+func mergedDialects(overrides map[contracts.Protocol]Dialect) map[contracts.Protocol]Dialect {
+	merged := make(map[contracts.Protocol]Dialect, len(DefaultDialects)+len(overrides))
+	for protocol, dialect := range DefaultDialects {
+		merged[protocol] = dialect
+	}
+	for protocol, dialect := range overrides {
+		if dialect.Path == "" {
+			continue
+		}
+		if !strings.HasPrefix(dialect.Path, "/") {
+			dialect.Path = "/" + dialect.Path
+		}
+		merged[protocol] = dialect
+	}
+	return merged
 }
 
 // Stage 是 dispatch 相位的 HTTP 派发阶段。
 type Stage struct {
-	config Config
-	source contracts.CredentialSource
-	client *http.Client
+	config     Config
+	source     contracts.CredentialSource
+	transcoder contracts.ResponseTranscoder
+	client     *http.Client
 }
 
-// New 构造阶段。source 是实现账号快照缓存的任意对象。
-func New(cfg Config, source contracts.CredentialSource) (*Stage, error) {
+// New 构造阶段。source 是实现账号快照缓存的任意对象；transcoder 可为 nil
+// （无转换时上游响应原样透传）。
+func New(cfg Config, source contracts.CredentialSource, transcoder contracts.ResponseTranscoder) (*Stage, error) {
 	if source == nil {
 		return nil, errors.New("transport: CredentialSource 不能为空")
 	}
@@ -102,12 +164,12 @@ func New(cfg Config, source contracts.CredentialSource) (*Stage, error) {
 			return http.ErrUseLastResponse
 		},
 	}
-	return &Stage{config: cfg, source: source, client: client}, nil
+	return &Stage{config: cfg, source: source, transcoder: transcoder, client: client}, nil
 }
 
 // Register 把 transport 阶段挂到组合根上。
-func Register(reg *contracts.Registry, cfg Config, source contracts.CredentialSource) (*Stage, error) {
-	stage, err := New(cfg, source)
+func Register(reg *contracts.Registry, cfg Config, source contracts.CredentialSource, transcoder contracts.ResponseTranscoder) (*Stage, error) {
+	stage, err := New(cfg, source, transcoder)
 	if err != nil {
 		return nil, err
 	}
@@ -137,15 +199,25 @@ func (s *Stage) Run(ctx *contracts.Ctx) (contracts.Decision, error) {
 	if !ok {
 		return contracts.Decision{}, retryableError(http.StatusServiceUnavailable, "ACCOUNT_UNAVAILABLE", "账号没有可用凭据")
 	}
-	if ctx.Body == nil {
-		return contracts.Decision{}, contracts.Errorf(http.StatusBadRequest, "REQUEST_BODY_REQUIRED", "请求体缺失")
-	}
-	body, err := ctx.Body.Bytes()
+
+	// 请求体：转换阶段写过 Upstream 就用转换后的字节；否则用客户端原始字节。
+	body, err := requestBody(ctx)
 	if err != nil {
-		return contracts.Decision{}, contracts.Errorf(http.StatusBadRequest, "REQUEST_BODY_INVALID", "请求体读取失败")
+		return contracts.Decision{}, err
 	}
 
-	target, err := joinURL(credential.BaseURL, s.config.Path)
+	// 上游协议决定方言（路径 + 鉴权）。转换阶段写的协议优先；
+	// 否则用账号声明的协议；再否则回退到 Config.Path + Bearer（今天的行为）。
+	upstreamProtocol := contracts.Protocol(credential.Protocol)
+	if ctx.Upstream != nil {
+		upstreamProtocol = ctx.Upstream.Protocol
+	}
+	dialect, known := s.config.Dialects[upstreamProtocol]
+	if !known {
+		dialect = Dialect{Path: s.config.Path, Auth: AuthBearer}
+	}
+
+	target, err := joinURL(credential.BaseURL, dialect.Path)
 	if err != nil {
 		return contracts.Decision{}, contracts.Errorf(http.StatusBadGateway, "UPSTREAM_URL_INVALID", "上游地址不合法")
 	}
@@ -169,7 +241,7 @@ func (s *Stage) Run(ctx *contracts.Ctx) (contracts.Decision, error) {
 	}
 	request.Header.Set("User-Agent", s.config.UserAgent)
 	// 只放账号令牌；客户端的 Authorization（网关密钥）绝不外传。
-	request.Header.Set("Authorization", "Bearer "+credential.AccessToken)
+	applyAuth(request, dialect, credential.AccessToken)
 
 	response, err := s.client.Do(request)
 	if err != nil {
@@ -190,7 +262,22 @@ func (s *Stage) Run(ctx *contracts.Ctx) (contracts.Decision, error) {
 		headers["Content-Type"] = "application/json"
 	}
 
+	// 需要转换时：把上游响应交给 transcoder，由它返回客户端协议的响应。
+	transcode := ctx.Upstream != nil && s.transcoder != nil
+
 	if ctx.Meta.Stream {
+		if transcode {
+			// 成功时 transcoder 接管并关闭 response.Body；失败时由这里关闭。
+			decision, transcodeErr := s.transcoder.TranscodeResponse(ctx, contracts.UpstreamResponse{
+				Status:  response.StatusCode,
+				Headers: headers,
+				Stream:  response.Body,
+			})
+			if transcodeErr != nil {
+				response.Body.Close()
+			}
+			return decision, transcodeErr
+		}
 		return contracts.Decision{
 			Action:  contracts.ActionRespond,
 			Status:  response.StatusCode,
@@ -207,12 +294,47 @@ func (s *Stage) Run(ctx *contracts.Ctx) (contracts.Decision, error) {
 	if int64(len(payload)) > s.config.MaxResponseBytes {
 		return contracts.Decision{}, contracts.Errorf(http.StatusBadGateway, "UPSTREAM_RESPONSE_TOO_LARGE", "上游响应超过大小上限")
 	}
+	if transcode {
+		return s.transcoder.TranscodeResponse(ctx, contracts.UpstreamResponse{
+			Status:  response.StatusCode,
+			Headers: headers,
+			Body:    payload,
+		})
+	}
 	return contracts.Decision{
 		Action:  contracts.ActionRespond,
 		Status:  response.StatusCode,
 		Headers: headers,
 		Body:    payload,
 	}, nil
+}
+
+// requestBody 选择要发给上游的字节：转换后的（Upstream）优先，否则是客户端原始字节。
+func requestBody(ctx *contracts.Ctx) ([]byte, error) {
+	if ctx.Upstream != nil {
+		return ctx.Upstream.Body, nil
+	}
+	if ctx.Body == nil {
+		return nil, contracts.Errorf(http.StatusBadRequest, "REQUEST_BODY_REQUIRED", "请求体缺失")
+	}
+	body, err := ctx.Body.Bytes()
+	if err != nil {
+		return nil, contracts.Errorf(http.StatusBadRequest, "REQUEST_BODY_INVALID", "请求体读取失败")
+	}
+	return body, nil
+}
+
+// applyAuth 按方言写鉴权头。客户端的 Authorization 永不转发。
+func applyAuth(request *http.Request, dialect Dialect, token string) {
+	switch dialect.Auth {
+	case AuthXAPIKey:
+		request.Header.Set("x-api-key", token)
+	default:
+		request.Header.Set("Authorization", "Bearer "+token)
+	}
+	for name, value := range dialect.ExtraHeaders {
+		request.Header.Set(name, value)
+	}
 }
 
 func (s *Stage) networkError(ctx *contracts.Ctx, err error, token string) error {

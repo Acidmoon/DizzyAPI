@@ -35,7 +35,7 @@ func newGateway(t *testing.T, upstreamURL string, keyConfig keyauth.Config) gate
 	if _, err := accountpriority.Register(registry, accountpriority.Config{}); err != nil {
 		t.Fatalf("accountpriority.Register: %v", err)
 	}
-	if _, err := transport.Register(registry, transport.Config{RequestTimeoutMs: 5_000}, cache); err != nil {
+	if _, err := transport.Register(registry, transport.Config{RequestTimeoutMs: 5_000}, cache, nil); err != nil {
 		t.Fatalf("transport.Register: %v", err)
 	}
 	requestEngine, err := engine.New(registry.Stages(), nil)

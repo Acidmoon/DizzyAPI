@@ -100,6 +100,44 @@ type Ctx struct {
 	// Attempts 是 dispatch 阶段的失败转移记录（账号 id + 状态码/错误码）。
 	// 不含秘密，可安全写入日志。
 	Attempts []AccountAttempt
+
+	// ClientProtocol 是 HTTP 入口按路由写入的客户端协议。
+	// 空 = 旧路径 / 未知（此时不做任何协议转换，直接透传）。
+	ClientProtocol Protocol
+
+	// Upstream 是转换阶段写下的「真正要发给上游的请求」。
+	// nil = 直通：transport 直接用 Body 的原始字节。
+	//
+	// 每个 attempt 都必须显式写它（含置 nil）：engine 的失败转移循环会重跑
+	// dispatch 阶段，残留上一次的结果就会发错请求体。
+	Upstream *UpstreamRequest
+}
+
+// UpstreamRequest 是协议转换阶段交给 transport 的上游请求。
+//
+// Body 已是上游协议格式的字节；Lossy 记录转换中发生的有损映射。
+type UpstreamRequest struct {
+	Protocol Protocol
+	Body     []byte
+	Lossy    []LossyNote
+}
+
+// UpstreamResponse 是 transport 取到的、需要交给 transcoder 转换的上游响应。
+//
+// 流式响应放 Stream（transcoder 负责关闭）；非流式放 Body。
+type UpstreamResponse struct {
+	Status  int
+	Headers map[string]string
+	Body    []byte
+	Stream  io.ReadCloser
+}
+
+// ResponseTranscoder 把上游协议的响应转成客户端协议。
+//
+// 它由 protoconv 实现，transport 在「上游协议与客户端协议不同」时调用。
+// 接口由消费者定义（AGENTS.md §2.3）。
+type ResponseTranscoder interface {
+	TranscodeResponse(ctx *Ctx, up UpstreamResponse) (Decision, error)
 }
 
 // BodyProvider 让请求体只在真正需要时被读出来。
@@ -174,6 +212,9 @@ type AccountCredential struct {
 	BaseURL     string
 	AccessToken string
 	ExpiresAt   *time.Time
+	// Protocol 是该账号声明的上游协议（openai-chat / openai-responses / anthropic）。
+	// 空 = 旧快照（未声明协议）：transport 走 Config.Path 回退，不做协议转换。
+	Protocol string
 }
 
 // CredentialSource 是 transport 对账号快照缓存的最小依赖。

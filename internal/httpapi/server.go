@@ -72,16 +72,21 @@ func New(eng *engine.Engine, cache *accounts.Cache, logger *slog.Logger, cfg Con
 }
 
 // Handler 返回带路由的 http.Handler。
+//
+// 每个 LLM 路由对应一个客户端协议：入口按路由写入 ctx.ClientProtocol，
+// 协议转换阶段据此选择 codec。
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", s.handleHealth)
-	mux.HandleFunc("/v1/chat/completions", s.handleChatCompletions)
+	mux.HandleFunc("/v1/chat/completions", s.llmHandler(contracts.ProtocolOpenAIChat, "/v1/chat/completions"))
+	mux.HandleFunc("/v1/responses", s.llmHandler(contracts.ProtocolOpenAIResponses, "/v1/responses"))
+	mux.HandleFunc("/v1/messages", s.llmHandler(contracts.ProtocolAnthropic, "/v1/messages"))
 	return s.recover(mux)
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
-		writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "只支持 GET /healthz")
+		writeErrorFor(w, contracts.Protocol(""), http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "只支持 GET /healthz")
 		return
 	}
 	state := s.accounts.State()
@@ -95,68 +100,74 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "只支持 POST /v1/chat/completions")
-		return
-	}
+// llmHandler 构造某个客户端协议的路由处理器。三个协议共用同一套
+// 「读体 → 探针 → 构造 Ctx → 交给 engine」流程，只是协议不同。
+func (s *Server) llmHandler(protocol contracts.Protocol, path string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			writeErrorFor(w, protocol, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "只支持 POST "+path)
+			return
+		}
 
-	body, err := s.readBody(w, r)
-	if err != nil {
-		return
-	}
-	var probe struct {
-		Model  string `json:"model"`
-		Stream bool   `json:"stream"`
-	}
-	if err := json.Unmarshal(body, &probe); err != nil {
-		writeError(w, http.StatusBadRequest, "INVALID_REQUEST", "请求体必须是合法 JSON")
-		return
-	}
-	if probe.Model == "" {
-		writeError(w, http.StatusBadRequest, "INVALID_REQUEST", "缺少 model")
-		return
-	}
+		body, err := s.readBody(w, r, protocol)
+		if err != nil {
+			return
+		}
+		var probe struct {
+			Model  string `json:"model"`
+			Stream bool   `json:"stream"`
+		}
+		if err := json.Unmarshal(body, &probe); err != nil {
+			writeErrorFor(w, protocol, http.StatusBadRequest, "INVALID_REQUEST", "请求体必须是合法 JSON")
+			return
+		}
+		if probe.Model == "" {
+			writeErrorFor(w, protocol, http.StatusBadRequest, "INVALID_REQUEST", "缺少 model")
+			return
+		}
 
-	requestID := s.nextRequestID()
-	ctx := &contracts.Ctx{
-		Context: r.Context(),
-		ReqID:   requestID,
-		Meta: contracts.RequestMeta{
-			Model:    probe.Model,
-			Stream:   probe.Stream,
-			Strategy: s.config.Strategy,
-		},
-		Headers:           r.Header.Clone(),
-		Body:              contracts.BytesBody(body),
-		AccountCandidates: s.accounts.Candidates(),
-	}
+		requestID := s.nextRequestID()
+		ctx := &contracts.Ctx{
+			Context: r.Context(),
+			ReqID:   requestID,
+			Meta: contracts.RequestMeta{
+				Model:    probe.Model,
+				Stream:   probe.Stream,
+				Strategy: s.config.Strategy,
+			},
+			Headers:           r.Header.Clone(),
+			Body:              contracts.BytesBody(body),
+			AccountCandidates: s.accounts.Candidates(),
+			ClientProtocol:    protocol,
+		}
 
-	started := time.Now()
-	decision := s.engine.Run(ctx)
-	if r.Context().Err() != nil {
-		// 客户端已经断开；不再写响应。
-		s.closeStream(decision)
-		return
+		started := time.Now()
+		decision := s.engine.Run(ctx)
+		if r.Context().Err() != nil {
+			// 客户端已经断开；不再写响应。
+			s.closeStream(decision)
+			return
+		}
+		status := decision.Status
+		if status == 0 {
+			status = http.StatusOK
+		}
+		s.writeDecision(w, decision)
+		s.logger.Info("LLM 请求完成",
+			"reqId", requestID,
+			"model", probe.Model,
+			"protocol", string(protocol),
+			"stream", probe.Stream,
+			"status", status,
+			"durationMs", time.Since(started).Milliseconds(),
+			"attempts", len(ctx.Attempts),
+		)
 	}
-	status := decision.Status
-	if status == 0 {
-		status = http.StatusOK
-	}
-	s.writeDecision(w, decision)
-	s.logger.Info("LLM 请求完成",
-		"reqId", requestID,
-		"model", probe.Model,
-		"stream", probe.Stream,
-		"status", status,
-		"durationMs", time.Since(started).Milliseconds(),
-		"attempts", len(ctx.Attempts),
-	)
 }
 
-func (s *Server) readBody(w http.ResponseWriter, r *http.Request) ([]byte, error) {
+func (s *Server) readBody(w http.ResponseWriter, r *http.Request, protocol contracts.Protocol) ([]byte, error) {
 	if r.ContentLength > s.config.MaxBodyBytes {
-		writeError(w, http.StatusRequestEntityTooLarge, "REQUEST_TOO_LARGE", "请求体超过大小上限")
+		writeErrorFor(w, protocol, http.StatusRequestEntityTooLarge, "REQUEST_TOO_LARGE", "请求体超过大小上限")
 		return nil, errors.New("body too large")
 	}
 	reader := http.MaxBytesReader(w, r.Body, s.config.MaxBodyBytes)
@@ -164,9 +175,9 @@ func (s *Server) readBody(w http.ResponseWriter, r *http.Request) ([]byte, error
 	if err != nil {
 		var maxErr *http.MaxBytesError
 		if errors.As(err, &maxErr) {
-			writeError(w, http.StatusRequestEntityTooLarge, "REQUEST_TOO_LARGE", "请求体超过大小上限")
+			writeErrorFor(w, protocol, http.StatusRequestEntityTooLarge, "REQUEST_TOO_LARGE", "请求体超过大小上限")
 		} else {
-			writeError(w, http.StatusBadRequest, "REQUEST_BODY_INVALID", "读取请求体失败")
+			writeErrorFor(w, protocol, http.StatusBadRequest, "REQUEST_BODY_INVALID", "读取请求体失败")
 		}
 		return nil, err
 	}
@@ -234,21 +245,33 @@ func (s *Server) recover(next http.Handler) http.Handler {
 		defer func() {
 			if recovered := recover(); recovered != nil {
 				s.logger.Error("HTTP 入口 panic", "error", fmt.Sprintf("%v", recovered))
-				writeError(w, http.StatusInternalServerError, "GATEWAY_INTERNAL", "网关内部错误")
+				writeErrorFor(w, protocolForPath(r.URL.Path), http.StatusInternalServerError, "GATEWAY_INTERNAL", "网关内部错误")
 			}
 		}()
 		next.ServeHTTP(w, r)
 	})
 }
 
-func writeError(w http.ResponseWriter, status int, code, message string) {
-	writeJSON(w, status, map[string]any{
-		"error": map[string]any{
-			"message": message,
-			"type":    "invalid_request_error",
-			"code":    code,
-		},
-	})
+// protocolForPath 由路由路径推断客户端协议（仅用于 panic 兜底这类无 Ctx 的场景）。
+func protocolForPath(path string) contracts.Protocol {
+	switch path {
+	case "/v1/responses":
+		return contracts.ProtocolOpenAIResponses
+	case "/v1/messages":
+		return contracts.ProtocolAnthropic
+	case "/v1/chat/completions":
+		return contracts.ProtocolOpenAIChat
+	default:
+		return contracts.Protocol("")
+	}
+}
+
+// writeErrorFor 按协议渲染并写出错误体。
+//
+// 空协议与 openai-* 走 OpenAI 兼容形状（与今天逐字节一致）；
+// anthropic 走 Anthropic 错误形状。状态码与错误码语义由调用方决定。
+func writeErrorFor(w http.ResponseWriter, protocol contracts.Protocol, status int, code, message string) {
+	writeRawJSON(w, status, contracts.RenderError(protocol, status, code, message))
 }
 
 func writeJSON(w http.ResponseWriter, status int, value any) {
@@ -257,6 +280,11 @@ func writeJSON(w http.ResponseWriter, status int, value any) {
 		payload = []byte(`{"error":{"message":"网关内部错误","type":"server_error","code":"GATEWAY_INTERNAL"}}`)
 		status = http.StatusInternalServerError
 	}
+	writeRawJSON(w, status, payload)
+}
+
+// writeRawJSON 写出已经序列化好的 JSON 体（错误体由 contracts.RenderError 产出）。
+func writeRawJSON(w http.ResponseWriter, status int, payload []byte) {
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Content-Length", strconv.Itoa(len(payload)))
 	w.WriteHeader(status)

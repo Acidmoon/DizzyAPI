@@ -104,6 +104,7 @@ func TestRejectsInvalidAccount(t *testing.T) {
 		{"user info", Account{AccountID: "a", Provider: "openai", BaseURL: "https://u:p@x.test", Token: "t"}},
 		{"empty token", Account{AccountID: "a", Provider: "openai", BaseURL: "https://x.test"}},
 		{"bad kind", Account{AccountID: "a", Provider: "openai", Kind: "unknown", BaseURL: "https://x.test", Token: "t"}},
+		{"bad protocol", Account{AccountID: "a", Provider: "openai", BaseURL: "https://x.test", Token: "t", Protocol: "gemini"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -112,6 +113,35 @@ func TestRejectsInvalidAccount(t *testing.T) {
 				t.Fatal("非法账号必须被拒绝")
 			}
 		})
+	}
+}
+
+func TestProtocolFlowsToCredentialAndRevision(t *testing.T) {
+	cache := New()
+	withoutProtocol := account("acc-1", "sk-one")
+	if _, err := cache.Replace(snapshot(withoutProtocol)); err != nil {
+		t.Fatalf("Replace: %v", err)
+	}
+	baseRevision := cache.State().Revision
+
+	// 空协议合法（旧快照兼容），凭据里协议为空。
+	credential, ok := cache.Credential("acc-1")
+	if !ok || credential.Protocol != "" {
+		t.Fatalf("旧快照协议应为空：%+v ok=%v", credential, ok)
+	}
+
+	// 声明协议后 revision 必须变化（协议进内容哈希）。
+	withProtocol := account("acc-1", "sk-one")
+	withProtocol.Protocol = "anthropic"
+	if _, err := cache.Replace(snapshot(withProtocol)); err != nil {
+		t.Fatalf("Replace: %v", err)
+	}
+	if cache.State().Revision == baseRevision {
+		t.Fatal("协议变化必须改变 revision")
+	}
+	credential, ok = cache.Credential("acc-1")
+	if !ok || credential.Protocol != "anthropic" {
+		t.Fatalf("凭据应带协议：%+v ok=%v", credential, ok)
 	}
 }
 
