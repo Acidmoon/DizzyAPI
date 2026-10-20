@@ -191,6 +191,8 @@ func run() error {
 	requestTimeout := flag.Int("request-timeout-ms", transport.DefaultRequestTimeoutMs, "非流式上游请求超时")
 	headerTimeout := flag.Int("header-timeout-ms", transport.DefaultHeaderTimeoutMs, "等待上游响应头超时")
 	maxBody := flag.Int64("max-body-bytes", httpapi.DefaultMaxBodyBytes, "LLM 请求体上限")
+	defaultMaxTokens := flag.Int("anthropic-default-max-tokens", 4096,
+		"跨协议转到 Anthropic 时，客户端没给 max_tokens 用的默认值")
 	flag.Parse()
 
 	logger := newLogger(*logFormat)
@@ -227,10 +229,17 @@ func run() error {
 		return fmt.Errorf("初始化账号优先级模块失败：%w", err)
 	}
 	accountCache := accounts.New()
-	// 协议转换 codec 注册表：v1 只注册 OpenAI Chat Completions。
+	// 协议转换 codec 注册表：三个协议族各一个。缺哪个协议，跨协议请求就按
+	// PROTOCOL_CODEC_UNAVAILABLE fail-closed（不静默降级）。
 	codecs := contracts.NewCodecRegistry()
-	if err := codecs.Register(protoconv.NewChatCodec()); err != nil {
-		return fmt.Errorf("注册 Chat codec 失败：%w", err)
+	for _, codec := range []contracts.Codec{
+		protoconv.NewChatCodec(),
+		protoconv.NewResponsesCodec(),
+		protoconv.NewAnthropicCodec(protoconv.AnthropicConfig{DefaultMaxTokens: *defaultMaxTokens}),
+	} {
+		if err := codecs.Register(codec); err != nil {
+			return fmt.Errorf("注册 %s codec 失败：%w", codec.Protocol(), err)
+		}
 	}
 	// protoconv 阶段必须注册在 transport 之前（组合根按注册顺序决定阶段顺序）。
 	converter, err := protoconv.Register(registry, protoconv.Config{}, codecs, accountCache, logger)
