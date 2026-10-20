@@ -148,6 +148,7 @@ export default FooService
 |---|---|
 | `contracts/` | 唯一共享契约；`Ctx` / `Stage` / `Decision` / `Registry` / DTO；规范化 IR 与 `Codec` 接口（`ir.go` / `protocol.go`）；只依赖标准库 |
 | `modules/accountpriority/` | 账号打分、排序、选择 |
+| `modules/modelroute/` | 模型路由（pre 相位按账号 `models` 过滤候选）+ 模型映射（dispatch 相位按账号 `modelMap` 改写 body 顶层 `model`） |
 | `modules/protoconv/` | 协议转换中间件：dispatch 相位阶段（请求方向）+ 响应转换器；Chat / Responses / Anthropic 三个 codec |
 | `modules/transport/` | 按选中账号发上游请求，透传普通响应与 SSE；按协议的方言表决定路径与鉴权头 |
 | `modules/keyauth/` | 动态 API key 哈希快照校验 |
@@ -155,7 +156,7 @@ export default FooService
 | `internal/engine/` | pre → dispatch → post 调度；失败转移；统一错误渲染 |
 | `internal/accounts/` | 账号 / 令牌只读快照缓存 |
 | `internal/apikeys/` | API key 哈希快照缓存；`Ready()` 区分「没收到」与「空快照」 |
-| `internal/httpapi/` | `POST /v1/chat/completions`、`POST /v1/responses`、`POST /v1/messages`、`GET /healthz` |
+| `internal/httpapi/` | `POST /v1/chat/completions`、`POST /v1/responses`、`POST /v1/messages`、`GET /v1/models`、`GET /healthz` |
 | `cmd/gatewayd/` | 组合根：注册模块、启动 HTTP 入口与控制桥 |
 
 ### 4.3 数据与端口
@@ -175,8 +176,11 @@ export default FooService
 - 协议转换：客户端按入口路径声明协议（`/v1/chat/completions` → openai-chat、
   `/v1/responses` → openai-responses、`/v1/messages` → anthropic），网关按选中账号声明的
   `protocol` 自动翻译请求与响应（含流式）；同协议直通不做任何改写
+- 模型路由与模型映射：账号声明 `models`（服务的对外模型名）与 `modelMap`（对外名 → 上游名）。
+  请求的 `model` 先在 pre 相位按 `models` 过滤候选，再在 dispatch 相位按选中账号的 `modelMap`
+  改写 body 顶层 `model`（同协议只动这一个字段，跨协议交给 protoconv 基于改名后的 body 解析 IR）
 - OpenAI 兼容 `/v1/chat/completions`、`/v1/responses`、Anthropic `/v1/messages`、
-  SSE 透传、`/healthz`
+  `GET /v1/models`（当前可用对外模型名并集）、SSE 透传、`/healthz`
 - SPA + `/api/*` 产品入口；设置、目录、健康、用户管理、账号管理
 - 部署：systemd + Caddy + fail2ban
 
@@ -296,6 +300,21 @@ pnpm build:go         # 产出 bin/gatewayd(.exe)
 - **部署顺序**：`accounts.replace` 用 `DisallowUnknownFields`。TS 若先发带新字段的账号快照而 Go
   二进制还是旧的，**整份快照被拒 → 账号缓存清空 → 全部 503**。先重建 Go，再发 TS。
 
+### 模型路由
+
+- **两个阶段、两个注册函数**：`modelroute.RegisterRouter`（pre，必须在 accountpriority 之前）与
+  `RegisterMapper`（dispatch，必须在 accountpriority 之后、protoconv 之前）。`Registry.Stage()`
+  只按注册顺序追加、engine 又强制相位不倒退，所以不能合成一个 Register。
+- **每个 attempt 都要显式重置 `ctx.MappedBody`**（含置 nil），与 `ctx.Upstream` 同理：failover
+  会重跑映射阶段，残留上一次的改写结果就会把错的 body 发出去。
+- **请求体优先级**：`ctx.Upstream`（协议转换结果）> `ctx.MappedBody`（模型映射结果）> `ctx.Body`
+  （原始）。同协议直通时 protoconv 不渲染，transport 直接发 `MappedBody`；跨协议时 protoconv 用
+  `MappedBody` 解析 IR，IR.Model 自然已是上游名。
+- **账号未声明 `models` = 不参与路由过滤**（向后兼容），不能当成「不服务任何模型」，否则旧账号
+  会静默失效。全被过滤掉才报 `MODEL_NOT_SERVED`（503，不可重试）；没有候选时报的是
+  accountpriority 的 `NO_ELIGIBLE_ACCOUNT`。
+- **`ctx.Meta.Model` 永远是客户端请求的模型名**，不改成上游名；上游名只放在 `MappedBody` 里。
+
 ### 前端
 
 - 预览用 `pnpm preview:console`；它没有 `/api/*`，真实进程用 `pnpm dev`。
@@ -312,8 +331,6 @@ pnpm build:go         # 产出 bin/gatewayd(.exe)
 - `quota-check`、`content-audit`、`settle`、`usage-log`
 - Go 侧用户 / 额度 / 计费 / 支付；充值订单目前 501
 - `account-state`（健康、限流、额度、并发）、粘性会话
-- **模型映射与模型路由**：请求里的 `model` 原样透传给上游，网关不翻译也不据此选账号。
-  账号的 `protocol` 只决定「怎么翻译」，不决定「选谁」——混协议号池下可能选到不认这个模型名的账号
 - Gemini 协议（`contracts.ProtocolGemini` 已预留，未注册 codec；请求它会被
   `PROTOCOL_CODEC_UNAVAILABLE` fail-closed 拒绝）
 - 跨协议转换的**有损面**：`thinking.signature` 不回传、`cache_control` 丢弃、OpenAI 专有采样

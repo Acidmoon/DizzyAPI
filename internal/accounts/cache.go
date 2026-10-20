@@ -27,6 +27,12 @@ const (
 	MaxTokenBytes = 16 << 10
 	// MaxBaseURLBytes 单个 base URL 的长度上限。
 	MaxBaseURLBytes = 2_048
+	// MaxModels 单个账号最多声明的对外模型名数。
+	MaxModels = 256
+	// MaxModelMapEntries 单个账号 modelMap 的最多映射条数。
+	MaxModelMapEntries = 256
+	// MaxModelNameBytes 单个模型名（或 modelMap 键 / 值）的长度上限。
+	MaxModelNameBytes = 256
 	// ExpirySafety 是「即将过期」的提前量；低于它的令牌不再参与选择。
 	ExpirySafety = 30 * time.Second
 )
@@ -50,6 +56,10 @@ type Account struct {
 	Tags      map[string]string `json:"tags,omitempty"`
 	// Protocol 是账号声明的上游协议。空 = 旧快照（未声明），合法。
 	Protocol string `json:"protocol,omitempty"`
+	// Models 是这个账号服务的对外模型名；ModelMap 是「对外模型名 → 上游真实模型名」。
+	// 空 = 旧快照（未声明），合法：不参与模型路由过滤、不做模型映射。
+	Models   []string          `json:"models,omitempty"`
+	ModelMap map[string]string `json:"modelMap,omitempty"`
 }
 
 // State 是给管理面看的运行期状态：只有计数与 revision，没有令牌。
@@ -147,7 +157,36 @@ func (c *Cache) Credential(accountID string) (contracts.AccountCredential, bool)
 		AccessToken: account.Token,
 		ExpiresAt:   account.ExpiresAt,
 		Protocol:    account.Protocol,
+		Models:      cloneStrings(account.Models),
+		ModelMap:    cloneModelMap(account.ModelMap),
 	}, true
+}
+
+// Models 返回当前所有可用账号声明的对外模型名的并集，去重并按字典序稳定排序。
+//
+// 未声明 Models 的账号不贡献任何模型名；不可用（令牌缺失 / 即将过期）的账号被跳过。
+// 它只返回模型名，绝不返回账号 id、baseUrl 或令牌。
+func (c *Cache) Models() []string {
+	snap := c.snap.Load()
+	now := time.Now()
+	seen := make(map[string]struct{})
+	for _, id := range snap.order {
+		account := snap.accounts[id]
+		if !usable(account, now) {
+			continue
+		}
+		for _, model := range account.Models {
+			if model != "" {
+				seen[model] = struct{}{}
+			}
+		}
+	}
+	out := make([]string, 0, len(seen))
+	for model := range seen {
+		out = append(out, model)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // Candidates 返回可参与打分的候选快照。不可用账号直接不出现。
@@ -167,6 +206,7 @@ func (c *Cache) Candidates() []contracts.AccountCandidate {
 			Priority:  account.Priority,
 			Health:    contracts.HealthUnknown,
 			Tags:      cloneTags(account.Tags),
+			Models:    cloneStrings(account.Models),
 		})
 	}
 	return out
@@ -206,6 +246,8 @@ func compile(snapshot Snapshot) (*cacheSnapshot, error) {
 			return nil, newError("ACCOUNTS_DUPLICATE_ACCOUNT", "账号 id 重复：%s", account.AccountID)
 		}
 		account.Tags = cloneTags(account.Tags)
+		account.Models = cloneStrings(account.Models)
+		account.ModelMap = cloneModelMap(account.ModelMap)
 		compiled.accounts[account.AccountID] = account
 		compiled.order = append(compiled.order, account.AccountID)
 	}
@@ -248,7 +290,66 @@ func validateAccount(account Account) error {
 	if account.ExpiresAt != nil && account.ExpiresAt.IsZero() {
 		return newError("ACCOUNTS_INVALID_ACCOUNT", "账号 %s 的 expiresAt 不合法", account.AccountID)
 	}
+	if err := validateModels(account.AccountID, account.Models); err != nil {
+		return err
+	}
+	if err := validateModelMap(account.AccountID, account.ModelMap); err != nil {
+		return err
+	}
 	return nil
+}
+
+// validateModels 校验对外模型名列表。空列表合法（未声明 = 不参与路由过滤）。
+func validateModels(accountID string, models []string) error {
+	if len(models) > MaxModels {
+		return newError("ACCOUNTS_INVALID_ACCOUNT",
+			"账号 %s 的 models 最多 %d 个，收到 %d 个", accountID, MaxModels, len(models))
+	}
+	for _, model := range models {
+		if strings.TrimSpace(model) == "" {
+			return newError("ACCOUNTS_INVALID_ACCOUNT", "账号 %s 的 models 含空模型名", accountID)
+		}
+		if len(model) > MaxModelNameBytes {
+			return newError("ACCOUNTS_INVALID_ACCOUNT", "账号 %s 的模型名过长（上限 %d 字节）", accountID, MaxModelNameBytes)
+		}
+		if hasControlChar(model) {
+			return newError("ACCOUNTS_INVALID_ACCOUNT", "账号 %s 的模型名含控制字符", accountID)
+		}
+	}
+	return nil
+}
+
+// validateModelMap 校验「对外模型名 → 上游模型名」映射。空映射合法。
+func validateModelMap(accountID string, mapping map[string]string) error {
+	if len(mapping) > MaxModelMapEntries {
+		return newError("ACCOUNTS_INVALID_ACCOUNT",
+			"账号 %s 的 modelMap 最多 %d 条，收到 %d 条", accountID, MaxModelMapEntries, len(mapping))
+	}
+	for key, value := range mapping {
+		if strings.TrimSpace(key) == "" {
+			return newError("ACCOUNTS_INVALID_ACCOUNT", "账号 %s 的 modelMap 含空键", accountID)
+		}
+		if strings.TrimSpace(value) == "" {
+			return newError("ACCOUNTS_INVALID_ACCOUNT", "账号 %s 的 modelMap 值不能为空（键 %q）", accountID, key)
+		}
+		if len(key) > MaxModelNameBytes || len(value) > MaxModelNameBytes {
+			return newError("ACCOUNTS_INVALID_ACCOUNT", "账号 %s 的 modelMap 键值过长（上限 %d 字节）", accountID, MaxModelNameBytes)
+		}
+		if hasControlChar(key) || hasControlChar(value) {
+			return newError("ACCOUNTS_INVALID_ACCOUNT", "账号 %s 的 modelMap 键值含控制字符", accountID)
+		}
+	}
+	return nil
+}
+
+// hasControlChar 报告字符串是否含控制字符（含 DEL）。模型名不应带控制字符。
+func hasControlChar(value string) bool {
+	for _, r := range value {
+		if r < 0x20 || r == 0x7f {
+			return true
+		}
+	}
+	return false
 }
 
 // validProtocol 是账号上游协议的白名单。空串合法（旧快照兼容）。
@@ -288,8 +389,47 @@ func revisionOf(accounts map[string]Account, order []string) string {
 			hash.Write([]byte{0})
 		}
 		hash.Write([]byte{0})
+		// models：按原顺序进哈希（内容变化即 revision 变化）。
+		for _, model := range account.Models {
+			hash.Write([]byte(model))
+			hash.Write([]byte{0})
+		}
+		hash.Write([]byte{0})
+		// modelMap：键排序保证稳定。
+		modelKeys := make([]string, 0, len(account.ModelMap))
+		for key := range account.ModelMap {
+			modelKeys = append(modelKeys, key)
+		}
+		sort.Strings(modelKeys)
+		for _, key := range modelKeys {
+			hash.Write([]byte(key))
+			hash.Write([]byte{0})
+			hash.Write([]byte(account.ModelMap[key]))
+			hash.Write([]byte{0})
+		}
+		hash.Write([]byte{0})
 	}
 	return hex.EncodeToString(hash.Sum(nil))[:16]
+}
+
+func cloneStrings(values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make([]string, len(values))
+	copy(out, values)
+	return out
+}
+
+func cloneModelMap(mapping map[string]string) map[string]string {
+	if len(mapping) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(mapping))
+	for key, value := range mapping {
+		out[key] = value
+	}
+	return out
 }
 
 func cloneTags(tags map[string]string) map[string]string {

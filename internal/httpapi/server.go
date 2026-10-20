@@ -6,7 +6,7 @@
 //   - 把 engine 的 Decision（含流式 Stream）写回客户端。
 //
 // 它不选账号、不转发、不读秘密；账号候选来自 internal/accounts 的内存快照。
-// /healthz 是运行期探针，不暴露账号令牌或配置。
+// /healthz 是运行期探针，/v1/models 列出对外模型名，二者都不暴露账号令牌或配置。
 package httpapi
 
 import (
@@ -32,20 +32,32 @@ const (
 	DefaultStrategy = ""
 )
 
+// Authorizer 校验 LLM 入口的 Bearer key。它由 keyauth 实现，复用与 LLM 请求
+// 完全一致的判定（动态快照 / 静态 key / 占位 / 空快照 fail-closed）。
+//
+// 定义在这里是为了让 httpapi 不 import keyauth 的实现包（AGENTS.md §2.3）：
+// 组合根把 keyauth.Stage 作为这个接口传进来。
+type Authorizer interface {
+	Authorize(headers http.Header) (*contracts.APIKey, error)
+}
+
 // Config 是 HTTP 入口的运行参数。
 type Config struct {
 	MaxBodyBytes int64
 	Strategy     string
+	// Authorizer 用于 GET /v1/models 的鉴权。为空时该路由 fail-closed（503）。
+	Authorizer Authorizer
 }
 
 // Server 持有 HTTP handler 的依赖。构造后只读，可被并发使用。
 type Server struct {
-	engine   *engine.Engine
-	accounts *accounts.Cache
-	logger   *slog.Logger
-	config   Config
-	started  time.Time
-	requests atomic.Uint64
+	engine     *engine.Engine
+	accounts   *accounts.Cache
+	logger     *slog.Logger
+	config     Config
+	authorizer Authorizer
+	started    time.Time
+	requests   atomic.Uint64
 }
 
 // New 构造 HTTP handler。
@@ -63,11 +75,12 @@ func New(eng *engine.Engine, cache *accounts.Cache, logger *slog.Logger, cfg Con
 		cfg.MaxBodyBytes = DefaultMaxBodyBytes
 	}
 	return &Server{
-		engine:   eng,
-		accounts: cache,
-		logger:   logger,
-		config:   cfg,
-		started:  time.Now().UTC(),
+		engine:     eng,
+		accounts:   cache,
+		logger:     logger,
+		config:     cfg,
+		authorizer: cfg.Authorizer,
+		started:    time.Now().UTC(),
 	}, nil
 }
 
@@ -78,10 +91,68 @@ func New(eng *engine.Engine, cache *accounts.Cache, logger *slog.Logger, cfg Con
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", s.handleHealth)
+	mux.HandleFunc("/v1/models", s.handleModels)
 	mux.HandleFunc("/v1/chat/completions", s.llmHandler(contracts.ProtocolOpenAIChat, "/v1/chat/completions"))
 	mux.HandleFunc("/v1/responses", s.llmHandler(contracts.ProtocolOpenAIResponses, "/v1/responses"))
 	mux.HandleFunc("/v1/messages", s.llmHandler(contracts.ProtocolAnthropic, "/v1/messages"))
 	return s.recover(mux)
+}
+
+// handleModels 返回当前可用的对外模型名（OpenAI /v1/models 形状）。
+//
+// 鉴权与 LLM 入口完全一致（复用 Authorizer，即 keyauth 的同一套判定）。
+// 只暴露模型名，绝不泄漏账号 id、baseUrl、令牌或账号数量。
+func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		writeErrorFor(w, contracts.Protocol(""), http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "只支持 GET /v1/models")
+		return
+	}
+	if s.authorizer == nil {
+		// 没装配鉴权器就不放行（fail-closed），而不是默默暴露模型名。
+		writeErrorFor(w, contracts.Protocol(""), http.StatusServiceUnavailable, "MODELS_UNAVAILABLE", "模型列表暂不可用")
+		return
+	}
+	if _, err := s.authorizer.Authorize(r.Header); err != nil {
+		writeAuthorizeError(w, err)
+		return
+	}
+
+	models := s.accounts.Models()
+	created := s.started.Unix()
+	data := make([]map[string]any, 0, len(models))
+	for _, model := range models {
+		data = append(data, map[string]any{
+			"id":       model,
+			"object":   "model",
+			"created":  created,
+			"owned_by": "dizzyapi",
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"object": "list",
+		"data":   data,
+	})
+}
+
+// writeAuthorizeError 把 Authorizer 返回的错误按入口协议形状渲染。
+// keyauth 返回的是 *contracts.StageError；未知错误一律 500，不伪装成 401。
+func writeAuthorizeError(w http.ResponseWriter, err error) {
+	status := http.StatusInternalServerError
+	code := "GATEWAY_INTERNAL"
+	message := "网关内部错误"
+
+	var stageErr *contracts.StageError
+	var publicErr contracts.PublicError
+	switch {
+	case errors.As(err, &stageErr):
+		status, code, message = stageErr.Status, stageErr.Code, stageErr.Message
+	case errors.As(err, &publicErr):
+		status, code, message = publicErr.HTTPStatus(), publicErr.ErrorCode(), publicErr.PublicMessage()
+	}
+	if status < 400 || status > 599 {
+		status = http.StatusInternalServerError
+	}
+	writeErrorFor(w, contracts.Protocol(""), status, code, message)
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {

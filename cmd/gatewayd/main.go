@@ -35,6 +35,7 @@ import (
 	"github.com/Acidmoon/DizzyAPI/internal/httpapi"
 	"github.com/Acidmoon/DizzyAPI/modules/accountpriority"
 	"github.com/Acidmoon/DizzyAPI/modules/keyauth"
+	"github.com/Acidmoon/DizzyAPI/modules/modelroute"
 	"github.com/Acidmoon/DizzyAPI/modules/protoconv"
 	"github.com/Acidmoon/DizzyAPI/modules/transport"
 )
@@ -217,6 +218,15 @@ func run() error {
 	}
 
 	// 组合根是唯一组装点：注册顺序就是阶段顺序 pre → dispatch → post。
+	//
+	// 装配顺序（也是阶段顺序）：
+	//   keyauth → modelroute.RegisterRouter（pre，排在 accountpriority 前）
+	//           → accountpriority（pre）
+	//           → modelroute.RegisterMapper（dispatch，排在 protoconv 前）
+	//           → protoconv（dispatch）→ transport（dispatch）
+	//
+	// 两个 modelroute 阶段分处 pre 与 dispatch，而 engine 强制相位不倒退，
+	// 所以必须由这里按位置各注册一次，不能合成一个 Register。
 	registry := contracts.NewRegistry()
 	keyCache := apikeys.New()
 	keyStage := keyauth.Register(registry, keyauth.Config{
@@ -224,11 +234,20 @@ func run() error {
 		Profile:  *profile,
 		Verifier: keyCache,
 	})
+	// 模型路由过滤（pre）：必须在 accountpriority 之前收窄候选。
+	if _, err := modelroute.RegisterRouter(registry, modelroute.Config{}, logger); err != nil {
+		return fmt.Errorf("初始化模型路由阶段失败：%w", err)
+	}
 	service, err := accountpriority.Register(registry, accountpriority.Config{})
 	if err != nil {
 		return fmt.Errorf("初始化账号优先级模块失败：%w", err)
 	}
 	accountCache := accounts.New()
+	// 模型映射（dispatch）：在 accountpriority 之后（要读选中账号）、protoconv 之前
+	// （protoconv 解析 IR 时优先用 Ctx.MappedBody）。
+	if err := modelroute.RegisterMapper(registry, modelroute.Config{}, accountCache, logger); err != nil {
+		return fmt.Errorf("初始化模型映射阶段失败：%w", err)
+	}
 	// 协议转换 codec 注册表：三个协议族各一个。缺哪个协议，跨协议请求就按
 	// PROTOCOL_CODEC_UNAVAILABLE fail-closed（不静默降级）。
 	codecs := contracts.NewCodecRegistry()
@@ -259,6 +278,8 @@ func run() error {
 	httpAPI, err := httpapi.New(requestEngine, accountCache, logger, httpapi.Config{
 		MaxBodyBytes: *maxBody,
 		Strategy:     *strategy,
+		// /v1/models 复用 keyauth 的同一套鉴权判定。
+		Authorizer: keyStage,
 	})
 	if err != nil {
 		return fmt.Errorf("初始化 HTTP 入口失败：%w", err)
