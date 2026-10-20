@@ -101,8 +101,8 @@
 
 # 账号管理门面：管理员导入 / 新建 / 修改 / 停用 / 删除上游账号。
 # 它自己不存任何数据：账号记录与令牌刷新由 identity 独占写入，秘密由 credentials 独占
-# （AGENTS.md D8）。写操作只对 adminPlugins 里的插件开放，默认拒绝；当前入口是开发者面板，
-# 面向用户站 / 管理台的 HTTP 路由尚未实现（届时把认证后的管理员映射成白名单 actor）。
+# （AGENTS.md D8）。写操作只对 adminPlugins 里的插件开放，默认拒绝；入口是 api 插件的
+# /api/accounts（要求管理员会话，以 API_ACTOR 身份调用），以及开发者面板。
 # 必须排在 identity 之后：它 inject identity，依赖不满足时不会构造。
 - id: account-admin
   name: '@dizzyapi/plugin-account-admin'

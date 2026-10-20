@@ -146,15 +146,16 @@ export default FooService
 
 | 路径 | 职责 |
 |---|---|
-| `contracts/` | 唯一共享契约；`Ctx` / `Stage` / `Decision` / `Registry` / DTO；只依赖标准库 |
+| `contracts/` | 唯一共享契约；`Ctx` / `Stage` / `Decision` / `Registry` / DTO；规范化 IR 与 `Codec` 接口（`ir.go` / `protocol.go`）；只依赖标准库 |
 | `modules/accountpriority/` | 账号打分、排序、选择 |
-| `modules/transport/` | 按选中账号发上游请求，透传普通响应与 SSE |
+| `modules/protoconv/` | 协议转换中间件：dispatch 相位阶段（请求方向）+ 响应转换器；Chat / Responses / Anthropic 三个 codec |
+| `modules/transport/` | 按选中账号发上游请求，透传普通响应与 SSE；按协议的方言表决定路径与鉴权头 |
 | `modules/keyauth/` | 动态 API key 哈希快照校验 |
 | `internal/bridge/` | 控制桥：长度前缀 JSON、UDS / 回环 TCP、优雅关闭 |
 | `internal/engine/` | pre → dispatch → post 调度；失败转移；统一错误渲染 |
 | `internal/accounts/` | 账号 / 令牌只读快照缓存 |
 | `internal/apikeys/` | API key 哈希快照缓存；`Ready()` 区分「没收到」与「空快照」 |
-| `internal/httpapi/` | `POST /v1/chat/completions`、`GET /healthz` |
+| `internal/httpapi/` | `POST /v1/chat/completions`、`POST /v1/responses`、`POST /v1/messages`、`GET /healthz` |
 | `cmd/gatewayd/` | 组合根：注册模块、启动 HTTP 入口与控制桥 |
 
 ### 4.3 数据与端口
@@ -169,9 +170,13 @@ export default FooService
 
 - 用户注册 / 登录 / 会话 / 改密 / 头像 / 角色与余额开关
 - 用户 API key：创建 / 改名 / 启停 / 轮换 / 删除 / 列表复制完整 key
-- 上游账号池：新建 / 编辑（含 Base URL、优先级）/ 导入凭据 / 启停 / 删除
+- 上游账号池：新建 / 编辑（含 Base URL、优先级、上游协议）/ 导入凭据 / 启停 / 删除
 - 账号优先级策略与 gatewayd 监管；账号与 key 快照推送
-- OpenAI 兼容 `/v1/chat/completions`、SSE 透传、`/healthz`
+- 协议转换：客户端按入口路径声明协议（`/v1/chat/completions` → openai-chat、
+  `/v1/responses` → openai-responses、`/v1/messages` → anthropic），网关按选中账号声明的
+  `protocol` 自动翻译请求与响应（含流式）；同协议直通不做任何改写
+- OpenAI 兼容 `/v1/chat/completions`、`/v1/responses`、Anthropic `/v1/messages`、
+  SSE 透传、`/healthz`
 - SPA + `/api/*` 产品入口；设置、目录、健康、用户管理、账号管理
 - 部署：systemd + Caddy + fail2ban
 
@@ -212,8 +217,8 @@ pnpm test:go
 
 - 新增插件必须有 `test/*.test.ts`；新增 Go 模块必须有单测。
 - 测试失败先修实现，不允许删断言或放宽断言来变绿。
-- 当前基线：`pnpm test` 297 个用例（296 通过 / 1 跳过），`pnpm typecheck` 干净，
-  `go test ./...` 全绿。这个数字会变，以实际输出为准。
+- 当前基线：`pnpm test` 302 个用例（301 通过 / 1 跳过），`pnpm typecheck` 干净，
+  `go test ./...` 全绿，`gofmt -l .` 与 `go vet ./...` 无输出。这个数字会变，以实际输出为准。
 
 ### 5.5 前端
 
@@ -273,6 +278,24 @@ pnpm build:go         # 产出 bin/gatewayd(.exe)
 - Windows 的 Node `net` 连不上 Go 的 AF_UNIX socket；`transport: auto` 在 Windows 走回环 TCP。
 - 桥拒绝非回环 TCP；生产 Linux 走 UDS。
 
+### 协议转换
+
+- **响应方向的转换只能发生在 transport 内部**：`engine.runDispatch` 在 transport 返回
+  `ActionRespond` 后立刻 return，注册在它之后的 dispatch 阶段永远不会执行；`runPost` 也改不了
+  已定的响应。所以请求方向是阶段、响应方向是注入 transport 的 `ResponseTranscoder`。
+- **每个 attempt 都要显式重置 `ctx.Upstream`**（含置 nil）。failover 循环会重跑转换阶段，残留
+  上一次的结果就会把错误的请求体发给下一个账号。
+- **路径约定**：`baseUrl` 自带版本前缀（`https://api.anthropic.com/v1`），方言表的 `Path` 是版本
+  之后的后缀（`/messages`）。写成 `/v1/messages` 会拼出 `/v1/v1/messages`。
+- **Anthropic 要求 `tool_use` / `tool_result` 成对且顺序合法**，否则上游直接 400；渲染前必须做
+  配对修补。工具 id 跨协议用无状态的「标记前缀 + base64url」方案改写，必须可逆。
+- **Anthropic 的 `max_tokens` 必填**：客户端没给时补默认值并记 `LossyNote`（旗标
+  `-anthropic-default-max-tokens`）。
+- **真实 Responses API 不发 `data: [DONE]`**，终止符是 `response.completed` / `response.incomplete`
+  / `response.failed`；解码端兼容上游发来的 `[DONE]`，编码端不发。
+- **部署顺序**：`accounts.replace` 用 `DisallowUnknownFields`。TS 若先发带新字段的账号快照而 Go
+  二进制还是旧的，**整份快照被拒 → 账号缓存清空 → 全部 503**。先重建 Go，再发 TS。
+
 ### 前端
 
 - 预览用 `pnpm preview:console`；它没有 `/api/*`，真实进程用 `pnpm dev`。
@@ -289,6 +312,11 @@ pnpm build:go         # 产出 bin/gatewayd(.exe)
 - `quota-check`、`content-audit`、`settle`、`usage-log`
 - Go 侧用户 / 额度 / 计费 / 支付；充值订单目前 501
 - `account-state`（健康、限流、额度、并发）、粘性会话
-- Claude / Gemini 原生协议与模型映射；当前只有 OpenAI 兼容上游
+- **模型映射与模型路由**：请求里的 `model` 原样透传给上游，网关不翻译也不据此选账号。
+  账号的 `protocol` 只决定「怎么翻译」，不决定「选谁」——混协议号池下可能选到不认这个模型名的账号
+- Gemini 协议（`contracts.ProtocolGemini` 已预留，未注册 codec；请求它会被
+  `PROTOCOL_CODEC_UNAVAILABLE` fail-closed 拒绝）
+- 跨协议转换的**有损面**：`thinking.signature` 不回传、`cache_control` 丢弃、OpenAI 专有采样
+  参数丢弃——都记 `LossyNote` 日志，但不保证语义等价
 - 每密钥并发上限、key 级限流、`lastUsedAt` 回报
 - 前端视觉打磨（等 owner 的参考设计）
