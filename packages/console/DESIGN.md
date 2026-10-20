@@ -180,6 +180,7 @@ tokens} / models[]{model, requests, tokens, costCents, daily?} / generatedAt`。
 |---|---|---|
 | GET | `/api/accounts?provider=&status=&cursor=&limit=` | 账号元数据，无 token / credentialRef |
 | POST | `/api/accounts` | `{ provider, kind, label, baseUrl?, protocol?, priority?, credential? }` 新建账号；凭据可留空 |
+| POST | `/api/accounts` | `{ provider, kind, label, baseUrl?, models?, modelMap?, priority?, credential? }` 新建账号；凭据可留空 |
 | GET/PATCH/DELETE | `/api/accounts/:id` | 元数据、启停、移除 |
 | GET | `/api/catalog/modules` | 插件 / 模块状态与贡献页面 |
 | GET | `/api/settings` | `{ namespaces }` 原样透传（秘密只有 `configured`） |

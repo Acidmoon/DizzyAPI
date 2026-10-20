@@ -59,6 +59,10 @@ export interface IdentityAccount {
   readonly baseUrl: string | null
   /** 上游端点的协议；`null` = 未声明（走旧行为）。 */
   readonly protocol: IdentityProtocol | null
+  /** 这个账号服务的**对外**模型名。`null` / 空 = 未声明（不参与按模型过滤，任何模型都可能落到它）。 */
+  readonly models: string[] | null
+  /** 对外模型名 → 上游真实模型名。`null` / 空 = 不改写模型名。 */
+  readonly modelMap: Record<string, string> | null
   /** 该账号在 account-priority 评分里的 priority 因子；默认 0。 */
   readonly priority: number
   /** 访问令牌过期时间（ISO）；`null` = 尚未导入令牌。 */
@@ -83,6 +87,10 @@ export interface CreateIdentityAccountInput {
   readonly subject?: string
   readonly baseUrl?: string
   readonly protocol?: IdentityProtocol
+  /** 这个账号服务的对外模型名；空数组与未声明等价。 */
+  readonly models?: string[]
+  /** 对外模型名 → 上游真实模型名；空对象与未声明等价。 */
+  readonly modelMap?: Record<string, string>
   readonly priority?: number
   readonly enabled?: boolean
   readonly secret?: IdentityTokenBundle
@@ -96,6 +104,10 @@ export interface UpdateIdentityAccountInput {
   readonly baseUrl?: string | null
   /** `undefined` = 不改；`null` = 清空为未声明。 */
   readonly protocol?: IdentityProtocol | null
+  /** `undefined` = 不改；`null` 或空数组 = 清空为未声明。 */
+  readonly models?: string[] | null
+  /** `undefined` = 不改；`null` 或空对象 = 清空为不改写。 */
+  readonly modelMap?: Record<string, string> | null
   readonly priority?: number
   readonly enabled?: boolean
 }

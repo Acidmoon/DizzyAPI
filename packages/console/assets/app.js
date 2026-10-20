@@ -8,6 +8,7 @@
  */
 import { createRouter } from './lib/router.js'
 import { ApiError, createHttpApis, createMockApis } from './lib/api.js'
+import { formatModelMapInput, parseModelMapInput, parseModelsInput } from './lib/account-form.js'
 
 /** @typedef {import('../src/contracts.ts').FrontendApis} FrontendApis */
 /** @typedef {import('../src/contracts.ts').AccountSummary} AccountSummary */
@@ -2179,6 +2180,13 @@ function openCreateAccountDialog(reload) {
   const priority = /** @type {HTMLInputElement} */ (el('input', {
     attrs: { type: 'number', min: '0', max: '1000', step: '1', value: '0' },
   }))
+  const models = /** @type {HTMLInputElement} */ (el('input', {
+    attrs: { type: 'text', placeholder: 'gpt-5, gpt-5-codex（逗号分隔）' },
+  }))
+  const modelMap = /** @type {HTMLTextAreaElement} */ (el('textarea', {
+    class: 'input',
+    attrs: { rows: '3', placeholder: '每行一条 对外名=上游名，例如：\ngpt-5-codex=claude-sonnet-4-5' },
+  }))
   const enabled = /** @type {HTMLInputElement} */ (el('input', {
     class: 'checkbox',
     attrs: { type: 'checkbox' },
@@ -2221,6 +2229,8 @@ function openCreateAccountDialog(reload) {
       el('div', { class: 'form-field' }, el('label', { text: 'Base URL' }), baseUrl),
       el('div', { class: 'form-field' }, el('label', { text: '上游协议' }), protocol),
       el('div', { class: 'form-field' }, el('label', { text: '优先级' }), priority),
+      el('div', { class: 'form-field span-2' }, el('label', { text: '对外模型名（逗号分隔）' }), models),
+      el('div', { class: 'form-field span-2' }, el('label', { text: '模型映射（每行 对外名=上游名）' }), modelMap),
       credentialField,
       el(
         'div',
@@ -2249,6 +2259,8 @@ function openCreateAccountDialog(reload) {
     create.disabled = true
     try {
       const payload = kind === 'api_key' ? apiKey.value.trim() : oauth.value.trim()
+      const parsedModels = parseModelsInput(models.value)
+      const parsedModelMap = parseModelMapInput(modelMap.value)
       /** @type {import('../src/contracts.ts').CreateAccountInput} */
       const input = {
         provider,
@@ -2260,6 +2272,8 @@ function openCreateAccountDialog(reload) {
         ...(protocol.value === ''
           ? {}
           : { protocol: /** @type {import('../src/contracts.ts').AccountProtocol} */ (protocol.value) }),
+        ...(parsedModels === null ? {} : { models: parsedModels }),
+        ...(parsedModelMap === null ? {} : { modelMap: parsedModelMap }),
         ...(payload === ''
           ? {}
           : {
@@ -2310,6 +2324,18 @@ function openEditAccountDialog(account, reload) {
     protocol.append(el('option', { attrs: { value }, text }))
   }
   protocol.value = account.protocol ?? ''
+  const models = /** @type {HTMLInputElement} */ (el('input', {
+    attrs: {
+      type: 'text',
+      value: Array.isArray(account.models) ? account.models.join(', ') : '',
+      placeholder: 'gpt-5, gpt-5-codex（逗号分隔）',
+    },
+  }))
+  const modelMap = /** @type {HTMLTextAreaElement} */ (el('textarea', {
+    class: 'input',
+    attrs: { rows: '3', placeholder: '每行一条 对外名=上游名' },
+  }))
+  modelMap.value = formatModelMapInput(account.modelMap)
   const error = el('p', { class: 'error-message', attrs: { hidden: '' } })
   const cancel = el('button', { class: 'btn', attrs: { type: 'button' }, text: '取消' })
   const save = /** @type {HTMLButtonElement} */ (el('button', {
@@ -2325,6 +2351,8 @@ function openEditAccountDialog(account, reload) {
       el('div', { class: 'form-field span-2' }, el('label', { text: 'Base URL' }), baseUrl),
       el('div', { class: 'form-field' }, el('label', { text: '上游协议' }), protocol),
       el('div', { class: 'form-field' }, el('label', { text: '优先级' }), priority),
+      el('div', { class: 'form-field span-2' }, el('label', { text: '对外模型名（逗号分隔）' }), models),
+      el('div', { class: 'form-field span-2' }, el('label', { text: '模型映射（每行 对外名=上游名）' }), modelMap),
     ),
     error,
     el('div', { class: 'dialog-actions' }, cancel, save),
@@ -2341,6 +2369,8 @@ function openEditAccountDialog(account, reload) {
         label: label.value,
         baseUrl: baseUrl.value.trim() === '' ? null : baseUrl.value.trim(),
         protocol: protocol.value === '' ? null : /** @type {import('../src/contracts.ts').AccountProtocol} */ (protocol.value),
+        models: parseModelsInput(models.value),
+        modelMap: parseModelMapInput(modelMap.value),
         priority: Number(priority.value === '' ? '0' : priority.value),
       })
       toast('账号已更新')

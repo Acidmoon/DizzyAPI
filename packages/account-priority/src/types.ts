@@ -138,6 +138,10 @@ export interface GatewayAccount {
   readonly baseUrl: string
   /** 上游端点协议；账号没声明时不带这个键，保持旧快照形状。 */
   readonly protocol?: string
+  /** 这个账号服务的对外模型名；账号没声明时不带这个键，保持旧快照形状。 */
+  readonly models?: readonly string[]
+  /** 对外模型名 → 上游真实模型名；账号没声明时不带这个键。 */
+  readonly modelMap?: Readonly<Record<string, string>>
   readonly token: string
   readonly expiresAt?: string
   readonly priority?: number

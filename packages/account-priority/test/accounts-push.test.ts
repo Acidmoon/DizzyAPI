@@ -17,6 +17,8 @@ interface FakeAccount {
   readonly status: string
   readonly baseUrl?: string | null
   readonly protocol?: string | null
+  readonly models?: readonly string[] | null
+  readonly modelMap?: Record<string, string> | null
   readonly priority?: number
   readonly accessExpiresAt: string | null
 }
@@ -206,6 +208,55 @@ test('账号快照带 protocol；未声明时不带这个键', async (t) => {
   const withoutProtocol = captured.find((item) => item.accountId === 'acc-without')
   assert.equal(withProtocol?.protocol, 'openai-chat')
   assert.ok(withoutProtocol !== undefined && !('protocol' in withoutProtocol), '未声明时快照里不该有 protocol 键')
+})
+
+test('账号快照带 models / modelMap；未声明时不带这两个键', async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), 'dizzyapi-accounts-models-'))
+  const logPath = join(dir, 'accounts.json')
+  const ctx = new Context()
+  await ctx.plugin(FakeIdentity)
+  const identity = ctx.get('identity') as unknown as FakeIdentity
+  const fiber = await ctx.plugin(AccountPriorityService, {
+    dataPath: join(dir, 'strategies.json'),
+    binaryPath: process.execPath,
+    args: [FAKE, `--accounts-log=${logPath}`],
+    transport: 'tcp',
+    autoStart: true,
+    startTimeoutMs: 5_000,
+    requestTimeoutMs: 2_000,
+    stopTimeoutMs: 2_000,
+    httpListen: '127.0.0.1:0',
+    upstreamBaseUrls: { openai: 'https://api.openai.com/v1' },
+  })
+  t.after(async () => {
+    try {
+      await fiber.dispose()
+    } catch {
+      // ignore
+    }
+    await rm(dir, { recursive: true, force: true })
+  })
+  const service = ctx.get('accountPriority') as AccountPriorityService
+  await waitFor(() => service.status().state === 'ready')
+
+  identity.add(
+    account('acc-with', { models: ['gpt-5'], modelMap: { 'gpt-5': 'gpt-5-2025' } }),
+    'sk-with',
+  )
+  identity.add(account('acc-without'), 'sk-without')
+  await waitFor(() => service.status().accounts === 2)
+
+  const captured = JSON.parse(await readFile(logPath, 'utf8')) as {
+    accountId: string
+    models?: string[]
+    modelMap?: Record<string, string>
+  }[]
+  const withModels = captured.find((item) => item.accountId === 'acc-with')
+  const withoutModels = captured.find((item) => item.accountId === 'acc-without')
+  assert.deepEqual(withModels?.models, ['gpt-5'])
+  assert.deepEqual(withModels?.modelMap, { 'gpt-5': 'gpt-5-2025' })
+  assert.ok(withoutModels !== undefined && !('models' in withoutModels), '未声明时快照里不该有 models 键')
+  assert.ok(!('modelMap' in withoutModels), '未声明时快照里不该有 modelMap 键')
 })
 
 test('没有 identity 时推送空快照，不阻塞 gatewayd 就绪', async (t) => {

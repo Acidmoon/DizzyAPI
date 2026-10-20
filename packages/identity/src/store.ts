@@ -59,6 +59,32 @@ function readOptionalInteger(source: Record<string, unknown>, key: string, where
   return value
 }
 
+/** 缺失按 `null`；形状不对（非数组 / 含非字符串）明确失败，不静默降级。 */
+function readOptionalStringArray(source: Record<string, unknown>, key: string, where: string): string[] | null {
+  const value = source[key]
+  if (value === undefined || value === null) return null
+  if (!Array.isArray(value)) corrupt(`${where}.${key} 必须是字符串数组或 null`)
+  for (const item of value) {
+    if (typeof item !== 'string') corrupt(`${where}.${key} 的元素必须是字符串`)
+  }
+  return value as string[]
+}
+
+/** 缺失按 `null`；形状不对（非对象 / 含非字符串值）明确失败，不静默降级。 */
+function readOptionalStringMap(
+  source: Record<string, unknown>,
+  key: string,
+  where: string,
+): Record<string, string> | null {
+  const value = source[key]
+  if (value === undefined || value === null) return null
+  if (typeof value !== 'object' || Array.isArray(value)) corrupt(`${where}.${key} 必须是字符串映射或 null`)
+  for (const [entryKey, entryValue] of Object.entries(value as Record<string, unknown>)) {
+    if (typeof entryValue !== 'string') corrupt(`${where}.${key}.${entryKey} 必须是字符串`)
+  }
+  return value as Record<string, string>
+}
+
 function decodeAccount(raw: unknown, key: string): IdentityAccount {
   const where = `accounts.${key}`
   const source = asObject(raw, where)
@@ -84,6 +110,8 @@ function decodeAccount(raw: unknown, key: string): IdentityAccount {
     subject: readNullableString(source, 'subject', where),
     baseUrl: readOptionalNullableString(source, 'baseUrl', where),
     protocol: readOptionalNullableString(source, 'protocol', where) as IdentityAccount['protocol'],
+    models: readOptionalStringArray(source, 'models', where),
+    modelMap: readOptionalStringMap(source, 'modelMap', where),
     priority: readOptionalInteger(source, 'priority', where),
     accessExpiresAt: readNullableString(source, 'accessExpiresAt', where),
     refreshDueAt: readNullableString(source, 'refreshDueAt', where),

@@ -176,6 +176,8 @@ export interface AccountViewLike {
   readonly subject: string | null
   readonly baseUrl: string | null
   readonly protocol: string | null
+  readonly models: string[] | null
+  readonly modelMap: Record<string, string> | null
   readonly priority: number
   readonly accessExpiresAt: string | null
   readonly refreshDueAt: string | null
@@ -207,6 +209,8 @@ export interface AccountAdminPort {
       subject?: string | null
       baseUrl?: string | null
       protocol?: string | null
+      models?: string[] | null
+      modelMap?: Record<string, string> | null
       priority?: number
     },
   ): Promise<unknown>

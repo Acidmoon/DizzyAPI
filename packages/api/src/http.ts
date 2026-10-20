@@ -757,6 +757,8 @@ export class ApiServer {
           'subject',
           'baseUrl',
           'protocol',
+          'models',
+          'modelMap',
           'priority',
           'enabled',
           'credential',
@@ -768,6 +770,8 @@ export class ApiServer {
         const subject = optionalString(body, 'subject')
         const baseUrl = optionalString(body, 'baseUrl')
         const protocol = optionalString(body, 'protocol')
+        const models = optionalStringArray(body, 'models')
+        const modelMap = optionalStringMap(body, 'modelMap')
         const priority = optionalInteger(body, 'priority', 0, 1000)
         const enabled = body.enabled === undefined ? undefined : requiredBoolean(body, 'enabled')
         const credential = accountCredentialOf(body.credential)
@@ -779,6 +783,8 @@ export class ApiServer {
           ...(subject === undefined ? {} : { subject }),
           ...(baseUrl === undefined ? {} : { baseUrl }),
           ...(protocol === undefined ? {} : { protocol }),
+          ...(models === undefined ? {} : { models }),
+          ...(modelMap === undefined ? {} : { modelMap }),
           ...(priority === undefined ? {} : { priority }),
           ...(enabled === undefined ? {} : { enabled }),
           ...(credential === undefined ? {} : { credential }),
@@ -839,13 +845,25 @@ export class ApiServer {
       }
       if (req.method === 'PATCH') {
         const body = await this.jsonBody(req)
-        assertOnlyKeys(body, ['label', 'email', 'subject', 'baseUrl', 'protocol', 'priority', 'enabled'])
+        assertOnlyKeys(body, [
+          'label',
+          'email',
+          'subject',
+          'baseUrl',
+          'protocol',
+          'models',
+          'modelMap',
+          'priority',
+          'enabled',
+        ])
         const hasMeta =
           Object.hasOwn(body, 'label') ||
           Object.hasOwn(body, 'email') ||
           Object.hasOwn(body, 'subject') ||
           Object.hasOwn(body, 'baseUrl') ||
           Object.hasOwn(body, 'protocol') ||
+          Object.hasOwn(body, 'models') ||
+          Object.hasOwn(body, 'modelMap') ||
           Object.hasOwn(body, 'priority')
         const hasEnabled = Object.hasOwn(body, 'enabled')
         if (!hasMeta && !hasEnabled) throw badRequest('没有可修改的字段')
@@ -857,6 +875,8 @@ export class ApiServer {
             subject?: string | null
             baseUrl?: string | null
             protocol?: string | null
+            models?: string[] | null
+            modelMap?: Record<string, string> | null
             priority?: number
           } = {}
           if (Object.hasOwn(body, 'label')) patch.label = requiredString(body, 'label')
@@ -864,6 +884,8 @@ export class ApiServer {
           if (Object.hasOwn(body, 'subject')) patch.subject = nullableString(body, 'subject')
           if (Object.hasOwn(body, 'baseUrl')) patch.baseUrl = nullableString(body, 'baseUrl')
           if (Object.hasOwn(body, 'protocol')) patch.protocol = nullableString(body, 'protocol')
+          if (Object.hasOwn(body, 'models')) patch.models = nullableStringArray(body, 'models')
+          if (Object.hasOwn(body, 'modelMap')) patch.modelMap = nullableStringMap(body, 'modelMap')
           if (Object.hasOwn(body, 'priority')) patch.priority = optionalInteger(body, 'priority', 0, 1000)
           await accountAdmin.update(API_ACTOR, id, patch)
         }
@@ -1429,6 +1451,50 @@ function nullableString(body: Record<string, unknown>, key: string): string | nu
   return value
 }
 
+/** 只做形状校验：数组且元素都是字符串。语义（trim / 去重 / 上限）由 identity 归一化。 */
+function readStringArray(value: unknown, key: string): string[] {
+  if (!Array.isArray(value)) throw badRequest(`${key} 必须是字符串数组`)
+  for (const item of value) {
+    if (typeof item !== 'string') throw badRequest(`${key} 的元素必须是字符串`)
+  }
+  return value as string[]
+}
+
+/** 只做形状校验：对象且值都是字符串。 */
+function readStringMap(value: unknown, key: string): Record<string, string> {
+  if (!isPlainObject(value)) throw badRequest(`${key} 必须是 JSON 对象`)
+  for (const [entryKey, entryValue] of Object.entries(value)) {
+    if (typeof entryValue !== 'string') throw badRequest(`${key}.${entryKey} 必须是字符串`)
+  }
+  return value as Record<string, string>
+}
+
+/** 没给（或给了 null）→ `undefined`（新建时等同未声明）。 */
+function optionalStringArray(body: Record<string, unknown>, key: string): string[] | undefined {
+  const value = body[key]
+  if (value === undefined || value === null) return undefined
+  return readStringArray(value, key)
+}
+
+function optionalStringMap(body: Record<string, unknown>, key: string): Record<string, string> | undefined {
+  const value = body[key]
+  if (value === undefined || value === null) return undefined
+  return readStringMap(value, key)
+}
+
+/** PATCH 里区分「没给」与「给了 null」：`null` 表示清空为未声明。 */
+function nullableStringArray(body: Record<string, unknown>, key: string): string[] | null {
+  const value = body[key]
+  if (value === null) return null
+  return readStringArray(value, key)
+}
+
+function nullableStringMap(body: Record<string, unknown>, key: string): Record<string, string> | null {
+  const value = body[key]
+  if (value === null) return null
+  return readStringMap(value, key)
+}
+
 /**
  * 新建账号时的可选凭据。只做形状校验；格式识别与秘密落库由 account-admin /
  * identity 负责，HTTP 层不解析、不回显 payload。
@@ -1699,6 +1765,8 @@ function accountOf(value: unknown): AccountViewLike {
     subject: typeof record.subject === 'string' ? record.subject : null,
     baseUrl: typeof record.baseUrl === 'string' ? record.baseUrl : null,
     protocol: typeof record.protocol === 'string' ? record.protocol : null,
+    models: stringArrayOf(record.models),
+    modelMap: stringMapOf(record.modelMap),
     priority: typeof record.priority === 'number' ? record.priority : 0,
     accessExpiresAt: typeof record.accessExpiresAt === 'string' ? record.accessExpiresAt : null,
     refreshDueAt: typeof record.refreshDueAt === 'string' ? record.refreshDueAt : null,
@@ -1709,6 +1777,25 @@ function accountOf(value: unknown): AccountViewLike {
     createdAt: typeof record.createdAt === 'string' ? record.createdAt : '',
     updatedAt: typeof record.updatedAt === 'string' ? record.updatedAt : '',
   }
+}
+
+/** 响应侧的形状归一：非数组 / 含非字符串一律退回 null，不把脏数据透给前端。 */
+function stringArrayOf(value: unknown): string[] | null {
+  if (!Array.isArray(value)) return null
+  const items: string[] = []
+  for (const item of value) {
+    if (typeof item === 'string') items.push(item)
+  }
+  return items
+}
+
+function stringMapOf(value: unknown): Record<string, string> | null {
+  if (!isPlainObject(value)) return null
+  const map: Record<string, string> = {}
+  for (const [key, item] of Object.entries(value)) {
+    if (typeof item === 'string') map[key] = item
+  }
+  return map
 }
 
 function normalizeBulkImport(value: unknown): unknown {

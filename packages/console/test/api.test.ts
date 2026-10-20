@@ -191,6 +191,32 @@ test('HTTP 客户端：网络错误与超时', async () => {
   )
 })
 
+test('mock：账号 create / update 回填 models 与 modelMap', async () => {
+  const mock = createMockApis({ latencyMs: 0, now: () => new Date('2026-10-19T12:00:00.000Z') })
+
+  const created = await mock.accounts.create({
+    provider: 'openai',
+    kind: 'api_key',
+    label: '模型账号',
+    models: ['gpt-5', 'gpt-5-codex'],
+    modelMap: { 'gpt-5-codex': 'gpt-5-codex-2025-01-01' },
+  })
+  assert.deepEqual(created.models, ['gpt-5', 'gpt-5-codex'])
+  assert.deepEqual(created.modelMap, { 'gpt-5-codex': 'gpt-5-codex-2025-01-01' })
+
+  const updated = await mock.accounts.update(created.id, { models: ['o3'], modelMap: { o3: 'o3-mini' } })
+  assert.deepEqual(updated.models, ['o3'])
+  assert.deepEqual(updated.modelMap, { o3: 'o3-mini' })
+
+  const cleared = await mock.accounts.update(created.id, { models: null, modelMap: null })
+  assert.equal(cleared.models, null)
+  assert.equal(cleared.modelMap, null)
+
+  const plain = await mock.accounts.create({ provider: 'custom', kind: 'api_key', label: '无模型' })
+  assert.equal(plain.models, null)
+  assert.equal(plain.modelMap, null)
+})
+
 test('mock：用量、keys、充值都是契约形状', async () => {
   const mock = createMockApis({ latencyMs: 0, now: () => new Date('2026-10-19T12:00:00.000Z') })
 
