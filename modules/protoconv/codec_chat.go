@@ -341,6 +341,10 @@ func renderChatMessage(message contracts.Message, request *contracts.Request) []
 	var contentParts []json.RawMessage
 	textOnly := true
 	for _, part := range message.Parts {
+		if hasCacheControl(part.Raw) {
+			request.Lossy = append(request.Lossy, lossyNote("request", "",
+				contracts.ProtocolOpenAIChat, "cache_control", "dropped", "OpenAI Chat 不支持 cache_control"))
+		}
 		switch part.Kind {
 		case contracts.KindText:
 			text.WriteString(part.Text)
@@ -362,7 +366,7 @@ func renderChatMessage(message contracts.Message, request *contracts.Request) []
 			out.ToolCalls = append(out.ToolCalls, call)
 		case contracts.KindThinking:
 			request.Lossy = append(request.Lossy, lossyNote("request", "",
-				contracts.ProtocolOpenAIChat, "thinking", "dropped", "OpenAI Chat 不支持 thinking"))
+				contracts.ProtocolOpenAIChat, thinkingLossyField(part), "dropped", "OpenAI Chat 不支持 thinking"))
 		default:
 			request.Lossy = append(request.Lossy, lossyNote("request", "",
 				contracts.ProtocolOpenAIChat, string(part.Kind), "dropped", "OpenAI Chat 无法表示"))
@@ -458,7 +462,7 @@ func (chatCodec) RenderResponse(response *contracts.Response) ([]byte, error) {
 			message.ToolCalls = append(message.ToolCalls, call)
 		case contracts.KindThinking:
 			response.Lossy = append(response.Lossy, lossyNote("response", "",
-				contracts.ProtocolOpenAIChat, "thinking", "dropped", "OpenAI Chat 不支持 thinking"))
+				contracts.ProtocolOpenAIChat, thinkingLossyField(part), "dropped", "OpenAI Chat 不支持 thinking"))
 		default:
 			response.Lossy = append(response.Lossy, lossyNote("response", "",
 				contracts.ProtocolOpenAIChat, string(part.Kind), "dropped", "OpenAI Chat 无法表示"))
