@@ -111,6 +111,13 @@ type Ctx struct {
 	// 每个 attempt 都必须显式写它（含置 nil）：engine 的失败转移循环会重跑
 	// dispatch 阶段，残留上一次的结果就会发错请求体。
 	Upstream *UpstreamRequest
+
+	// MappedBody 是模型映射阶段写下的、替换过顶层 model 字段的请求体。
+	// nil = 没有映射：transport / protoconv 用 Body 的原始字节。
+	//
+	// 与 Upstream 一样，每个 attempt 都必须显式写它（含置 nil）：failover 会重跑
+	// 映射阶段，残留上一次的改写结果就会把错误的请求体发出去。
+	MappedBody []byte
 }
 
 // UpstreamRequest 是协议转换阶段交给 transport 的上游请求。
@@ -215,6 +222,11 @@ type AccountCredential struct {
 	// Protocol 是该账号声明的上游协议（openai-chat / openai-responses / anthropic）。
 	// 空 = 旧快照（未声明协议）：transport 走 Config.Path 回退，不做协议转换。
 	Protocol string
+
+	// Models 是这个账号服务的对外模型名；ModelMap 是「对外模型名 → 上游真实模型名」。
+	// 空 = 未声明：模型路由不过滤该账号、模型映射不生效（向后兼容，旧快照合法）。
+	Models   []string
+	ModelMap map[string]string
 }
 
 // CredentialSource 是 transport 对账号快照缓存的最小依赖。
@@ -350,6 +362,9 @@ type AccountCandidate struct {
 	SuccessRate    *float64   `json:"successRate,omitempty"`
 	LatencyP95Ms   *float64   `json:"latencyP95Ms,omitempty"`
 	CostMultiplier *float64   `json:"costMultiplier,omitempty"`
+
+	// Models 是这个账号服务的对外模型名。空 = 未声明：不参与模型路由过滤（向后兼容）。
+	Models []string `json:"models,omitempty"`
 }
 
 // ScoreFactor 是一个打分因子的可解释明细。

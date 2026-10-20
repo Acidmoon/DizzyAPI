@@ -309,10 +309,14 @@ func (s *Stage) Run(ctx *contracts.Ctx) (contracts.Decision, error) {
 	}, nil
 }
 
-// requestBody 选择要发给上游的字节：转换后的（Upstream）优先，否则是客户端原始字节。
+// requestBody 选择要发给上游的字节，优先级：
+// 协议转换结果（Upstream）> 模型映射结果（MappedBody）> 客户端原始字节（Body）。
 func requestBody(ctx *contracts.Ctx) ([]byte, error) {
 	if ctx.Upstream != nil {
 		return ctx.Upstream.Body, nil
+	}
+	if ctx.MappedBody != nil {
+		return ctx.MappedBody, nil
 	}
 	if ctx.Body == nil {
 		return nil, contracts.Errorf(http.StatusBadRequest, "REQUEST_BODY_REQUIRED", "请求体缺失")

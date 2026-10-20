@@ -31,7 +31,7 @@ func newGateway(t *testing.T, upstreamURL string, keyConfig keyauth.Config) gate
 	t.Helper()
 	cache := accounts.New()
 	registry := contracts.NewRegistry()
-	keyauth.Register(registry, keyConfig)
+	keyStage := keyauth.Register(registry, keyConfig)
 	if _, err := accountpriority.Register(registry, accountpriority.Config{}); err != nil {
 		t.Fatalf("accountpriority.Register: %v", err)
 	}
@@ -42,7 +42,7 @@ func newGateway(t *testing.T, upstreamURL string, keyConfig keyauth.Config) gate
 	if err != nil {
 		t.Fatalf("engine.New: %v", err)
 	}
-	server, err := New(requestEngine, cache, nil, Config{})
+	server, err := New(requestEngine, cache, nil, Config{Authorizer: keyStage})
 	if err != nil {
 		t.Fatalf("httpapi.New: %v", err)
 	}

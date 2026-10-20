@@ -71,13 +71,20 @@ func (s *Stage) Run(ctx *contracts.Ctx) (contracts.Decision, error) {
 	if !ok {
 		return contracts.Decision{}, codecUnavailable()
 	}
-	if ctx.Body == nil {
-		return contracts.Decision{}, convertFailed()
-	}
-	// 始终从客户端原始字节重新解析，保证幂等。
-	body, err := ctx.Body.Bytes()
-	if err != nil {
-		return contracts.Decision{}, convertFailed()
+	// 解析 IR 的输入体：模型映射阶段改写过的字节优先（它已带上游模型名），
+	// 否则是客户端原始字节。始终从确定的字节重新解析，保证幂等。
+	var body []byte
+	if ctx.MappedBody != nil {
+		body = ctx.MappedBody
+	} else {
+		if ctx.Body == nil {
+			return contracts.Decision{}, convertFailed()
+		}
+		original, err := ctx.Body.Bytes()
+		if err != nil {
+			return contracts.Decision{}, convertFailed()
+		}
+		body = original
 	}
 	request, err := inbound.ParseRequest(body)
 	if err != nil {

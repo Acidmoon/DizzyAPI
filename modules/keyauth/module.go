@@ -88,9 +88,26 @@ func (s *Stage) Run(ctx *contracts.Ctx) (contracts.Decision, error) {
 	if ctx == nil {
 		return contracts.Decision{}, contracts.Errorf(http.StatusInternalServerError, "KEY_AUTH_INVALID_REQUEST", "请求上下文为空")
 	}
-	token, err := bearerToken(ctx.Headers)
+	key, err := s.Authorize(ctx.Headers)
 	if err != nil {
 		return contracts.Decision{}, err
+	}
+	ctx.Key = key
+	ctx.Profile = key.Profile
+	return contracts.Decision{Action: contracts.ActionContinue}, nil
+}
+
+// Authorize 校验 Authorization 头并返回调用方身份，语义与 Run 完全一致。
+//
+// 它供不经过 engine 的路由（如 GET /v1/models）复用同一套判定，避免另写一套鉴权：
+//   - 已收到过快照：只认快照里的 key，未命中直接 401，绝不回退（空快照同样 fail-closed）；
+//   - 尚未收到快照：沿用静态 key；未配置静态 key 时接受任何非空 Bearer（占位模式）。
+//
+// 返回的 *APIKey 只含指纹 / 用户 id 等非秘密字段；错误是 *contracts.StageError。
+func (s *Stage) Authorize(headers http.Header) (*contracts.APIKey, error) {
+	token, err := bearerToken(headers)
+	if err != nil {
+		return nil, err
 	}
 
 	// 动态快照优先，且绝不回退：只要收到过快照，环境变量 key 与占位模式都失效。
@@ -98,30 +115,26 @@ func (s *Stage) Run(ctx *contracts.Ctx) (contracts.Decision, error) {
 	if s.hasSnapshot() {
 		record, ok := s.verifier.Verify(token)
 		if !ok {
-			return contracts.Decision{}, contracts.Errorf(http.StatusUnauthorized, "INVALID_API_KEY", "API key 无效")
+			return nil, contracts.Errorf(http.StatusUnauthorized, "INVALID_API_KEY", "API key 无效")
 		}
 		profile := strings.TrimSpace(record.Profile)
 		if profile == "" {
 			profile = s.profile
 		}
-		ctx.Key = &contracts.APIKey{
+		return &contracts.APIKey{
 			ID:      record.KeyID,
 			KeyID:   record.KeyID,
 			UserID:  record.UserID,
 			Name:    record.Name,
 			Profile: profile,
-		}
-		ctx.Profile = profile
-		return contracts.Decision{Action: contracts.ActionContinue}, nil
+		}, nil
 	}
 
 	if len(s.keys) > 0 && !s.matches(token) {
-		return contracts.Decision{}, contracts.Errorf(http.StatusUnauthorized, "INVALID_API_KEY", "API key 无效")
+		return nil, contracts.Errorf(http.StatusUnauthorized, "INVALID_API_KEY", "API key 无效")
 	}
 
-	ctx.Key = &contracts.APIKey{ID: keyID(token), Profile: s.profile}
-	ctx.Profile = s.profile
-	return contracts.Decision{Action: contracts.ActionContinue}, nil
+	return &contracts.APIKey{ID: keyID(token), Profile: s.profile}, nil
 }
 
 // hasSnapshot 表示动态模式是否已经接管。
