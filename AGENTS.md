@@ -25,7 +25,13 @@ owner 说「实现若干个插件 / 功能」时，按下面流程：
 1. **拆任务**：结合 owner 的想法和当前代码，列出插件边界、依赖顺序、每个 worktree 的范围。
    先给 owner 一个简短拆分方案，确认后再分派。
 2. **建 worktree**：每个插件 / 功能一个 worktree，一个子代理。
-   - 用 `EnterWorktree` 创建；命名与 owner 的意图一致（如 `feat/user-system`）。
+   - 并行派多个时用子代理自带的 worktree 隔离（Agent 工具创建），**不要**用主会话的
+     `EnterWorktree`：后者会把主会话自己挪进那个 worktree，一次只能待一个，做不了并行。
+   - **子代理的 worktree 从 `origin/main` 切，不是本地 `main`**。派活前先 `git push`，
+     否则子代理会在旧基底上开工——本项目踩过：TS 侧那个代理在一棵还没有 `protocol` 的树上
+     做了 `models` 字段，合并时 61 处冲突要靠手工解。
+     （Go 侧那个代理自己发现并 `git merge --ff-only main` 修好了，可以在 prompt 里直接写上这句。）
+   - 分支命名与 owner 的意图一致（如 `feat/user-system`）。
    - **子代理默认继承主会话模型**：分派时不要传 `model` 覆盖。
 3. **写子代理 prompt**：必须自包含，至少包含：
    - 目标插件 / 功能、做什么、不做什么；
