@@ -48,6 +48,8 @@ type Account struct {
 	ExpiresAt *time.Time        `json:"expiresAt,omitempty"`
 	Priority  int               `json:"priority,omitempty"`
 	Tags      map[string]string `json:"tags,omitempty"`
+	// Protocol 是账号声明的上游协议。空 = 旧快照（未声明），合法。
+	Protocol string `json:"protocol,omitempty"`
 }
 
 // State 是给管理面看的运行期状态：只有计数与 revision，没有令牌。
@@ -144,6 +146,7 @@ func (c *Cache) Credential(accountID string) (contracts.AccountCredential, bool)
 		BaseURL:     account.BaseURL,
 		AccessToken: account.Token,
 		ExpiresAt:   account.ExpiresAt,
+		Protocol:    account.Protocol,
 	}, true
 }
 
@@ -220,6 +223,9 @@ func validateAccount(account Account) error {
 	if account.Kind != "" && account.Kind != "oauth" && account.Kind != "api_key" {
 		return newError("ACCOUNTS_INVALID_ACCOUNT", "账号 %s 的 kind 不合法：%s", account.AccountID, account.Kind)
 	}
+	if account.Protocol != "" && !validProtocol(account.Protocol) {
+		return newError("ACCOUNTS_INVALID_ACCOUNT", "账号 %s 的 protocol 不合法：%s", account.AccountID, account.Protocol)
+	}
 	if strings.TrimSpace(account.BaseURL) == "" {
 		return newError("ACCOUNTS_INVALID_ACCOUNT", "账号 %s 缺少 baseUrl", account.AccountID)
 	}
@@ -245,6 +251,18 @@ func validateAccount(account Account) error {
 	return nil
 }
 
+// validProtocol 是账号上游协议的白名单。空串合法（旧快照兼容）。
+func validProtocol(protocol string) bool {
+	switch protocol {
+	case string(contracts.ProtocolOpenAIChat),
+		string(contracts.ProtocolOpenAIResponses),
+		string(contracts.ProtocolAnthropic):
+		return true
+	default:
+		return false
+	}
+}
+
 // revisionOf 对快照内容（含令牌）做哈希。只输出哈希，不输出令牌。
 func revisionOf(accounts map[string]Account, order []string) string {
 	hash := sha256.New()
@@ -252,6 +270,7 @@ func revisionOf(accounts map[string]Account, order []string) string {
 		account := accounts[id]
 		fmt.Fprintf(hash, "%s\x00%s\x00%s\x00%s\x00", account.AccountID, account.Provider, account.Kind, account.BaseURL)
 		hash.Write([]byte(account.Token))
+		fmt.Fprintf(hash, "\x00%s\x00", account.Protocol)
 		fmt.Fprintf(hash, "\x00%d\x00", account.Priority)
 		if account.ExpiresAt != nil {
 			hash.Write([]byte(account.ExpiresAt.UTC().Format(time.RFC3339Nano)))

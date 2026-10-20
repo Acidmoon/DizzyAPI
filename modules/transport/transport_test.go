@@ -43,7 +43,7 @@ func newStage(t *testing.T, baseURL, token string, cfg Config) *Stage {
 			BaseURL:     baseURL,
 			AccessToken: token,
 		},
-	})
+	}, nil)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -165,7 +165,7 @@ func TestUpstreamAuthErrorDoesNotLeakBody(t *testing.T) {
 }
 
 func TestMissingCredentialIsRetryable(t *testing.T) {
-	stage, err := New(Config{}, staticSource{})
+	stage, err := New(Config{}, staticSource{}, nil)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}

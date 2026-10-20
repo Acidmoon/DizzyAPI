@@ -9,7 +9,6 @@ package engine
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -96,7 +95,7 @@ func phaseRank(phase contracts.Phase) int {
 //   - 任何错误都由 engine 渲染成 HTTP 响应，模块不自己写响应。
 func (e *Engine) Run(ctx *contracts.Ctx) (decision contracts.Decision) {
 	if ctx == nil {
-		return e.render(contracts.Errorf(http.StatusInternalServerError, "GATEWAY_INTERNAL", "请求上下文为空"))
+		return e.render(nil, contracts.Errorf(http.StatusInternalServerError, "GATEWAY_INTERNAL", "请求上下文为空"))
 	}
 	if ctx.Context == nil {
 		ctx.Context = context.Background()
@@ -107,7 +106,7 @@ func (e *Engine) Run(ctx *contracts.Ctx) (decision contracts.Decision) {
 		// 失败只记日志（结算类阶段的失败策略尚未按描述符实现）。
 		if recovered := recover(); recovered != nil {
 			e.logger.Error("LLM 请求链路 panic", "reqId", ctx.ReqID, "error", fmt.Sprintf("%v", recovered))
-			decision = e.render(contracts.Errorf(http.StatusInternalServerError, "GATEWAY_INTERNAL", "网关内部错误"))
+			decision = e.render(ctx, contracts.Errorf(http.StatusInternalServerError, "GATEWAY_INTERNAL", "网关内部错误"))
 		}
 		e.runPost(ctx)
 	}()
@@ -116,7 +115,7 @@ func (e *Engine) Run(ctx *contracts.Ctx) (decision contracts.Decision) {
 		result, err := stage.Run(ctx)
 		if err != nil {
 			e.logger.Warn("pre 阶段失败", "reqId", ctx.ReqID, "stage", stage.Name(), "code", errorCode(err))
-			return e.render(err)
+			return e.render(ctx, err)
 		}
 		if result.Action == contracts.ActionRespond {
 			return normalize(result)
@@ -131,7 +130,7 @@ func (e *Engine) Run(ctx *contracts.Ctx) (decision contracts.Decision) {
 func (e *Engine) runDispatch(ctx *contracts.Ctx) contracts.Decision {
 	attempts := rankedAccounts(ctx)
 	if len(attempts) == 0 {
-		return e.render(contracts.Errorf(http.StatusServiceUnavailable, "NO_ELIGIBLE_ACCOUNT", "没有可用账号"))
+		return e.render(ctx, contracts.Errorf(http.StatusServiceUnavailable, "NO_ELIGIBLE_ACCOUNT", "没有可用账号"))
 	}
 
 	var lastErr error
@@ -155,7 +154,7 @@ func (e *Engine) runDispatch(ctx *contracts.Ctx) contracts.Decision {
 						"accountId", scored.AccountID, "code", errorCode(err))
 					break
 				}
-				return e.render(err)
+				return e.render(ctx, err)
 			}
 
 			ctx.Attempts = append(ctx.Attempts, contracts.AccountAttempt{
@@ -170,14 +169,14 @@ func (e *Engine) runDispatch(ctx *contracts.Ctx) contracts.Decision {
 
 		if responded && lastErr == nil {
 			// 所有 dispatch 阶段都返回 Continue：没有任何阶段产生响应。
-			return e.render(contracts.Errorf(http.StatusBadGateway, "NO_GATEWAY_RESPONSE", "上游没有返回响应"))
+			return e.render(ctx, contracts.Errorf(http.StatusBadGateway, "NO_GATEWAY_RESPONSE", "上游没有返回响应"))
 		}
 	}
 
 	if lastErr != nil {
-		return e.render(lastErr)
+		return e.render(ctx, lastErr)
 	}
-	return e.render(contracts.Errorf(http.StatusBadGateway, "NO_GATEWAY_RESPONSE", "上游没有返回响应"))
+	return e.render(ctx, contracts.Errorf(http.StatusBadGateway, "NO_GATEWAY_RESPONSE", "上游没有返回响应"))
 }
 
 func rankedAccounts(ctx *contracts.Ctx) []contracts.ScoredAccount {
@@ -219,9 +218,11 @@ func normalize(decision contracts.Decision) contracts.Decision {
 	return decision
 }
 
-// render 把错误渲染成 OpenAI 兼容的错误响应。
+// render 把错误渲染成客户端协议对应的错误响应。
+//
 // 只有 StageError / PublicError 的 message 会外露；其他错误一律吞掉。
-func (e *Engine) render(err error) contracts.Decision {
+// ctx 决定错误体形状（ctx == nil 或 ClientProtocol 为空 = OpenAI 兼容形状）。
+func (e *Engine) render(ctx *contracts.Ctx, err error) contracts.Decision {
 	if err == nil {
 		err = contracts.Errorf(http.StatusInternalServerError, "GATEWAY_INTERNAL", "网关内部错误")
 	}
@@ -251,21 +252,15 @@ func (e *Engine) render(err error) contracts.Decision {
 	if status < 400 || status > 599 {
 		status = http.StatusInternalServerError
 	}
-	body, marshalErr := json.Marshal(map[string]any{
-		"error": map[string]any{
-			"message": message,
-			"type":    errorType(status),
-			"code":    code,
-		},
-	})
-	if marshalErr != nil {
-		body = []byte(`{"error":{"message":"网关内部错误","type":"server_error","code":"GATEWAY_INTERNAL"}}`)
+	protocol := contracts.Protocol("")
+	if ctx != nil {
+		protocol = ctx.ClientProtocol
 	}
 	return contracts.Decision{
 		Action:  contracts.ActionRespond,
 		Status:  status,
 		Headers: map[string]string{"Content-Type": "application/json"},
-		Body:    body,
+		Body:    contracts.RenderError(protocol, status, code, message),
 	}
 }
 
@@ -296,17 +291,4 @@ func statusOf(err error) int {
 		return publicErr.HTTPStatus()
 	}
 	return 0
-}
-
-func errorType(status int) string {
-	switch {
-	case status == http.StatusUnauthorized || status == http.StatusForbidden:
-		return "authentication_error"
-	case status == http.StatusTooManyRequests:
-		return "rate_limit_error"
-	case status >= 500:
-		return "server_error"
-	default:
-		return "invalid_request_error"
-	}
 }

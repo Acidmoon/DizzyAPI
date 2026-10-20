@@ -35,6 +35,7 @@ import (
 	"github.com/Acidmoon/DizzyAPI/internal/httpapi"
 	"github.com/Acidmoon/DizzyAPI/modules/accountpriority"
 	"github.com/Acidmoon/DizzyAPI/modules/keyauth"
+	"github.com/Acidmoon/DizzyAPI/modules/protoconv"
 	"github.com/Acidmoon/DizzyAPI/modules/transport"
 )
 
@@ -226,10 +227,20 @@ func run() error {
 		return fmt.Errorf("初始化账号优先级模块失败：%w", err)
 	}
 	accountCache := accounts.New()
+	// 协议转换 codec 注册表：v1 只注册 OpenAI Chat Completions。
+	codecs := contracts.NewCodecRegistry()
+	if err := codecs.Register(protoconv.NewChatCodec()); err != nil {
+		return fmt.Errorf("注册 Chat codec 失败：%w", err)
+	}
+	// protoconv 阶段必须注册在 transport 之前（组合根按注册顺序决定阶段顺序）。
+	converter, err := protoconv.Register(registry, protoconv.Config{}, codecs, accountCache, logger)
+	if err != nil {
+		return fmt.Errorf("初始化协议转换模块失败：%w", err)
+	}
 	if _, err := transport.Register(registry, transport.Config{
 		RequestTimeoutMs: *requestTimeout,
 		HeaderTimeoutMs:  *headerTimeout,
-	}, accountCache); err != nil {
+	}, accountCache, converter.Transcoder()); err != nil {
 		return fmt.Errorf("初始化 transport 模块失败：%w", err)
 	}
 	requestEngine, err := engine.New(registry.Stages(), logger)
