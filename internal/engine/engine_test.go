@@ -173,6 +173,31 @@ func TestUnknownErrorIsNotLeaked(t *testing.T) {
 	}
 }
 
+func TestRenderWritesStableErrorCodeToCtx(t *testing.T) {
+	dispatch := &fakeStage{name: "dispatch", phase: contracts.PhaseDispatch, run: func(*contracts.Ctx) (contracts.Decision, error) {
+		return contracts.Decision{}, contracts.Errorf(502, "UPSTREAM_DOWN", "上游不可用")
+	}}
+
+	ctx := newCtx()
+	decision := mustEngine(t, dispatch).Run(ctx)
+	if decision.Status != 502 {
+		t.Fatalf("期望 502，得到 %d", decision.Status)
+	}
+	if ctx.ErrorCode != "UPSTREAM_DOWN" {
+		t.Fatalf("ErrorCode = %q，期望 UPSTREAM_DOWN", ctx.ErrorCode)
+	}
+
+	// 成功路径不得写 ErrorCode。
+	okDispatch := &fakeStage{name: "dispatch", phase: contracts.PhaseDispatch, run: func(*contracts.Ctx) (contracts.Decision, error) {
+		return contracts.Decision{Action: contracts.ActionRespond, Status: 200, Body: []byte("ok")}, nil
+	}}
+	okCtx := newCtx()
+	mustEngine(t, okDispatch).Run(okCtx)
+	if okCtx.ErrorCode != "" {
+		t.Fatalf("成功路径不应写 ErrorCode，得到 %q", okCtx.ErrorCode)
+	}
+}
+
 func TestPostRunsOnPanic(t *testing.T) {
 	dispatch := &fakeStage{name: "dispatch", phase: contracts.PhaseDispatch, run: func(*contracts.Ctx) (contracts.Decision, error) {
 		panic("boom")

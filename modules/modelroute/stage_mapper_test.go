@@ -62,6 +62,10 @@ func TestMapRewritesModelField(t *testing.T) {
 	if ctx.Meta.Model != "gpt-4o" {
 		t.Fatalf("ctx.Meta.Model 不应被改写：%s", ctx.Meta.Model)
 	}
+	// 用量记录需要上游真实模型名。
+	if ctx.UpstreamModel != "gpt-4o-2024-11-20" {
+		t.Fatalf("UpstreamModel = %q，期望 gpt-4o-2024-11-20", ctx.UpstreamModel)
+	}
 }
 
 func TestMapPreservesOtherFieldValues(t *testing.T) {
@@ -104,6 +108,9 @@ func TestMapNoEntryLeavesMappedBodyNil(t *testing.T) {
 	if ctx.MappedBody != nil {
 		t.Fatal("没有映射时 MappedBody 必须为 nil（字节级直通）")
 	}
+	if ctx.UpstreamModel != "" {
+		t.Fatalf("没有映射时 UpstreamModel 必须为空，得到 %q", ctx.UpstreamModel)
+	}
 }
 
 func TestMapResetsMappedBodyEachAttempt(t *testing.T) {
@@ -111,12 +118,16 @@ func TestMapResetsMappedBodyEachAttempt(t *testing.T) {
 	ctx := mapCtx("a", "gpt-4o", `{"model":"gpt-4o"}`)
 	// 模拟上一次 attempt 的残留。
 	ctx.MappedBody = []byte(`{"stale":true}`)
+	ctx.UpstreamModel = "stale-model"
 
 	if _, err := stage.Run(ctx); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	if ctx.MappedBody != nil {
 		t.Fatalf("每个 attempt 必须重置 MappedBody，残留=%s", ctx.MappedBody)
+	}
+	if ctx.UpstreamModel != "" {
+		t.Fatalf("每个 attempt 必须重置 UpstreamModel，残留=%q", ctx.UpstreamModel)
 	}
 }
 

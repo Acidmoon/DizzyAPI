@@ -39,6 +39,7 @@ func (s *MapStage) Run(ctx *contracts.Ctx) (contracts.Decision, error) {
 
 	// 1) 每个 attempt 先显式重置：绝不残留上一次的映射结果。
 	ctx.MappedBody = nil
+	ctx.UpstreamModel = ""
 
 	model := strings.TrimSpace(ctx.Meta.Model)
 	if model == "" {
@@ -77,6 +78,7 @@ func (s *MapStage) Run(ctx *contracts.Ctx) (contracts.Decision, error) {
 		return contracts.Decision{}, mapFailed()
 	}
 	ctx.MappedBody = rewritten
+	ctx.UpstreamModel = upstreamModel
 	s.service.logger.Info("模型映射",
 		"reqId", ctx.ReqID,
 		"model", model,

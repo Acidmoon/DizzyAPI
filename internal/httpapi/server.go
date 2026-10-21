@@ -10,19 +10,23 @@
 package httpapi
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync/atomic"
 	"time"
 
 	"github.com/Acidmoon/DizzyAPI/contracts"
 	"github.com/Acidmoon/DizzyAPI/internal/accounts"
 	"github.com/Acidmoon/DizzyAPI/internal/engine"
+	"github.com/Acidmoon/DizzyAPI/internal/usageprobe"
 )
 
 const (
@@ -41,12 +45,29 @@ type Authorizer interface {
 	Authorize(headers http.Header) (*contracts.APIKey, error)
 }
 
+// UsageProbe 从响应字节里提取 usage。它由 internal/usageprobe 实现；
+// 在这里声明是为了让 httpapi 不依赖具体实现（与 Authorizer 同构）。
+type UsageProbe interface {
+	Extract(protocol contracts.Protocol, body []byte) (contracts.Usage, bool)
+	Watch(protocol contracts.Protocol, r io.Reader) (io.Reader, func() (contracts.Usage, bool, string))
+}
+
 // Config 是 HTTP 入口的运行参数。
 type Config struct {
 	MaxBodyBytes int64
 	Strategy     string
 	// Authorizer 用于 GET /v1/models 的鉴权。为空时该路由 fail-closed（503）。
 	Authorizer Authorizer
+	// UsageSink 接收已完成的 LLM 请求用量；为空时不记录（也不影响现有行为）。
+	UsageSink contracts.UsageSink
+	// UsageProbe 从响应里提取 usage；为空时记录里的 token 全为 0。
+	UsageProbe UsageProbe
+	// RecordStreamUsage 为 true 时，openai-chat 流式请求会被注入
+	// stream_options.include_usage=true（响应体才带 usage）。false 时一个字节都不改。
+	RecordStreamUsage bool
+	// TrustedProxyHops 是 X-Forwarded-For 从右往左的第几跳可信代理；
+	// <=0 按 1 处理。
+	TrustedProxyHops int
 }
 
 // Server 持有 HTTP handler 的依赖。构造后只读，可被并发使用。
@@ -56,6 +77,8 @@ type Server struct {
 	logger     *slog.Logger
 	config     Config
 	authorizer Authorizer
+	usageSink  contracts.UsageSink
+	usageProbe UsageProbe
 	started    time.Time
 	requests   atomic.Uint64
 }
@@ -80,6 +103,8 @@ func New(eng *engine.Engine, cache *accounts.Cache, logger *slog.Logger, cfg Con
 		logger:     logger,
 		config:     cfg,
 		authorizer: cfg.Authorizer,
+		usageSink:  cfg.UsageSink,
+		usageProbe: cfg.UsageProbe,
 		started:    time.Now().UTC(),
 	}, nil
 }
@@ -172,7 +197,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 }
 
 // llmHandler 构造某个客户端协议的路由处理器。三个协议共用同一套
-// 「读体 → 探针 → 构造 Ctx → 交给 engine」流程，只是协议不同。
+// 「读体 → 探针 → 构造 Ctx → 交给 engine → 写响应 → 记录用量」流程，只是协议不同。
 func (s *Server) llmHandler(protocol contracts.Protocol, path string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
@@ -184,17 +209,22 @@ func (s *Server) llmHandler(protocol contracts.Protocol, path string) http.Handl
 		if err != nil {
 			return
 		}
-		var probe struct {
+		var envelope struct {
 			Model  string `json:"model"`
 			Stream bool   `json:"stream"`
 		}
-		if err := json.Unmarshal(body, &probe); err != nil {
+		if err := json.Unmarshal(body, &envelope); err != nil {
 			writeErrorFor(w, protocol, http.StatusBadRequest, "INVALID_REQUEST", "请求体必须是合法 JSON")
 			return
 		}
-		if probe.Model == "" {
+		if envelope.Model == "" {
 			writeErrorFor(w, protocol, http.StatusBadRequest, "INVALID_REQUEST", "缺少 model")
 			return
+		}
+		// openai-chat 流式请求默认不带 usage。只有显式开启时才改写请求体：
+		// 关闭时 body 必须与客户端发来的字节逐字节相同（回归约束）。
+		if s.config.RecordStreamUsage && protocol == contracts.ProtocolOpenAIChat && envelope.Stream {
+			body = injectStreamUsage(body)
 		}
 
 		requestID := s.nextRequestID()
@@ -202,38 +232,281 @@ func (s *Server) llmHandler(protocol contracts.Protocol, path string) http.Handl
 			Context: r.Context(),
 			ReqID:   requestID,
 			Meta: contracts.RequestMeta{
-				Model:    probe.Model,
-				Stream:   probe.Stream,
+				Model:    envelope.Model,
+				Stream:   envelope.Stream,
 				Strategy: s.config.Strategy,
 			},
 			Headers:           r.Header.Clone(),
 			Body:              contracts.BytesBody(body),
 			AccountCandidates: s.accounts.Candidates(),
 			ClientProtocol:    protocol,
+			ClientIP:          s.clientIP(r),
 		}
 
 		started := time.Now()
 		decision := s.engine.Run(ctx)
 		if r.Context().Err() != nil {
-			// 客户端已经断开；不再写响应。
+			// 客户端已经断开；不再写响应，但仍要留下一条「未完成」的用量记录。
 			s.closeStream(decision)
+			s.recordUsage(ctx, decision, started, usageSample{})
 			return
 		}
 		status := decision.Status
 		if status == 0 {
 			status = http.StatusOK
 		}
+
+		// 流式：在字节透传的同时喂给 probe；非流式：直接从最终响应体提取。
+		var tracked *trackedReadCloser
+		var settle func() (contracts.Usage, bool, string)
+		if decision.Stream != nil {
+			tracked = &trackedReadCloser{Reader: decision.Stream, Closer: decision.Stream}
+			if s.usageProbe != nil {
+				wrapped, settleFn := s.usageProbe.Watch(ctx.ClientProtocol, decision.Stream)
+				tracked.Reader = wrapped
+				settle = settleFn
+			}
+			decision.Stream = tracked
+		}
+
 		s.writeDecision(w, decision)
+
+		sample := usageSample{}
+		switch {
+		case settle != nil:
+			sample.usage, sample.present, sample.errorCode = settle()
+			sample.complete = tracked.eof.Load()
+		case decision.Stream == nil:
+			// 非流式响应已经整段读完（无论是否带 usage），完整性没有疑问。
+			sample.complete = true
+			if s.usageProbe != nil {
+				sample.usage, sample.present = s.usageProbe.Extract(ctx.ClientProtocol, decision.Body)
+			}
+		}
+		tokens := s.recordUsage(ctx, decision, started, sample)
+
 		s.logger.Info("LLM 请求完成",
 			"reqId", requestID,
-			"model", probe.Model,
+			"model", envelope.Model,
 			"protocol", string(protocol),
-			"stream", probe.Stream,
+			"stream", envelope.Stream,
 			"status", status,
 			"durationMs", time.Since(started).Milliseconds(),
 			"attempts", len(ctx.Attempts),
+			"tokens", tokens,
 		)
 	}
+}
+
+// usageSample 是一次请求的用量采集结果。
+type usageSample struct {
+	usage     contracts.Usage
+	present   bool
+	complete  bool
+	errorCode string
+}
+
+// trackedReadCloser 记录流是否读到 EOF。copyStream 因客户端断开提前返回时
+// eof 为 false，用量记录据此把 UsageComplete 写成 false。
+type trackedReadCloser struct {
+	io.Reader
+	io.Closer
+	eof atomic.Bool
+}
+
+func (t *trackedReadCloser) Read(p []byte) (int, error) {
+	read, err := t.Reader.Read(p)
+	if errors.Is(err, io.EOF) {
+		t.eof.Store(true)
+	}
+	return read, err
+}
+
+// recordUsage 组装并提交一条用量记录，返回 totalTokens（仅用于日志）。
+//
+// ctx.Key 为空说明请求没有通过 key-auth（401 / 缺失 key），按约定不记录：
+// 未鉴权的调用不属于任何用户，也不是可计费事实。
+func (s *Server) recordUsage(ctx *contracts.Ctx, decision contracts.Decision, started time.Time, sample usageSample) int {
+	if s.usageSink == nil || ctx == nil || ctx.Key == nil {
+		return 0
+	}
+
+	upstream := s.upstreamProtocol(ctx)
+	usage := usageprobe.Normalize(sample.usage, upstream)
+	errorCode := ctx.ErrorCode
+	if errorCode == "" {
+		errorCode = sample.errorCode
+	}
+	status := decision.Status
+	if status == 0 {
+		status = http.StatusOK
+	}
+
+	profile := ctx.Profile
+	if profile == "" {
+		profile = ctx.Key.Profile
+	}
+	keyID := ctx.Key.KeyID
+	if keyID == "" {
+		keyID = ctx.Key.ID
+	}
+	accountID := ""
+	if ctx.AccountRoute != nil && ctx.AccountRoute.Picked != nil {
+		accountID = ctx.AccountRoute.Picked.AccountID
+	}
+
+	record := contracts.UsageRecord{
+		RequestID:        ctx.ReqID,
+		UserID:           ctx.Key.UserID,
+		KeyID:            keyID,
+		KeyName:          ctx.Key.Name,
+		Profile:          profile,
+		AccountID:        accountID,
+		Model:            ctx.Meta.Model,
+		UpstreamModel:    ctx.UpstreamModel,
+		Protocol:         ctx.ClientProtocol,
+		UpstreamProtocol: upstream,
+		Stream:           ctx.Meta.Stream,
+		Status:           status,
+		ErrorCode:        errorCode,
+		InputTokens:      usage.InputTokens,
+		OutputTokens:     usage.OutputTokens,
+		CacheReadTokens:  usage.CacheReadInputTokens,
+		CacheWriteTokens: usage.CacheCreationInputTokens,
+		ReasoningTokens:  usage.ReasoningTokens,
+		TotalTokens:      usageprobe.TotalTokens(usage),
+		UsagePresent:     sample.present,
+		UsageComplete:    sample.complete,
+		DurationMs:       time.Since(started).Milliseconds(),
+		ClientIP:         ctx.ClientIP,
+		Attempts:         len(ctx.Attempts),
+		StartedAt:        started.UTC(),
+	}
+	s.usageSink.Append(record)
+	return record.TotalTokens
+}
+
+// upstreamProtocol 依次取：转换后的上游协议 → 选中账号声明的协议 → 客户端协议。
+func (s *Server) upstreamProtocol(ctx *contracts.Ctx) contracts.Protocol {
+	if ctx.Upstream != nil && ctx.Upstream.Protocol != "" {
+		return ctx.Upstream.Protocol
+	}
+	if ctx.AccountRoute != nil && ctx.AccountRoute.Picked != nil {
+		if credential, ok := s.accounts.Credential(ctx.AccountRoute.Picked.AccountID); ok {
+			if protocol := contracts.Protocol(credential.Protocol); protocol != "" {
+				return protocol
+			}
+		}
+	}
+	return ctx.ClientProtocol
+}
+
+// clientIP 解析客户端地址：X-Forwarded-For 右起第 hops 跳 → X-Real-IP → RemoteAddr。
+//
+// 取值是不可信输入：长度上限 64，只允许字母 / 数字 / 点 / 冒号；不合法就换下一个来源。
+func (s *Server) clientIP(r *http.Request) string {
+	hops := s.config.TrustedProxyHops
+	if hops <= 0 {
+		hops = 1
+	}
+	if forwarded := r.Header.Get("X-Forwarded-For"); forwarded != "" {
+		parts := strings.Split(forwarded, ",")
+		candidates := make([]string, 0, len(parts))
+		for _, part := range parts {
+			if trimmed := strings.TrimSpace(part); trimmed != "" {
+				candidates = append(candidates, trimmed)
+			}
+		}
+		if len(candidates) >= hops {
+			if ip := sanitizeIP(candidates[len(candidates)-hops]); ip != "" {
+				return ip
+			}
+		}
+	}
+	if ip := sanitizeIP(r.Header.Get("X-Real-IP")); ip != "" {
+		return ip
+	}
+	host := r.RemoteAddr
+	if parsed, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
+		host = parsed
+	}
+	return sanitizeIP(host)
+}
+
+func sanitizeIP(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	if host, _, err := net.SplitHostPort(value); err == nil {
+		value = host
+	}
+	value = strings.TrimPrefix(value, "[")
+	value = strings.TrimSuffix(value, "]")
+	if value == "" || len(value) > 64 {
+		return ""
+	}
+	for _, r := range value {
+		switch {
+		case r >= '0' && r <= '9',
+			r >= 'a' && r <= 'z',
+			r >= 'A' && r <= 'Z',
+			r == '.', r == ':':
+		default:
+			return ""
+		}
+	}
+	return value
+}
+
+// injectStreamUsage 给 openai-chat 流式请求补 stream_options.include_usage=true。
+//
+// 只在缺失时改写；已经显式给出 include_usage（包括 false）时不动。body 不是对象、
+// stream 不是 true、或 stream_options 不是对象时原样返回——绝不为了采集破坏请求。
+func injectStreamUsage(body []byte) []byte {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(body, &fields); err != nil || fields == nil {
+		return body
+	}
+	var stream bool
+	rawStream, exists := fields["stream"]
+	if !exists || json.Unmarshal(rawStream, &stream) != nil || !stream {
+		return body
+	}
+	var options map[string]json.RawMessage
+	if rawOptions, exists := fields["stream_options"]; exists {
+		if err := json.Unmarshal(rawOptions, &options); err != nil {
+			return body
+		}
+	}
+	if options == nil {
+		options = map[string]json.RawMessage{}
+	}
+	if _, exists := options["include_usage"]; exists {
+		return body
+	}
+	options["include_usage"] = json.RawMessage("true")
+	encodedOptions, err := marshalNoEscape(options)
+	if err != nil {
+		return body
+	}
+	fields["stream_options"] = encodedOptions
+	encoded, err := marshalNoEscape(fields)
+	if err != nil {
+		return body
+	}
+	return encoded
+}
+
+// marshalNoEscape 序列化时不转义 < > &，让未改动的字段值保持原样。
+func marshalNoEscape(value any) ([]byte, error) {
+	var buffer bytes.Buffer
+	encoder := json.NewEncoder(&buffer)
+	encoder.SetEscapeHTML(false)
+	if err := encoder.Encode(value); err != nil {
+		return nil, err
+	}
+	return bytes.TrimRight(buffer.Bytes(), "\n"), nil
 }
 
 func (s *Server) readBody(w http.ResponseWriter, r *http.Request, protocol contracts.Protocol) ([]byte, error) {

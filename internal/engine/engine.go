@@ -255,6 +255,8 @@ func (e *Engine) render(ctx *contracts.Ctx, err error) contracts.Decision {
 	protocol := contracts.Protocol("")
 	if ctx != nil {
 		protocol = ctx.ClientProtocol
+		// 稳定错误码同时写回 Ctx，供 HTTP 入口组装用量记录；成功路径不写。
+		ctx.ErrorCode = code
 	}
 	return contracts.Decision{
 		Action:  contracts.ActionRespond,

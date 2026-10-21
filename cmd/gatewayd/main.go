@@ -33,6 +33,8 @@ import (
 	"github.com/Acidmoon/DizzyAPI/internal/bridge"
 	"github.com/Acidmoon/DizzyAPI/internal/engine"
 	"github.com/Acidmoon/DizzyAPI/internal/httpapi"
+	"github.com/Acidmoon/DizzyAPI/internal/usagelog"
+	"github.com/Acidmoon/DizzyAPI/internal/usageprobe"
 	"github.com/Acidmoon/DizzyAPI/modules/accountpriority"
 	"github.com/Acidmoon/DizzyAPI/modules/keyauth"
 	"github.com/Acidmoon/DizzyAPI/modules/modelroute"
@@ -44,6 +46,7 @@ type handler struct {
 	service  *accountpriority.Service
 	accounts *accounts.Cache
 	keys     *apikeys.Cache
+	usage    *usagelog.Ring
 	logger   *slog.Logger
 	shutdown chan struct{}
 	stopOnce sync.Once
@@ -136,6 +139,25 @@ func (h *handler) Handle(_ context.Context, method string, params json.RawMessag
 	case bridge.MethodKeysStatus:
 		return h.keys.Status(), nil
 
+	case contracts.BridgeMethodUsageSince:
+		var query struct {
+			Epoch    string `json:"epoch"`
+			AfterSeq int64  `json:"afterSeq"`
+			Limit    int    `json:"limit"`
+		}
+		if err := decodeParams(params, &query); err != nil {
+			return nil, bridge.Errorf("BRIDGE_BAD_REQUEST", "用量拉取参数不合法：%v", err)
+		}
+		if h.usage == nil {
+			return usagelog.SinceResult{}, nil
+		}
+		// limit 的硬边界在 Ring 内部 clamp；这里只给缺省值。
+		const defaultUsageLimit = 500
+		if query.Limit <= 0 {
+			query.Limit = defaultUsageLimit
+		}
+		return h.usage.Since(query.Epoch, query.AfterSeq, query.Limit), nil
+
 	case bridge.MethodShutdown:
 		// 先让响应写完，再关闭进程。TS 不依赖这个 ack，但排障时能看到它。
 		h.stopOnce.Do(func() {
@@ -194,6 +216,10 @@ func run() error {
 	maxBody := flag.Int64("max-body-bytes", httpapi.DefaultMaxBodyBytes, "LLM 请求体上限")
 	defaultMaxTokens := flag.Int("anthropic-default-max-tokens", 4096,
 		"跨协议转到 Anthropic 时，客户端没给 max_tokens 用的默认值")
+	recordStreamUsage := flag.Bool("record-stream-usage", true,
+		"为 openai-chat 流式请求注入 stream_options.include_usage，以采集 token 用量")
+	trustedProxyHops := flag.Int("trusted-proxy-hops", 1,
+		"X-Forwarded-For 从右往左第几跳是可信代理（默认 1）")
 	flag.Parse()
 
 	logger := newLogger(*logFormat)
@@ -275,11 +301,17 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("初始化 LLM 请求 engine 失败：%w", err)
 	}
+	// 用量环形缓冲：HTTP 入口写，控制桥的 usage.since 读。
+	usageRing := usagelog.NewRing(usagelog.DefaultCapacity)
 	httpAPI, err := httpapi.New(requestEngine, accountCache, logger, httpapi.Config{
 		MaxBodyBytes: *maxBody,
 		Strategy:     *strategy,
 		// /v1/models 复用 keyauth 的同一套鉴权判定。
-		Authorizer: keyStage,
+		Authorizer:        keyStage,
+		UsageSink:         usageRing,
+		UsageProbe:        usageprobe.New(codecs),
+		RecordStreamUsage: *recordStreamUsage,
+		TrustedProxyHops:  *trustedProxyHops,
 	})
 	if err != nil {
 		return fmt.Errorf("初始化 HTTP 入口失败：%w", err)
@@ -304,6 +336,7 @@ func run() error {
 		service:  service,
 		accounts: accountCache,
 		keys:     keyCache,
+		usage:    usageRing,
 		logger:   logger,
 		shutdown: stop,
 	}
@@ -321,6 +354,9 @@ func run() error {
 		"accounts":        accountState.Accounts,
 		"keys":            keyState.Keys,
 		"httpAddress":     httpListener.Addr().String(),
+		// 让 TS 在首次连接时就能对齐用量游标（进程重启后 seq 从 1 重新开始）。
+		"usageEpoch": usageRing.Epoch(),
+		"usageSeq":   usageRing.LastSeq(),
 	}
 
 	server, err := bridge.NewServer(network, address, control, bridge.Options{
