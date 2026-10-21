@@ -77,10 +77,16 @@ func TestExtractNonStream(t *testing.T) {
 		}
 	})
 
-	t.Run("没有 usage 键", func(t *testing.T) {
-		body := []byte(`{"id":"c2","model":"m","choices":[]}`)
-		if _, present := probe.Extract(contracts.ProtocolOpenAIChat, body); present {
-			t.Fatal("没有 usage 键时 present 应为 false")
+	t.Run("三种协议都没有 usage 键", func(t *testing.T) {
+		bodies := map[contracts.Protocol]string{
+			contracts.ProtocolOpenAIChat:      `{"id":"c2","model":"m","choices":[]}`,
+			contracts.ProtocolOpenAIResponses: `{"id":"r2","object":"response","model":"m","output":[]}`,
+			contracts.ProtocolAnthropic:       `{"id":"a2","type":"message","model":"m","content":[]}`,
+		}
+		for protocol, body := range bodies {
+			if _, present := probe.Extract(protocol, []byte(body)); present {
+				t.Fatalf("%s 没有 usage 键时 present 应为 false", protocol)
+			}
 		}
 	})
 
@@ -185,6 +191,27 @@ func TestWatchRecordsStreamError(t *testing.T) {
 	_, present, errorCode := settle()
 	if present {
 		t.Fatal("错误流不应有 usage")
+	}
+	if errorCode != protoconv.CodeTranscodeFailed {
+		t.Fatalf("errorCode = %q，期望 %q", errorCode, protoconv.CodeTranscodeFailed)
+	}
+}
+
+func TestWatchMalformedFrameDoesNotBreakCaller(t *testing.T) {
+	stream := "data: {not json}\n\ndata: [DONE]\n\n"
+
+	probe := usageprobe.New(newRegistry(t))
+	reader, settle := probe.Watch(contracts.ProtocolOpenAIChat, strings.NewReader(stream))
+	payload, err := io.ReadAll(reader)
+	if err != nil {
+		t.Fatalf("ReadAll: %v", err)
+	}
+	if string(payload) != stream {
+		t.Fatal("解析失败也必须原样透传字节")
+	}
+	_, present, errorCode := settle()
+	if present {
+		t.Fatal("坏帧不应产生 usage")
 	}
 	if errorCode != protoconv.CodeTranscodeFailed {
 		t.Fatalf("errorCode = %q，期望 %q", errorCode, protoconv.CodeTranscodeFailed)
