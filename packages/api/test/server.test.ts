@@ -725,9 +725,20 @@ test('用量：余额按 BigInt 换算成分，历史不伪造；充值选项与
   assert.equal(usage.json.balances.paidCents, 1234)
   assert.equal(usage.json.balances.grantedCents, 0)
   assert.equal(usage.json.balances.spentCents, 0)
-  assert.deepEqual(usage.json.totals, { costCents: 0, requests: 0, tokens: 0 })
+  assert.deepEqual(usage.json.totals, {
+    requests: 0,
+    tokens: 0,
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
+    costCents: 0,
+    costMicros: '0',
+  })
   assert.deepEqual(usage.json.daily, [])
   assert.deepEqual(usage.json.models, [])
+  assert.deepEqual(usage.json.records, { items: [], nextCursor: null })
+  assert.equal(usage.json.pricingAvailable, true)
   assert.equal(usage.json.generatedAt, '2026-10-19T12:00:00.000Z')
 
   const normalCookie = `dizzyapi_session=${encodeURIComponent(auth.issueFor(2))}`

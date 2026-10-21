@@ -87,7 +87,8 @@ test('可选服务缺失：API 仍 ACTIVE，静态 / 目录 / 账号路由各自
   assert.equal(session.status, 200)
 
   const usage = await getJson(`${service.url}/api/usage?range=7d`, { cookie })
-  assert.equal(usage.status, 200, '不依赖可选服务的路由必须照常工作')
+  assert.equal(usage.status, 503, '用量路由只依赖 usage 服务，缺失时自己 503')
+  assert.equal(usage.json.error.code, 'API_USAGE_UNAVAILABLE')
   const topup = await getJson(`${service.url}/api/topup/options`, { cookie })
   assert.equal(topup.status, 200)
 
