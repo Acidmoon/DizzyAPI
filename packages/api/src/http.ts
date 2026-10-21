@@ -36,6 +36,9 @@ import type {
   GatewayHealthState,
   GatewayHealthView,
   LoginResultLike,
+  ModelPriceInputLike,
+  ModelPriceLike,
+  PricingPort,
   SessionInfoView,
   SessionRole,
   SessionUserView,
@@ -650,11 +653,102 @@ export class ApiServer {
 
   /**
    * `/api/pricing`：读价格表（会话）与改价格（管理员）。
-   * 路由已注册，方法体随 `feat/pricing-plugin` 落地。
+   *
+   * - `GET /api/pricing` → `{ items }`；
+   * - `GET /api/pricing/:model` → 单个价格，没有就 404；
+   * - `PUT /api/pricing/:model` → 写入并返回新价格；
+   * - `DELETE /api/pricing/:model` → `{ removed }`。
+   *
+   * 模型名可能含 `/`，由 `encodeURIComponent` 编成 `%2F` 留在同一路径段里。
    */
-  private async routePricing(req: IncomingMessage, _res: ServerResponse, _parts: readonly string[]): Promise<void> {
-    await this.requireSession(req)
-    throw new ApiError('API_PRICING_UNAVAILABLE', 501, '价格表接口尚未实现')
+  private async routePricing(
+    req: IncomingMessage,
+    res: ServerResponse,
+    parts: readonly string[],
+  ): Promise<void> {
+    const requirePricing = (): PricingPort => {
+      const pricing = this.runtime.pricing()
+      if (pricing === undefined) {
+        throw new ApiError('API_PRICING_UNAVAILABLE', 503, '价格表插件不在运行')
+      }
+      return pricing
+    }
+    const viewOf = (price: ModelPriceLike) => ({
+      model: price.model,
+      inputPerMillion: price.inputPerMillion,
+      outputPerMillion: price.outputPerMillion,
+      cacheReadPerMillion: price.cacheReadPerMillion,
+      cacheWritePerMillion: price.cacheWritePerMillion,
+      currency: 'CNY' as const,
+      updatedAt: price.updatedAt,
+    })
+    /** 价格字段只接受字符串或数字；其余在 HTTP 层就拒绝，不把脏值交给服务。 */
+    const priceField = (
+      body: Record<string, unknown>,
+      key: keyof ModelPriceInputLike,
+      required: boolean,
+    ): string | number | undefined => {
+      const value = body[key]
+      if (value === undefined) {
+        if (!required) return undefined
+        throw new ApiError('PRICING_PRICE_INVALID', 400, `${key} 必须是字符串或数字`)
+      }
+      if (typeof value !== 'string' && typeof value !== 'number') {
+        throw new ApiError('PRICING_PRICE_INVALID', 400, `${key} 必须是字符串或数字`)
+      }
+      return value
+    }
+
+    if (parts.length === 1) {
+      if (!this.allowRead(req, res)) return
+      await this.requireSession(req)
+      const pricing = requirePricing()
+      this.sendJson(req, res, 200, { items: pricing.list().map(viewOf) })
+      return
+    }
+    if (parts.length > 2) throw notFound('没有这个价格接口')
+
+    const model = parts[1] as string
+
+    if (req.method === 'GET' || req.method === 'HEAD') {
+      await this.requireSession(req)
+      const pricing = requirePricing()
+      const price = pricing.get(model)
+      if (price === null) throw new ApiError('PRICING_NOT_FOUND', 404, `没有模型 ${model} 的价格`)
+      this.sendJson(req, res, 200, viewOf(price))
+      return
+    }
+
+    if (req.method === 'PUT') {
+      await this.requireAdmin(req)
+      const pricing = requirePricing()
+      const body = await this.jsonBody(req)
+      assertOnlyKeys(body, [
+        'inputPerMillion',
+        'outputPerMillion',
+        'cacheReadPerMillion',
+        'cacheWritePerMillion',
+      ])
+      const cacheRead = priceField(body, 'cacheReadPerMillion', false)
+      const cacheWrite = priceField(body, 'cacheWritePerMillion', false)
+      const input: ModelPriceInputLike = {
+        inputPerMillion: priceField(body, 'inputPerMillion', true) as string | number,
+        outputPerMillion: priceField(body, 'outputPerMillion', true) as string | number,
+        ...(cacheRead === undefined ? {} : { cacheReadPerMillion: cacheRead }),
+        ...(cacheWrite === undefined ? {} : { cacheWritePerMillion: cacheWrite }),
+      }
+      this.sendJson(req, res, 200, viewOf(await pricing.set(API_ACTOR, model, input)))
+      return
+    }
+
+    if (req.method === 'DELETE') {
+      await this.requireAdmin(req)
+      const pricing = requirePricing()
+      this.sendJson(req, res, 200, { removed: await pricing.remove(API_ACTOR, model) })
+      return
+    }
+
+    this.sendMethodNotAllowed(req, res, ['GET', 'HEAD', 'PUT', 'DELETE'])
   }
 
   /**

@@ -101,8 +101,14 @@ export class PricingService extends Service implements PricingServiceLike {
   }
 
   async *[Service.init](): AsyncGenerator<() => void> {
-    const file = await this.store.read()
-    this.prices = decodePrices(file)
+    try {
+      const file = await this.store.read()
+      this.prices = decodePrices(file)
+    } catch (error) {
+      // 装载失败必须明确失败：宁可插件停在初始化错误上，也不能带着半张表继续算钱。
+      if (isPricingError(error) && error.code === 'PRICING_STORE_FAILED') throw error
+      throw new PricingError('PRICING_STORE_FAILED', `价格表装载失败：${describeError(error)}`)
+    }
     this.ready = true
     this.logger.info(`价格表已装载：存储 ${this.store.describe}；${this.prices.size} 个模型`)
     yield () => {
@@ -125,7 +131,11 @@ export class PricingService extends Service implements PricingServiceLike {
     return price === undefined ? null : copyPrice(price)
   }
 
-  /** 一次性快照：调用方在内存里算整页费用，不要逐行回查。 */
+  /**
+   * 一次性快照：调用方在内存里算整页费用，不要逐行回查。
+   *
+   * 返回新的 Map，且条目在入库时就已 `Object.freeze`：调用方改不动内部状态。
+   */
   snapshot(): PricingSnapshot {
     this.assertReady()
     return new Map(this.prices)
@@ -142,7 +152,7 @@ export class PricingService extends Service implements PricingServiceLike {
     this.assertAdmin(actor)
     const name = normalizeModel(model)
     const now = nowIso()
-    const price: ModelPrice = {
+    const price: ModelPrice = Object.freeze({
       model: name,
       inputPerMillion: normalizePrice(input.inputPerMillion, 'inputPerMillion'),
       outputPerMillion: normalizePrice(input.outputPerMillion, 'outputPerMillion'),
@@ -150,12 +160,15 @@ export class PricingService extends Service implements PricingServiceLike {
       cacheWritePerMillion: normalizePrice(input.cacheWritePerMillion ?? 0, 'cacheWritePerMillion'),
       currency: 'CNY',
       updatedAt: now,
-    }
+    })
     // 先验证能换算成微元，避免写进一份永远算不出费用的表。
     priceMicrosOf(price)
     await this.exclusive(async () => {
-      this.prices.set(name, price)
-      await this.persist()
+      // 先落盘、成功后再替换内存：写失败时内存不能留下半个状态。
+      const next = new Map(this.prices)
+      next.set(name, price)
+      await this.persist(next)
+      this.prices = next
     })
     this.ctx.emit('pricing/changed', name, 'upsert')
     return copyPrice(price)
@@ -166,8 +179,11 @@ export class PricingService extends Service implements PricingServiceLike {
     const name = normalizeModel(model)
     let removed = false
     await this.exclusive(async () => {
-      removed = this.prices.delete(name)
-      if (removed) await this.persist()
+      const next = new Map(this.prices)
+      removed = next.delete(name)
+      if (!removed) return
+      await this.persist(next)
+      this.prices = next
     })
     if (removed) this.ctx.emit('pricing/changed', name, 'remove')
     return removed
@@ -175,9 +191,9 @@ export class PricingService extends Service implements PricingServiceLike {
 
   // ───────────────────────────────── 内部
 
-  private async persist(): Promise<void> {
+  private async persist(table: ReadonlyMap<string, ModelPrice>): Promise<void> {
     const prices: Record<string, StoredPrice> = {}
-    for (const [model, price] of this.prices) {
+    for (const [model, price] of table) {
       prices[model] = {
         input: price.inputPerMillion,
         output: price.outputPerMillion,
@@ -308,7 +324,7 @@ function decodePrices(file: PricingFile): Map<string, ModelPrice> {
       throw new PricingError('PRICING_STORE_FAILED', `价格表条目 ${model} 不是对象`)
     }
     const entry = stored as Partial<StoredPrice>
-    const price: ModelPrice = {
+    const price: ModelPrice = Object.freeze({
       model: normalizeModel(model),
       inputPerMillion: normalizePrice(entry.input ?? '0', 'input'),
       outputPerMillion: normalizePrice(entry.output ?? '0', 'output'),
@@ -316,7 +332,7 @@ function decodePrices(file: PricingFile): Map<string, ModelPrice> {
       cacheWritePerMillion: normalizePrice(entry.cacheWrite ?? '0', 'cacheWrite'),
       currency: 'CNY',
       updatedAt: typeof entry.updatedAt === 'string' ? entry.updatedAt : nowIso(),
-    }
+    })
     priceMicrosOf(price)
     table.set(price.model, price)
   }
