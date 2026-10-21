@@ -467,6 +467,10 @@ test('管理员账号：列表 / 详情剥掉 credentialRef，PATCH enabled 走 
       'label',
       'lastError',
       'lastRefreshAt',
+      'lastTestAt',
+      'lastTestError',
+      'lastTestLatencyMs',
+      'lastTestOk',
       'models',
       'modelMap',
       'priority',
@@ -587,6 +591,71 @@ test('管理员账号：列表 / 详情剥掉 credentialRef，PATCH enabled 走 
 
   const removed = await call(server, '/api/accounts/acc_2', { method: 'DELETE', cookie })
   assert.equal(removed.status, 200)
+})
+
+test('管理员账号：连通性测试只回状态与耗时，普通用户 403', async (t) => {
+  const { server, accountAdmin } = await setup(t)
+  const { cookie } = await login(server)
+
+  const replied = await call(server, '/api/accounts/acc_1/test', {
+    method: 'POST',
+    cookie,
+    body: JSON.stringify({ model: 'gpt-5', protocol: 'openai-chat' }),
+  })
+  assert.equal(replied.status, 200, replied.text)
+  assert.equal(replied.json.ok, true)
+  assert.equal(replied.json.status, 200)
+  assert.equal(replied.json.latencyMs, 123)
+  assert.equal(replied.json.model, 'gpt-5')
+  assert.equal(replied.json.protocol, 'openai-chat')
+  assert.ok(!replied.text.includes('credentialRef'))
+  assert.ok(!replied.text.includes('credentialConfigured'))
+  assert.ok(!replied.text.includes('credential-ref-acc-1'))
+  assert.deepEqual(
+    accountAdmin.calls.find((entry) => entry.method === 'testConnection')?.args,
+    ['acc_1', { model: 'gpt-5', protocol: 'openai-chat' }],
+  )
+
+  const member = await login(server, 'alice@example.com', 'password2')
+  const denied = await call(server, '/api/accounts/acc_1/test', { method: 'POST', cookie: member.cookie })
+  assert.equal(denied.status, 403)
+  assert.equal(denied.json.error.code, 'API_FORBIDDEN')
+})
+
+test('管理员账号：导入 body 带 source 时走来源预检 / 导入，响应不含凭据', async (t) => {
+  const { server, accountAdmin } = await setup(t)
+  const { cookie } = await login(server)
+
+  const preview = await call(server, '/api/accounts/import/preview', {
+    method: 'POST',
+    cookie,
+    body: JSON.stringify({ source: 'plain-keys', payload: 'sk-a\nsk-b' }),
+  })
+  assert.equal(preview.status, 200, preview.text)
+  assert.equal(preview.json.source, 'plain-keys')
+  assert.equal(preview.json.total, 1)
+  assert.equal(preview.json.items[0].label, 'from-source')
+  assert.ok(!preview.text.includes('sk-a'))
+  assert.ok(!preview.text.includes('sk-b'))
+  assert.deepEqual(
+    accountAdmin.calls.find((entry) => entry.method === 'previewImportSource')?.args,
+    [{ source: 'plain-keys', payload: 'sk-a\nsk-b' }],
+  )
+
+  const imported = await call(server, '/api/accounts/import', {
+    method: 'POST',
+    cookie,
+    body: JSON.stringify({
+      source: 'sub2api',
+      payload: '{"type":"sub2api-data","accounts":[]}',
+      defaults: { provider: 'openai' },
+    }),
+  })
+  assert.equal(imported.status, 200, imported.text)
+  assert.equal(imported.json.created, 1)
+  assert.equal(imported.json.items[0].account.id, 'acc_1')
+  assert.ok(!imported.text.includes('credentialRef'))
+  assert.ok(!imported.text.includes('credential-ref-acc-1'))
 })
 
 test('管理员目录：catalog.query 映射成 CatalogResponse，pages 按 owner/package 匹配', async (t) => {

@@ -27,7 +27,17 @@ import {
   type CredentialBundle,
   type ParsedCredential,
 } from './importers.ts'
+import { parseImportSource } from './import-sources.ts'
+import {
+  resolveTestBaseUrl,
+  resolveTestModel,
+  resolveTestProtocol,
+  runConnectionTest,
+} from './test-connection.ts'
 import type {
+  AccountImportPreview,
+  AccountImportPreviewItem,
+  AccountImportSourceInput,
   AccountKind,
   AccountListQuery,
   AccountProvider,
@@ -37,13 +47,17 @@ import type {
   AccountView,
   BulkImportDefaults,
   BulkImportInput,
+  BulkImportItem,
   BulkImportItemResult,
   BulkImportResult,
   CreateAccountInput,
+  ParsedImportItem,
   CredentialImportFormat,
   CredentialImportInput,
   CredentialImportPreview,
   ImportCredentialsInput,
+  AccountTestInput,
+  AccountTestResult,
   UpdateAccountInput,
 } from './types.ts'
 
@@ -57,6 +71,11 @@ interface IdentitySeam {
     readonly label: string
     readonly email?: string
     readonly subject?: string
+    readonly baseUrl?: string
+    readonly protocol?: AccountProtocol
+    readonly models?: string[]
+    readonly modelMap?: Record<string, string>
+    readonly priority?: number
     readonly enabled?: boolean
     readonly secret?: CredentialBundle
   }): Promise<AccountRecord>
@@ -73,6 +92,13 @@ interface IdentitySeam {
   remove(id: string): Promise<void>
   credentialStatus(id: string): { readonly ref: string; readonly configured: boolean }
   refreshNow(id: string): Promise<AccountRecord>
+  /** 进程内 seam：返回可用令牌；**不得**挂 HTTP。 */
+  getAccessToken(id: string): Promise<string>
+  /** 只写运营元数据（lastTest*），不发 identity/account-updated。 */
+  recordTestResult(
+    id: string,
+    result: { readonly ok: boolean; readonly latencyMs: number; readonly error: string | null; readonly testedAt: string },
+  ): Promise<AccountRecord>
 }
 
 const ACTOR_MAX_LENGTH = 200
@@ -102,10 +128,24 @@ export class AccountAdminService extends Service {
 
   /** 能力清单：管理门面本身不落盘、不发事件、不暴露桥命令。 */
   static catalog = {
-    capabilities: ['account-management', 'credential-import', 'upstream-account-admin'],
+    capabilities: [
+      'account-management',
+      'credential-import',
+      'upstream-account-admin',
+      'account-connectivity-test',
+      'account-import-source',
+    ],
     events: [],
     bridge: [],
     storage: [],
+    methods: {
+      testConnection: {
+        description:
+          '发一个真实的最小请求验证连通性；凭据走 identity.getAccessToken（进程内），结果落 lastTest*',
+      },
+      previewImportSource: { description: '把 new-api / sub2api / 纯 key 文本归一化并逐条预检，不含凭据' },
+      importSource: { description: '按导入来源批量创建账号；部分成功，逐条返回错误' },
+    },
     shapes: {
       AccountView: {
         description: '管理面返回的账号元数据（不含令牌）',
@@ -125,6 +165,10 @@ export class AccountAdminService extends Service {
           models: { type: 'array<string>', optional: true },
           modelMap: { type: 'map<string, string>', optional: true },
           priority: { type: 'number' },
+          lastTestAt: { type: 'string', optional: true },
+          lastTestOk: { type: 'boolean', optional: true },
+          lastTestError: { type: 'string', optional: true },
+          lastTestLatencyMs: { type: 'number', optional: true },
         },
       },
       CredentialImportPreview: {
@@ -148,6 +192,8 @@ export class AccountAdminService extends Service {
   private readonly adminPlugins: readonly string[]
   private readonly maxBatchSize: number
   private readonly logger: Logger
+  /** 测试可替换；生产用全局 fetch。 */
+  private fetchImpl: typeof fetch = (input, init) => globalThis.fetch(input, init)
 
   constructor(ctx: Context, config: ResolvedAccountAdminConfig = {}) {
     super(ctx, 'accountAdmin')
@@ -194,6 +240,143 @@ export class AccountAdminService extends Service {
   /** 导入预检：识别格式与元数据，不落盘、不返回令牌本体。 */
   previewImport(input: CredentialImportInput): CredentialImportPreview {
     return previewCredentialImport(input)
+  }
+
+  /**
+   * 连通性测试：凭据只经 identity.getAccessToken 读取（进程内 seam），
+   * 测试结果落 lastTest*。上游失败也是结果对象；配置缺失才抛错。
+   */
+  async testConnection(id: string, input: AccountTestInput = {}): Promise<AccountTestResult> {
+    const accountId = normalizeId(id)
+    const params = normalizeTestInput(input)
+    const identity = this.identity()
+    const account = identity.get(accountId)
+
+    // 配置错误先于取令牌失败：custom 没有 baseUrl 这类问题不需要去碰凭据。
+    const protocol = resolveTestProtocol(account, params.protocol)
+    const model = resolveTestModel(account, params.model)
+    resolveTestBaseUrl(account)
+
+    let token: string
+    try {
+      token = await identity.getAccessToken(accountId)
+    } catch (error) {
+      const result: AccountTestResult = {
+        ok: false,
+        status: null,
+        latencyMs: 0,
+        model,
+        protocol,
+        error: `${errorCodeOf(error)}：${describeError(error)}`,
+        testedAt: new Date().toISOString(),
+      }
+      await this.persistTestResult(identity, accountId, result)
+      return result
+    }
+
+    const result = await runConnectionTest(
+      {
+        provider: account.provider,
+        baseUrl: account.baseUrl,
+        protocol: account.protocol,
+        models: account.models,
+      },
+      token,
+      params,
+      { fetch: this.fetchImpl },
+    )
+    await this.persistTestResult(identity, accountId, result)
+    return result
+  }
+
+  /** 导入来源预检：逐条归一化，不含凭据；单条失败不影响其它条。 */
+  previewImportSource(input: AccountImportSourceInput): AccountImportPreview {
+    const parsed = parseImportSource(normalizeImportSourceInput(input))
+    const items: AccountImportPreviewItem[] = [
+      ...parsed.items.map((item) => ({
+        index: item.index,
+        ok: true,
+        label: item.label ?? null,
+        provider: item.provider,
+        kind: item.kind,
+        baseUrl: item.baseUrl ?? null,
+        models: item.models ?? null,
+        error: null,
+      })),
+      ...parsed.issues.map((issue) => ({
+        index: issue.index,
+        ok: false,
+        label: null,
+        provider: null,
+        kind: null,
+        baseUrl: null,
+        models: null,
+        error: issue.message,
+      })),
+    ].sort((left, right) => left.index - right.index)
+
+    return { source: parsed.source, total: items.length, items }
+  }
+
+  /**
+   * 按导入来源批量创建账号：复用 `importAccounts` 的逐条语义（部分成功 + 每项 error），
+   * 并把每个 item 的 baseUrl / protocol / models / modelMap / priority 透传给 identity。
+   */
+  async importSource(actor: string, input: AccountImportSourceInput): Promise<BulkImportResult> {
+    this.assertAdmin(actor)
+    const parsed = parseImportSource(normalizeImportSourceInput(input))
+    const total = parsed.items.length + parsed.issues.length
+    if (total === 0) failInput('没有可导入的账号')
+    if (total > this.maxBatchSize) {
+      throw new AccountAdminError(
+        'ACCOUNT_ADMIN_IMPORT_TOO_LARGE',
+        `一次最多导入 ${this.maxBatchSize} 项，收到 ${total} 项`,
+      )
+    }
+
+    if (parsed.items.length === 0) {
+      return {
+        total,
+        created: 0,
+        failed: total,
+        items: parsed.issues.map((issue) => ({
+          index: issue.index,
+          ok: false,
+          account: null,
+          error: { code: issue.code, message: issue.message },
+        })),
+      }
+    }
+
+    const bulk = await this.importAccounts(actor, {
+      items: parsed.items.map(toBulkItem),
+    })
+
+    // importAccounts 的 index 是「有效项」的下标；这里映射回解析结果里的全局位置。
+    const succeeded = new Map<number, BulkImportItemResult>()
+    bulk.items.forEach((result, position) => {
+      const parsedItem = parsed.items[position]
+      if (parsedItem !== undefined) succeeded.set(parsedItem.index, { ...result, index: parsedItem.index })
+    })
+    const items: BulkImportItemResult[] = []
+    for (let index = 0; index < total; index += 1) {
+      const success = succeeded.get(index)
+      if (success !== undefined) {
+        items.push(success)
+        continue
+      }
+      const issue = parsed.issues.find((entry) => entry.index === index)
+      items.push({
+        index,
+        ok: false,
+        account: null,
+        error: issue === undefined
+          ? { code: 'ACCOUNT_ADMIN_UNKNOWN', message: '导入结果缺失' }
+          : { code: issue.code, message: issue.message },
+      })
+    }
+    const created = items.filter((item) => item.ok).length
+    return { total, created, failed: total - created, items }
   }
 
   // ───────────────────────────── 写面：仅限白名单 ─────────────────────────────
@@ -389,6 +572,24 @@ export class AccountAdminService extends Service {
 
   // ───────────────────────────────── 内部 ─────────────────────────────────
 
+  private async persistTestResult(
+    identity: IdentitySeam,
+    id: string,
+    result: AccountTestResult,
+  ): Promise<void> {
+    try {
+      await identity.recordTestResult(id, {
+        ok: result.ok,
+        latencyMs: result.latencyMs,
+        error: result.error,
+        testedAt: result.testedAt,
+      })
+    } catch (error) {
+      // 测试本身已经完成；持久化失败只影响面板展示，不能把结果吞掉。
+      this.logger.warn(`账号 ${id} 的测试结果写入失败：${describeError(error)}`)
+    }
+  }
+
   private async importOne(
     identity: IdentitySeam,
     item: unknown,
@@ -427,6 +628,11 @@ export class AccountAdminService extends Service {
       item.enabled !== undefined
         ? normalizeOptionalBoolean(item.enabled, 'enabled')
         : defaults.enabled
+    const baseUrl = normalizeOptionalBaseUrl(item.baseUrl)
+    const protocol = normalizeOptionalProtocol(item.protocol)
+    const models = normalizeOptionalModels(item.models)
+    const modelMap = normalizeOptionalModelMap(item.modelMap)
+    const priority = normalizeOptionalPriority(item.priority)
 
     const account = await identity.create({
       provider: parsed.provider,
@@ -434,6 +640,11 @@ export class AccountAdminService extends Service {
       label,
       ...(email !== undefined ? { email } : {}),
       ...(subject !== undefined ? { subject } : {}),
+      ...(baseUrl !== undefined ? { baseUrl } : {}),
+      ...(protocol !== undefined ? { protocol } : {}),
+      ...(models !== undefined ? { models } : {}),
+      ...(modelMap !== undefined ? { modelMap } : {}),
+      ...(priority !== undefined ? { priority } : {}),
       ...(enabled !== undefined ? { enabled } : {}),
       secret: parsed.bundle,
     })
@@ -496,6 +707,10 @@ function toView(account: AccountRecord, credentialConfigured: boolean): AccountV
     lastError: account.lastError,
     failureCount: account.failureCount,
     backoffUntil: account.backoffUntil,
+    lastTestAt: account.lastTestAt,
+    lastTestOk: account.lastTestOk,
+    lastTestError: account.lastTestError,
+    lastTestLatencyMs: account.lastTestLatencyMs,
     createdAt: account.createdAt,
     updatedAt: account.updatedAt,
     credentialConfigured,
@@ -778,4 +993,43 @@ function normalizeBulkDefaults(value: unknown): BulkImportDefaults {
 
 function rejectControlCharacters(value: string, field: string): void {
   if (/[\u0000-\u001f\u007f]/.test(value)) failInput(`${field} 不得包含控制字符`)
+}
+
+/** 测试参数：只接受 model / protocol，且都是字符串。 */
+function normalizeTestInput(value: unknown): AccountTestInput {
+  if (value === undefined || value === null) return {}
+  if (!isRecord(value)) failInput('测试参数必须是对象')
+  for (const key of Object.keys(value)) {
+    if (key !== 'model' && key !== 'protocol') failInput(`测试参数不支持字段 ${key}`)
+  }
+  const model = normalizeOptionalText(value.model, 'model', MODEL_NAME_MAX_LENGTH)
+  let protocol: string | undefined
+  if (value.protocol !== undefined && value.protocol !== null) {
+    if (typeof value.protocol !== 'string') failInput('protocol 必须是字符串')
+    protocol = requireProtocol(value.protocol)
+  }
+  return {
+    ...(model !== undefined ? { model } : {}),
+    ...(protocol !== undefined ? { protocol } : {}),
+  }
+}
+
+function normalizeImportSourceInput(value: unknown): AccountImportSourceInput {
+  if (!isRecord(value)) failInput('导入参数必须是对象')
+  return value as unknown as AccountImportSourceInput
+}
+
+function toBulkItem(item: ParsedImportItem): BulkImportItem {
+  return {
+    payload: item.payload,
+    provider: item.provider,
+    kind: item.kind,
+    ...(item.label === undefined ? {} : { label: item.label }),
+    ...(item.baseUrl === undefined ? {} : { baseUrl: item.baseUrl }),
+    ...(item.protocol === undefined ? {} : { protocol: item.protocol }),
+    ...(item.models === undefined ? {} : { models: item.models }),
+    ...(item.modelMap === undefined ? {} : { modelMap: item.modelMap }),
+    ...(item.priority === undefined ? {} : { priority: item.priority }),
+    ...(item.enabled === undefined ? {} : { enabled: item.enabled }),
+  }
 }

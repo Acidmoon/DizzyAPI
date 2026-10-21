@@ -45,6 +45,10 @@ export interface AccountRecord {
   readonly lastError: string | null
   readonly failureCount: number
   readonly backoffUntil: string | null
+  readonly lastTestAt: string | null
+  readonly lastTestOk: boolean | null
+  readonly lastTestError: string | null
+  readonly lastTestLatencyMs: number | null
   readonly createdAt: string
   readonly updatedAt: string
 }
@@ -155,6 +159,116 @@ export interface BulkImportItem extends CredentialImportInput {
   readonly email?: string
   readonly subject?: string
   readonly enabled?: boolean
+  /** 账号自己的上游地址；省略 = 用 provider 默认映射。 */
+  readonly baseUrl?: string
+  /** 上游端点协议；省略 = 未声明。 */
+  readonly protocol?: AccountProtocol
+  /** 这个账号服务的对外模型名。 */
+  readonly models?: string[]
+  /** 对外模型名 → 上游真实模型名。 */
+  readonly modelMap?: Record<string, string>
+  /** 优先级（0–1000）；省略 = identity 默认 0。 */
+  readonly priority?: number
+}
+
+// ───────────────────────────── 连通性测试 ─────────────────────────────
+
+/** 连通性测试参数；两者都可省略，省略时按账号自身声明推断。 */
+export interface AccountTestInput {
+  readonly model?: string
+  readonly protocol?: string
+}
+
+/**
+ * 一次连通性测试的结果。**没有凭据**：只有状态码、耗时与脱敏后的错误文本。
+ * `status` 为 `null` 表示请求根本没拿到 HTTP 响应（网络错误 / 超时）。
+ */
+export interface AccountTestResult {
+  readonly ok: boolean
+  readonly status: number | null
+  readonly latencyMs: number
+  readonly model: string | null
+  readonly protocol: AccountProtocol | null
+  readonly error: string | null
+  readonly testedAt: string
+}
+
+// ───────────────────────────── 导入来源 ─────────────────────────────
+
+/** 支持的导入来源。`auto` 按 payload 形状推断。 */
+export type AccountImportSourceFormat = 'auto' | 'new-api' | 'sub2api' | 'plain-keys'
+
+/** 导入来源的默认值；目前只作用于 plain-keys（new-api / sub2api 自带字段）。 */
+export interface AccountImportDefaults {
+  readonly provider?: AccountProvider
+  readonly kind?: AccountKind
+  readonly baseUrl?: string
+  readonly protocol?: AccountProtocol
+  readonly enabled?: boolean
+  readonly labelPrefix?: string
+}
+
+/** 导入来源的输入。`payload` 是原始文本；秘密只在其中，绝不进入任何返回值。 */
+export interface AccountImportSourceInput {
+  readonly source: AccountImportSourceFormat
+  readonly payload: string
+  readonly defaults?: AccountImportDefaults
+}
+
+/** 归一化后的一条待导入账号（内部形状；`payload` 是凭据，只交给 identity）。 */
+export interface ParsedImportItem {
+  /** 在本次解析结果里的位置（0 起，含失败项占位）。 */
+  readonly index: number
+  /** 在原始来源里的位置（渠道 / 账号 / 行号，0 起），用于错误信息。 */
+  readonly sourceIndex: number
+  readonly label?: string
+  readonly provider: AccountProvider
+  readonly kind: AccountKind
+  readonly baseUrl?: string
+  readonly protocol?: AccountProtocol
+  readonly models?: string[]
+  readonly modelMap?: Record<string, string>
+  readonly priority?: number
+  readonly enabled?: boolean
+  /** 凭据文本；可能是纯 key，也可能是 JSON。永不回显。 */
+  readonly payload: string
+  /** 被忽略的字段等非致命提示。 */
+  readonly warnings: readonly string[]
+}
+
+/** 解析时某个来源项失败（不影响其它项）。 */
+export interface ParsedImportIssue {
+  readonly index: number
+  readonly sourceIndex: number
+  readonly code: string
+  readonly message: string
+}
+
+/** `parseImportSource` 的结果：成功项与逐项失败分开，互不阻塞。 */
+export interface ParsedImportSource {
+  readonly source: Exclude<AccountImportSourceFormat, 'auto'>
+  readonly items: readonly ParsedImportItem[]
+  readonly issues: readonly ParsedImportIssue[]
+  readonly warnings: readonly string[]
+}
+
+/** 导入来源预览的一条结果；不含凭据。 */
+export interface AccountImportPreviewItem {
+  readonly index: number
+  readonly ok: boolean
+  readonly label: string | null
+  readonly provider: AccountProvider | null
+  readonly kind: AccountKind | null
+  readonly baseUrl: string | null
+  readonly models: readonly string[] | null
+  readonly error: string | null
+}
+
+/** 导入来源预览。 */
+export interface AccountImportPreview {
+  readonly source: Exclude<AccountImportSourceFormat, 'auto'>
+  readonly total: number
+  readonly items: readonly AccountImportPreviewItem[]
 }
 
 export interface BulkImportInput {

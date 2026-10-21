@@ -187,6 +187,10 @@ export interface AccountViewLike {
   readonly lastError: string | null
   readonly failureCount: number
   readonly backoffUntil: string | null
+  readonly lastTestAt: string | null
+  readonly lastTestOk: boolean | null
+  readonly lastTestError: string | null
+  readonly lastTestLatencyMs: number | null
   readonly createdAt: string
   readonly updatedAt: string
 }
@@ -224,6 +228,10 @@ export interface AccountAdminPort {
   previewImport?(input: unknown): unknown
   /** 连通性测试：不发秘密、不回显秘密；返回状态码与耗时。 */
   testConnection?(id: string, input: { model?: string; protocol?: string }): Promise<AccountTestResultLike>
+  /** 导入来源预检：逐条归一化，不含凭据。 */
+  previewImportSource?(input: unknown): unknown
+  /** 导入来源批量创建：部分成功，逐条返回结果。 */
+  importSource?(actor: string, input: unknown): Promise<unknown>
 }
 
 export interface AccountTestResultLike {

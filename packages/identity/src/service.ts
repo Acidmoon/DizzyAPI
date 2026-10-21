@@ -31,6 +31,7 @@ import type {
   IdentityProvider,
   IdentityProtocol,
   IdentityRefreshResult,
+  IdentityTestResult,
   IdentityTokenBundle,
   UpdateIdentityAccountInput,
 } from './types.ts'
@@ -58,7 +59,7 @@ export class IdentityService extends Service {
 
   /** 能力清单：账号元数据的唯一写者 + RT 刷新；令牌在 credentials 里。 */
   static catalog = {
-    capabilities: ['upstream-accounts', 'token-refresh'],
+    capabilities: ['upstream-accounts', 'token-refresh', 'account-connectivity-test'],
     events: [
       {
         name: 'identity/account-updated',
@@ -74,6 +75,12 @@ export class IdentityService extends Service {
     ],
     bridge: [],
     storage: [{ key: 'dataPath', kind: 'file', description: '账号元数据 JSON（不含任何令牌）' }],
+    methods: {
+      recordTestResult: {
+        description:
+          '写入最近一次连通性测试结果（lastTest*）；这是运营元数据，不触发 identity/account-updated，也不影响调度',
+      },
+    },
   } as const
 
   readonly config: ResolvedIdentityConfig
@@ -173,6 +180,10 @@ export class IdentityService extends Service {
         lastError: null,
         failureCount: 0,
         backoffUntil: null,
+        lastTestAt: null,
+        lastTestOk: null,
+        lastTestError: null,
+        lastTestLatencyMs: null,
         createdAt: now,
         updatedAt: now,
       }
@@ -325,6 +336,51 @@ export class IdentityService extends Service {
       throw new IdentityError('IDENTITY_CREDENTIAL_INVALID', `账号 ${id} 刷新后没有 access token`)
     }
     return bundle.accessToken
+  }
+
+  /**
+   * 记录一次连通性测试的结果。
+   *
+   * 这是运营元数据，**不触发** `identity/account-updated`：它不改变调度所需的任何字段
+   * （enabled / status / 令牌 / 模型），推一份新快照给 Go 没有意义。错误文本应已由调用方
+   * 脱敏；这里仍按上限截断，避免把一大段上游响应写进账号文件。
+   */
+  async recordTestResult(id: string, result: IdentityTestResult): Promise<IdentityAccount> {
+    this.assertReady()
+    if (typeof result !== 'object' || result === null) {
+      throw new IdentityError('IDENTITY_ACCOUNT_INVALID', '测试结果必须是对象')
+    }
+    if (typeof result.ok !== 'boolean') {
+      throw new IdentityError('IDENTITY_ACCOUNT_INVALID', '测试结果的 ok 必须是布尔值')
+    }
+    if (
+      typeof result.latencyMs !== 'number' ||
+      !Number.isFinite(result.latencyMs) ||
+      result.latencyMs < 0
+    ) {
+      throw new IdentityError('IDENTITY_ACCOUNT_INVALID', '测试结果的 latencyMs 必须是非负数')
+    }
+    const testedAt = result.testedAt === undefined ? nowIso() : normalizeTestedAt(result.testedAt)
+    const errorText =
+      result.error === null || result.error === undefined
+        ? null
+        : requireTestError(result.error)
+
+    return this.exclusive(async () => {
+      const account = this.requireAccount(id)
+      const updated: IdentityAccount = {
+        ...account,
+        lastTestAt: testedAt,
+        lastTestOk: result.ok,
+        lastTestError: result.ok ? null : errorText,
+        lastTestLatencyMs: Math.max(0, Math.round(result.latencyMs)),
+        updatedAt: nowIso(),
+      }
+      const next = new Map(this.accounts)
+      next.set(id, updated)
+      await this.commit(next)
+      return copyAccount(updated)
+    })
   }
 
   /** 手动触发一次刷新；失败会 reject，便于面板/运维脚本拿到明确原因。 */
@@ -807,6 +863,21 @@ function requireLabel(value: string): string {
   const trimmed = value.trim()
   if (trimmed === '') throw new IdentityError('IDENTITY_ACCOUNT_INVALID', 'label 不能为空')
   return trimmed
+}
+
+function normalizeTestedAt(value: string): string {
+  const parsed = Date.parse(value)
+  if (!Number.isFinite(parsed)) {
+    throw new IdentityError('IDENTITY_ACCOUNT_INVALID', '测试结果的 testedAt 必须是可识别的时间')
+  }
+  return new Date(parsed).toISOString()
+}
+
+function requireTestError(value: string): string {
+  if (typeof value !== 'string') {
+    throw new IdentityError('IDENTITY_ACCOUNT_INVALID', '测试结果的 error 必须是字符串或 null')
+  }
+  return value.length > 2000 ? `${value.slice(0, 2000)}…` : value
 }
 
 function copyAccount(account: IdentityAccount): IdentityAccount {

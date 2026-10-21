@@ -59,6 +59,28 @@ function readOptionalInteger(source: Record<string, unknown>, key: string, where
   return value
 }
 
+function readOptionalNullableBoolean(
+  source: Record<string, unknown>,
+  key: string,
+  where: string,
+): boolean | null {
+  const value = source[key]
+  if (value === undefined || value === null) return null
+  if (typeof value !== 'boolean') corrupt(`${where}.${key} 必须是布尔值或 null`)
+  return value
+}
+
+function readOptionalNullableInteger(
+  source: Record<string, unknown>,
+  key: string,
+  where: string,
+): number | null {
+  const value = source[key]
+  if (value === undefined || value === null) return null
+  if (typeof value !== 'number' || !Number.isInteger(value)) corrupt(`${where}.${key} 必须是整数或 null`)
+  return value
+}
+
 /** 缺失按 `null`；形状不对（非数组 / 含非字符串）明确失败，不静默降级。 */
 function readOptionalStringArray(source: Record<string, unknown>, key: string, where: string): string[] | null {
   const value = source[key]
@@ -119,6 +141,10 @@ function decodeAccount(raw: unknown, key: string): IdentityAccount {
     lastError: readNullableString(source, 'lastError', where),
     failureCount: source.failureCount,
     backoffUntil: readNullableString(source, 'backoffUntil', where),
+    lastTestAt: readOptionalNullableString(source, 'lastTestAt', where),
+    lastTestOk: readOptionalNullableBoolean(source, 'lastTestOk', where),
+    lastTestError: readOptionalNullableString(source, 'lastTestError', where),
+    lastTestLatencyMs: readOptionalNullableInteger(source, 'lastTestLatencyMs', where),
     createdAt: readStringField(source, 'createdAt', where),
     updatedAt: readStringField(source, 'updatedAt', where),
   }

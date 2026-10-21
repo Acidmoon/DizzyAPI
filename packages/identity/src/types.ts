@@ -74,8 +74,25 @@ export interface IdentityAccount {
   readonly failureCount: number
   /** 退避截止时间；在此之前调度器不碰它。 */
   readonly backoffUntil: string | null
+  /** 最近一次连通性测试的时间（ISO）；`null` = 从未测试。 */
+  readonly lastTestAt: string | null
+  /** 最近一次测试是否成功；`null` = 从未测试。 */
+  readonly lastTestOk: boolean | null
+  /** 最近一次测试的失败原因（已脱敏）；成功或从未测试时为 `null`。 */
+  readonly lastTestError: string | null
+  /** 最近一次测试的耗时（毫秒）；`null` = 从未测试。 */
+  readonly lastTestLatencyMs: number | null
   readonly createdAt: string
   readonly updatedAt: string
+}
+
+/** 一次连通性测试的结果；只落「有没有通、多久、为什么失败」，不含任何凭据。 */
+export interface IdentityTestResult {
+  readonly ok: boolean
+  readonly latencyMs: number
+  readonly error: string | null
+  /** ISO 时间；缺失时由 identity 用当前时间补齐。 */
+  readonly testedAt?: string
 }
 
 /** 新建账号的输入。secret 会写进 credentials，不会进账号文件。 */

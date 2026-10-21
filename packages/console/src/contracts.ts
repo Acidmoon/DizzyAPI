@@ -40,6 +40,11 @@ export interface AccountSummary {
   readonly lastError: string | null
   readonly failureCount: number
   readonly backoffUntil: string | null
+  /** 最近一次连通性测试；mock / 旧服务可能没有这几个字段。 */
+  readonly lastTestAt?: string | null
+  readonly lastTestOk?: boolean | null
+  readonly lastTestError?: string | null
+  readonly lastTestLatencyMs?: number | null
   readonly createdAt: string
   readonly updatedAt: string
 }
