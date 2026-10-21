@@ -48,6 +48,7 @@ import type {
   ScoredAccount,
   StrategyGroup,
   StrategyListSnapshot,
+  UsageSinceResult,
 } from './types.ts'
 import {
   MAX_STRATEGIES,
@@ -260,6 +261,21 @@ export class AccountPriorityService extends Service {
       lastError: this.lastError,
       startedAt: this.startedAt,
     }
+  }
+
+  /**
+   * 拉取 Go 的用量缓冲（`usage.since`）。
+   *
+   * 这是控制消息，不是 LLM 请求；供 usage 插件定时轮询。桥没连上时抛
+   * `ACCOUNT_PRIORITY_NOT_READY`，调用方应当跳过这一轮而不是把插件打挂。
+   */
+  async usageSince(params: {
+    readonly epoch?: string
+    readonly afterSeq?: number
+    readonly limit?: number
+  } = {}): Promise<UsageSinceResult> {
+    const bridge = this.requireBridge()
+    return bridge.request<UsageSinceResult>('usage.since', params, this.config.requestTimeoutMs)
   }
 
   /** 策略组的权威副本（TS 是唯一写者）。 */

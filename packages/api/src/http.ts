@@ -391,12 +391,30 @@ export class ApiServer {
       this.sendJson(req, res, 200, await this.usage(req, url))
       return
     }
+    if (parts.length === 2 && parts[0] === 'usage' && parts[1] === 'export') {
+      if (!this.allowRead(req, res)) return
+      await this.usageExport(req, res, url)
+      return
+    }
+    if (parts[0] === 'pricing') {
+      await this.routePricing(req, res, parts)
+      return
+    }
     if (parts[0] === 'topup') {
       await this.routeTopup(req, res, parts)
       return
     }
 
     // 管理员面
+    if (parts[0] === 'admin' && parts[1] === 'usage') {
+      await this.routeAdminUsage(req, res, parts, url)
+      return
+    }
+    if (parts.length === 2 && parts[0] === 'admin' && parts[1] === 'stats') {
+      if (!this.allowRead(req, res)) return
+      await this.adminStats(req, res)
+      return
+    }
     if (parts[0] === 'users') {
       await this.routeUsers(req, res, parts)
       return
@@ -619,6 +637,47 @@ export class ApiServer {
       models: [],
       generatedAt: now.toISOString(),
     }
+  }
+
+  /**
+   * `GET /api/usage/export`：把当前筛选条件下的明细导出成 CSV。
+   * 路由已注册，方法体随 `feat/usage-core` 落地。
+   */
+  private async usageExport(req: IncomingMessage, _res: ServerResponse, _url: URL): Promise<void> {
+    await this.requireSession(req)
+    throw new ApiError('API_USAGE_EXPORT_UNAVAILABLE', 501, '用量导出尚未实现')
+  }
+
+  /**
+   * `/api/pricing`：读价格表（会话）与改价格（管理员）。
+   * 路由已注册，方法体随 `feat/pricing-plugin` 落地。
+   */
+  private async routePricing(req: IncomingMessage, _res: ServerResponse, _parts: readonly string[]): Promise<void> {
+    await this.requireSession(req)
+    throw new ApiError('API_PRICING_UNAVAILABLE', 501, '价格表接口尚未实现')
+  }
+
+  /**
+   * `/api/admin/usage`：管理员口径的用量明细与导出。
+   * 路由已注册，方法体随 `feat/admin-usage` 落地。
+   */
+  private async routeAdminUsage(
+    req: IncomingMessage,
+    _res: ServerResponse,
+    _parts: readonly string[],
+    _url: URL,
+  ): Promise<void> {
+    await this.requireAdmin(req)
+    throw new ApiError('API_ADMIN_USAGE_UNAVAILABLE', 501, '管理员用量接口尚未实现')
+  }
+
+  /**
+   * `GET /api/admin/stats`：全站计数与 token 汇总。
+   * 路由已注册，方法体随 `feat/admin-usage` 落地。
+   */
+  private async adminStats(req: IncomingMessage, _res: ServerResponse): Promise<void> {
+    await this.requireAdmin(req)
+    throw new ApiError('API_ADMIN_STATS_UNAVAILABLE', 501, '全站统计接口尚未实现')
   }
 
   private async routeTopup(req: IncomingMessage, res: ServerResponse, parts: readonly string[]): Promise<void> {

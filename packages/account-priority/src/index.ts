@@ -75,6 +75,8 @@ export {
   type StrategyListResult,
   type StrategyListSnapshot,
   type StrategySelection,
+  type UsageSinceRecord,
+  type UsageSinceResult,
 } from './types.ts'
 export {
   MAX_CANDIDATES,

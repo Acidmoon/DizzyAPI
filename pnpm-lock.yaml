@@ -71,9 +71,15 @@ importers:
       '@dizzyapi/plugin-mailer':
         specifier: workspace:*
         version: link:packages/mailer
+      '@dizzyapi/plugin-pricing':
+        specifier: workspace:*
+        version: link:packages/pricing
       '@dizzyapi/plugin-settings':
         specifier: workspace:*
         version: link:packages/settings
+      '@dizzyapi/plugin-usage':
+        specifier: workspace:*
+        version: link:packages/usage
       '@dizzyapi/plugin-user':
         specifier: workspace:*
         version: link:packages/user
@@ -222,6 +228,15 @@ importers:
         specifier: workspace:*
         version: link:../credentials
 
+  packages/pricing:
+    dependencies:
+      '@dizzyapi/plugin-kit':
+        specifier: workspace:*
+        version: link:../kit
+      cordis:
+        specifier: ^4.0.0-rc.11
+        version: 4.0.0-rc.11(@cordisjs/plugin-include@1.1.1)(@cordisjs/plugin-loader@1.0.0-rc.8)
+
   packages/settings:
     dependencies:
       '@cordisjs/plugin-loader':
@@ -240,6 +255,18 @@ importers:
       '@dizzyapi/plugin-mailer':
         specifier: workspace:*
         version: link:../mailer
+
+  packages/usage:
+    dependencies:
+      '@dizzyapi/plugin-account-priority':
+        specifier: workspace:*
+        version: link:../account-priority
+      '@dizzyapi/plugin-kit':
+        specifier: workspace:*
+        version: link:../kit
+      cordis:
+        specifier: ^4.0.0-rc.11
+        version: 4.0.0-rc.11(@cordisjs/plugin-include@1.1.1)(@cordisjs/plugin-loader@1.0.0-rc.8)
 
   packages/user:
     dependencies:

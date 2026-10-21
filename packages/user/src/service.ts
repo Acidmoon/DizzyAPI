@@ -347,6 +347,14 @@ export class UserService extends Service {
     return this.exclusive(async () => this.db.getUser(userId))
   }
 
+  /**
+   * 用户总数。统计口径用 `COUNT(*)`，不要为了一个数字把整张表读出来
+   * （管理概览每次刷新都会问一次）。
+   */
+  async count(): Promise<number> {
+    return this.exclusive(async () => this.db.countUsers())
+  }
+
   async list(query: UserQuery = {}): Promise<User[]> {
     const status = query.status === undefined ? undefined : normalizeStatus(query.status)
     const role = query.role === undefined ? undefined : normalizeRole(query.role)

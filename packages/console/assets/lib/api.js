@@ -27,6 +27,7 @@
 /** @typedef {import('../../src/contracts.ts').UsageResponse} UsageResponse */
 /** @typedef {import('../../src/contracts.ts').UsageQuery} UsageQuery */
 /** @typedef {import('../../src/contracts.ts').UsageDailyPoint} UsageDailyPoint */
+/** @typedef {import('../../src/contracts.ts').UsageTotals} UsageTotals */
 /** @typedef {import('../../src/contracts.ts').ApiKeySummary} ApiKeySummary */
 /** @typedef {import('../../src/contracts.ts').ApiKeyListResponse} ApiKeyListResponse */
 /** @typedef {import('../../src/contracts.ts').CreatedApiKey} CreatedApiKey */
@@ -267,6 +268,23 @@ export function createHttpApis(options = {}) {
        * @returns {Promise<CredentialImportPreview>}
        */
       previewImport: (input) => request('/accounts/import/preview', { method: 'POST', body: input }),
+      /**
+       * @param {string} id
+       * @param {import('../../src/contracts.ts').AccountTestInput} [input]
+       * @returns {Promise<import('../../src/contracts.ts').AccountTestResult>}
+       */
+      test: (id, input = {}) =>
+        request(`/accounts/${encodeURIComponent(id)}/test`, { method: 'POST', body: input }),
+      /**
+       * @param {import('../../src/contracts.ts').AccountImportSourceInput} input
+       * @returns {Promise<import('../../src/contracts.ts').AccountImportPreview>}
+       */
+      previewImportSource: (input) => request('/accounts/import/preview', { method: 'POST', body: input }),
+      /**
+       * @param {import('../../src/contracts.ts').AccountImportSourceInput} input
+       * @returns {Promise<import('../../src/contracts.ts').AccountImportResult>}
+       */
+      importSource: (input) => request('/accounts/import', { method: 'POST', body: input }),
     },
     catalog: {
       /** @returns {Promise<CatalogResponse>} */
@@ -295,7 +313,62 @@ export function createHttpApis(options = {}) {
     },
     usage: {
       /** @param {UsageQuery} query @returns {Promise<UsageResponse>} */
-      get: (query) => request('/usage', { query: { range: query.range, apiKeyId: query.apiKeyId } }),
+      get: (query) =>
+        request('/usage', {
+          query: {
+            range: query.range,
+            apiKeyId: query.apiKeyId,
+            model: query.model,
+            cursor: query.cursor,
+            limit: query.limit,
+          },
+        }),
+      /** @param {UsageQuery} query @returns {Promise<{ filename: string, content: string }>} */
+      exportCsv: (query) =>
+        request('/usage/export', {
+          query: { format: 'csv', range: query.range, apiKeyId: query.apiKeyId, model: query.model },
+        }),
+    },
+    adminUsage: {
+      /** @param {import('../../src/contracts.ts').AdminUsageQuery} query */
+      list: (query) =>
+        request('/admin/usage', {
+          query: {
+            range: query.range,
+            userId: query.userId,
+            apiKeyId: query.apiKeyId,
+            model: query.model,
+            status: query.status,
+            cursor: query.cursor,
+            limit: query.limit,
+          },
+        }),
+      /** @param {import('../../src/contracts.ts').AdminUsageQuery} query */
+      exportCsv: (query) =>
+        request('/admin/usage/export', {
+          query: {
+            format: 'csv',
+            range: query.range,
+            userId: query.userId,
+            apiKeyId: query.apiKeyId,
+            model: query.model,
+            status: query.status,
+          },
+        }),
+    },
+    stats: {
+      /** @returns {Promise<import('../../src/contracts.ts').GatewayStats>} */
+      get: () => request('/admin/stats'),
+    },
+    pricing: {
+      /** @returns {Promise<import('../../src/contracts.ts').PricingListResponse>} */
+      list: () => request('/pricing'),
+      /** @param {string} model */
+      get: (model) => request(`/pricing/${encodeURIComponent(model)}`),
+      /** @param {string} model @param {import('../../src/contracts.ts').ModelPriceInput} input */
+      set: (model, input) => request(`/pricing/${encodeURIComponent(model)}`, { method: 'PUT', body: input }),
+      /** @param {string} model */
+      remove: (model) => request(`/pricing/${encodeURIComponent(model)}`, { method: 'DELETE' }),
     },
     keys: {
       /** @returns {Promise<ApiKeyListResponse>} */
@@ -645,6 +718,56 @@ export function createMockApis(options = {}) {
           hasApiKey: true,
         }
       },
+      /** @param {string} id */
+      async test(id) {
+        await wait()
+        const account = state.accounts.find((item) => item.id === id)
+        if (account === undefined) throw new ApiError(`没有这个账号：${id}`, { status: 404, code: 'ACCOUNT_NOT_FOUND' })
+        return {
+          ok: true,
+          status: 200,
+          latencyMs: 180 + ((id.length * 37) % 900),
+          model: account.models?.[0] ?? null,
+          protocol: account.protocol ?? null,
+          error: null,
+          testedAt: stamp(),
+        }
+      },
+      /** @param {import('../../src/contracts.ts').AccountImportSourceInput} input */
+      async previewImportSource(input) {
+        await wait()
+        const count = input.source === 'plain-keys' ? Math.max(input.payload.split('\n').filter((line) => line.trim() !== '').length, 1) : 1
+        return {
+          source: input.source === 'auto' ? 'new-api' : input.source,
+          total: count,
+          items: Array.from({ length: count }, (_, index) => ({
+            index,
+            ok: true,
+            label: `导入账号 #${index + 1}`,
+            provider: input.defaults?.provider ?? 'openai',
+            kind: input.defaults?.kind ?? 'api_key',
+            baseUrl: input.defaults?.baseUrl ?? null,
+            models: null,
+            error: null,
+          })),
+        }
+      },
+      /** @param {import('../../src/contracts.ts').AccountImportSourceInput} input */
+      async importSource(input) {
+        await wait()
+        const count = input.source === 'plain-keys' ? Math.max(input.payload.split('\n').filter((line) => line.trim() !== '').length, 1) : 1
+        return {
+          total: count,
+          created: count,
+          failed: 0,
+          items: Array.from({ length: count }, (_, index) => ({
+            index,
+            ok: true,
+            account: null,
+            error: null,
+          })),
+        }
+      },
     },
     catalog: {
       async list() {
@@ -699,19 +822,23 @@ export function createMockApis(options = {}) {
         const days = query.range === '7d' ? 7 : query.range === '90d' ? 90 : 30
         const factor = query.apiKeyId === undefined ? 1 : 0.35
         const daily = state.usage.daily.slice(-days).map((point) => scaleUsagePoint(point, factor))
-        const totals = {
-          costCents: daily.reduce((total, point) => total + point.costCents, 0),
-          requests: daily.reduce((total, point) => total + point.requests, 0),
-          tokens: daily.reduce((total, point) => total + point.tokens, 0),
-        }
+        const totals = sumUsage(daily)
         const models = (query.apiKeyId === undefined ? state.usage.models : state.usage.models.slice(0, 2)).map(
           (model) => ({
             ...model,
             requests: Math.round(model.requests * factor),
             tokens: Math.round(model.tokens * factor),
             costCents: Math.round(model.costCents * factor),
+            costMicros: String(Math.round(Number(model.costMicros) * factor)),
           }),
         )
+        const rows = state.usage.records.filter(
+          (row) =>
+            (query.apiKeyId === undefined || row.apiKeyId === query.apiKeyId) &&
+            (query.model === undefined || row.model === query.model),
+        )
+        const limit = Math.min(Math.max(query.limit ?? 20, 1), 200)
+        const page = rows.filter((row) => query.cursor === undefined || row.id < query.cursor).slice(0, limit)
         return {
           range: query.range,
           from: daily[0]?.date ?? '',
@@ -721,8 +848,112 @@ export function createMockApis(options = {}) {
           totals,
           daily,
           models,
+          records: { items: clone(page), nextCursor: page.length === limit ? page[page.length - 1].id : null },
+          pricingAvailable: true,
           generatedAt: stamp(),
         }
+      },
+      /** @param {UsageQuery} query */
+      async exportCsv(query) {
+        await wait()
+        const rows = state.usage.records.slice(0, 50)
+        return { filename: `usage-${query.range}.csv`, content: usageCsv(rows) }
+      },
+    },
+    adminUsage: {
+      /** @param {import('../../src/contracts.ts').AdminUsageQuery} query */
+      async list(query) {
+        await wait()
+        const days = query.range === '7d' ? 7 : query.range === '90d' ? 90 : 30
+        const daily = state.usage.daily.slice(-days).map((point) => scaleUsagePoint(point, 1))
+        const rows = state.usage.records.filter(
+          (row) =>
+            (query.userId === undefined || row.userId === query.userId) &&
+            (query.apiKeyId === undefined || row.apiKeyId === query.apiKeyId) &&
+            (query.model === undefined || row.model === query.model) &&
+            (query.status === undefined || row.status === query.status),
+        )
+        const limit = Math.min(Math.max(query.limit ?? 20, 1), 200)
+        const page = rows.filter((row) => query.cursor === undefined || row.id < query.cursor).slice(0, limit)
+        return {
+          range: query.range,
+          from: daily[0]?.date ?? '',
+          to: daily[daily.length - 1]?.date ?? '',
+          totals: sumUsage(daily),
+          daily,
+          models: state.usage.models.map((model) => ({ ...model })),
+          records: { items: clone(page), nextCursor: page.length === limit ? page[page.length - 1].id : null },
+          pricingAvailable: true,
+          generatedAt: stamp(),
+        }
+      },
+      /** @param {import('../../src/contracts.ts').AdminUsageQuery} query */
+      async exportCsv(query) {
+        await wait()
+        return { filename: `admin-usage-${query.range}.csv`, content: usageCsv(state.usage.records) }
+      },
+    },
+    stats: {
+      async get() {
+        await wait()
+        const totals = sumUsage(state.usage.daily.slice(-30))
+        return {
+          generatedAt: stamp(),
+          users: { total: state.users.length, admins: 1, enabled: state.users.filter((user) => user.status === 'enabled').length, banned: state.users.filter((user) => user.status === 'banned').length },
+          accounts: { total: state.accounts.length, enabled: state.accounts.filter((account) => account.enabled).length, disabled: state.accounts.filter((account) => !account.enabled).length, needsReauth: state.accounts.filter((account) => account.status === 'needs_reauth').length },
+          keys: { total: state.keys.length, enabled: state.keys.filter((key) => key.enabled).length, disabled: state.keys.filter((key) => !key.enabled).length },
+          usage: {
+            today: sumUsage(state.usage.daily.slice(-1)),
+            total: totals,
+            series: state.usage.daily.slice(-30).map((point) => ({ ...point })),
+            models: state.usage.models.map((model) => ({ ...model })),
+            topUsers: [
+              { userId: 1, name: 'Dzy', requests: 6_420, tokens: 1_284_550, inputTokens: 796_421, outputTokens: 385_365, cacheReadTokens: 77_073, cacheWriteTokens: 25_691, costCents: 9_860, costMicros: '98600000' },
+              { userId: 2, name: 'tester', requests: 2_180, tokens: 968_400, inputTokens: 600_408, outputTokens: 290_520, cacheReadTokens: 58_104, cacheWriteTokens: 19_368, costCents: 7_240, costMicros: '72400000' },
+            ],
+          },
+        }
+      },
+    },
+    pricing: {
+      async list() {
+        await wait()
+        return { items: clone(state.pricing) }
+      },
+      /** @param {string} model */
+      async get(model) {
+        await wait()
+        const found = state.pricing.find((item) => item.model === model)
+        if (found === undefined) throw new ApiError('没有这个模型的价格', { status: 404, code: 'PRICING_NOT_FOUND' })
+        return clone(found)
+      },
+      /**
+       * @param {string} model
+       * @param {import('../../src/contracts.ts').ModelPriceInput} input
+       */
+      async set(model, input) {
+        await wait()
+        const entry = {
+          model,
+          inputPerMillion: String(input.inputPerMillion),
+          outputPerMillion: String(input.outputPerMillion),
+          cacheReadPerMillion: String(input.cacheReadPerMillion ?? '0'),
+          cacheWritePerMillion: String(input.cacheWritePerMillion ?? '0'),
+          currency: /** @type {const} */ ('CNY'),
+          updatedAt: stamp(),
+        }
+        const index = state.pricing.findIndex((item) => item.model === model)
+        if (index < 0) state.pricing.push(entry)
+        else state.pricing[index] = entry
+        return clone(entry)
+      },
+      /** @param {string} model */
+      async remove(model) {
+        await wait()
+        const index = state.pricing.findIndex((item) => item.model === model)
+        if (index < 0) return { removed: false }
+        state.pricing.splice(index, 1)
+        return { removed: true }
       },
     },
     keys: {
@@ -1082,6 +1313,13 @@ function createMockState(now) {
   ]
 
   const usage = createMockUsage(at)
+  /** @type {{ model: string, inputPerMillion: string, outputPerMillion: string, cacheReadPerMillion: string, cacheWritePerMillion: string, currency: 'CNY', updatedAt: string }[]} */
+  const pricing = [
+    { model: 'dizzy-flash', inputPerMillion: '1', outputPerMillion: '4', cacheReadPerMillion: '0.1', cacheWritePerMillion: '1.25', currency: 'CNY', updatedAt: at },
+    { model: 'dizzy-reasoner', inputPerMillion: '4', outputPerMillion: '16', cacheReadPerMillion: '0.4', cacheWritePerMillion: '5', currency: 'CNY', updatedAt: at },
+    { model: 'dizzy-vision', inputPerMillion: '2', outputPerMillion: '8', cacheReadPerMillion: '0.2', cacheWritePerMillion: '2.5', currency: 'CNY', updatedAt: at },
+    { model: '*', inputPerMillion: '0', outputPerMillion: '0', cacheReadPerMillion: '0', cacheWritePerMillion: '0', currency: 'CNY', updatedAt: at },
+  ]
   const topup = {
     currency: 'CNY',
     amountsCents: [1_000, 2_000, 5_000, 10_000, 30_000, 50_000],
@@ -1153,6 +1391,7 @@ function createMockState(now) {
     keys,
     keySequence: 4,
     usage,
+    pricing,
     topup,
     orderSequence: 1,
     modules: [
@@ -1256,19 +1495,76 @@ function createMockUsage(at) {
     daily.push({
       date: date.toISOString().slice(0, 10),
       costCents,
+      costMicros: String(costCents * 10_000),
       requests,
       tokens,
+      ...splitTokens(tokens),
     })
   }
   return {
     balances: { paidCents: 42_000, grantedCents: 5_000, spentCents: 18_673 },
     daily,
     models: [
-      { model: 'dizzy-flash', requests: 6_420, tokens: 1_284_550, costCents: 9_860 },
-      { model: 'dizzy-reasoner', requests: 2_180, tokens: 968_400, costCents: 7_240 },
-      { model: 'dizzy-vision', requests: 640, tokens: 312_900, costCents: 1_573 },
+      { model: 'dizzy-flash', requests: 6_420, tokens: 1_284_550, costCents: 9_860, costMicros: '98600000', ...splitTokens(1_284_550) },
+      { model: 'dizzy-reasoner', requests: 2_180, tokens: 968_400, costCents: 7_240, costMicros: '72400000', ...splitTokens(968_400) },
+      { model: 'dizzy-vision', requests: 640, tokens: 312_900, costCents: 1_573, costMicros: '15730000', ...splitTokens(312_900) },
     ],
+    records: createMockUsageRecords(end),
   }
+}
+
+/**
+ * 把总 token 拆成四个互不重叠的桶（mock 用）。
+ * @param {number} tokens
+ */
+function splitTokens(tokens) {
+  const inputTokens = Math.round(tokens * 0.62)
+  const outputTokens = Math.round(tokens * 0.3)
+  const cacheReadTokens = Math.round(tokens * 0.06)
+  return {
+    inputTokens,
+    outputTokens,
+    cacheReadTokens,
+    cacheWriteTokens: Math.max(tokens - inputTokens - outputTokens - cacheReadTokens, 0),
+  }
+}
+
+/**
+ * @param {number} end
+ */
+function createMockUsageRecords(end) {
+  const models = ['dizzy-flash', 'dizzy-reasoner', 'dizzy-vision', 'dizzy-embed']
+  const keys = ['生产 Key', '本地开发', 'CI 流水线']
+  const records = []
+  for (let index = 0; index < 24; index++) {
+    const tokens = 180 + ((index * 137) % 2_600)
+    const buckets = splitTokens(tokens)
+    const costCents = 3 + ((index * 7) % 40)
+    records.push({
+      id: 10_000 - index,
+      reqId: `req-mock-${String(index + 1).padStart(3, '0')}`,
+      userId: 1,
+      apiKeyId: `key_mock_${String((index % 3) + 1).padStart(3, '0')}`,
+      apiKeyName: keys[index % keys.length],
+      model: models[index % models.length],
+      upstreamModel: index % 5 === 0 ? `${models[index % models.length]}-upstream` : null,
+      protocol: index % 3 === 0 ? 'anthropic' : 'openai-chat',
+      upstreamProtocol: index % 4 === 0 ? 'anthropic' : 'openai-chat',
+      stream: index % 2 === 0,
+      status: index % 11 === 7 ? 429 : 200,
+      errorCode: index % 11 === 7 ? 'UPSTREAM_RATE_LIMITED' : null,
+      ...buckets,
+      totalTokens: tokens,
+      durationMs: 420 + ((index * 211) % 4_800),
+      clientIp: `203.0.113.${(index % 200) + 10}`,
+      startedAt: new Date(end - index * 3_600_000).toISOString(),
+      costMicros: String(costCents * 10_000),
+      userName: index % 2 === 0 ? 'Dzy' : 'tester',
+      accountId: index % 3 === 0 ? 'acct_claude_main' : 'acct_openai_pool',
+      attempts: index % 7 === 0 ? 2 : 1,
+    })
+  }
+  return records
 }
 
 /**
@@ -1278,11 +1574,78 @@ function createMockUsage(at) {
  */
 function scaleUsagePoint(point, factor) {
   return {
-    date: point.date,
+    ...point,
     costCents: Math.round(point.costCents * factor),
+    costMicros: String(Math.round(Number(point.costMicros) * factor)),
     requests: Math.round(point.requests * factor),
     tokens: Math.round(point.tokens * factor),
+    inputTokens: Math.round(point.inputTokens * factor),
+    outputTokens: Math.round(point.outputTokens * factor),
+    cacheReadTokens: Math.round(point.cacheReadTokens * factor),
+    cacheWriteTokens: Math.round(point.cacheWriteTokens * factor),
   }
+}
+
+/**
+ * 把一串用量点累加成总数（mock 用）。
+ * @param {readonly UsageTotals[]} points
+ * @returns {UsageTotals}
+ */
+function sumUsage(points) {
+  let requests = 0
+  let tokens = 0
+  let inputTokens = 0
+  let outputTokens = 0
+  let cacheReadTokens = 0
+  let cacheWriteTokens = 0
+  let costCents = 0
+  let micros = 0n
+  for (const point of points) {
+    requests += point.requests
+    tokens += point.tokens
+    inputTokens += point.inputTokens
+    outputTokens += point.outputTokens
+    cacheReadTokens += point.cacheReadTokens
+    cacheWriteTokens += point.cacheWriteTokens
+    costCents += point.costCents
+    micros += BigInt(point.costMicros)
+  }
+  return {
+    requests,
+    tokens,
+    inputTokens,
+    outputTokens,
+    cacheReadTokens,
+    cacheWriteTokens,
+    costCents,
+    costMicros: micros.toString(),
+  }
+}
+
+/**
+ * mock 的 CSV 导出。
+ * @param {readonly Record<string, any>[]} rows
+ */
+function usageCsv(rows) {
+  const header =
+    'time,api_key,model,input_tokens,output_tokens,cache_read_tokens,cache_write_tokens,total_tokens,cost_micros,status,duration_ms,client_ip'
+  const lines = rows.map((row) =>
+    [
+      row.startedAt,
+      row.apiKeyName,
+      row.model,
+      row.inputTokens,
+      row.outputTokens,
+      row.cacheReadTokens,
+      row.cacheWriteTokens,
+      row.totalTokens,
+      row.costMicros,
+      row.status,
+      row.durationMs,
+      row.clientIp ?? '',
+    ].join(','),
+  )
+  return `${header}\n${lines.join('\n')}\n`
 }
 
 /** @param {string} at */

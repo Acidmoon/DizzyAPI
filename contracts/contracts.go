@@ -118,6 +118,18 @@ type Ctx struct {
 	// 与 Upstream 一样，每个 attempt 都必须显式写它（含置 nil）：failover 会重跑
 	// 映射阶段，残留上一次的改写结果就会把错误的请求体发出去。
 	MappedBody []byte
+
+	// ClientIP 是 HTTP 入口解析出的客户端地址（不受信任的输入，只用于用量记录与排障）。
+	// 它可能为空：例如请求来自本机且没有任何转发头。
+	ClientIP string
+
+	// ErrorCode 由 engine.render 写入：请求失败时的稳定错误码。
+	// 成功请求保持为空。用量记录据此区分「200 但上游报错」与真正的失败。
+	ErrorCode string
+
+	// UpstreamModel 是模型映射阶段写下的上游真实模型名；空 = 没有映射。
+	// 与 MappedBody 一样每个 attempt 都要显式重置。
+	UpstreamModel string
 }
 
 // UpstreamRequest 是协议转换阶段交给 transport 的上游请求。

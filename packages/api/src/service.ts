@@ -33,7 +33,9 @@ import type {
   AuthPort,
   CatalogPort,
   FrontendPort,
+  PricingPort,
   SettingsPort,
+  UsagePort,
   UserPort,
 } from './types.ts'
 
@@ -130,6 +132,8 @@ export class ApiService extends Service {
       settings: () => this.optionalService<SettingsPort>('settings', ['describe', 'update', 'reset']),
       apiKey: () => this.optionalService<ApiKeyPort>('apiKey', ['list', 'create', 'update', 'remove', 'rotate']),
       accountPriority: () => this.optionalService<AccountPriorityPort>('accountPriority', ['status']),
+      usage: () => this.optionalService<UsagePort>('usage', ['list', 'summary', 'stats', 'exportRows']),
+      pricing: () => this.optionalService<PricingPort>('pricing', ['list', 'get', 'set', 'remove']),
       now: () => new Date(),
       uptimeSec: () => Math.round(process.uptime()),
       log: (level, message) => {

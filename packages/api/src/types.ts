@@ -220,6 +220,143 @@ export interface AccountAdminPort {
   importCredentials?(actor: string, id: string, input: unknown): Promise<unknown>
   importAccounts?(actor: string, input: unknown): Promise<unknown>
   previewImport?(input: unknown): unknown
+  /** 连通性测试：不发秘密、不回显秘密；返回状态码与耗时。 */
+  testConnection?(id: string, input: { model?: string; protocol?: string }): Promise<AccountTestResultLike>
+}
+
+export interface AccountTestResultLike {
+  readonly ok: boolean
+  readonly status: number | null
+  readonly latencyMs: number
+  readonly model: string | null
+  readonly protocol: string | null
+  readonly error: string | null
+  readonly testedAt: string
+}
+
+// ───────────────────────────── 用量与价格 ─────────────────────────────
+
+export interface UsageRowLike {
+  readonly id: number
+  readonly reqId: string
+  readonly userId: number
+  readonly apiKeyId: string
+  readonly apiKeyName: string
+  readonly profile: string
+  readonly accountId: string
+  readonly model: string
+  readonly upstreamModel: string | null
+  readonly protocol: string
+  readonly upstreamProtocol: string | null
+  readonly stream: boolean
+  readonly status: number
+  readonly errorCode: string | null
+  readonly inputTokens: number
+  readonly outputTokens: number
+  readonly cacheReadTokens: number
+  readonly cacheWriteTokens: number
+  readonly reasoningTokens: number
+  readonly totalTokens: number
+  readonly usagePresent: boolean
+  readonly usageComplete: boolean
+  readonly durationMs: number
+  readonly clientIp: string | null
+  readonly attempts: number
+  readonly startedAt: string
+  readonly costMicros: string
+}
+
+export interface UsageQueryLike {
+  readonly fromMs: number
+  readonly toMs: number
+  readonly userId?: number
+  readonly apiKeyId?: string
+  readonly model?: string
+  readonly status?: number
+  readonly cursor?: number
+  readonly limit?: number
+}
+
+export interface UsageTotalsLike {
+  readonly requests: number
+  readonly inputTokens: number
+  readonly outputTokens: number
+  readonly cacheReadTokens: number
+  readonly cacheWriteTokens: number
+  readonly reasoningTokens: number
+  readonly totalTokens: number
+  readonly costMicros: string
+}
+
+export interface UsageDailyPointLike extends UsageTotalsLike {
+  readonly date: string
+}
+
+export interface UsageModelBreakdownLike extends UsageTotalsLike {
+  readonly model: string
+}
+
+export interface UsageUserBreakdownLike extends UsageTotalsLike {
+  readonly userId: number
+}
+
+export interface UsageSummaryLike {
+  readonly totals: UsageTotalsLike
+  readonly daily: readonly UsageDailyPointLike[]
+  readonly models: readonly UsageModelBreakdownLike[]
+}
+
+export interface UsageListPageLike {
+  readonly items: readonly UsageRowLike[]
+  readonly nextCursor: number | null
+}
+
+export interface UsageStatsLike {
+  readonly today: UsageTotalsLike
+  readonly total: UsageTotalsLike
+  readonly series: readonly UsageDailyPointLike[]
+  readonly models: readonly UsageModelBreakdownLike[]
+  readonly topUsers: readonly UsageUserBreakdownLike[]
+}
+
+export interface UsageStatusLike {
+  readonly records: number
+  readonly epoch: string | null
+  readonly lastSeq: number
+  readonly polling: boolean
+  readonly pricingAvailable: boolean
+}
+
+export interface UsagePort {
+  list(query: UsageQueryLike): UsageListPageLike
+  summary(query: UsageQueryLike): UsageSummaryLike
+  stats(nowMs?: number): UsageStatsLike
+  exportRows(query: UsageQueryLike, limit?: number): readonly UsageRowLike[]
+  status(): UsageStatusLike
+}
+
+export interface ModelPriceLike {
+  readonly model: string
+  readonly inputPerMillion: string
+  readonly outputPerMillion: string
+  readonly cacheReadPerMillion: string
+  readonly cacheWritePerMillion: string
+  readonly currency: string
+  readonly updatedAt: string
+}
+
+export interface ModelPriceInputLike {
+  readonly inputPerMillion: string | number
+  readonly outputPerMillion: string | number
+  readonly cacheReadPerMillion?: string | number
+  readonly cacheWritePerMillion?: string | number
+}
+
+export interface PricingPort {
+  list(): readonly ModelPriceLike[]
+  get(model: string): ModelPriceLike | null
+  set(actor: string, model: string, input: ModelPriceInputLike): Promise<ModelPriceLike>
+  remove(actor: string, model: string): Promise<boolean>
 }
 
 // ───────────────────────────── 设置与 API key ─────────────────────────────
@@ -318,6 +455,8 @@ export interface ApiRuntime {
   settings(): SettingsPort | undefined
   apiKey(): ApiKeyPort | undefined
   accountPriority(): AccountPriorityPort | undefined
+  usage(): UsagePort | undefined
+  pricing(): PricingPort | undefined
   now(): Date
   uptimeSec(): number
   log(level: 'info' | 'warn' | 'error', message: string): void

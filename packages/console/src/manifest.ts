@@ -28,6 +28,8 @@ export interface FrontendAreaInfo {
 export type PageView =
   | { readonly kind: 'overview'; readonly flavor: FrontendArea }
   | { readonly kind: 'usage' }
+  | { readonly kind: 'adminUsage' }
+  | { readonly kind: 'pricing' }
   | { readonly kind: 'keys' }
   | { readonly kind: 'topup' }
   | { readonly kind: 'redirect'; readonly to: string }
@@ -285,6 +287,47 @@ export const BUILT_IN_CONTRIBUTIONS: readonly (ContributionBundle & { readonly o
         description: '刷新窗口、轮询间隔、退避与超时。',
         namespace: 'identity',
         order: 20,
+      },
+    ],
+  },
+  {
+    owner: '@dizzyapi/plugin-usage',
+    pages: [
+      {
+        id: 'usage.admin.usage',
+        area: 'admin',
+        path: '/admin/usage',
+        title: '用量明细',
+        nav: '用量明细',
+        icon: 'usage',
+        description: '全站请求记录：API key、模型、四个 token 桶、费用、耗时与客户端 IP。',
+        order: 5,
+        view: { kind: 'adminUsage' },
+      },
+    ],
+    settingsCards: [
+      {
+        id: 'usage.settings',
+        title: '用量明细',
+        description: '明细保留天数、轮询间隔与单次拉取上限。',
+        namespace: 'usage',
+        order: 25,
+      },
+    ],
+  },
+  {
+    owner: '@dizzyapi/plugin-pricing',
+    pages: [
+      {
+        id: 'pricing.admin.pricing',
+        area: 'admin',
+        path: '/admin/pricing',
+        title: '模型价格',
+        nav: '模型价格',
+        icon: 'price',
+        description: '每百万 token 的单价（元）；用量页的费用按这张表计算。',
+        order: 35,
+        view: { kind: 'pricing' },
       },
     ],
   },
@@ -559,6 +602,8 @@ function assertView(page: { readonly id: string; readonly view: PageView }): voi
       }
       return
     case 'usage':
+    case 'adminUsage':
+    case 'pricing':
     case 'keys':
     case 'topup':
       return

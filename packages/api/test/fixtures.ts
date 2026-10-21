@@ -23,9 +23,17 @@ import type {
   FrontendPageLike,
   FrontendPort,
   LoginResultLike,
+  ModelPriceLike,
+  PricingPort,
   SessionViewLike,
   SettingsPort,
   TicketLike,
+  UsagePort,
+  UsageQueryLike,
+  UsageRowLike,
+  UsageStatsLike,
+  UsageStatusLike,
+  UsageSummaryLike,
   UserLike,
   UserPort,
   UserStatusLike,
@@ -683,6 +691,119 @@ export class FakeAccountPriority implements AccountPriorityPort {
   }
 }
 
+/** 假用量服务：默认空表；测试可以 `usage.rows.push(...)` 后验证查询口径。 */
+export class FakeUsage implements UsagePort {
+  rows: UsageRowLike[] = []
+
+  list(query: UsageQueryLike) {
+    const filtered = this.filter(query)
+    const limit = Math.min(Math.max(query.limit ?? 20, 1), 200)
+    const page = filtered.filter((row) => query.cursor === undefined || row.id < query.cursor).slice(0, limit)
+    return {
+      items: page,
+      nextCursor: page.length === limit && page.length > 0 ? page[page.length - 1]!.id : null,
+    }
+  }
+
+  summary(query: UsageQueryLike): UsageSummaryLike {
+    return { totals: totalsOf(this.filter(query)), daily: [], models: [] }
+  }
+
+  stats(): UsageStatsLike {
+    return {
+      today: totalsOf(this.rows),
+      total: totalsOf(this.rows),
+      series: [],
+      models: [],
+      topUsers: [],
+    }
+  }
+
+  exportRows(query: UsageQueryLike, limit = 1000): readonly UsageRowLike[] {
+    return this.filter(query).slice(0, limit)
+  }
+
+  status(): UsageStatusLike {
+    return { records: this.rows.length, epoch: 'test-epoch', lastSeq: this.rows.length, polling: false, pricingAvailable: true }
+  }
+
+  private filter(query: UsageQueryLike): UsageRowLike[] {
+    return this.rows
+      .filter((row) => query.userId === undefined || row.userId === query.userId)
+      .filter((row) => query.apiKeyId === undefined || row.apiKeyId === query.apiKeyId)
+      .filter((row) => query.model === undefined || row.model === query.model)
+      .filter((row) => query.status === undefined || row.status === query.status)
+      .sort((a, b) => b.id - a.id)
+  }
+}
+
+function totalsOf(rows: readonly UsageRowLike[]) {
+  let requests = 0
+  let inputTokens = 0
+  let outputTokens = 0
+  let cacheReadTokens = 0
+  let cacheWriteTokens = 0
+  let reasoningTokens = 0
+  let totalTokens = 0
+  let costMicros = 0n
+  for (const row of rows) {
+    requests += 1
+    inputTokens += row.inputTokens
+    outputTokens += row.outputTokens
+    cacheReadTokens += row.cacheReadTokens
+    cacheWriteTokens += row.cacheWriteTokens
+    reasoningTokens += row.reasoningTokens
+    totalTokens += row.totalTokens
+    costMicros += BigInt(row.costMicros)
+  }
+  return {
+    requests,
+    inputTokens,
+    outputTokens,
+    cacheReadTokens,
+    cacheWriteTokens,
+    reasoningTokens,
+    totalTokens,
+    costMicros: costMicros.toString(),
+  }
+}
+
+/** 假价格表：测试可以 `pricing.prices.set(...)`。 */
+export class FakePricing implements PricingPort {
+  prices = new Map<string, ModelPriceLike>()
+
+  list(): readonly ModelPriceLike[] {
+    return [...this.prices.values()]
+  }
+
+  get(model: string): ModelPriceLike | null {
+    return this.prices.get(model) ?? null
+  }
+
+  async set(_actor: string, model: string, input: {
+    inputPerMillion: string | number
+    outputPerMillion: string | number
+    cacheReadPerMillion?: string | number
+    cacheWritePerMillion?: string | number
+  }): Promise<ModelPriceLike> {
+    const price: ModelPriceLike = {
+      model,
+      inputPerMillion: String(input.inputPerMillion),
+      outputPerMillion: String(input.outputPerMillion),
+      cacheReadPerMillion: String(input.cacheReadPerMillion ?? '0'),
+      cacheWritePerMillion: String(input.cacheWritePerMillion ?? '0'),
+      currency: 'CNY',
+      updatedAt: '2026-10-19T12:00:00.000Z',
+    }
+    this.prices.set(model, price)
+    return price
+  }
+
+  async remove(_actor: string, model: string): Promise<boolean> {
+    return this.prices.delete(model)
+  }
+}
+
 export interface Fixture {
   readonly runtime: ApiRuntime
   readonly user: FakeUser
@@ -693,6 +814,8 @@ export interface Fixture {
   readonly settings: FakeSettings
   readonly apiKey: FakeApiKey
   readonly priority: FakeAccountPriority
+  readonly usage: FakeUsage
+  readonly pricing: FakePricing
   readonly cleanup: () => Promise<void>
 }
 
@@ -704,6 +827,8 @@ export interface FixtureOptions {
   readonly withoutCatalog?: boolean
   readonly withoutAccountAdmin?: boolean
   readonly withoutPriority?: boolean
+  readonly withoutUsage?: boolean
+  readonly withoutPricing?: boolean
   readonly pages?: FrontendPageLike[]
 }
 
@@ -716,6 +841,8 @@ export async function createFixture(options: FixtureOptions = {}): Promise<Fixtu
   const settings = new FakeSettings()
   const apiKey = new FakeApiKey()
   const priority = new FakeAccountPriority()
+  const usage = new FakeUsage()
+  const pricing = new FakePricing()
 
   const runtime: ApiRuntime = {
     config: resolvedConfig(options.config),
@@ -727,6 +854,8 @@ export async function createFixture(options: FixtureOptions = {}): Promise<Fixtu
     settings: () => (options.withSettings === false ? undefined : settings),
     apiKey: () => (options.withApiKey === false ? undefined : apiKey),
     accountPriority: () => (options.withoutPriority === true ? undefined : priority),
+    usage: () => (options.withoutUsage === true ? undefined : usage),
+    pricing: () => (options.withoutPricing === true ? undefined : pricing),
     now: () => new Date('2026-10-19T12:00:00.000Z'),
     uptimeSec: () => 42,
     log: () => undefined,
@@ -742,6 +871,8 @@ export async function createFixture(options: FixtureOptions = {}): Promise<Fixtu
     settings,
     apiKey,
     priority,
+    usage,
+    pricing,
     async cleanup() {
       await rm(frontend.root, { recursive: true, force: true })
     },

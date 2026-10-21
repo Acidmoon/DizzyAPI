@@ -214,6 +214,16 @@ export type UsageMetric = 'cost' | 'requests' | 'tokens'
 export interface UsageQuery {
   readonly range: UsageRange
   readonly apiKeyId?: string
+  readonly model?: string
+  /** keyset 分页：只取 id 小于它的明细。 */
+  readonly cursor?: number
+  readonly limit?: number
+}
+
+/** 管理员口径：多一个按用户过滤的目标。 */
+export interface AdminUsageQuery extends UsageQuery {
+  readonly userId?: number
+  readonly status?: number
 }
 
 /** 金额一律是整数分（D10：禁止浮点存余额）；前端只做显示换算。 */
@@ -223,25 +233,72 @@ export interface UsageBalances {
   readonly spentCents: number
 }
 
+/**
+ * 一组用量数字。
+ *
+ * `tokens` 是四个桶之和；`costCents` 是图表的粗口径，`costMicros` 是精确值
+ * （整数微元，十进制字符串——30 位以上的大整数不能进 number）。
+ */
 export interface UsageTotals {
-  readonly costCents: number
   readonly requests: number
   readonly tokens: number
+  readonly inputTokens: number
+  readonly outputTokens: number
+  readonly cacheReadTokens: number
+  readonly cacheWriteTokens: number
+  readonly costCents: number
+  readonly costMicros: string
 }
 
-export interface UsageDailyPoint {
-  /** `YYYY-MM-DD`。 */
+export interface UsageDailyPoint extends UsageTotals {
+  /** `YYYY-MM-DD`（UTC）。 */
   readonly date: string
-  readonly costCents: number
-  readonly requests: number
-  readonly tokens: number
 }
 
-export interface UsageModelBreakdown {
+export interface UsageModelBreakdown extends UsageTotals {
   readonly model: string
-  readonly requests: number
-  readonly tokens: number
-  readonly costCents: number
+}
+
+export interface UsageUserBreakdown extends UsageTotals {
+  readonly userId: number
+  readonly name: string | null
+}
+
+/** 一条请求明细。费用是读取时按价格表算的「应扣」金额。 */
+export interface UsageRowView {
+  readonly id: number
+  readonly reqId: string
+  readonly userId: number
+  readonly apiKeyId: string
+  readonly apiKeyName: string
+  readonly model: string
+  readonly upstreamModel: string | null
+  readonly protocol: string
+  readonly upstreamProtocol: string | null
+  readonly stream: boolean
+  readonly status: number
+  readonly errorCode: string | null
+  readonly inputTokens: number
+  readonly outputTokens: number
+  readonly cacheReadTokens: number
+  readonly cacheWriteTokens: number
+  readonly totalTokens: number
+  readonly durationMs: number
+  readonly clientIp: string | null
+  readonly startedAt: string
+  readonly costMicros: string
+}
+
+/** 管理员明细：多账号与用户维度；用户页永远拿不到这些字段。 */
+export interface AdminUsageRowView extends UsageRowView {
+  readonly userName: string | null
+  readonly accountId: string | null
+  readonly attempts: number
+}
+
+export interface UsageListResponse<T extends UsageRowView = UsageRowView> {
+  readonly items: readonly T[]
+  readonly nextCursor: number | null
 }
 
 export interface UsageResponse {
@@ -253,7 +310,64 @@ export interface UsageResponse {
   readonly totals: UsageTotals
   readonly daily: readonly UsageDailyPoint[]
   readonly models: readonly UsageModelBreakdown[]
+  readonly records: UsageListResponse
+  /** false = pricing 插件不在运行，费用全是 0。 */
+  readonly pricingAvailable: boolean
   readonly generatedAt: string
+}
+
+export interface AdminUsageResponse {
+  readonly range: UsageRange
+  readonly from: string
+  readonly to: string
+  readonly totals: UsageTotals
+  readonly daily: readonly UsageDailyPoint[]
+  readonly models: readonly UsageModelBreakdown[]
+  readonly records: UsageListResponse<AdminUsageRowView>
+  readonly pricingAvailable: boolean
+  readonly generatedAt: string
+}
+
+/** 全站概览：计数 + 用量汇总。`usage` 为 null 表示用量插件不在运行。 */
+export interface GatewayStats {
+  readonly generatedAt: string
+  readonly users: { readonly total: number; readonly admins: number; readonly enabled: number; readonly banned: number }
+  readonly accounts: {
+    readonly total: number
+    readonly enabled: number
+    readonly disabled: number
+    readonly needsReauth: number
+  }
+  readonly keys: { readonly total: number; readonly enabled: number; readonly disabled: number }
+  readonly usage: {
+    readonly today: UsageTotals
+    readonly total: UsageTotals
+    readonly series: readonly UsageDailyPoint[]
+    readonly models: readonly UsageModelBreakdown[]
+    readonly topUsers: readonly UsageUserBreakdown[]
+  } | null
+}
+
+/** 模型价格（元 / 百万 token，十进制字符串）。 */
+export interface ModelPriceView {
+  readonly model: string
+  readonly inputPerMillion: string
+  readonly outputPerMillion: string
+  readonly cacheReadPerMillion: string
+  readonly cacheWritePerMillion: string
+  readonly currency: 'CNY'
+  readonly updatedAt: string
+}
+
+export interface ModelPriceInput {
+  readonly inputPerMillion: string
+  readonly outputPerMillion: string
+  readonly cacheReadPerMillion?: string
+  readonly cacheWritePerMillion?: string
+}
+
+export interface PricingListResponse {
+  readonly items: readonly ModelPriceView[]
 }
 
 /** 列表里只有掩码；完整 key 只在创建响应里出现一次。 */
@@ -450,6 +564,73 @@ export interface AccountsApi {
   importCredentials(id: string, input: ImportAccountCredentialsInput): Promise<AccountSummary>
   /** 导入预检：识别格式与元数据，不落盘。 */
   previewImport(input: ImportAccountCredentialsInput): Promise<CredentialImportPreview>
+  /** 连通性测试：只发最小请求，不回显任何凭据。 */
+  test(id: string, input?: AccountTestInput): Promise<AccountTestResult>
+  /** 批量导入预检：把来源格式归一化后逐条给出结论，不含秘密。 */
+  previewImportSource(input: AccountImportSourceInput): Promise<AccountImportPreview>
+  /** 批量导入：部分成功，逐条返回结果。 */
+  importSource(input: AccountImportSourceInput): Promise<AccountImportResult>
+}
+
+export type AccountImportSourceFormat = 'auto' | 'new-api' | 'sub2api' | 'plain-keys'
+
+export interface AccountImportSourceInput {
+  readonly source: AccountImportSourceFormat
+  readonly payload: string
+  readonly defaults?: {
+    readonly provider?: AccountProvider
+    readonly kind?: AccountKind
+    readonly baseUrl?: string
+    readonly protocol?: AccountProtocol
+    readonly enabled?: boolean
+    readonly labelPrefix?: string
+  }
+}
+
+export interface AccountImportPreviewItem {
+  readonly index: number
+  readonly ok: boolean
+  readonly label: string | null
+  readonly provider: AccountProvider | null
+  readonly kind: AccountKind | null
+  readonly baseUrl: string | null
+  readonly models: readonly string[] | null
+  readonly error: string | null
+}
+
+export interface AccountImportPreview {
+  readonly source: Exclude<AccountImportSourceFormat, 'auto'>
+  readonly total: number
+  readonly items: readonly AccountImportPreviewItem[]
+}
+
+export interface AccountImportItemResult {
+  readonly index: number
+  readonly ok: boolean
+  readonly account: AccountSummary | null
+  readonly error: { readonly code: string; readonly message: string } | null
+}
+
+export interface AccountImportResult {
+  readonly total: number
+  readonly created: number
+  readonly failed: number
+  readonly items: readonly AccountImportItemResult[]
+}
+
+export interface AccountTestInput {
+  readonly model?: string
+  readonly protocol?: AccountProtocol
+}
+
+export interface AccountTestResult {
+  readonly ok: boolean
+  readonly status: number | null
+  readonly latencyMs: number
+  readonly model: string | null
+  readonly protocol: string | null
+  readonly error: string | null
+  readonly testedAt: string
 }
 
 export interface CatalogApi {
@@ -472,6 +653,24 @@ export interface ConsoleApi {
 
 export interface UsageApi {
   get(query: UsageQuery): Promise<UsageResponse>
+  /** 返回 CSV 文本与建议文件名；由页面生成 Blob 下载。 */
+  exportCsv(query: UsageQuery): Promise<{ readonly filename: string; readonly content: string }>
+}
+
+export interface AdminUsageApi {
+  list(query: AdminUsageQuery): Promise<AdminUsageResponse>
+  exportCsv(query: AdminUsageQuery): Promise<{ readonly filename: string; readonly content: string }>
+}
+
+export interface StatsApi {
+  get(): Promise<GatewayStats>
+}
+
+export interface PricingApi {
+  list(): Promise<PricingListResponse>
+  get(model: string): Promise<ModelPriceView>
+  set(model: string, input: ModelPriceInput): Promise<ModelPriceView>
+  remove(model: string): Promise<{ readonly removed: boolean }>
 }
 
 export interface ApiKeysApi {
@@ -496,6 +695,9 @@ export interface FrontendApis {
   readonly settings: SettingsApi
   readonly health: HealthApi
   readonly usage: UsageApi
+  readonly adminUsage: AdminUsageApi
+  readonly stats: StatsApi
+  readonly pricing: PricingApi
   readonly keys: ApiKeysApi
   readonly topup: TopupApi
   readonly console: ConsoleApi

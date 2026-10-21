@@ -258,3 +258,51 @@ export const DEFAULT_STRATEGY: StrategyGroup = {
   selection: 'rank',
   tieBreaker: ['priority', 'accountId'],
 }
+
+// ───────────────────────────────── 用量上行 ─────────────────────────────────
+
+/**
+ * Go 环形缓冲里的一条用量记录（控制消息载荷）。
+ *
+ * 字段与 `contracts/usage.go` 的 `UsageRecord` 一一对应；这里只声明形状，
+ * 真正的校验与落库在 usage 插件里做（桥只负责搬运）。
+ */
+export interface UsageSinceRecord {
+  readonly seq: number
+  readonly epoch: string
+  readonly requestId: string
+  readonly userId: string
+  readonly keyId: string
+  readonly keyName: string
+  readonly profile?: string
+  readonly accountId?: string
+  readonly model: string
+  readonly upstreamModel?: string
+  readonly protocol?: string
+  readonly upstreamProtocol?: string
+  readonly stream: boolean
+  readonly status: number
+  readonly errorCode?: string
+  readonly inputTokens: number
+  readonly outputTokens: number
+  readonly cacheReadTokens: number
+  readonly cacheWriteTokens: number
+  readonly reasoningTokens: number
+  readonly totalTokens: number
+  readonly usagePresent: boolean
+  readonly usageComplete: boolean
+  readonly durationMs: number
+  readonly clientIp?: string
+  readonly attempts?: number
+  readonly startedAt: string
+}
+
+/** `usage.since` 的返回：一段连续记录 + 当前 epoch 与序号边界。 */
+export interface UsageSinceResult {
+  readonly epoch: string
+  readonly firstSeq: number
+  readonly lastSeq: number
+  /** 因环形缓冲回绕而丢弃的累计条数；调用方据此记 gap 警告。 */
+  readonly dropped: number
+  readonly records: readonly UsageSinceRecord[]
+}

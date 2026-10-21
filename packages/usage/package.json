@@ -1,0 +1,22 @@
+{
+  "name": "@dizzyapi/plugin-usage",
+  "version": "0.1.0",
+  "private": true,
+  "description": "DizzyAPI · 用量明细：接收 Go 的请求用量、落 SQLite、按用户/管理员口径查询",
+  "type": "module",
+  "license": "MIT",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./package.json": "./package.json"
+  },
+  "scripts": {
+    "test": "node --import tsx --test \"test/*.test.ts\""
+  },
+  "dependencies": {
+    "@dizzyapi/plugin-account-priority": "workspace:*",
+    "@dizzyapi/plugin-kit": "workspace:*",
+    "cordis": "^4.0.0-rc.11"
+  }
+}

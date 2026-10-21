@@ -136,6 +136,27 @@
     upstreamBaseUrls:
       openai: https://api.openai.com/v1
 
+# 模型价格表：管理员维护的「每百万 token 单价」（元，十进制字符串）。
+# 用量插件在读取时按它把 token 换算成费用；本插件不参与 LLM 请求链路，也不碰余额。
+# 价格表文件只有本插件写；别的插件只经 pricing 服务读。价格为空的模型按 0 计。
+- id: pricing
+  name: '@dizzyapi/plugin-pricing'
+  config:
+    dataPath: ./data/pricing.json
+    adminPlugins:
+      - '@dizzyapi/plugin-api'
+
+# 用量明细：接收 Go 经控制桥送来的请求用量（轮询 `usage.since`），落 SQLite。
+# 只存 token 事实，不存费用；费用由读取方按 pricing 的当前价格表计算。
+# 不 inject account-priority / pricing：它们被禁用时历史查询仍然可用（D5）。
+- id: usage
+  name: '@dizzyapi/plugin-usage'
+  config:
+    dataPath: ./data/usage.db
+    retentionDays: 90
+    pollIntervalMs: 2000
+    maxBatch: 500
+
 # 插件能力目录：只读观察窗，汇总已装载插件提供什么、接受什么。
 # 它从活的插件树反射（服务 / 方法 / inject / 配置 schema），事件、桥命令、数据形状
 # 与存储用途由各插件可选的 static catalog 清单补齐；没有清单的面标 unknown。

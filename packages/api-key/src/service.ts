@@ -415,6 +415,12 @@ export class ApiKeyService extends Service {
     }
   }
 
+  /** 全站 key 总数（管理概览用；只查 COUNT，不加载记录）。 */
+  async count(): Promise<number> {
+    const row = this.db.prepare('SELECT COUNT(*) AS n FROM api_keys').get()
+    return toCount(row?.n)
+  }
+
   private countForUser(userId: number): number {
     const row = this.db
       .prepare('SELECT COUNT(*) AS n FROM api_keys WHERE user_id = ?')

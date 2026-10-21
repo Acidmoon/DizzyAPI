@@ -663,6 +663,10 @@ async function renderPage(page, match) {
       return renderOverview(page)
     case 'usage':
       return renderUsage(page)
+    case 'adminUsage':
+      return renderAdminUsage(page)
+    case 'pricing':
+      return renderPricing(page)
     case 'keys':
       return renderKeys(page)
     case 'topup':
@@ -1873,6 +1877,19 @@ async function renderOverview(page) {
   return section
 }
 
+/**
+ * 管理员用量明细（`/admin/usage`）。接口随 `feat/admin-usage` 落地。
+ * @param {FrontendPage} page @returns {Promise<HTMLElement>}
+ */
+async function renderAdminUsage(page) {
+  return el(
+    'section',
+    { class: 'page' },
+    pageHead(page),
+    el('div', { class: 'empty', text: '全站用量明细尚未接入。' }),
+  )
+}
+
 /** @param {FrontendPage} page @returns {Promise<HTMLElement>} */
 async function renderAccounts(page) {
   const section = el('section', { class: 'page' }, pageHead(page))
@@ -3008,6 +3025,19 @@ function renderRedirect(page) {
   routes().navigate(page.view.to, { replace: true })
   queueMicrotask(() => void rerender())
   return el('section', { class: 'page' }, loadingState(`正在转到 ${page.view.to}…`))
+}
+
+/**
+ * 模型价格表（`/admin/pricing`）。接口随 `feat/pricing-plugin` 落地。
+ * @param {FrontendPage} page @returns {Promise<HTMLElement>}
+ */
+async function renderPricing(page) {
+  return el(
+    'section',
+    { class: 'page' },
+    pageHead(page),
+    el('div', { class: 'empty', text: '模型价格表尚未接入。' }),
+  )
 }
 
 /** @param {FrontendPage} page @returns {HTMLElement} */
