@@ -876,22 +876,49 @@ export class ApiServer {
 
     if (parts.length === 2 && parts[1] === 'import') {
       if (!this.allowMethod(req, res, ['POST'])) return
+      const body = await this.jsonBody(req)
+      // body 里有 `source` 时按 new-api / sub2api / 纯 key 的来源格式导入；否则沿用逐项格式。
+      if (Object.hasOwn(body, 'source')) {
+        const importSource = accountAdmin.importSource
+        if (typeof importSource !== 'function') {
+          throw new ApiError('API_ACCOUNT_IMPORT_UNAVAILABLE', 503, '账号管理服务不支持按来源导入')
+        }
+        assertOnlyKeys(body, ['source', 'payload', 'defaults'])
+        const source = requiredString(body, 'source')
+        const payload = requiredString(body, 'payload')
+        const defaults = Object.hasOwn(body, 'defaults') ? body.defaults : undefined
+        const input = { source, payload, ...(defaults === undefined ? {} : { defaults }) }
+        this.sendJson(req, res, 200, normalizeBulkImport(await importSource.call(accountAdmin, API_ACTOR, input)))
+        return
+      }
       const bulk = accountAdmin.importAccounts
       if (typeof bulk !== 'function') {
         throw new ApiError('API_ACCOUNT_IMPORT_UNAVAILABLE', 503, '账号管理服务不支持批量导入')
       }
-      const body = await this.jsonBody(req)
       this.sendJson(req, res, 200, normalizeBulkImport(await bulk.call(accountAdmin, API_ACTOR, body)))
       return
     }
 
     if (parts.length === 3 && parts[1] === 'import' && parts[2] === 'preview') {
       if (!this.allowMethod(req, res, ['POST'])) return
+      const body = await this.jsonBody(req)
+      if (Object.hasOwn(body, 'source')) {
+        const previewSource = accountAdmin.previewImportSource
+        if (typeof previewSource !== 'function') {
+          throw new ApiError('API_ACCOUNT_IMPORT_UNAVAILABLE', 503, '账号管理服务不支持按来源导入')
+        }
+        assertOnlyKeys(body, ['source', 'payload', 'defaults'])
+        const source = requiredString(body, 'source')
+        const payload = requiredString(body, 'payload')
+        const defaults = Object.hasOwn(body, 'defaults') ? body.defaults : undefined
+        const input = { source, payload, ...(defaults === undefined ? {} : { defaults }) }
+        this.sendJson(req, res, 200, previewSource.call(accountAdmin, input))
+        return
+      }
       const preview = accountAdmin.previewImport
       if (typeof preview !== 'function') {
         throw new ApiError('API_ACCOUNT_IMPORT_UNAVAILABLE', 503, '账号管理服务不支持导入预检')
       }
-      const body = await this.jsonBody(req)
       this.sendJson(req, res, 200, preview.call(accountAdmin, body))
       return
     }
@@ -962,6 +989,24 @@ export class ApiServer {
         return
       }
       this.sendMethodNotAllowed(req, res, ['GET', 'HEAD', 'PATCH', 'DELETE'])
+      return
+    }
+
+    if (parts.length === 3 && parts[2] === 'test') {
+      if (!this.allowMethod(req, res, ['POST'])) return
+      const testConnection = accountAdmin.testConnection
+      if (typeof testConnection !== 'function') {
+        throw new ApiError('API_ACCOUNT_TEST_UNAVAILABLE', 503, '账号管理服务不支持连通性测试')
+      }
+      const body = await this.jsonBody(req)
+      assertOnlyKeys(body, ['model', 'protocol'])
+      const model = optionalString(body, 'model')
+      const protocol = optionalString(body, 'protocol')
+      const input = {
+        ...(model === undefined ? {} : { model }),
+        ...(protocol === undefined ? {} : { protocol }),
+      }
+      this.sendJson(req, res, 200, await testConnection.call(accountAdmin, id, input))
       return
     }
 
@@ -1833,6 +1878,10 @@ function accountOf(value: unknown): AccountViewLike {
     lastError: typeof record.lastError === 'string' ? record.lastError : null,
     failureCount: typeof record.failureCount === 'number' ? record.failureCount : 0,
     backoffUntil: typeof record.backoffUntil === 'string' ? record.backoffUntil : null,
+    lastTestAt: typeof record.lastTestAt === 'string' ? record.lastTestAt : null,
+    lastTestOk: typeof record.lastTestOk === 'boolean' ? record.lastTestOk : null,
+    lastTestError: typeof record.lastTestError === 'string' ? record.lastTestError : null,
+    lastTestLatencyMs: typeof record.lastTestLatencyMs === 'number' ? record.lastTestLatencyMs : null,
     createdAt: typeof record.createdAt === 'string' ? record.createdAt : '',
     updatedAt: typeof record.updatedAt === 'string' ? record.updatedAt : '',
   }

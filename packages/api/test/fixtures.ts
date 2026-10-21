@@ -452,6 +452,10 @@ export class FakeAccountAdmin implements AccountAdminPort {
       lastError: null,
       failureCount: 0,
       backoffUntil: null,
+      lastTestAt: null,
+      lastTestOk: null,
+      lastTestError: null,
+      lastTestLatencyMs: null,
       createdAt: '2026-10-01T00:00:00.000Z',
       updatedAt: '2026-10-01T00:00:00.000Z',
     },
@@ -475,6 +479,10 @@ export class FakeAccountAdmin implements AccountAdminPort {
       lastError: 'invalid_grant',
       failureCount: 3,
       backoffUntil: null,
+      lastTestAt: null,
+      lastTestOk: null,
+      lastTestError: null,
+      lastTestLatencyMs: null,
       createdAt: '2026-10-02T00:00:00.000Z',
       updatedAt: '2026-10-02T00:00:00.000Z',
     },
@@ -524,6 +532,10 @@ export class FakeAccountAdmin implements AccountAdminPort {
       lastError: null,
       failureCount: 0,
       backoffUntil: null,
+      lastTestAt: null,
+      lastTestOk: null,
+      lastTestError: null,
+      lastTestLatencyMs: null,
       createdAt: '2026-10-03T00:00:00.000Z',
       updatedAt: '2026-10-03T00:00:00.000Z',
     }
@@ -578,6 +590,63 @@ export class FakeAccountAdmin implements AccountAdminPort {
       hasAccessToken: false,
       hasRefreshToken: false,
       hasApiKey: true,
+    }
+  }
+
+  async testConnection(
+    id: string,
+    input: { model?: string; protocol?: string },
+  ): Promise<{
+    ok: boolean
+    status: number | null
+    latencyMs: number
+    model: string | null
+    protocol: string | null
+    error: string | null
+    testedAt: string
+  }> {
+    this.calls.push({ method: 'testConnection', args: [id, input] })
+    const account = this.accounts.find((item) => item.id === id)
+    if (account === undefined) throw new DomainError('IDENTITY_NOT_FOUND', '没有这个账号')
+    return {
+      ok: true,
+      status: 200,
+      latencyMs: 123,
+      model: input.model ?? account.models?.[0] ?? null,
+      protocol: input.protocol ?? account.protocol ?? 'openai-chat',
+      error: null,
+      testedAt: '2026-10-21T00:00:00.000Z',
+    }
+  }
+
+  previewImportSource(input: unknown): unknown {
+    this.calls.push({ method: 'previewImportSource', args: [input] })
+    const source = (input as { source?: string }).source ?? 'auto'
+    return {
+      source: source === 'auto' ? 'plain-keys' : source,
+      total: 1,
+      items: [
+        {
+          index: 0,
+          ok: true,
+          label: 'from-source',
+          provider: 'openai',
+          kind: 'api_key',
+          baseUrl: null,
+          models: null,
+          error: null,
+        },
+      ],
+    }
+  }
+
+  async importSource(actor: string, input: unknown): Promise<unknown> {
+    this.calls.push({ method: 'importSource', args: [actor, input] })
+    return {
+      total: 1,
+      created: 1,
+      failed: 0,
+      items: [{ index: 0, ok: true, account: this.get('acc_1'), error: null }],
     }
   }
 

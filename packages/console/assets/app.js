@@ -1911,6 +1911,12 @@ async function renderAccounts(page) {
   ))
   const refresh = el('button', { class: 'btn btn-small', attrs: { type: 'button' } }, icon('refresh'), el('span', { text: '刷新' }))
   const add = el('button', { class: 'btn btn-light', attrs: { type: 'button' } }, icon('plus'), el('span', { text: '添加账号' }))
+  const bulkImport = el(
+    'button',
+    { class: 'btn btn-light', attrs: { type: 'button' } },
+    icon('mark'),
+    el('span', { text: '批量导入' }),
+  )
   const toolbar = el(
     'div',
     { class: 'toolbar' },
@@ -1919,6 +1925,7 @@ async function renderAccounts(page) {
     el('span', { class: 'toolbar-spacer' }),
     refresh,
     add,
+    bulkImport,
   )
   section.append(toolbar, results)
 
@@ -1970,6 +1977,7 @@ async function renderAccounts(page) {
   status.addEventListener('change', () => void load())
   refresh.addEventListener('click', () => void load())
   add.addEventListener('click', () => openCreateAccountDialog(load))
+  bulkImport.addEventListener('click', () => openImportSourceDialog(load))
   void load()
   return section
 }
@@ -1980,6 +1988,49 @@ async function renderAccounts(page) {
  * @returns {HTMLElement}
  */
 function accountRow(account, reload) {
+  let testState = {
+    at: account.lastTestAt ?? null,
+    ok: account.lastTestOk ?? null,
+    error: account.lastTestError ?? null,
+    latency: account.lastTestLatencyMs ?? null,
+  }
+  const statusCell = el('td', {})
+  const renderStatus = () => {
+    const nodes = [badge(account.status, accountTone(account.status))]
+    const testNode = accountTestStateNode(testState)
+    if (testNode !== null) nodes.push(testNode)
+    statusCell.replaceChildren(...nodes)
+  }
+  renderStatus()
+
+  const test = /** @type {HTMLButtonElement} */ (el('button', {
+    class: 'btn btn-icon',
+    attrs: { type: 'button', title: '测试连通性' },
+    on: {
+      click: async () => {
+        test.disabled = true
+        test.replaceChildren(icon('refresh'))
+        try {
+          const result = await api().accounts.test(account.id)
+          testState = {
+            at: result.testedAt,
+            ok: result.ok,
+            error: result.error,
+            latency: result.latencyMs,
+          }
+          renderStatus()
+          if (result.ok) toast(`「${account.label}」连通 · ${result.latencyMs}ms`)
+          else toast(result.error ?? '连通性测试失败', 'bad')
+        } catch (error) {
+          toast(errorMessage(error), 'bad')
+        } finally {
+          test.disabled = false
+          test.replaceChildren(icon('dot'))
+        }
+      },
+    },
+  }))
+  test.append(icon('dot'))
   const toggle = /** @type {HTMLButtonElement} */ (el(
     'button',
     {
@@ -2051,12 +2102,28 @@ function accountRow(account, reload) {
       el('div', { text: account.provider }),
       el('span', { class: 'muted', text: account.kind }),
     ),
-    el('td', {}, badge(account.status, accountTone(account.status))),
+    statusCell,
     el('td', {}, el('div', { text: formatRelative(account.accessExpiresAt) })),
     el('td', { text: formatRelative(account.refreshDueAt) }),
     el('td', {}, el('div', { text: String(account.failureCount) }), account.lastError === null ? null : el('code', { class: 'tone-bad-text', text: account.lastError })),
-    el('td', { class: 'cell-actions' }, el('div', { class: 'table-actions' }, edit, credential, toggle, remove)),
+    el('td', { class: 'cell-actions' }, el('div', { class: 'table-actions' }, edit, credential, test, toggle, remove)),
   )
+}
+
+/**
+ * 账号状态单元格里的连通性测试摘要；从未测试过返回 null。
+ * @param {{ at: string | null, ok: boolean | null, error: string | null, latency: number | null }} state
+ * @returns {HTMLElement | null}
+ */
+function accountTestStateNode(state) {
+  if (state.at === null) return null
+  if (state.ok === true) {
+    const latency = state.latency === null ? '' : ` · ${state.latency}ms`
+    return el('div', {}, badge(`连通${latency}`, 'ok'))
+  }
+  const text = state.error ?? '测试失败'
+  const summary = text.length > 60 ? `${text.slice(0, 60)}…` : text
+  return el('div', { class: 'tone-bad-text', attrs: { title: text }, text: summary })
 }
 
 /**
@@ -2439,6 +2506,204 @@ function openImportCredentialsDialog(account, reload) {
       save.disabled = false
     }
   })
+}
+
+/** @typedef {{ index: number, ok: boolean, label: string | null, provider: string | null, kind: string | null, baseUrl: string | null, models: readonly string[] | null, error: string | null }} ImportRow */
+
+/**
+ * 导入来源的逐条结果表；预览显示「可导入」，导入后显示「已导入」。
+ * @param {HTMLElement} host
+ * @param {ImportRow[]} items
+ * @param {string | null} sourceLabel
+ * @param {boolean} [committed]
+ */
+function renderImportRows(host, items, sourceLabel, committed = false) {
+  if (items.length === 0) {
+    host.replaceChildren(el('div', { class: 'empty', text: '没有可导入的条目。' }))
+    return
+  }
+  const headers = ['序号', '状态', '名称', '上游', '类型', 'Base URL', '错误']
+  const rows = items.map((item) =>
+    el(
+      'tr',
+      { class: item.ok ? '' : 'row-muted' },
+      el('td', { text: String(item.index + 1) }),
+      el('td', {}, badge(item.ok ? (committed ? '已导入' : '可导入') : '失败', item.ok ? 'ok' : 'bad')),
+      el('td', { text: item.label ?? '—' }),
+      el('td', { text: item.provider ?? '—' }),
+      el('td', { text: item.kind ?? '—' }),
+      el('td', {
+        attrs: item.baseUrl === null ? {} : { title: item.baseUrl },
+        text: item.baseUrl ?? '—',
+      }),
+      el('td', {
+        class: item.ok ? '' : 'tone-bad-text',
+        attrs: item.error === null ? {} : { title: item.error },
+        text: item.error ?? '—',
+      }),
+    ),
+  )
+  const summary = sourceLabel === null ? `${items.length} 项` : `识别为 ${sourceLabel}，共 ${items.length} 项`
+  host.replaceChildren(
+    el('p', { class: 'muted', text: summary }),
+    el(
+      'div',
+      { class: 'table-wrap table-card' },
+      el(
+        'table',
+        { class: 'data-table' },
+        el('thead', {}, el('tr', {}, ...headers.map((text) => el('th', { text })))),
+        el('tbody', {}, ...rows),
+      ),
+    ),
+  )
+}
+
+/**
+ * 批量导入：new-api Channel / sub2api 导出 / 一行一个 Key。
+ * 预览只展示归一化后的元数据；凭据始终只上行，不写进页面。
+ * @param {() => Promise<void>} reload
+ */
+function openImportSourceDialog(reload) {
+  const source = /** @type {HTMLSelectElement} */ (el(
+    'select',
+    { class: 'input' },
+    el('option', { attrs: { value: 'auto' }, text: '自动识别' }),
+    el('option', { attrs: { value: 'new-api' }, text: 'new-api Channel' }),
+    el('option', { attrs: { value: 'sub2api' }, text: 'sub2api 导出' }),
+    el('option', { attrs: { value: 'plain-keys' }, text: '一行一个 Key' }),
+  ))
+  const payload = /** @type {HTMLTextAreaElement} */ (el('textarea', {
+    class: 'input',
+    attrs: { rows: '10', placeholder: '粘贴 JSON（new-api Channel / sub2api 导出），或每行一个 API key' },
+  }))
+  const file = /** @type {HTMLInputElement} */ (el('input', {
+    attrs: { type: 'file', accept: '.json,.txt' },
+  }))
+  const error = el('p', { class: 'error-message', attrs: { hidden: '' } })
+  const resultHost = el('div', { class: 'results' })
+  const cancel = el('button', { class: 'btn', attrs: { type: 'button' }, text: '取消' })
+  const previewButton = /** @type {HTMLButtonElement} */ (el('button', {
+    class: 'btn',
+    attrs: { type: 'button' },
+    text: '预览',
+  }))
+  const importButton = /** @type {HTMLButtonElement} */ (el('button', {
+    class: 'btn btn-light',
+    attrs: { type: 'button' },
+    text: '导入',
+  }))
+  /** @type {ImportRow[] | null} */
+  let previewItems = null
+
+  const importInput = () =>
+    /** @type {import('../src/contracts.ts').AccountImportSourceInput} */ ({
+      source: source.value,
+      payload: payload.value,
+    })
+
+  file.addEventListener('change', async () => {
+    const selected = file.files?.[0]
+    if (selected === undefined) return
+    try {
+      payload.value = await selected.text()
+      previewItems = null
+      resultHost.replaceChildren()
+      error.hidden = true
+    } catch (caught) {
+      error.textContent = errorMessage(caught)
+      error.hidden = false
+    } finally {
+      file.value = ''
+    }
+  })
+
+  source.addEventListener('change', () => {
+    previewItems = null
+    resultHost.replaceChildren()
+  })
+
+  previewButton.addEventListener('click', async () => {
+    error.hidden = true
+    previewButton.disabled = true
+    try {
+      const preview = await api().accounts.previewImportSource(importInput())
+      previewItems = preview.items.map((item) => ({
+        index: item.index,
+        ok: item.ok,
+        label: item.label,
+        provider: item.provider,
+        kind: item.kind,
+        baseUrl: item.baseUrl,
+        models: item.models,
+        error: item.error,
+      }))
+      renderImportRows(resultHost, previewItems, preview.source)
+    } catch (caught) {
+      error.textContent = errorMessage(caught)
+      error.hidden = false
+    } finally {
+      previewButton.disabled = false
+    }
+  })
+
+  importButton.addEventListener('click', async () => {
+    error.hidden = true
+    importButton.disabled = true
+    try {
+      const result = await api().accounts.importSource(importInput())
+      /** @type {ImportRow[]} */
+      let rows
+      if (previewItems === null) {
+        rows = result.items.map((item) => ({
+          index: item.index,
+          ok: item.ok,
+          label: item.account?.label ?? null,
+          provider: item.account?.provider ?? null,
+          kind: item.account?.kind ?? null,
+          baseUrl: item.account?.baseUrl ?? null,
+          models: item.account?.models ?? null,
+          error: item.error?.message ?? null,
+        }))
+      } else {
+        rows = previewItems.map((item) => {
+          const outcome = result.items.find((entry) => entry.index === item.index)
+          if (outcome === undefined) return item
+          return {
+            ...item,
+            ok: outcome.ok,
+            error: outcome.ok ? null : outcome.error?.message ?? '导入失败',
+          }
+        })
+      }
+      previewItems = rows
+      renderImportRows(resultHost, rows, null, true)
+      toast(
+        result.failed === 0 ? `已导入 ${result.created} 个` : `已导入 ${result.created} 个，失败 ${result.failed} 个`,
+        result.failed === 0 ? 'ok' : 'bad',
+      )
+      if (result.created > 0) await reload()
+    } catch (caught) {
+      error.textContent = errorMessage(caught)
+      error.hidden = false
+    } finally {
+      importButton.disabled = false
+    }
+  })
+
+  const content = el(
+    'div',
+    {},
+    el('div', { class: 'form-field' }, el('label', { text: '来源' }), source),
+    el('div', { class: 'form-field' }, el('label', { text: '内容' }), payload),
+    el('div', { class: 'form-field' }, el('label', { text: '从文件读取' }), file),
+    error,
+    el('div', { class: 'dialog-actions' }, cancel, previewButton, importButton),
+    resultHost,
+  )
+  const dialog = openDialog('批量导入账号', content, { wide: true })
+  cancel.addEventListener('click', () => dialog.close())
+  payload.focus()
 }
 
 /**

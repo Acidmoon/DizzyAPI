@@ -458,6 +458,92 @@ test('持久化：换一个上下文仍然读得到账号与凭据', async (t) =
   assert.equal(identity.credentialStatus(account.id).configured, true)
 })
 
+test('lastTest*：旧快照缺字段读出 null，不拒绝整份文件', async (t) => {
+  const first = await boot(t)
+  const account = await first.identity.create({
+    provider: 'openai',
+    kind: 'api_key',
+    label: '旧快照',
+    secret: { apiKey: 'sk-old' },
+  })
+  assert.equal(account.lastTestAt, null)
+  assert.equal(account.lastTestOk, null)
+  assert.equal(account.lastTestError, null)
+  assert.equal(account.lastTestLatencyMs, null)
+  await first.fiber.dispose()
+
+  const path = join(first.dir, 'accounts.json')
+  const snapshot = JSON.parse(await readFile(path, 'utf8')) as {
+    accounts: Record<string, Record<string, unknown>>
+  }
+  delete snapshot.accounts[account.id]?.lastTestAt
+  delete snapshot.accounts[account.id]?.lastTestOk
+  delete snapshot.accounts[account.id]?.lastTestError
+  delete snapshot.accounts[account.id]?.lastTestLatencyMs
+  await writeFile(path, JSON.stringify(snapshot), 'utf8')
+
+  const ctx = new Context()
+  await ctx.plugin(CredentialsService, { dataPath: join(first.dir, 'credentials.json') })
+  const fiber = await ctx.plugin(IdentityService, { dataPath: path })
+  t.after(() => fiber.dispose())
+
+  const identity = ctx.get('identity') as IdentityService
+  const restored = identity.get(account.id)
+  assert.equal(restored.lastTestAt, null)
+  assert.equal(restored.lastTestOk, null)
+  assert.equal(restored.lastTestError, null)
+  assert.equal(restored.lastTestLatencyMs, null)
+})
+
+test('recordTestResult：落盘、读回、不发 account-updated', async (t) => {
+  const world = await boot(t)
+  const account = await world.identity.create({
+    provider: 'openai',
+    kind: 'api_key',
+    label: '测试结果',
+    secret: { apiKey: 'sk-test-result' },
+  })
+
+  let updated = 0
+  world.ctx.on('identity/account-updated', () => {
+    updated += 1
+  })
+
+  const testedAt = '2026-10-21T01:02:03.000Z'
+  const recorded = await world.identity.recordTestResult(account.id, {
+    ok: false,
+    latencyMs: 321.6,
+    error: 'HTTP 401：[REDACTED]',
+    testedAt,
+  })
+  assert.equal(recorded.lastTestAt, testedAt)
+  assert.equal(recorded.lastTestOk, false)
+  assert.equal(recorded.lastTestError, 'HTTP 401：[REDACTED]')
+  assert.equal(recorded.lastTestLatencyMs, 322)
+  assert.equal(updated, 0, '测试结果不影响调度，不该推账号更新事件')
+
+  await assert.rejects(
+    world.identity.recordTestResult(account.id, { ok: true, latencyMs: -1, error: null }),
+    (error: unknown) => isIdentityError(error) && error.code === 'IDENTITY_ACCOUNT_INVALID',
+  )
+  await assert.rejects(
+    world.identity.recordTestResult(account.id, { ok: true, latencyMs: 1, error: null, testedAt: 'nope' }),
+    (error: unknown) => isIdentityError(error) && error.code === 'IDENTITY_ACCOUNT_INVALID',
+  )
+
+  await world.fiber.dispose()
+  const ctx = new Context()
+  await ctx.plugin(CredentialsService, { dataPath: join(world.dir, 'credentials.json') })
+  const fiber = await ctx.plugin(IdentityService, { dataPath: join(world.dir, 'accounts.json') })
+  t.after(() => fiber.dispose())
+  const identity = ctx.get('identity') as IdentityService
+  const restored = identity.get(account.id)
+  assert.equal(restored.lastTestAt, testedAt)
+  assert.equal(restored.lastTestOk, false)
+  assert.equal(restored.lastTestError, 'HTTP 401：[REDACTED]')
+  assert.equal(restored.lastTestLatencyMs, 322)
+})
+
 test('卸载插件：服务与调度一起消失（D5）', async (t) => {
   const world = await boot(t)
   await world.fiber.dispose()

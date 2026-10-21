@@ -32,13 +32,30 @@ export {
   type ResolvedAccountAdminConfig,
 } from './config.ts'
 export { previewCredentialImport } from './importers.ts'
+export { parseImportSource, detectSource } from './import-sources.ts'
+export {
+  redact as redactAccountTestText,
+  resolveTestBaseUrl,
+  resolveTestModel,
+  resolveTestProtocol,
+  runConnectionTest,
+  type ConnectionTestDeps,
+  type ConnectionTestTarget,
+} from './test-connection.ts'
 export type {
+  AccountImportDefaults,
+  AccountImportPreview,
+  AccountImportPreviewItem,
+  AccountImportSourceFormat,
+  AccountImportSourceInput,
   AccountKind,
   AccountListQuery,
   AccountProvider,
   AccountProtocol,
   AccountRecord,
   AccountStatus,
+  AccountTestInput,
+  AccountTestResult,
   AccountView,
   BulkImportDefaults,
   BulkImportFailure,
@@ -52,6 +69,9 @@ export type {
   CredentialImportPreview,
   CredentialPayload,
   ImportCredentialsInput,
+  ParsedImportIssue,
+  ParsedImportItem,
+  ParsedImportSource,
   UpdateAccountInput,
 } from './types.ts'
 

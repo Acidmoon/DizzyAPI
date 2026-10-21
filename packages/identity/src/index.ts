@@ -50,6 +50,7 @@ export type {
   IdentityProvider,
   IdentityProtocol,
   IdentityRefreshResult,
+  IdentityTestResult,
   IdentityTokenBundle,
   UpdateIdentityAccountInput,
 } from './types.ts'
