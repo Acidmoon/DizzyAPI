@@ -292,7 +292,9 @@ func (s *Server) llmHandler(protocol contracts.Protocol, path string) http.Handl
 			"stream", envelope.Stream,
 			"status", status,
 			"durationMs", time.Since(started).Milliseconds(),
-			"attempts", len(ctx.Attempts),
+			// Attempts 记录的是 dispatch 阶段执行次数（一次请求每个阶段一条），
+			// 日志与用量都要的是「试了几个账号」，所以按 AccountID 去重。
+			"attempts", attemptedAccounts(ctx.Attempts),
 			"tokens", tokens,
 		)
 	}
@@ -379,11 +381,31 @@ func (s *Server) recordUsage(ctx *contracts.Ctx, decision contracts.Decision, st
 		UsageComplete:    sample.complete,
 		DurationMs:       time.Since(started).Milliseconds(),
 		ClientIP:         ctx.ClientIP,
-		Attempts:         len(ctx.Attempts),
+		Attempts:         attemptedAccounts(ctx.Attempts),
 		StartedAt:        started.UTC(),
 	}
 	s.usageSink.Append(record)
 	return record.TotalTokens
+}
+
+// attemptedAccounts 数的是「被试过的账号数」，不是 dispatch 阶段的执行次数。
+//
+// engine 在每个 attempt 里按阶段各追加一条 AccountAttempt（转换 / 映射 / 转发），
+// 直接取 len 会在装配了 N 个 dispatch 阶段时把 1 个账号记成 N 次。
+func attemptedAccounts(attempts []contracts.AccountAttempt) int {
+	if len(attempts) == 0 {
+		return 0
+	}
+	seen := make(map[string]struct{}, len(attempts))
+	for _, attempt := range attempts {
+		if attempt.AccountID != "" {
+			seen[attempt.AccountID] = struct{}{}
+		}
+	}
+	if len(seen) == 0 {
+		return 1
+	}
+	return len(seen)
 }
 
 // upstreamProtocol 依次取：转换后的上游协议 → 选中账号声明的协议 → 客户端协议。

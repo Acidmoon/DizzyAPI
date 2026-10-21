@@ -275,9 +275,14 @@ function parseChannel(collector: Collector, raw: unknown, channelIndex: number):
     return
   }
 
-  const baseUrl = optionalStringField(raw.base_url)
+  const baseUrl = readChannelBaseUrl(optionalStringField(raw.base_url))
   if (baseUrl === false) {
-    addIssue(collector, channelIndex, 'ACCOUNT_IMPORT_FIELD_INVALID', `第 ${position} 项的 base_url 必须是字符串`)
+    addIssue(
+      collector,
+      channelIndex,
+      'ACCOUNT_IMPORT_FIELD_INVALID',
+      `第 ${position} 项的 base_url 必须是 http(s) URL`,
+    )
     return
   }
   const models = readModels(raw.models)
@@ -364,6 +369,27 @@ function optionalStringField(value: unknown): string | undefined | false {
   if (typeof value !== 'string') return false
   const trimmed = value.trim()
   return trimmed === '' ? undefined : trimmed
+}
+
+/**
+ * new-api 的 `base_url` 是「源站」（`https://api.openai.com`），而 DizzyAPI 的
+ * `baseUrl` 自带版本前缀（`https://api.openai.com/v1`）。
+ *
+ * 只给「路径为空或 `/`」的裸源站补 `/v1`；已经有路径的原样保留——那可能是
+ * `/openai`、`/anthropic` 之类的自定义前缀，补上去反而会拼出错误的 URL。
+ */
+function readChannelBaseUrl(value: string | undefined | false): string | undefined | false {
+  if (value === undefined || value === false) return value
+  let url: URL
+  try {
+    url = new URL(value)
+  } catch {
+    return false
+  }
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') return false
+  const trimmed = value.replace(/\/+$/, '')
+  if (url.pathname !== '' && url.pathname !== '/') return trimmed
+  return `${trimmed}/v1`
 }
 
 /** `undefined` = 未声明（不参与过滤）；`false` = 形状非法。 */

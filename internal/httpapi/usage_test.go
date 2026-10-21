@@ -432,3 +432,25 @@ func TestUsageRecordCarriesDynamicKeyIdentity(t *testing.T) {
 		t.Fatalf("动态 key 身份没有进记录：%+v", record)
 	}
 }
+
+func TestAttemptedAccountsCountsDistinctAccounts(t *testing.T) {
+	cases := []struct {
+		name     string
+		attempts []contracts.AccountAttempt
+		want     int
+	}{
+		{name: "没有记录", attempts: nil, want: 0},
+		{name: "一个账号跑了三个阶段", attempts: []contracts.AccountAttempt{
+			{AccountID: "a"}, {AccountID: "a"}, {AccountID: "a"},
+		}, want: 1},
+		{name: "失败转移后两个账号", attempts: []contracts.AccountAttempt{
+			{AccountID: "a"}, {AccountID: "a"}, {AccountID: "a"}, {AccountID: "b"}, {AccountID: "b"}, {AccountID: "b"},
+		}, want: 2},
+		{name: "全空视为一次尝试", attempts: []contracts.AccountAttempt{{}, {}}, want: 1},
+	}
+	for _, tc := range cases {
+		if got := attemptedAccounts(tc.attempts); got != tc.want {
+			t.Fatalf("%s：期望 %d，得到 %d", tc.name, tc.want, got)
+		}
+	}
+}

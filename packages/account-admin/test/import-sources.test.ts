@@ -73,7 +73,8 @@ test('new-api：单渠道多 key 拆成多条账号，models / model_mapping / s
   assert.equal(first.provider, 'openai')
   assert.equal(first.kind, 'api_key')
   assert.equal(first.protocol, 'openai-chat')
-  assert.equal(first.baseUrl, 'https://up.example/v1/')
+  // 导入时统一去掉结尾斜杠：transport / 连通性测试都按「无尾斜杠」拼接路径。
+  assert.equal(first.baseUrl, 'https://up.example/v1')
   assert.deepEqual(first.models, ['gpt-5', 'gpt-5-codex'])
   assert.deepEqual(first.modelMap, { 'gpt-5-codex': 'up-codex' })
   assert.equal(first.priority, 42)
@@ -404,4 +405,19 @@ test('importSource：sub2api 的 claude / openai 账号都落到 identity，base
   assert.equal(openai.protocol, 'openai-chat')
   assert.ok(!JSON.stringify(result).includes('claude-token'))
   assert.ok(!JSON.stringify(result).includes('sk-openai-key'))
+})
+
+test('new-api：裸源站 base_url 补 /v1，已有路径原样保留', () => {
+  const parsed = parseImportSource({
+    source: 'new-api',
+    payload: JSON.stringify([
+      newApiChannel({ key: 'a', base_url: 'https://api.openai.com' }),
+      newApiChannel({ key: 'b', base_url: 'https://gw.example/openai/' }),
+      newApiChannel({ key: 'c' }),
+    ]),
+  })
+  assert.deepEqual(
+    parsed.items.map((item) => item.baseUrl),
+    ['https://api.openai.com/v1', 'https://gw.example/openai', undefined],
+  )
 })

@@ -129,7 +129,7 @@ export default FooService
 
 ## 4. 现状地图
 
-### 4.1 TS 插件（13 个 + kit）
+### 4.1 TS 插件（15 个 + kit）
 
 | 包 | 服务 | 职责 |
 |---|---|---|
@@ -146,13 +146,15 @@ export default FooService
 | `@dizzyapi/plugin-api` | `api` | 产品 HTTP 入口：SPA + `/api/*`，进程内调用控制面服务 |
 | `@dizzyapi/plugin-settings` | `settings` | 运行期配置覆盖；`app.yml` 是基线 |
 | `@dizzyapi/plugin-admin` | `admin` | 开发者面板：依赖图、概览、改设置、重启插件、退出 |
+| `@dizzyapi/plugin-pricing` | `pricing` | 模型价格表唯一写者：每百万 token 的单价（元，十进制字符串）；`data/pricing.json`；读不设限，写要求 actor 在白名单 |
+| `@dizzyapi/plugin-usage` | `usage` | 用量明细唯一存储者：轮询 Go 的 `usage.since`、幂等落 `data/usage.db`、按用户/管理员口径查询；费用在**读取时**按 pricing 计算 |
 | `@dizzyapi/plugin-kit` | — | 共用底座：配置 schema + 原子写 JSON 存储 |
 
 ### 4.2 Go 模块
 
 | 路径 | 职责 |
 |---|---|
-| `contracts/` | 唯一共享契约；`Ctx` / `Stage` / `Decision` / `Registry` / DTO；规范化 IR 与 `Codec` 接口（`ir.go` / `protocol.go`）；只依赖标准库 |
+| `contracts/` | 唯一共享契约；`Ctx` / `Stage` / `Decision` / `Registry` / DTO；规范化 IR 与 `Codec` 接口（`ir.go` / `protocol.go`）；用量记录与桥事件（`usage.go`）；只依赖标准库 |
 | `modules/accountpriority/` | 账号打分、排序、选择 |
 | `modules/modelroute/` | 模型路由（pre 相位按账号 `models` 过滤候选）+ 模型映射（dispatch 相位按账号 `modelMap` 改写 body 顶层 `model`） |
 | `modules/protoconv/` | 协议转换中间件：dispatch 相位阶段（请求方向）+ 响应转换器；Chat / Responses / Anthropic 三个 codec |
@@ -162,14 +164,18 @@ export default FooService
 | `internal/engine/` | pre → dispatch → post 调度；失败转移；统一错误渲染 |
 | `internal/accounts/` | 账号 / 令牌只读快照缓存 |
 | `internal/apikeys/` | API key 哈希快照缓存；`Ready()` 区分「没收到」与「空快照」 |
-| `internal/httpapi/` | `POST /v1/chat/completions`、`POST /v1/responses`、`POST /v1/messages`、`GET /v1/models`、`GET /healthz` |
+| `internal/usagelog/` | 用量环形缓冲（容量 8192，满了丢最旧并计数）；`Seq` + `Epoch`，经 `usage.since` 给 TS 轮询 |
+| `internal/usageprobe/` | 用 codec 从**发回客户端**的响应字节里提取 usage（流式只观察不改字节）；按上游协议归一化四桶 |
+| `internal/httpapi/` | `POST /v1/chat/completions`、`POST /v1/responses`、`POST /v1/messages`、`GET /v1/models`、`GET /healthz`；请求结束写用量记录 |
 | `cmd/gatewayd/` | 组合根：注册模块、启动 HTTP 入口与控制桥 |
 
 ### 4.3 数据与端口
 
 - 数据：`data/users.db`、`data/auth.db`、`data/api-keys.db`、`data/accounts.json`、
   `data/credentials.json`、`data/settings.json`、`data/account-priority.json`、
-  `data/frontend/`。
+  `data/pricing.json`、`data/usage.db`、`data/frontend/`。
+- 用量只有 `usage` 插件写 `usage.db`；价格只有 `pricing` 插件写 `pricing.json`；
+  Go 只把用量放进内存环形缓冲，不落盘。
 - 本地端口：`api` `127.0.0.1:7791`、gatewayd `127.0.0.1:8080`、面板 `127.0.0.1:7788`。
 - 服务器：`<OLD_SERVER_IP>`，gatewayd `127.0.0.1:18080`，Caddy `80/443`。
 
@@ -177,7 +183,9 @@ export default FooService
 
 - 用户注册 / 登录 / 会话 / 改密 / 头像 / 角色与余额开关
 - 用户 API key：创建 / 改名 / 启停 / 轮换 / 删除 / 列表复制完整 key
-- 上游账号池：新建 / 编辑（含 Base URL、优先级、上游协议）/ 导入凭据 / 启停 / 删除
+- 上游账号池：新建 / 编辑（含 Base URL、优先级、上游协议）/ 导入凭据 / 启停 / 删除；
+  每个账号可做**连通性测试**（发一条最小真实请求，结果与耗时写回账号）；
+  批量导入支持 new-api Channel JSON、sub2api 导出文件、一行一个 key（未知渠道类型明确失败）
 - 账号优先级策略与 gatewayd 监管；账号与 key 快照推送
 - 协议转换：客户端按入口路径声明协议（`/v1/chat/completions` → openai-chat、
   `/v1/responses` → openai-responses、`/v1/messages` → anthropic），网关按选中账号声明的
@@ -187,6 +195,14 @@ export default FooService
   改写 body 顶层 `model`（同协议只动这一个字段，跨协议交给 protoconv 基于改名后的 body 解析 IR）
 - OpenAI 兼容 `/v1/chat/completions`、`/v1/responses`、Anthropic `/v1/messages`、
   `GET /v1/models`（当前可用对外模型名并集）、SSE 透传、`/healthz`
+- 用量记录：Go 在请求结束时采集「谁用的 / 哪个账号与模型 / 四个 token 桶 / 耗时 / 状态 /
+  客户端 IP」，经控制桥 `usage.since` 由 TS 轮询落 SQLite；`/api/usage`（用户）与
+  `/api/admin/usage`（全站）提供明细、汇总、按天/按模型/按用户聚合与 CSV 导出；
+  `/console/usage` 只加明细表，`/admin/usage` 是独立页面
+- 模型价格：`/api/pricing` 读、`/api/pricing/:model` 读写（写需管理员），`/admin/pricing` 页面；
+  用量费用在**读取时**按价格表计算（整数微元，1 元 = 1_000_000 微元），当前没有真实扣费
+- 管理员概览 `/api/admin/stats`：用户 / 账号 / key 计数 + 今日与累计 token（入 / 出 / 总）、
+  请求数、费用、近 30 天序列、Top 模型与 Top 用户
 - SPA + `/api/*` 产品入口；设置、目录、健康、用户管理、账号管理
 - 部署：systemd + Caddy + fail2ban
 
@@ -227,7 +243,7 @@ pnpm test:go
 
 - 新增插件必须有 `test/*.test.ts`；新增 Go 模块必须有单测。
 - 测试失败先修实现，不允许删断言或放宽断言来变绿。
-- 当前基线：`pnpm test` 310 个用例（309 通过 / 1 跳过），`pnpm typecheck` 干净，
+- 当前基线：`pnpm test` 384 个用例（383 通过 / 1 跳过），`pnpm typecheck` 干净，
   `go test ./...` 全绿，`gofmt -l .` 与 `go vet ./...` 无输出。这个数字会变，以实际输出为准。
 
 ### 5.5 前端
@@ -321,6 +337,32 @@ pnpm build:go         # 产出 bin/gatewayd(.exe)
   accountpriority 的 `NO_ELIGIBLE_ACCOUNT`。
 - **`ctx.Meta.Model` 永远是客户端请求的模型名**，不改成上游名；上游名只放在 `MappedBody` 里。
 
+### 用量与价格
+
+- **流式用量只有在流读完之后才有**：`engine.runPost` 在 `copyStream` 之前就跑了，所以记录
+  在 `httpapi` 写完响应后发出，不要试图在 post 相位采集。
+- **Anthropic 的流式 usage 分两次发**：`message_start` 带 input / cache，`message_delta`
+  带 output。探针按字段取 max 合并，覆盖式合并会把输入清零。
+- **OpenAI 的 `prompt_tokens` 含缓存命中，Anthropic 的 `input_tokens` 不含**：记录按
+  **上游协议**归一化成「input 不含缓存」的四桶，否则输入与费用都会偏高。
+- **跨协议到 OpenAI 客户端时 `cache_creation_input_tokens` 无法表达**，记录的
+  `cacheWriteTokens` 会是 0（协议固有有损面）。
+- **`stream_options.include_usage` 默认注入**：否则 OpenAI 流式请求记不到 token。关掉
+  `-record-stream-usage` 时请求体必须逐字节不变（回归测试守着）。
+- **`usage.since` 用 epoch + seq**：gatewayd 重启后 seq 从 1 重新开始，TS 必须按 epoch 重置
+  游标；`firstSeq > lastSeq+1` 说明环形缓冲丢过记录，记 gap 警告。轮询游标只推进到实际
+  落库的最大 seq，否则积压超过 `maxBatch` 时会永久跳过。
+- **`attempts` 是「试了几个账号」**，不是 `len(ctx.Attempts)`（那是 dispatch 阶段执行次数，
+  一次请求通常是 3）；用 `attemptedAccounts()` 按 AccountID 去重。
+- **客户端 IP 取 `X-Forwarded-For` 右起第 N 跳**（`-trusted-proxy-hops`，默认 1），
+  其次 `X-Real-IP`，最后 `RemoteAddr`。gatewayd 只监听回环，前面必然有代理。
+- **费用在读取时算**：`usage.db` 只存 token 事实；每次查询取一次 pricing 快照，按模型分组
+  算完再相加（不同模型单价不同）。`pricing` 不在运行时费用是 0，页面要提示。
+- **导入的 base_url 约定**：new-api 的 `base_url` 是源站（`https://api.openai.com`），
+  DizzyAPI 的 `baseUrl` 自带版本前缀；导入时只给「路径为空或 `/`」的裸源站补 `/v1`。
+- **CSV 导出**：UTF-8 BOM + `= + - @` 开头加前导 `'`（防公式注入）；接口返回 JSON
+  `{filename, content}`，由页面生成 Blob 下载。
+
 ### 前端
 
 - 预览用 `pnpm preview:console`；它没有 `/api/*`，真实进程用 `pnpm dev`。
@@ -334,8 +376,13 @@ pnpm build:go         # 产出 bin/gatewayd(.exe)
 以下仍是目标，不要当成已实现：
 
 - 描述符下发、profile 编排、按 profile 切换阶段
-- `quota-check`、`content-audit`、`settle`、`usage-log`
+- `quota-check`、`content-audit`、`settle`
 - Go 侧用户 / 额度 / 计费 / 支付；充值订单目前 501
+- **真实扣费**：用量页的「费用」是按价格表在读取时算出的**应扣金额**，不扣余额；
+  真正的结算要另做（幂等 reqId、预扣 → 按真实 usage 补退、余额原子调整）
+- 用量的投递边界：Go 只有内存环形缓冲（8192）+ TS 轮询，gatewayd 重启、长时间断线
+  或缓冲回绕会丢记录（gap 会记警告）；请求 / 响应正文不落库
+- 自动健康检查与自动禁用、账号级并发 / 限流、`lastUsedAt` 回报
 - `account-state`（健康、限流、额度、并发）、粘性会话
 - Gemini 协议（`contracts.ProtocolGemini` 已预留，未注册 codec；请求它会被
   `PROTOCOL_CODEC_UNAVAILABLE` fail-closed 拒绝）
@@ -343,5 +390,4 @@ pnpm build:go         # 产出 bin/gatewayd(.exe)
   参数丢弃——都记 `LossyNote` 日志，但不保证语义等价
 - 模型映射只改**请求**里的模型名：响应里的 `model` 保持上游原名，不映射回对外名。
   另有 `models` 与 `modelMap` 之间不做交叉校验（可以给没列进 `models` 的模型配映射）
-- 每密钥并发上限、key 级限流、`lastUsedAt` 回报
 - 前端视觉打磨（等 owner 的参考设计）
