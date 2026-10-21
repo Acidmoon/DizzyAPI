@@ -127,6 +127,11 @@ export class FakeUser implements UserPort {
     return all.slice(query.offset ?? 0, (query.offset ?? 0) + (query.limit ?? 100))
   }
 
+  async count(): Promise<number> {
+    this.calls.push({ method: 'count', args: [] })
+    return this.users.size
+  }
+
   async rename(actor: string, id: number, name: string): Promise<UserLike> {
     this.calls.push({ method: 'rename', args: [actor, id, name] })
     return this.replace(id, { name })
@@ -633,6 +638,16 @@ export class FakeApiKey implements ApiKeyPort {
   async list(userId: number): Promise<unknown> {
     this.calls.push({ method: 'list', args: [userId] })
     return [...this.items.values()]
+  }
+
+  async count(): Promise<number> {
+    this.calls.push({ method: 'count', args: [] })
+    return this.items.size
+  }
+
+  async listAll(): Promise<unknown> {
+    this.calls.push({ method: 'listAll', args: [] })
+    return [...this.items.values()].map((item) => ({ ...item, secret: null }))
   }
 
   async create(userId: number, input: { name: string }): Promise<unknown> {

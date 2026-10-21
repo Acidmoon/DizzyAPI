@@ -16,6 +16,10 @@ import { formatModelMapInput, parseModelMapInput, parseModelsInput } from './lib
 /** @typedef {import('../src/contracts.ts').SettingsFieldView} SettingsFieldView */
 /** @typedef {import('../src/contracts.ts').GatewayHealth} GatewayHealth */
 /** @typedef {import('../src/contracts.ts').UsageResponse} UsageResponse */
+/** @typedef {import('../src/contracts.ts').AdminUsageResponse} AdminUsageResponse */
+/** @typedef {import('../src/contracts.ts').AdminUsageRowView} AdminUsageRowView */
+/** @typedef {import('../src/contracts.ts').GatewayStats} GatewayStats */
+/** @typedef {import('../src/contracts.ts').UsageTotals} UsageTotals */
 /** @typedef {import('../src/contracts.ts').UsageDailyPoint} UsageDailyPoint */
 /** @typedef {import('../src/contracts.ts').UsageRange} UsageRange */
 /** @typedef {import('../src/contracts.ts').UsageMetric} UsageMetric */
@@ -238,6 +242,29 @@ function formatCny(cents) {
   const yuan = Math.floor(absolute / 100)
   const fen = absolute % 100
   return `${sign}¥${yuan.toLocaleString('zh-CN')}.${String(fen).padStart(2, '0')}`
+}
+
+/**
+ * 整数微元 → `¥1,234.56`。用量接口的费用是精确微元（十进制字符串），
+ * 不能用浮点累加；保留最多 6 位小数并去掉尾零，至少两位。
+ * @param {string | number | bigint} micros
+ * @returns {string}
+ */
+function formatMicrosCny(micros) {
+  let value
+  try {
+    value = BigInt(typeof micros === 'string' ? micros : String(micros))
+  } catch {
+    return '¥0.00'
+  }
+  const negative = value < 0n
+  const absolute = negative ? -value : value
+  const microsPerYuan = 10n ** 6n
+  const yuan = absolute / microsPerYuan
+  const fraction = absolute % microsPerYuan
+  let digits = String(fraction).padStart(6, '0').replace(/0+$/, '')
+  if (digits.length < 2) digits = digits.padEnd(2, '0')
+  return `${negative ? '-' : ''}¥${yuan.toLocaleString('zh-CN')}.${digits}`
 }
 
 /** @param {number} value @returns {string} */
@@ -1786,6 +1813,25 @@ async function renderOverview(page) {
   const section = el('section', { class: 'page' }, pageHead(page))
   const content = el('div', { class: 'stack' })
   section.append(content)
+
+  if (page.view.kind === 'overview' && page.view.flavor === 'admin') {
+    const statsResult = await api().stats.get().then(
+      (stats) => ({ stats, error: null }),
+      (error) => ({ stats: null, error }),
+    )
+    if (statsResult.error !== null) {
+      // 统计失败只降级这一块，不影响下面的健康面与模块区块。
+      content.append(
+        el('div', {
+          class: 'empty',
+          text: `全站概览暂不可用：${errorMessage(statsResult.error)}`,
+        }),
+      )
+    } else if (statsResult.stats !== null) {
+      content.append(renderGatewayStats(statsResult.stats))
+    }
+  }
+
   const healthResult = await api().health.get().then(
     (health) => ({ health, error: null }),
     (error) => ({ health: null, error }),
@@ -1878,15 +1924,392 @@ async function renderOverview(page) {
 }
 
 /**
- * 管理员用量明细（`/admin/usage`）。接口随 `feat/admin-usage` 落地。
+ * 管理概览顶部的「全站概览」：计数卡 + 近 30 天 / 按模型 / 按用户三张小表。
+ * `stats.usage === null` 表示用量插件不在运行，数字一律显示为「—」。
+ * @param {GatewayStats} stats
+ * @returns {HTMLElement}
+ */
+function renderGatewayStats(stats) {
+  const usage = stats.usage
+  /** @param {UsageTotals | null} totals */
+  const tokenLine = (totals) =>
+    totals === null
+      ? '—'
+      : `${formatInteger(totals.inputTokens)} / ${formatInteger(totals.outputTokens)} / ${formatInteger(totals.tokens)}`
+  /** @param {UsageTotals | null} totals */
+  const costLine = (totals) =>
+    totals === null ? '—' : formatMicrosCny(totals.costMicros)
+
+  const block = el(
+    'div',
+    { class: 'section' },
+    el(
+      'div',
+      { class: 'section-head' },
+      el('h2', { text: '全站概览' }),
+      el('span', { class: 'muted', text: `更新于 ${formatTime(stats.generatedAt)}` }),
+    ),
+    el(
+      'div',
+      { class: 'metrics' },
+      metric('用户数', formatInteger(stats.users.total)),
+      metric(
+        '账号数（正常/异常）',
+        `${formatInteger(stats.accounts.enabled)} / ${formatInteger(stats.accounts.needsReauth)}`,
+      ),
+      metric('API Key 数', formatInteger(stats.keys.total)),
+      metric('今日请求', usage === null ? '—' : formatInteger(usage.today.requests)),
+      metric('今日 Token（入/出/总）', tokenLine(usage === null ? null : usage.today)),
+      metric('累计 Token（入/出/总）', tokenLine(usage === null ? null : usage.total)),
+      metric('今日费用', costLine(usage === null ? null : usage.today)),
+      metric('累计费用', costLine(usage === null ? null : usage.total)),
+    ),
+  )
+  if (usage === null) {
+    block.append(el('div', { class: 'empty', text: '用量插件不在运行，请求与费用统计暂不可用。' }))
+  }
+
+  const series = usage === null ? [] : usage.series.slice(-10).reverse()
+  const seriesTable = statsMiniTable(
+    '近 30 天',
+    ['日期', '请求', 'Token', '费用'],
+    series.map((point) => [
+      point.date,
+      formatInteger(point.requests),
+      formatInteger(point.tokens),
+      formatMicrosCny(point.costMicros),
+    ]),
+  )
+  const models = usage === null ? [] : usage.models.slice(0, 5)
+  const modelTable = statsMiniTable(
+    '按模型 Top 5',
+    ['模型', '请求', 'Token', '费用'],
+    models.map((item) => [
+      item.model,
+      formatInteger(item.requests),
+      formatInteger(item.tokens),
+      formatMicrosCny(item.costMicros),
+    ]),
+  )
+  const topUsers = usage === null ? [] : usage.topUsers.slice(0, 5)
+  const userTable = statsMiniTable(
+    '按用户 Top 5',
+    ['用户', '请求', 'Token', '费用'],
+    topUsers.map((item) => [
+      item.name ?? `#${item.userId}`,
+      formatInteger(item.requests),
+      formatInteger(item.tokens),
+      formatMicrosCny(item.costMicros),
+    ]),
+  )
+  block.append(el('div', { class: 'model-grid' }, seriesTable, modelTable, userTable))
+  return block
+}
+
+/**
+ * @param {string} title
+ * @param {readonly string[]} headers
+ * @param {readonly (readonly (string | number)[])[]} rows
+ * @returns {HTMLElement}
+ */
+function statsMiniTable(title, headers, rows) {
+  const body =
+    rows.length === 0
+      ? el('div', { class: 'empty', text: '暂无数据。' })
+      : el(
+          'div',
+          { class: 'table-wrap table-card' },
+          el(
+            'table',
+            { class: 'data-table' },
+            el('thead', {}, el('tr', {}, ...headers.map((header) => el('th', { text: header })))),
+            el(
+              'tbody',
+              {},
+              ...rows.map((row) => el('tr', {}, ...row.map((cell) => el('td', { text: String(cell) })))),
+            ),
+          ),
+        )
+  return el(
+    'div',
+    { class: 'section' },
+    el('div', { class: 'section-head' }, el('h3', { text: title })),
+    body,
+  )
+}
+
+/**
+ * 管理员用量明细（`/admin/usage`）：跨用户、按 keyset 分页，支持 CSV 导出。
  * @param {FrontendPage} page @returns {Promise<HTMLElement>}
  */
 async function renderAdminUsage(page) {
+  /** @type {{ range: UsageRange, userId: string, apiKeyId: string, model: string, status: 'all' | '200' | 'non-200' }} */
+  const state = { range: '30d', userId: '', apiKeyId: '', model: '', status: 'all' }
+  /** @type {AdminUsageRowView[]} */
+  let rows = []
+  /** @type {number | null} */
+  let nextCursor = null
+  /** @type {AdminUsageResponse | null} */
+  let response = null
+  let loading = false
+
+  const section = el('section', { class: 'page' }, pageHead(page))
+  const summaryHost = el('div', { class: 'metrics' })
+  const resultsHost = el('div', { class: 'results' })
+  const moreHost = el('div', { class: 'toolbar' })
+
+  const rangeSelect = /** @type {HTMLSelectElement} */ (el(
+    'select',
+    {},
+    el('option', { text: '近 7 天', attrs: { value: '7d' } }),
+    el('option', { text: '近 30 天', attrs: { value: '30d' } }),
+    el('option', { text: '近 90 天', attrs: { value: '90d' } }),
+  ))
+  rangeSelect.value = state.range
+  const userSelect = /** @type {HTMLSelectElement} */ (el(
+    'select',
+    {},
+    el('option', { text: '全部用户', attrs: { value: '' } }),
+  ))
+  const keySelect = /** @type {HTMLSelectElement} */ (el(
+    'select',
+    {},
+    el('option', { text: '全部 API Key', attrs: { value: '' } }),
+  ))
+  const statusSelect = /** @type {HTMLSelectElement} */ (el(
+    'select',
+    {},
+    el('option', { text: '全部状态', attrs: { value: 'all' } }),
+    el('option', { text: '200', attrs: { value: '200' } }),
+    el('option', { text: '非 200', attrs: { value: 'non-200' } }),
+  ))
+  const modelInput = /** @type {HTMLInputElement} */ (el('input', {
+    class: 'input',
+    attrs: { type: 'text', placeholder: '模型名，回车查询', 'aria-label': '模型筛选' },
+  }))
+  const exportButton = /** @type {HTMLButtonElement} */ (el(
+    'button',
+    { class: 'btn btn-small', attrs: { type: 'button' } },
+    icon('external'),
+    el('span', { text: '导出' }),
+  ))
+  const filters = el(
+    'div',
+    { class: 'filters' },
+    el('label', { class: 'filter' }, el('span', { text: '时间范围' }), rangeSelect),
+    el('label', { class: 'filter' }, el('span', { text: '用户' }), userSelect),
+    el('label', { class: 'filter' }, el('span', { text: '模型' }), modelInput),
+    el('label', { class: 'filter' }, el('span', { text: '状态' }), statusSelect),
+    el('label', { class: 'filter' }, el('span', { text: 'API Key' }), keySelect),
+    el('span', { class: 'spacer' }),
+    exportButton,
+  )
+  section.append(filters, summaryHost, resultsHost, moreHost)
+
+  const query = () => ({
+    range: state.range,
+    ...(state.userId === '' ? {} : { userId: Number(state.userId) }),
+    ...(state.apiKeyId === '' ? {} : { apiKeyId: state.apiKeyId }),
+    ...(state.model === '' ? {} : { model: state.model }),
+  })
+
+  /** @param {AdminUsageRowView} row @returns {boolean} */
+  const matchesStatus = (row) =>
+    state.status === 'all' || (state.status === '200' ? row.status === 200 : row.status !== 200)
+
+  const renderSummary = () => {
+    if (response === null) {
+      summaryHost.replaceChildren()
+      return
+    }
+    const totals = response.totals
+    summaryHost.replaceChildren(
+      metric('请求次数', formatInteger(totals.requests)),
+      metric('Tokens', formatInteger(totals.tokens)),
+      metric('应扣费用', response.pricingAvailable ? formatMicrosCny(totals.costMicros) : '价格表未运行'),
+    )
+  }
+
+  const renderTable = () => {
+    const visible = rows.filter(matchesStatus)
+    if (visible.length === 0) {
+      const hint =
+        state.status !== 'all' && nextCursor !== null
+          ? '当前已加载的明细里没有符合状态筛选的记录，可继续「加载更多」。'
+          : '没有符合条件的用量记录。'
+      resultsHost.replaceChildren(el('div', { class: 'empty', text: hint }))
+      return
+    }
+    resultsHost.replaceChildren(
+      el(
+        'div',
+        { class: 'table-wrap table-card' },
+        el(
+          'table',
+          { class: 'data-table' },
+          el(
+            'thead',
+            {},
+            el(
+              'tr',
+              {},
+              el('th', { text: '时间' }),
+              el('th', { text: '用户' }),
+              el('th', { text: 'API Key' }),
+              el('th', { text: '模型' }),
+              el('th', { text: '输入' }),
+              el('th', { text: '输出' }),
+              el('th', { text: '缓存读' }),
+              el('th', { text: '缓存写' }),
+              el('th', { text: '费用' }),
+              el('th', { text: '状态' }),
+              el('th', { text: '耗时' }),
+              el('th', { text: 'IP' }),
+            ),
+          ),
+          el('tbody', {}, ...visible.map(adminUsageRow)),
+        ),
+      ),
+    )
+  }
+
+  const renderMore = () => {
+    if (nextCursor === null) {
+      moreHost.replaceChildren()
+      return
+    }
+    const button = /** @type {HTMLButtonElement} */ (el('button', {
+      class: 'btn btn-small',
+      attrs: { type: 'button' },
+      text: loading ? '加载中…' : '加载更多',
+      on: { click: () => void load(true) },
+    }))
+    if (loading) button.disabled = true
+    moreHost.replaceChildren(button)
+  }
+
+  /** @param {boolean} append */
+  const load = async (append) => {
+    if (loading) return
+    loading = true
+    exportButton.disabled = true
+    if (!append) {
+      rows = []
+      nextCursor = null
+      response = null
+      summaryHost.replaceChildren()
+      resultsHost.replaceChildren(loadingState('正在读取全站用量…'))
+    }
+    renderMore()
+    try {
+      const pageResult = await api().adminUsage.list({
+        ...query(),
+        ...(append && nextCursor !== null ? { cursor: nextCursor } : {}),
+        limit: 20,
+      })
+      response = pageResult
+      rows = append ? [...rows, ...pageResult.records.items] : [...pageResult.records.items]
+      nextCursor = pageResult.records.nextCursor
+      renderSummary()
+      renderTable()
+    } catch (error) {
+      if (append) toast(errorMessage(error), 'bad')
+      else resultsHost.replaceChildren(errorState(error, () => void load(false)))
+    } finally {
+      loading = false
+      exportButton.disabled = false
+      renderMore()
+    }
+  }
+
+  rangeSelect.addEventListener('change', () => {
+    state.range = /** @type {UsageRange} */ (rangeSelect.value)
+    void load(false)
+  })
+  userSelect.addEventListener('change', () => {
+    state.userId = userSelect.value
+    void load(false)
+  })
+  keySelect.addEventListener('change', () => {
+    state.apiKeyId = keySelect.value
+    void load(false)
+  })
+  statusSelect.addEventListener('change', () => {
+    // 状态只筛选已加载的明细：用量服务的 status 是精确匹配，没有「非 200」查询口。
+    state.status = /** @type {'all' | '200' | 'non-200'} */ (statusSelect.value)
+    renderTable()
+  })
+  modelInput.addEventListener('keydown', (event) => {
+    if (event.key !== 'Enter') return
+    event.preventDefault()
+    state.model = modelInput.value.trim()
+    void load(false)
+  })
+  exportButton.addEventListener('click', async () => {
+    if (response === null) return
+    exportButton.disabled = true
+    try {
+      const result = await api().adminUsage.exportCsv(query())
+      const blob = new Blob([result.content], { type: 'text/csv;charset=utf-8' })
+      const url = URL.createObjectURL(blob)
+      const link = el('a', { attrs: { href: url, download: result.filename } })
+      document.body.append(link)
+      link.click()
+      link.remove()
+      URL.revokeObjectURL(url)
+      toast(`已导出 ${result.filename}`)
+    } catch (error) {
+      toast(errorMessage(error), 'bad')
+    } finally {
+      exportButton.disabled = false
+    }
+  })
+
+  try {
+    const users = (await api().users.list({ limit: 200 })).items
+    for (const user of users) {
+      userSelect.append(el('option', { text: `${user.name} (#${user.id})`, attrs: { value: String(user.id) } }))
+    }
+  } catch {
+    // 用户列表不可读时仍可按其它条件查；下拉只剩「全部用户」。
+  }
+  try {
+    const keys = (await api().keys.list()).items
+    for (const key of keys) {
+      keySelect.append(el('option', { text: key.name, attrs: { value: key.id } }))
+    }
+  } catch {
+    // 没有 keys 接口时仍展示全部用量。
+  }
+  await load(false)
+  return section
+}
+
+/**
+ * @param {AdminUsageRowView} row
+ * @returns {HTMLElement}
+ */
+function adminUsageRow(row) {
   return el(
-    'section',
-    { class: 'page' },
-    pageHead(page),
-    el('div', { class: 'empty', text: '全站用量明细尚未接入。' }),
+    'tr',
+    {},
+    el('td', { text: formatTime(row.startedAt), attrs: { title: row.startedAt } }),
+    el('td', { text: row.userName ?? `#${row.userId}` }),
+    el('td', { text: row.apiKeyName === '' ? row.apiKeyId : row.apiKeyName }),
+    el(
+      'td',
+      {},
+      el('div', { text: row.model }),
+      row.upstreamModel === null ? null : el('div', { class: 'muted', text: `→ ${row.upstreamModel}` }),
+    ),
+    el('td', { text: formatInteger(row.inputTokens) }),
+    el('td', { text: formatInteger(row.outputTokens) }),
+    el('td', { text: formatInteger(row.cacheReadTokens) }),
+    el('td', { text: formatInteger(row.cacheWriteTokens) }),
+    el('td', { text: formatMicrosCny(row.costMicros) }),
+    el('td', {}, badge(String(row.status), row.status === 200 ? 'ok' : 'bad')),
+    el('td', { text: `${formatInteger(row.durationMs)} ms` }),
+    el('td', { class: 'muted', text: row.clientIp ?? '—' }),
   )
 }
 
