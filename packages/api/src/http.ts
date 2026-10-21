@@ -41,6 +41,9 @@ import type {
   SessionUserView,
   SessionViewLike,
   SettingsPort,
+  UsageQueryLike,
+  UsageRowLike,
+  UsageTotalsLike,
   UserLike,
   UserStatusLike,
 } from './types.ts'
@@ -611,41 +614,124 @@ export class ApiServer {
 
   private async usage(req: IncomingMessage, url: URL): Promise<unknown> {
     const view = await this.requireSession(req)
+    const usage = this.runtime.usage()
+    if (usage === undefined) {
+      throw new ApiError('API_USAGE_UNAVAILABLE', 503, '用量插件不在运行，暂时无法查询用量')
+    }
+
     const range = url.searchParams.get('range') ?? '30d'
     const days = USAGE_RANGE_DAYS[range]
     if (days === undefined) throw badRequest(`range 只能是 ${Object.keys(USAGE_RANGE_DAYS).join(' / ')}`)
-    const apiKeyId = url.searchParams.get('apiKeyId')
+
+    const now = this.runtime.now()
+    const todayStart = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate())
+    const fromMs = todayStart - (days - 1) * 86_400_000
+    const toMs = todayStart + 86_400_000
+
     const user = await this.runtime.user.get(view.userId)
     if (user === undefined) throw unauthorized('账号已不存在，请重新登录')
 
-    const now = this.runtime.now()
-    const to = dateOf(now)
-    const from = dateOf(new Date(now.getTime() - (days - 1) * 86_400_000))
+    // 普通用户只能看自己的；管理员可以用 userId 指定别人（不传 = 全部）。
+    const userIdParam = url.searchParams.get('userId')
+    let userId: number | undefined
+    if (roleOf(view.user) === 'admin') {
+      if (userIdParam !== null && userIdParam !== '') userId = parseUserId(userIdParam)
+    } else {
+      userId = view.userId
+    }
+
+    const apiKeyParam = url.searchParams.get('apiKeyId')
+    const apiKeyId = apiKeyParam === null || apiKeyParam === '' ? undefined : apiKeyParam
+    const modelParam = url.searchParams.get('model')
+    const model = modelParam === null || modelParam === '' ? undefined : modelParam
+    const cursorParam = url.searchParams.get('cursor')
+    const cursor =
+      cursorParam === null || cursorParam === ''
+        ? undefined
+        : parseIntegerParam(cursorParam, 'cursor', 1, 1, Number.MAX_SAFE_INTEGER)
+    const limit = parseIntegerParam(url.searchParams.get('limit'), 'limit', 20, 1, 200) ?? 20
+
+    const query: UsageQueryLike = {
+      fromMs,
+      toMs,
+      ...(userId === undefined ? {} : { userId }),
+      ...(apiKeyId === undefined ? {} : { apiKeyId }),
+      ...(model === undefined ? {} : { model }),
+    }
+    const summary = usage.summary(query)
+    const page = usage.list({ ...query, ...(cursor === undefined ? {} : { cursor }), limit })
+
     return {
       range,
-      from,
-      to,
-      apiKeyId: apiKeyId === null || apiKeyId === '' ? null : apiKeyId,
-      // 没有 usage-log：余额只按当前用户余额换算，历史消费不伪造。
+      from: dateOf(new Date(fromMs)),
+      to: dateOf(new Date(toMs - 86_400_000)),
+      apiKeyId: apiKeyId ?? null,
+      // 余额只按当前用户余额换算；历史消费由用量明细体现，不在这里伪造。
       balances: {
         paidCents: centsOf(user.balance),
         grantedCents: 0,
         spentCents: 0,
       },
-      totals: { costCents: 0, requests: 0, tokens: 0 },
-      daily: [],
-      models: [],
+      totals: usageTotalsOf(summary.totals),
+      daily: summary.daily.map((point) => ({ date: point.date, ...usageTotalsOf(point) })),
+      models: summary.models.map((item) => ({ model: item.model, ...usageTotalsOf(item) })),
+      records: { items: page.items.map(usageRowOf), nextCursor: page.nextCursor },
+      pricingAvailable: this.runtime.pricing() !== undefined,
       generatedAt: now.toISOString(),
     }
   }
 
   /**
    * `GET /api/usage/export`：把当前筛选条件下的明细导出成 CSV。
-   * 路由已注册，方法体随 `feat/usage-core` 落地。
+   *
+   * 响应是 JSON `{ filename, content }`，由浏览器自己生成 Blob 下载；
+   * 这样不用在 HTTP 层区分下载 / 错误信封，也不会把 CSV 当 JSON 解析。
    */
-  private async usageExport(req: IncomingMessage, _res: ServerResponse, _url: URL): Promise<void> {
-    await this.requireSession(req)
-    throw new ApiError('API_USAGE_EXPORT_UNAVAILABLE', 501, '用量导出尚未实现')
+  private async usageExport(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
+    const view = await this.requireSession(req)
+    const usage = this.runtime.usage()
+    if (usage === undefined) {
+      throw new ApiError('API_USAGE_UNAVAILABLE', 503, '用量插件不在运行，暂时无法导出用量')
+    }
+
+    const format = url.searchParams.get('format') ?? 'csv'
+    if (format !== 'csv') throw badRequest('format 只支持 csv')
+
+    const range = url.searchParams.get('range') ?? '30d'
+    const days = USAGE_RANGE_DAYS[range]
+    if (days === undefined) throw badRequest(`range 只能是 ${Object.keys(USAGE_RANGE_DAYS).join(' / ')}`)
+
+    const now = this.runtime.now()
+    const todayStart = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate())
+    const fromMs = todayStart - (days - 1) * 86_400_000
+    const toMs = todayStart + 86_400_000
+
+    const userIdParam = url.searchParams.get('userId')
+    let userId: number | undefined
+    if (roleOf(view.user) === 'admin') {
+      if (userIdParam !== null && userIdParam !== '') userId = parseUserId(userIdParam)
+    } else {
+      userId = view.userId
+    }
+
+    const apiKeyParam = url.searchParams.get('apiKeyId')
+    const apiKeyId = apiKeyParam === null || apiKeyParam === '' ? undefined : apiKeyParam
+    const modelParam = url.searchParams.get('model')
+    const model = modelParam === null || modelParam === '' ? undefined : modelParam
+
+    const rows = usage.exportRows({
+      fromMs,
+      toMs,
+      ...(userId === undefined ? {} : { userId }),
+      ...(apiKeyId === undefined ? {} : { apiKeyId }),
+      ...(model === undefined ? {} : { model }),
+    })
+    const from = dateOf(new Date(fromMs)).replaceAll('-', '')
+    const to = dateOf(new Date(toMs - 86_400_000)).replaceAll('-', '')
+    this.sendJson(req, res, 200, {
+      filename: `usage-${from}-${to}.csv`,
+      content: usageCsv(rows),
+    })
   }
 
   /**
@@ -1726,6 +1812,144 @@ function centsOf(balance: bigint): number {
 
 function dateOf(value: Date): string {
   return value.toISOString().slice(0, 10)
+}
+
+// ───────────────────────────────── 用量响应换算 ─────────────────────────────────
+
+/**
+ * 服务口径 → 页面口径。
+ *
+ * `tokens` 是四个桶之和（input / output / cacheRead / cacheWrite）；`costCents`
+ * 是给图表的粗口径，`costMicros` 才是精确值（1 分 = 10_000 微元）。
+ * 先做 BigInt 除法再转 number，避免 `Number(costMicros) / 10_000` 丢精度。
+ */
+function usageTotalsOf(totals: UsageTotalsLike): {
+  requests: number
+  tokens: number
+  inputTokens: number
+  outputTokens: number
+  cacheReadTokens: number
+  cacheWriteTokens: number
+  costCents: number
+  costMicros: string
+} {
+  return {
+    requests: totals.requests,
+    tokens:
+      totals.inputTokens + totals.outputTokens + totals.cacheReadTokens + totals.cacheWriteTokens,
+    inputTokens: totals.inputTokens,
+    outputTokens: totals.outputTokens,
+    cacheReadTokens: totals.cacheReadTokens,
+    cacheWriteTokens: totals.cacheWriteTokens,
+    costCents: costCentsOf(totals.costMicros),
+    costMicros: totals.costMicros,
+  }
+}
+
+function costCentsOf(costMicros: string): number {
+  try {
+    return Number(BigInt(costMicros) / 10_000n)
+  } catch {
+    return 0
+  }
+}
+
+/** 用户页永远拿不到账号 / profile / attempts 等管理面字段。 */
+function usageRowOf(row: UsageRowLike): {
+  id: number
+  reqId: string
+  userId: number
+  apiKeyId: string
+  apiKeyName: string
+  model: string
+  upstreamModel: string | null
+  protocol: string
+  upstreamProtocol: string | null
+  stream: boolean
+  status: number
+  errorCode: string | null
+  inputTokens: number
+  outputTokens: number
+  cacheReadTokens: number
+  cacheWriteTokens: number
+  totalTokens: number
+  durationMs: number
+  clientIp: string | null
+  startedAt: string
+  costMicros: string
+} {
+  return {
+    id: row.id,
+    reqId: row.reqId,
+    userId: row.userId,
+    apiKeyId: row.apiKeyId,
+    apiKeyName: row.apiKeyName,
+    model: row.model,
+    upstreamModel: row.upstreamModel,
+    protocol: row.protocol,
+    upstreamProtocol: row.upstreamProtocol,
+    stream: row.stream,
+    status: row.status,
+    errorCode: row.errorCode,
+    inputTokens: row.inputTokens,
+    outputTokens: row.outputTokens,
+    cacheReadTokens: row.cacheReadTokens,
+    cacheWriteTokens: row.cacheWriteTokens,
+    totalTokens: row.totalTokens,
+    durationMs: row.durationMs,
+    clientIp: row.clientIp,
+    startedAt: row.startedAt,
+    costMicros: row.costMicros,
+  }
+}
+
+const USAGE_CSV_HEADER = [
+  'time',
+  'api_key',
+  'model',
+  'input_tokens',
+  'output_tokens',
+  'cache_read_tokens',
+  'cache_write_tokens',
+  'total_tokens',
+  'cost_micros',
+  'status',
+  'duration_ms',
+  'client_ip',
+] as const
+
+/** UTF-8 BOM + 表头 + 行；单元格按 CSV 规则转义并防公式注入。 */
+function usageCsv(rows: readonly UsageRowLike[]): string {
+  const lines = [USAGE_CSV_HEADER.join(',')]
+  for (const row of rows) {
+    lines.push(
+      [
+        row.startedAt,
+        row.apiKeyName === '' ? row.apiKeyId : row.apiKeyName,
+        row.model,
+        String(row.inputTokens),
+        String(row.outputTokens),
+        String(row.cacheReadTokens),
+        String(row.cacheWriteTokens),
+        String(row.totalTokens),
+        row.costMicros,
+        String(row.status),
+        String(row.durationMs),
+        row.clientIp ?? '',
+      ]
+        .map(csvCell)
+        .join(','),
+    )
+  }
+  return `﻿${lines.join('\r\n')}`
+}
+
+function csvCell(value: string): string {
+  let text = value
+  // Excel / Numbers 会把 = + - @ 开头的单元格当公式执行。
+  if (/^[=+\-@]/.test(text)) text = `'${text}`
+  if (/[",\r\n]/.test(text)) text = `"${text.replaceAll('"', '""')}"`
+  return text
 }
 
 function catalogState(state: string): CatalogModuleView['state'] {

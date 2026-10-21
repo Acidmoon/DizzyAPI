@@ -16,6 +16,7 @@ import { formatModelMapInput, parseModelMapInput, parseModelsInput } from './lib
 /** @typedef {import('../src/contracts.ts').SettingsFieldView} SettingsFieldView */
 /** @typedef {import('../src/contracts.ts').GatewayHealth} GatewayHealth */
 /** @typedef {import('../src/contracts.ts').UsageResponse} UsageResponse */
+/** @typedef {import('../src/contracts.ts').UsageRowView} UsageRowView */
 /** @typedef {import('../src/contracts.ts').UsageDailyPoint} UsageDailyPoint */
 /** @typedef {import('../src/contracts.ts').UsageRange} UsageRange */
 /** @typedef {import('../src/contracts.ts').UsageMetric} UsageMetric */
@@ -906,6 +907,28 @@ function readFileAsDataUrl(file) {
   })
 }
 
+/**
+ * 整数微元 → 元。保留 4~6 位小数（去掉末尾多余的 0，但至少 4 位）；
+ * 费用是十进制字符串，用 BigInt 解析，避免大整数经过 number 丢精度。
+ * @param {string} micros
+ * @returns {string}
+ */
+function formatMicros(micros) {
+  let value
+  try {
+    value = BigInt(micros)
+  } catch {
+    return '¥0.0000'
+  }
+  const sign = value < 0n ? '-' : ''
+  const absolute = value < 0n ? -value : value
+  const whole = absolute / 1_000_000n
+  let fraction = (absolute % 1_000_000n).toString().padStart(6, '0')
+  fraction = fraction.replace(/0+$/, '')
+  if (fraction.length < 4) fraction = fraction.padEnd(4, '0')
+  return `${sign}¥${whole.toLocaleString('zh-CN')}.${fraction}`
+}
+
 /** @param {FrontendPage} page @returns {Promise<HTMLElement>} */
 async function renderUsage(page) {
   /** @type {{ range: UsageRange, apiKeyId: string, metric: UsageMetric }} */
@@ -914,12 +937,18 @@ async function renderUsage(page) {
   let usage = null
   /** @type {readonly ApiKeySummary[]} */
   let keys = []
+  /** @type {UsageRowView[]} */
+  let recordRows = []
+  /** @type {number | null} */
+  let recordsCursor = null
+  let recordsLoading = false
 
   const section = el('section', { class: 'page' }, pageHead(page))
   const balancesHost = el('div', { class: 'stat-grid' })
   const metricsHost = el('div', { class: 'metrics' })
   const chartHost = el('div', {})
   const modelsHost = el('div', {})
+  const recordsHost = el('div', {})
   const rangeSelect = /** @type {HTMLSelectElement} */ (el(
     'select',
     {},
@@ -938,7 +967,7 @@ async function renderUsage(page) {
     el('span', { class: 'spacer' }),
     exportButton,
   )
-  section.append(balancesHost, filters, metricsHost, chartHost, modelsHost)
+  section.append(balancesHost, filters, metricsHost, chartHost, modelsHost, recordsHost)
 
   const load = async () => {
     filters.classList.add('is-loading')
@@ -946,16 +975,21 @@ async function renderUsage(page) {
       usage = await api().usage.get({
         range: state.range,
         ...(state.apiKeyId === '' ? {} : { apiKeyId: state.apiKeyId }),
+        limit: 20,
       })
+      recordRows = [...usage.records.items]
+      recordsCursor = usage.records.nextCursor
       renderBalances()
       renderMetrics()
       renderChart()
       renderModels()
+      renderRecords()
     } catch (error) {
       metricsHost.replaceChildren(errorState(error, () => void load()))
       balancesHost.replaceChildren()
       chartHost.replaceChildren()
       modelsHost.replaceChildren()
+      recordsHost.replaceChildren()
     } finally {
       filters.classList.remove('is-loading')
     }
@@ -1021,6 +1055,132 @@ async function renderUsage(page) {
     )
   }
 
+  const renderRecords = () => {
+    if (usage === null) return
+    const head = el(
+      'div',
+      { class: 'section-head' },
+      el('h2', { text: '请求明细' }),
+      el('span', { class: 'section-note', text: `${recordRows.length} 条` }),
+    )
+    const pricingNote =
+      usage.pricingAvailable === false
+        ? el('p', { class: 'section-note', text: '价格表插件未运行，费用显示为 0' })
+        : null
+
+    if (recordRows.length === 0) {
+      recordsHost.replaceChildren(
+        el(
+          'div',
+          { class: 'section' },
+          head,
+          pricingNote,
+          el('div', { class: 'empty', text: '这个时间窗口没有请求明细。' }),
+        ),
+      )
+      return
+    }
+
+    const table = el(
+      'table',
+      { class: 'data-table', attrs: { style: 'min-width: 1120px' } },
+      el(
+        'thead',
+        {},
+        el(
+          'tr',
+          {},
+          el('th', { text: '时间' }),
+          el('th', { text: 'API Key' }),
+          el('th', { text: '模型' }),
+          el('th', { text: '输入' }),
+          el('th', { text: '输出' }),
+          el('th', { text: '缓存读' }),
+          el('th', { text: '缓存写' }),
+          el('th', { text: '费用' }),
+          el('th', { text: '状态' }),
+          el('th', { text: '耗时' }),
+          el('th', { text: 'IP' }),
+        ),
+      ),
+      el(
+        'tbody',
+        {},
+        ...recordRows.map((row) =>
+          el(
+            'tr',
+            {},
+            el('td', { text: formatTime(row.startedAt) }),
+            el('td', { text: row.apiKeyName === '' ? row.apiKeyId || '—' : row.apiKeyName }),
+            el('td', { text: row.model }),
+            el('td', { class: 'num', text: formatInteger(row.inputTokens) }),
+            el('td', { class: 'num', text: formatInteger(row.outputTokens) }),
+            el('td', { class: 'num', text: formatInteger(row.cacheReadTokens) }),
+            el('td', { class: 'num', text: formatInteger(row.cacheWriteTokens) }),
+            el('td', { class: 'num', text: formatMicros(row.costMicros) }),
+            el(
+              'td',
+              {},
+              row.status >= 200 && row.status < 300
+                ? el('span', { class: 'badge tone-ok', text: String(row.status) })
+                : el('span', {
+                    class: 'badge tone-bad',
+                    text: row.errorCode === null ? String(row.status) : `${row.status} ${row.errorCode}`,
+                  }),
+            ),
+            el('td', { class: 'num', text: `${formatInteger(row.durationMs)} ms` }),
+            el('td', { text: row.clientIp === null || row.clientIp === '' ? '—' : row.clientIp }),
+          ),
+        ),
+      ),
+    )
+
+    const moreButton = recordsCursor === null
+      ? null
+      : el('button', {
+          class: 'btn btn-small',
+          attrs: { type: 'button', disabled: recordsLoading },
+          text: recordsLoading ? '加载中…' : '加载更多',
+          on: { click: () => void loadMore() },
+        })
+
+    recordsHost.replaceChildren(
+      el(
+        'div',
+        { class: 'section' },
+        head,
+        pricingNote,
+        el('div', { class: 'table-wrap table-card' }, table),
+        moreButton === null ? el('span') : el('div', { class: 'filters tight' }, moreButton),
+      ),
+    )
+  }
+
+  const loadMore = async () => {
+    if (usage === null || recordsCursor === null || recordsLoading) return
+    const range = state.range
+    const apiKeyId = state.apiKeyId
+    recordsLoading = true
+    renderRecords()
+    try {
+      const next = await api().usage.get({
+        range,
+        ...(apiKeyId === '' ? {} : { apiKeyId }),
+        cursor: recordsCursor,
+        limit: 20,
+      })
+      // 筛选项在请求期间变了：当前页已经由 load() 重置，丢弃这一页。
+      if (state.range !== range || state.apiKeyId !== apiKeyId) return
+      recordRows = recordRows.concat(next.records.items)
+      recordsCursor = next.records.nextCursor
+    } catch (error) {
+      toast(errorMessage(error), 'bad')
+    } finally {
+      recordsLoading = false
+      renderRecords()
+    }
+  }
+
   rangeSelect.addEventListener('change', () => {
     state.range = /** @type {UsageRange} */ (rangeSelect.value)
     void load()
@@ -1029,8 +1189,32 @@ async function renderUsage(page) {
     state.apiKeyId = keySelect.value
     void load()
   })
-  exportButton.addEventListener('click', () => {
-    toast('导出接口待接入：预期 GET /api/usage/export')
+  exportButton.addEventListener('click', async () => {
+    const button = /** @type {HTMLButtonElement} */ (exportButton)
+    button.disabled = true
+    try {
+      const result = await api().usage.exportCsv({
+        range: state.range,
+        ...(state.apiKeyId === '' ? {} : { apiKeyId: state.apiKeyId }),
+      })
+      const filename = result.filename.toLowerCase().endsWith('.csv')
+        ? result.filename
+        : `${result.filename}.csv`
+      const blob = new Blob([result.content], { type: 'text/csv;charset=utf-8' })
+      const url = URL.createObjectURL(blob)
+      const link = document.createElement('a')
+      link.href = url
+      link.download = filename
+      document.body.append(link)
+      link.click()
+      link.remove()
+      setTimeout(() => URL.revokeObjectURL(url), 0)
+      toast(`已导出 ${filename}`)
+    } catch (error) {
+      toast(errorMessage(error), 'bad')
+    } finally {
+      button.disabled = false
+    }
   })
 
   try {
