@@ -41,7 +41,15 @@ import type {
   SessionUserView,
   SessionViewLike,
   SettingsPort,
+  UsageDailyPointLike,
+  UsageModelBreakdownLike,
+  UsagePort,
+  UsageQueryLike,
+  UsageRowLike,
+  UsageTotalsLike,
+  UsageUserBreakdownLike,
   UserLike,
+  UserPort,
   UserStatusLike,
 } from './types.ts'
 
@@ -90,6 +98,15 @@ const TOPUP_OPTIONS = {
 } as const
 
 const USAGE_RANGE_DAYS: Readonly<Record<string, number>> = { '7d': 7, '30d': 30, '90d': 90 }
+
+type UsageRange = '7d' | '30d' | '90d'
+
+/** 导出只受内存与响应体限制；上限防止一次管理操作把整库读进内存。 */
+const ADMIN_USAGE_EXPORT_LIMIT = 100_000
+
+/** 管理概览分页读用户时的页大小；user 服务单页上限就是 1000。 */
+const STATS_USER_PAGE = 1_000
+const STATS_USER_MAX_PAGES = 100
 
 /**
  * HTTP 服务器。它只依赖 `ApiRuntime` 这组端口，不 import 任何具体插件类；
@@ -659,25 +676,233 @@ export class ApiServer {
 
   /**
    * `/api/admin/usage`：管理员口径的用量明细与导出。
-   * 路由已注册，方法体随 `feat/admin-usage` 落地。
+   *
+   * 查询窗口与用户侧 `/api/usage` 同口径：[from 当天 00:00 UTC, 明天 00:00 UTC)。
+   * `records.items` 比用户侧多 `userName` / `accountId` / `attempts`；
+   * `userName` 在同一次请求内按 userId 缓存，查不到就是 null。
    */
   private async routeAdminUsage(
     req: IncomingMessage,
-    _res: ServerResponse,
-    _parts: readonly string[],
-    _url: URL,
+    res: ServerResponse,
+    parts: readonly string[],
+    url: URL,
   ): Promise<void> {
     await this.requireAdmin(req)
-    throw new ApiError('API_ADMIN_USAGE_UNAVAILABLE', 501, '管理员用量接口尚未实现')
+    if (parts.length > 3 || (parts.length === 3 && parts[2] !== 'export')) {
+      throw notFound('没有这个管理员用量接口')
+    }
+    if (!this.allowRead(req, res)) return
+
+    const usage = this.requireUsage()
+    const spec = this.adminUsageQuery(url)
+    const nameOf = this.userNameResolver()
+
+    if (parts.length === 3) {
+      const rows = usage.exportRows(spec.query, ADMIN_USAGE_EXPORT_LIMIT)
+      const decorated = await Promise.all(
+        rows.map(async (row) => ({ ...row, userName: await nameOf(row.userId) })),
+      )
+      this.sendJson(req, res, 200, {
+        filename: `admin-usage-${spec.from.replaceAll('-', '')}-${spec.to.replaceAll('-', '')}.csv`,
+        content: adminUsageCsv(decorated),
+      })
+      return
+    }
+
+    const page = usage.list(spec.query)
+    const summary = usage.summary(spec.query)
+    const items = await Promise.all(
+      page.items.map(async (row) => adminUsageRowOf(row, await nameOf(row.userId))),
+    )
+    this.sendJson(req, res, 200, {
+      range: spec.range,
+      from: spec.from,
+      to: spec.to,
+      totals: usageTotalsOf(summary.totals),
+      daily: summary.daily.map(usageDailyOf),
+      models: summary.models.map(usageModelOf),
+      records: { items, nextCursor: page.nextCursor },
+      pricingAvailable: this.runtime.pricing() !== undefined,
+      generatedAt: this.runtime.now().toISOString(),
+    })
   }
 
   /**
    * `GET /api/admin/stats`：全站计数与 token 汇总。
-   * 路由已注册，方法体随 `feat/admin-usage` 落地。
+   *
+   * 计数优先用服务的 `count()`；user 的角色 / 状态拆分与 key 的启用拆分需要逐条读，
+   * 但 key 的总数绝不为了一个数字加载整表。accountAdmin / apiKey 缺席时对应块全 0，
+   * 整个接口照常返回；只有 usage 缺席时 `usage: null`。
    */
-  private async adminStats(req: IncomingMessage, _res: ServerResponse): Promise<void> {
+  private async adminStats(req: IncomingMessage, res: ServerResponse): Promise<void> {
     await this.requireAdmin(req)
-    throw new ApiError('API_ADMIN_STATS_UNAVAILABLE', 501, '全站统计接口尚未实现')
+    if (!this.allowRead(req, res)) return
+
+    const users = await this.allUsers()
+    const userPort = this.runtime.user as UserPort & { count?: () => Promise<number> }
+    const countedUsers = typeof userPort.count === 'function' ? await userPort.count.call(this.runtime.user) : null
+    const userTotal = countedUsers ?? users.length
+
+    const accountAdmin = this.runtime.accountAdmin()
+    const accounts = accountAdmin === undefined ? [] : [...(await accountAdmin.list())]
+
+    const apiKey = this.runtime.apiKey()
+    const keyPort = apiKey as (ApiKeyPort & { count?: () => Promise<number>; listAll?: () => Promise<unknown> }) | undefined
+    let keyTotal: number | null = null
+    let keyEnabled = 0
+    let keyDisabled = 0
+    if (keyPort !== undefined) {
+      if (typeof keyPort.count === 'function') {
+        try {
+          keyTotal = await keyPort.count.call(keyPort)
+        } catch {
+          keyTotal = null
+        }
+      }
+      if (typeof keyPort.listAll === 'function') {
+        try {
+          const listed = keyPortResult(await keyPort.listAll.call(keyPort))
+          keyEnabled = listed.filter((item) => item.enabled !== false).length
+          keyDisabled = listed.length - keyEnabled
+          if (keyTotal === null) keyTotal = listed.length
+        } catch {
+          // key 列表不可读时保留 count()（如果有）或 0，不让整个概览失败。
+        }
+      }
+    }
+
+    const nameOf = this.userNameResolver()
+    const usage = this.runtime.usage()
+    let usageView: {
+      today: ReturnType<typeof usageTotalsOf>
+      total: ReturnType<typeof usageTotalsOf>
+      series: ReturnType<typeof usageDailyOf>[]
+      models: ReturnType<typeof usageModelOf>[]
+      topUsers: { userId: number; name: string | null; requests: number; tokens: number; inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheWriteTokens: number; costCents: number; costMicros: string }[]
+    } | null = null
+    if (usage !== undefined) {
+      const stats = usage.stats()
+      usageView = {
+        today: usageTotalsOf(stats.today),
+        total: usageTotalsOf(stats.total),
+        series: stats.series.map(usageDailyOf),
+        models: stats.models.map(usageModelOf),
+        topUsers: await Promise.all(stats.topUsers.map(async (item) => usageUserOf(item, await nameOf(item.userId)))),
+      }
+    }
+
+    this.sendJson(req, res, 200, {
+      generatedAt: this.runtime.now().toISOString(),
+      users: {
+        total: userTotal,
+        admins: users.filter((user) => user.role === 'admin').length,
+        enabled: users.filter((user) => user.status === 'enabled').length,
+        banned: users.filter((user) => user.status === 'banned').length,
+      },
+      accounts: {
+        total: accounts.length,
+        enabled: accounts.filter((account) => account.enabled === true).length,
+        disabled: accounts.filter((account) => account.enabled !== true).length,
+        needsReauth: accounts.filter((account) => account.status === 'needs_reauth').length,
+      },
+      keys: {
+        total: keyTotal ?? 0,
+        enabled: keyEnabled,
+        disabled: keyDisabled,
+      },
+      usage: usageView,
+    })
+  }
+
+  /** 分页读完用户表（角色 / 状态拆分要用）；`count()` 只给总数。 */
+  private async allUsers(): Promise<UserLike[]> {
+    const users: UserLike[] = []
+    for (let page = 0; page < STATS_USER_MAX_PAGES; page++) {
+      const batch = await this.runtime.user.list({ offset: users.length, limit: STATS_USER_PAGE })
+      users.push(...batch)
+      if (batch.length < STATS_USER_PAGE) break
+    }
+    return users
+  }
+
+  /**
+   * 管理员用量的筛选与时间窗口。`range` 与用户侧一致；`status` 是精确匹配的 HTTP 状态码。
+   */
+  private adminUsageQuery(url: URL): {
+    readonly range: UsageRange
+    readonly from: string
+    readonly to: string
+    readonly query: UsageQueryLike
+  } {
+    const range = url.searchParams.get('range') ?? '30d'
+    const days = USAGE_RANGE_DAYS[range]
+    if (days === undefined) throw badRequest(`range 只能是 ${Object.keys(USAGE_RANGE_DAYS).join(' / ')}`)
+
+    const now = this.runtime.now()
+    const to = dateOf(now)
+    const from = dateOf(new Date(now.getTime() - (days - 1) * 86_400_000))
+    const fromMs = Date.parse(`${from}T00:00:00.000Z`)
+    const toMs = Date.parse(`${to}T00:00:00.000Z`) + 86_400_000
+
+    const userIdText = url.searchParams.get('userId')
+    const userId =
+      userIdText === null || userIdText === '' ? undefined : parsePositiveInteger(userIdText, 'userId')
+
+    const apiKeyId = queryStringOf(url, 'apiKeyId')
+    const model = queryStringOf(url, 'model')
+
+    const statusText = url.searchParams.get('status')
+    let status: number | undefined
+    if (statusText !== null && statusText !== '') {
+      if (!/^\d+$/.test(statusText)) throw badRequest('status 必须是非负整数')
+      status = Number(statusText)
+      if (!Number.isSafeInteger(status) || status < 0 || status > 599) {
+        throw badRequest('status 必须在 0..599 之间')
+      }
+    }
+
+    const cursorText = url.searchParams.get('cursor')
+    const cursor =
+      cursorText === null || cursorText === ''
+        ? undefined
+        : parseIntegerParam(cursorText, 'cursor', 0, 1, Number.MAX_SAFE_INTEGER)
+    const limit = parseIntegerParam(url.searchParams.get('limit'), 'limit', 20, 1, 200) ?? 20
+
+    return {
+      range: range as UsageRange,
+      from,
+      to,
+      query: {
+        fromMs,
+        toMs,
+        ...(userId === undefined ? {} : { userId }),
+        ...(apiKeyId === undefined ? {} : { apiKeyId }),
+        ...(model === undefined ? {} : { model }),
+        ...(status === undefined ? {} : { status }),
+        ...(cursor === undefined ? {} : { cursor }),
+        limit,
+      },
+    }
+  }
+
+  /**
+   * 同一次请求内复用的 userId → name 解析器。用户服务不可用或用户已删除时记 null，
+   * 不让一行缺失把整个列表打成 500。
+   */
+  private userNameResolver(): (userId: number) => Promise<string | null> {
+    const cache = new Map<number, string | null>()
+    return async (userId: number) => {
+      if (cache.has(userId)) return cache.get(userId) ?? null
+      let name: string | null = null
+      try {
+        const user = await this.runtime.user.get(userId)
+        name = user === undefined ? null : user.name
+      } catch {
+        name = null
+      }
+      cache.set(userId, name)
+      return name
+    }
   }
 
   private async routeTopup(req: IncomingMessage, res: ServerResponse, parts: readonly string[]): Promise<void> {
@@ -1302,6 +1527,14 @@ export class ApiServer {
     return apiKey
   }
 
+  private requireUsage(): UsagePort {
+    const usage = this.runtime.usage()
+    if (usage === undefined) {
+      throw new ApiError('API_ADMIN_USAGE_UNAVAILABLE', 503, '用量插件不在运行')
+    }
+    return usage
+  }
+
   private requireSettings(): SettingsPort {
     const settings = this.runtime.settings()
     if (settings === undefined) {
@@ -1726,6 +1959,146 @@ function centsOf(balance: bigint): number {
 
 function dateOf(value: Date): string {
   return value.toISOString().slice(0, 10)
+}
+
+/** 整数微元 → 整数分；1 分 = 10_000 微元。超出安全整数时夹到边界。 */
+function microsToCents(costMicros: string): number {
+  let micros: bigint
+  try {
+    micros = BigInt(costMicros)
+  } catch {
+    return 0
+  }
+  const cents = micros / 10_000n
+  if (cents > BigInt(Number.MAX_SAFE_INTEGER)) return Number.MAX_SAFE_INTEGER
+  if (cents < BigInt(Number.MIN_SAFE_INTEGER)) return Number.MIN_SAFE_INTEGER
+  return Number(cents)
+}
+
+/** 用量服务的 totals → 前端契约的 `UsageTotals`（`totalTokens` → `tokens`）。 */
+function usageTotalsOf(totals: UsageTotalsLike): {
+  requests: number
+  tokens: number
+  inputTokens: number
+  outputTokens: number
+  cacheReadTokens: number
+  cacheWriteTokens: number
+  costCents: number
+  costMicros: string
+} {
+  return {
+    requests: totals.requests,
+    tokens: totals.totalTokens,
+    inputTokens: totals.inputTokens,
+    outputTokens: totals.outputTokens,
+    cacheReadTokens: totals.cacheReadTokens,
+    cacheWriteTokens: totals.cacheWriteTokens,
+    costCents: microsToCents(totals.costMicros),
+    costMicros: totals.costMicros,
+  }
+}
+
+function usageDailyOf(point: UsageDailyPointLike) {
+  return { date: point.date, ...usageTotalsOf(point) }
+}
+
+function usageModelOf(item: UsageModelBreakdownLike) {
+  return { model: item.model, ...usageTotalsOf(item) }
+}
+
+function usageUserOf(item: UsageUserBreakdownLike, name: string | null) {
+  return { userId: item.userId, name, ...usageTotalsOf(item) }
+}
+
+/** 管理员明细行：用户侧字段 + userName / accountId / attempts。 */
+function adminUsageRowOf(row: UsageRowLike, userName: string | null) {
+  return {
+    id: row.id,
+    reqId: row.reqId,
+    userId: row.userId,
+    apiKeyId: row.apiKeyId,
+    apiKeyName: row.apiKeyName,
+    model: row.model,
+    upstreamModel: row.upstreamModel ?? null,
+    protocol: row.protocol,
+    upstreamProtocol: row.upstreamProtocol ?? null,
+    stream: row.stream,
+    status: row.status,
+    errorCode: row.errorCode ?? null,
+    inputTokens: row.inputTokens,
+    outputTokens: row.outputTokens,
+    cacheReadTokens: row.cacheReadTokens,
+    cacheWriteTokens: row.cacheWriteTokens,
+    totalTokens: row.totalTokens,
+    durationMs: row.durationMs,
+    clientIp: row.clientIp ?? null,
+    startedAt: row.startedAt,
+    costMicros: row.costMicros,
+    userName,
+    accountId: row.accountId,
+    attempts: row.attempts,
+  }
+}
+
+type AdminUsageCsvRow = UsageRowLike & { readonly userName: string | null }
+
+/**
+ * 管理员 CSV：列与用户侧一致，另加 `user` / `account`。
+ * 带 UTF-8 BOM（Excel 直接识别中文），并对以 `= + - @` 开头的字段做公式注入转义。
+ */
+function adminUsageCsv(rows: readonly AdminUsageCsvRow[]): string {
+  const header =
+    'time,user,api_key,model,input_tokens,output_tokens,cache_read_tokens,cache_write_tokens,total_tokens,cost_micros,status,duration_ms,client_ip,account'
+  const lines = rows.map((row) =>
+    [
+      row.startedAt,
+      row.userName ?? '',
+      row.apiKeyName,
+      row.model,
+      row.inputTokens,
+      row.outputTokens,
+      row.cacheReadTokens,
+      row.cacheWriteTokens,
+      row.totalTokens,
+      row.costMicros,
+      row.status,
+      row.durationMs,
+      row.clientIp ?? '',
+      row.accountId,
+    ]
+      .map(csvField)
+      .join(','),
+  )
+  return `﻿${header}\n${lines.length === 0 ? '' : `${lines.join('\n')}\n`}`
+}
+
+function csvField(value: unknown): string {
+  let text = value === undefined || value === null ? '' : String(value)
+  if (/^[=+\-@\t\r]/.test(text)) text = `'${text}`
+  if (/[",\r\n]/.test(text)) text = `"${text.replaceAll('"', '""')}"`
+  return text
+}
+
+/** `listAll()` 的形状兼容：数组或 `{ items }`；只保留 `enabled` 判定需要的信息。 */
+function keyPortResult(value: unknown): { enabled: boolean }[] {
+  const items = Array.isArray(value)
+    ? value
+    : isPlainObject(value) && Array.isArray(value.items)
+      ? value.items
+      : []
+  return items.filter(isPlainObject).map((item) => ({ enabled: item.enabled !== false }))
+}
+
+function queryStringOf(url: URL, name: string): string | undefined {
+  const value = url.searchParams.get(name)
+  return value === null || value === '' ? undefined : value
+}
+
+function parsePositiveInteger(value: string, name: string): number {
+  if (!/^\d+$/.test(value)) throw badRequest(`${name} 必须是正整数`)
+  const parsed = Number(value)
+  if (!Number.isSafeInteger(parsed) || parsed <= 0) throw badRequest(`${name} 必须是正整数`)
+  return parsed
 }
 
 function catalogState(state: string): CatalogModuleView['state'] {

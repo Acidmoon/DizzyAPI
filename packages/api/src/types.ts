@@ -86,6 +86,8 @@ export interface AdminUserView {
 export interface UserPort {
   get(id: number): Promise<UserLike | undefined>
   list(query?: { readonly status?: UserStatusLike; readonly offset?: number; readonly limit?: number }): Promise<UserLike[]>
+  /** 可选的全表计数；没有时管理概览退回分页 `list()` 统计。 */
+  count?(): Promise<number>
   rename(actor: string, id: number, name: string): Promise<UserLike>
   setStatus(actor: string, id: number, status: UserStatusLike): Promise<UserLike>
   remove(actor: string, id: number): Promise<UserLike>
@@ -384,6 +386,10 @@ export interface ApiKeyPort {
   update(userId: number, id: string, patch: { name?: string; enabled?: boolean }): Promise<unknown>
   remove(userId: number, id: string): Promise<unknown>
   rotate(userId: number, id: string): Promise<unknown>
+  /** 全站 key 计数（管理概览用）；拿到就不必为了一个数字加载整表。 */
+  count?(): Promise<number>
+  /** 管理面只读列表（掩码、无完整 key）；启用 / 停用拆分从这里读。 */
+  listAll?(): Promise<unknown>
 }
 
 export interface ApiKeySummaryView {
