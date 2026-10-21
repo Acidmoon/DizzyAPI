@@ -39,7 +39,8 @@ const KNOWN_KEYS = knownKeysOf(PRICING_FIELDS)
 
 export function validatePricingConfig(value: unknown): ResolvedPricingConfig | readonly StandardIssue[] {
   const { raw, issues } = checkConfigObject(value, KNOWN_KEYS)
-  const dataPath = readString(raw, 'dataPath', issues)
+  // 空字符串是合法值：表示不落盘，使用内存存储（测试与不需要持久化的场合）。
+  const dataPath = readString(raw, 'dataPath', issues, { allowEmpty: true })
   const adminPlugins = readStringArray(raw, 'adminPlugins', issues)
   if (issues.length > 0) return issues
   return {

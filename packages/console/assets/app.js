@@ -3028,16 +3028,217 @@ function renderRedirect(page) {
 }
 
 /**
- * 模型价格表（`/admin/pricing`）。接口随 `feat/pricing-plugin` 落地。
+ * 模型价格表（`/admin/pricing`）。
+ *
+ * 价格单位是「元 / 百万 token」，金额始终以十进制字符串进出；页面只负责展示与编辑，
+ * 换算与舍入都在服务端完成。
  * @param {FrontendPage} page @returns {Promise<HTMLElement>}
  */
 async function renderPricing(page) {
-  return el(
+  const section = el(
     'section',
     { class: 'page' },
     pageHead(page),
-    el('div', { class: 'empty', text: '模型价格表尚未接入。' }),
+    el('p', {
+      class: 'lede',
+      text: '价格单位是「元 / 百万 token」，费用在读取用量时按这张表计算。精确模型名优先；「*」是兜底条目，没有匹配到任何模型时按它计价。',
+    }),
   )
+  const tableHost = el('div', { class: 'table-card' })
+  const actions = el(
+    'div',
+    { class: 'filters' },
+    el('span', { class: 'spacer' }),
+    el('button', {
+      class: 'btn btn-light',
+      attrs: { type: 'button' },
+      text: '新增价格',
+      on: { click: () => openPricingDialog(null, load) },
+    }),
+  )
+  section.append(actions, tableHost)
+  tableHost.append(loadingState('正在读取价格表…'))
+
+  const load = async () => {
+    tableHost.replaceChildren(loadingState('正在读取价格表…'))
+    try {
+      const response = await api().pricing.list()
+      if (response.items.length === 0) {
+        tableHost.replaceChildren(
+          el('div', {
+            class: 'empty',
+            text: '价格表还是空的。新增「*」兜底条目，或按模型配置单价。',
+          }),
+        )
+        return
+      }
+      tableHost.replaceChildren(
+        el(
+          'div',
+          { class: 'table-wrap' },
+          el(
+            'table',
+            { class: 'data-table' },
+            el(
+              'thead',
+              {},
+              el(
+                'tr',
+                {},
+                el('th', { text: '模型' }),
+                el('th', { text: '输入' }),
+                el('th', { text: '输出' }),
+                el('th', { text: '缓存读' }),
+                el('th', { text: '缓存写' }),
+                el('th', { text: '更新时间' }),
+                el('th', { text: '操作' }),
+              ),
+            ),
+            el('tbody', {}, ...response.items.map((price) => pricingRow(price, load))),
+          ),
+        ),
+      )
+    } catch (error) {
+      tableHost.replaceChildren(errorState(error, () => void load()))
+    }
+  }
+  await load()
+  return section
+}
+
+/**
+ * @param {import('../src/contracts.ts').ModelPriceView} price
+ * @param {() => Promise<void>} reload
+ * @returns {HTMLElement}
+ */
+function pricingRow(price, reload) {
+  const edit = /** @type {HTMLButtonElement} */ (el('button', {
+    class: 'btn btn-icon',
+    attrs: { type: 'button', title: '编辑价格' },
+    on: { click: () => openPricingDialog(price, reload) },
+  }))
+  edit.append(icon('edit'))
+
+  const remove = /** @type {HTMLButtonElement} */ (el('button', {
+    class: 'btn btn-icon btn-danger',
+    attrs: { type: 'button', title: '删除价格' },
+    on: {
+      click: async () => {
+        if (!window.confirm(`删除模型「${price.model}」的价格？删除后该模型按兜底价或 0 计算。`)) return
+        remove.disabled = true
+        try {
+          const result = await api().pricing.remove(price.model)
+          toast(result.removed ? `${price.model} 的价格已删除` : `${price.model} 的价格已不存在`)
+          await reload()
+        } catch (error) {
+          remove.disabled = false
+          toast(errorMessage(error), 'bad')
+        }
+      },
+    },
+  }))
+  remove.append(icon('trash'))
+
+  return el(
+    'tr',
+    {},
+    el('td', {}, el('div', { class: 'cell-title' }, el('code', { text: price.model }))),
+    el('td', { class: 'num', text: price.inputPerMillion }),
+    el('td', { class: 'num', text: price.outputPerMillion }),
+    el('td', { class: 'num', text: price.cacheReadPerMillion }),
+    el('td', { class: 'num', text: price.cacheWritePerMillion }),
+    el('td', { text: formatTime(price.updatedAt) }),
+    el('td', { class: 'cell-actions' }, el('div', { class: 'table-actions' }, edit, remove)),
+  )
+}
+
+/**
+ * 新增 / 编辑一个模型的价格。编辑时模型名不可改，避免留下旧条目。
+ * @param {import('../src/contracts.ts').ModelPriceView | null} price
+ * @param {() => Promise<void>} reload
+ * @returns {void}
+ */
+function openPricingDialog(price, reload) {
+  const editing = price !== null
+  const modelInput = /** @type {HTMLInputElement} */ (el('input', {
+    attrs: {
+      type: 'text',
+      value: price?.model ?? '',
+      placeholder: '例如 deepseek-ai/DeepSeek-V3 或 *',
+      maxlength: '200',
+    },
+  }))
+  modelInput.disabled = editing
+
+  const inputInput = /** @type {HTMLInputElement} */ (el('input', {
+    attrs: { type: 'text', inputmode: 'decimal', value: price?.inputPerMillion ?? '0' },
+  }))
+  const outputInput = /** @type {HTMLInputElement} */ (el('input', {
+    attrs: { type: 'text', inputmode: 'decimal', value: price?.outputPerMillion ?? '0' },
+  }))
+  const cacheReadInput = /** @type {HTMLInputElement} */ (el('input', {
+    attrs: { type: 'text', inputmode: 'decimal', value: price?.cacheReadPerMillion ?? '0' },
+  }))
+  const cacheWriteInput = /** @type {HTMLInputElement} */ (el('input', {
+    attrs: { type: 'text', inputmode: 'decimal', value: price?.cacheWritePerMillion ?? '0' },
+  }))
+
+  const error = el('p', { class: 'error-message', attrs: { hidden: '' } })
+  const cancel = el('button', { class: 'btn', attrs: { type: 'button' }, text: '取消' })
+  const save = /** @type {HTMLButtonElement} */ (el('button', {
+    class: 'btn btn-light',
+    attrs: { type: 'submit' },
+    text: editing ? '保存' : '新增',
+  }))
+
+  const form = el(
+    'form',
+    {},
+    el(
+      'div',
+      { class: 'form-grid' },
+      el(
+        'div',
+        { class: 'form-field span-2' },
+        el('label', { text: '模型名' }),
+        modelInput,
+        el('span', { class: 'cell-sub', text: editing ? '模型名不可修改；需要改名请删除后重新添加。' : '允许包含 /，例如 deepseek-ai/DeepSeek-V3；「*」表示兜底。' }),
+      ),
+      el('div', { class: 'form-field' }, el('label', { text: '输入（元 / 百万 token）' }), inputInput),
+      el('div', { class: 'form-field' }, el('label', { text: '输出（元 / 百万 token）' }), outputInput),
+      el('div', { class: 'form-field' }, el('label', { text: '缓存读（元 / 百万 token）' }), cacheReadInput),
+      el('div', { class: 'form-field' }, el('label', { text: '缓存写（元 / 百万 token）' }), cacheWriteInput),
+    ),
+    error,
+    el('div', { class: 'dialog-actions' }, cancel, save),
+  )
+
+  const dialog = openDialog(editing ? `编辑价格 · ${price.model}` : '新增价格', form, { wide: true })
+  cancel.addEventListener('click', () => dialog.close())
+  if (!editing) modelInput.focus()
+  else inputInput.focus()
+
+  form.addEventListener('submit', async (event) => {
+    event.preventDefault()
+    error.hidden = true
+    save.disabled = true
+    try {
+      const model = modelInput.value.trim()
+      await api().pricing.set(model, {
+        inputPerMillion: inputInput.value.trim(),
+        outputPerMillion: outputInput.value.trim(),
+        cacheReadPerMillion: cacheReadInput.value.trim(),
+        cacheWritePerMillion: cacheWriteInput.value.trim(),
+      })
+      toast(editing ? `${model} 的价格已更新` : `${model} 的价格已添加`)
+      dialog.close()
+      await reload()
+    } catch (caught) {
+      error.textContent = errorMessage(caught)
+      error.hidden = false
+      save.disabled = false
+    }
+  })
 }
 
 /** @param {FrontendPage} page @returns {HTMLElement} */
