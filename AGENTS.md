@@ -287,8 +287,10 @@ pnpm build:go         # 产出 bin/gatewayd(.exe)
 
 - 生产服务器 `<生产服务器>` / `<SERVER_IP>`（root），代码 `/opt/dizzyapi`，systemd `dizzyapi.service`；
   公网入口 `https://<站点域名>`：宝塔 nginx 把 `/v1/*` 与 `/healthz` 反代 gatewayd
-  `18080`、其余反代 `web` 的 `7792`（旧的 `/console/usage → 7793` 与 `/ → 7791` 规则已过时，
-  切换时把 `Host` 改写成 `127.0.0.1:7792`，与旧规则同理）。
+  `18080`、`/api/*` 反代 `api` 的 `7791`、其余反代 `web` 的 `7792`；后两者的 `Host` 都要改写成
+  对应回环地址（`/` 还要把 `Origin` 改写成 `https://127.0.0.1:7792`）。
+- 服务器上 `pnpm` 走网络会卡住；部署依赖统一用
+  `npx -y pnpm@11.21.0 install --frozen-lockfile --offline` 复用已装好的 store。
 - `tx`（`<OLD_SERVER_IP>`）上的旧部署已于 2026-10-23 下线，`data/` 备份在本地 `temp/`。
 - 服务器没有 Go 工具链：本地 `GOOS=linux GOARCH=amd64 go build -trimpath -o bin/gatewayd ./cmd/gatewayd`
   交叉编译后 scp `bin/gatewayd`；服务器 Node 26，用 `npx pnpm@11.21.0 install --frozen-lockfile`。
