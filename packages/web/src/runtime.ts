@@ -225,6 +225,12 @@ export interface AccountAdminLike {
   testConnection(id: string, input?: { model?: string }): Promise<{ readonly ok: boolean; readonly status: number | null; readonly latencyMs: number; readonly model: string | null; readonly error: string | null }>
 }
 
+/** 站点字体：web 只用到这两件事。 */
+export interface FontLike {
+  css(): string
+  file(): { readonly name: string; readonly contentType: string; readonly body: Buffer }
+}
+
 /** 页面能看到的全部控制面服务；缺哪个页面就降级哪块。 */
 export interface WebRuntime {
   readonly user: UserLike | undefined
@@ -235,6 +241,7 @@ export interface WebRuntime {
   readonly settings: SettingsLike | undefined
   readonly catalog: CatalogLike | undefined
   readonly accountAdmin: AccountAdminLike | undefined
+  readonly fontSmiley: FontLike | undefined
 }
 
 /** 写入时用的 actor 名（app.yml 白名单里登记同一字符串）。 */

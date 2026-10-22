@@ -1,0 +1,24 @@
+{
+  "name": "@dizzyapi/plugin-font-smiley",
+  "version": "0.1.0",
+  "private": true,
+  "description": "DizzyAPI · 站点字体：自托管 Smiley Sans（得意黑）",
+  "type": "module",
+  "license": "MIT",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "assets",
+    "src"
+  ],
+  "scripts": {
+    "test": "node --import tsx --test \"test/*.test.ts\""
+  },
+  "dependencies": {
+    "cordis": "^4.0.0-rc.11"
+  }
+}

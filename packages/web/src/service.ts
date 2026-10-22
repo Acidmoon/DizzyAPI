@@ -17,6 +17,7 @@ import type {
   ApiKeyLike,
   AuthLike,
   CatalogLike,
+  FontLike,
   PricingLike,
   SessionView,
   SettingsLike,
@@ -138,6 +139,7 @@ export class WebService extends Service {
       settings: get<SettingsLike>('settings'),
       catalog: get<CatalogLike>('catalog'),
       accountAdmin: get<AccountAdminLike>('accountAdmin'),
+      fontSmiley: get<FontLike>('fontSmiley'),
     }
   }
 
@@ -152,8 +154,25 @@ export class WebService extends Service {
       const path = url.pathname
 
       if (path === '/assets/app.css') {
-        this.send(res, 200, 'text/css; charset=utf-8', `${PAGE_CSS}${COMPONENT_CSS}`, true)
+        const font = this.runtime().fontSmiley
+        const fontCss = font === undefined ? '' : font.css()
+        this.send(res, 200, 'text/css; charset=utf-8', `${PAGE_CSS}${COMPONENT_CSS}\n${fontCss}`, true)
         return
+      }
+      if (path.startsWith('/assets/fonts/')) {
+        const font = this.runtime().fontSmiley
+        if (font !== undefined) {
+          const file = font.file()
+          if (path === `/assets/fonts/${file.name}`) {
+            res.writeHead(200, {
+              ...SECURITY_HEADERS,
+              'Content-Type': file.contentType,
+              'Cache-Control': 'public, max-age=31536000, immutable',
+            })
+            res.end(file.body)
+            return
+          }
+        }
       }
       if (path === '/assets/app.js') {
         this.send(res, 200, 'text/javascript; charset=utf-8', `${CLIENT_JS}\n${CONFIRM_JS}`, true)
@@ -169,10 +188,6 @@ export class WebService extends Service {
         return
       }
       if (path === '/logout') {
-        if (req.method !== 'POST') {
-          this.redirect(res, '/login')
-          return
-        }
         const token = readCookie(req, this.config.sessionCookieName)
         if (token !== undefined) await this.runtime().auth?.logout(token).catch(() => undefined)
         res.writeHead(303, {

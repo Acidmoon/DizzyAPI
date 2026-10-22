@@ -152,6 +152,7 @@ export default FooService
 | `@dizzyapi/plugin-deepseek-usage` | `deepseekUsage` | 独立成页的「用量信息」页（DeepSeek 开放平台用量页的像素级复刻）：自起 `127.0.0.1:7793`；**已禁用**，保留为像素级参考 |
 | `@dizzyapi/plugin-page-template` | `pageTemplate` | 页面模板：从 deepseek-usage 原样抽出的设计 token、侧栏/卡片/表格/表单、堆叠柱状图与面积折线图、线性图标；纯服务，不起 HTTP、不读写存储 |
 | `@dizzyapi/plugin-web` | `web` | 服务端渲染前端：**一页一个文件**（`packages/web/src/pages/*.ts`），数据走进程内服务，写操作是表单 POST + 303；监听 `127.0.0.1:7792` |
+| `@dizzyapi/plugin-font-smiley` | `fontSmiley` | 站点字体：自托管 Smiley Sans（得意黑）v2.0.1，OFL-1.1；纯资源服务，web 追加 `@font-face` 并发 `/assets/fonts/smiley-sans.woff2` |
 
 ### 4.2 Go 模块
 
@@ -250,7 +251,7 @@ pnpm test:go
 
 - 新增插件必须有 `test/*.test.ts`；新增 Go 模块必须有单测。
 - 测试失败先修实现，不允许删断言或放宽断言来变绿。
-- 当前基线：`pnpm test` 426 个用例（425 通过 / 1 跳过），`pnpm typecheck` 干净，
+- 当前基线：`pnpm test` 432 个用例（431 通过 / 1 跳过），`pnpm typecheck` 干净，
   `go test ./...` 全绿，`gofmt -l .` 与 `go vet ./...` 无输出。这个数字会变，以实际输出为准。
 
 ### 5.5 前端
@@ -263,6 +264,9 @@ pnpm test:go
 - 旧的 `frontend` SPA（`packages/console`）已禁用：`/assets/frontend/*` 与 SPA 路由不再提供，
   `/api/*` JSON 入口仍由 `api` 插件保留。
 - 不把完整 key 写进 localStorage / URL / 日志；页面只在创建 / 轮换后显示一次。
+- 站点字体是 `font-smiley` 插件：自托管 Smiley Sans（得意黑）v2.0.1（OFL-1.1），
+  字体与 LICENSE 在 `packages/font-smiley/assets/`；`scope` 默认 `headings`（只换标题与品牌），
+  改 `all` 才换正文。web 负责把 `@font-face` 追加进 `/assets/app.css` 并发送 woff2 字节。
 
 ---
 

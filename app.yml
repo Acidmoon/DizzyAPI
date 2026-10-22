@@ -189,6 +189,14 @@
 - id: page-template
   name: '@dizzyapi/plugin-page-template'
 
+# 站点字体：自托管 Smiley Sans（得意黑）v2.0.1，SIL OFL-1.1。
+# 纯资源服务：web 把它的 @font-face 追加进 /assets/app.css，并从
+# /assets/fonts/smiley-sans.woff2 发字体字节；scope 决定只换标题还是全站。
+- id: font-smiley
+  name: '@dizzyapi/plugin-font-smiley'
+  config:
+    scope: headings
+
 # 服务端渲染前端：一页一个文件（packages/web/src/pages），数据走进程内服务。
 # 写操作是表单 POST + 303；样式与脚本由 /assets/app.* 外链，CSP 保持 'self'。
 - id: web

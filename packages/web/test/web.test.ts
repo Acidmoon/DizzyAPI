@@ -7,6 +7,7 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { Context } from 'cordis'
 import { PageTemplateService } from '@dizzyapi/plugin-page-template'
+import { FontSmileyService } from '@dizzyapi/plugin-font-smiley'
 import { WebService } from '../src/service.ts'
 import { PAGES } from '../src/pages/index.ts'
 import { WEB_DEFAULTS, validateWebConfig, type ResolvedWebConfig } from '../src/config.ts'
@@ -15,6 +16,7 @@ import { formatYuan, microsToYuan } from '../src/forms.ts'
 async function boot(): Promise<{ ctx: Context; base: string; close(): Promise<void> }> {
   const ctx = new Context()
   await ctx.plugin(PageTemplateService)
+  await ctx.plugin(FontSmileyService)
   await ctx.plugin(WebService, { port: 0 })
   const web = ctx.get('web') as WebService
   for (let i = 0; i < 100; i += 1) {
@@ -112,6 +114,24 @@ test('HTTP：登录 POST 在鉴权服务缺失时回到登录页带错误', asyn
     })
     assert.equal(response.status, 303)
     assert.ok((response.headers.get('location') ?? '').startsWith('/login?err='))
+  } finally {
+    await app.close()
+  }
+})
+
+test('HTTP：字体 @font-face 追加进 app.css，woff2 可下载', async () => {
+  const app = await boot()
+  try {
+    const css = await (await fetch(`${app.base}/assets/app.css`)).text()
+    assert.ok(css.includes('@font-face'))
+    assert.ok(css.includes("font-family: 'Smiley Sans'"))
+    assert.ok(css.includes('/assets/fonts/smiley-sans.woff2'))
+
+    const font = await fetch(`${app.base}/assets/fonts/smiley-sans.woff2`)
+    assert.equal(font.status, 200)
+    assert.equal(font.headers.get('content-type'), 'font/woff2')
+    const bytes = Buffer.from(await font.arrayBuffer())
+    assert.equal(bytes.subarray(0, 4).toString('latin1'), 'wOF2')
   } finally {
     await app.close()
   }
