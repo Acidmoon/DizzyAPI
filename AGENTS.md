@@ -177,7 +177,9 @@ export default FooService
 - 用量只有 `usage` 插件写 `usage.db`；价格只有 `pricing` 插件写 `pricing.json`；
   Go 只把用量放进内存环形缓冲，不落盘。
 - 本地端口：`api` `127.0.0.1:7791`、gatewayd `127.0.0.1:8080`、面板 `127.0.0.1:7788`。
-- 服务器：`<OLD_SERVER_IP>`，gatewayd `127.0.0.1:18080`，Caddy `80/443`。
+- 生产服务器：`<生产服务器>` / `<SERVER_IP>`，gatewayd `127.0.0.1:18080`，入口
+  `https://<站点域名>`（宝塔 nginx `80/443`）；`sub2api` 并存于 `127.0.0.1:8080`
+  （`<站点域名>`），不要动。
 
 ### 4.4 已实现的能力
 
@@ -204,7 +206,7 @@ export default FooService
 - 管理员概览 `/api/admin/stats`：用户 / 账号 / key 计数 + 今日与累计 token（入 / 出 / 总）、
   请求数、费用、近 30 天序列、Top 模型与 Top 用户
 - SPA + `/api/*` 产品入口；设置、目录、健康、用户管理、账号管理
-- 部署：systemd + Caddy + fail2ban
+- 部署：systemd + nginx（宝塔）+ fail2ban；`sub2api` 暂并存于同一台机器
 
 ---
 
@@ -243,7 +245,7 @@ pnpm test:go
 
 - 新增插件必须有 `test/*.test.ts`；新增 Go 模块必须有单测。
 - 测试失败先修实现，不允许删断言或放宽断言来变绿。
-- 当前基线：`pnpm test` 384 个用例（383 通过 / 1 跳过），`pnpm typecheck` 干净，
+- 当前基线：`pnpm test` 404 个用例（403 通过 / 1 跳过），`pnpm typecheck` 干净，
   `go test ./...` 全绿，`gofmt -l .` 与 `go vet ./...` 无输出。这个数字会变，以实际输出为准。
 
 ### 5.5 前端
@@ -270,12 +272,22 @@ pnpm build:go         # 产出 bin/gatewayd(.exe)
 
 ### 6.2 部署
 
-- 服务器 `et-vps2` / `<OLD_SERVER_IP>`，代码 `/opt/dizzyapi`，systemd `dizzyapi.service`。
+- 生产服务器 `<生产服务器>` / `<SERVER_IP>`（root），代码 `/opt/dizzyapi`，systemd `dizzyapi.service`；
+  公网入口 `https://<站点域名>`：宝塔 nginx 把 `/v1/*` 与 `/healthz` 反代 gatewayd
+  `18080`、`/console/usage` 反代 `7793`、其余反代 `7791`。
+- `tx`（`<OLD_SERVER_IP>`）上的旧部署已于 2026-10-23 下线，`data/` 备份在本地 `temp/`。
+- 服务器没有 Go 工具链：本地 `GOOS=linux GOARCH=amd64 go build -trimpath -o bin/gatewayd ./cmd/gatewayd`
+  交叉编译后 scp `bin/gatewayd`；服务器 Node 26，用 `npx pnpm@11.21.0 install --frozen-lockfile`。
+- 反向代理必须把 `Host` / `Origin` 改写成回环（`127.0.0.1:7791` / `127.0.0.1:7793`）：
+  `api` 与 `deepseek-usage` 都校验它们来挡 DNS rebinding，原样转发会 403 / 500。
+- `deepseek-usage.consoleBaseUrl` 在服务器 `app.yml` 里配成 `https://<站点域名>`，
+  否则侧栏链接会指向访客本机的 `127.0.0.1`。
+- 服务器 `app.yml` 的 `account-priority.httpListen` 用 `18080`：仓库默认的 `8080` 在 `<生产服务器>`
+  属于 sub2api，`18080` 原属已删除的 dsh-proxy。
 - 服务器无法直连私有 GitHub 仓库：用本地 `git archive` + `scp` 部署，不要覆盖服务器
   `app.yml`、`data/`、`bin/`。
 - 部署前备份代码与 `data/`；部署后重启 `dizzyapi`，检查 `systemctl is-active` 与
   `/api/health`。
-- Nginx 的 `127.0.0.1:8080` 属于现有 darts-club，不要动。
 
 ---
 
