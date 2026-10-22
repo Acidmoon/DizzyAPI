@@ -149,6 +149,7 @@ export default FooService
 | `@dizzyapi/plugin-pricing` | `pricing` | 模型价格表唯一写者：每百万 token 的单价（元，十进制字符串）；`data/pricing.json`；读不设限，写要求 actor 在白名单 |
 | `@dizzyapi/plugin-usage` | `usage` | 用量明细唯一存储者：轮询 Go 的 `usage.since`、幂等落 `data/usage.db`、按用户/管理员口径查询；费用在**读取时**按 pricing 计算 |
 | `@dizzyapi/plugin-kit` | — | 共用底座：配置 schema + 原子写 JSON 存储 |
+| `@dizzyapi/plugin-deepseek-usage` | `deepseekUsage` | 独立成页的「用量信息」页（DeepSeek 开放平台用量页的像素级复刻）：自起 `127.0.0.1:7793`，数据只经 `usage` / `user` / `auth` 的只读接口拿 |
 
 ### 4.2 Go 模块
 
@@ -176,7 +177,8 @@ export default FooService
   `data/pricing.json`、`data/usage.db`、`data/frontend/`。
 - 用量只有 `usage` 插件写 `usage.db`；价格只有 `pricing` 插件写 `pricing.json`；
   Go 只把用量放进内存环形缓冲，不落盘。
-- 本地端口：`api` `127.0.0.1:7791`、gatewayd `127.0.0.1:8080`、面板 `127.0.0.1:7788`。
+- 本地端口：`api` `127.0.0.1:7791`、gatewayd `127.0.0.1:8080`、面板 `127.0.0.1:7788`、
+  `deepseek-usage` 页面 `127.0.0.1:7793`（预览 `7794`）。
 - 生产服务器：`<生产服务器>` / `<SERVER_IP>`，gatewayd `127.0.0.1:18080`，入口
   `https://<站点域名>`（宝塔 nginx `80/443`）；`sub2api` 并存于 `127.0.0.1:8080`
   （`<站点域名>`），不要动。
@@ -282,6 +284,9 @@ pnpm build:go         # 产出 bin/gatewayd(.exe)
   `api` 与 `deepseek-usage` 都校验它们来挡 DNS rebinding，原样转发会 403 / 500。
 - `deepseek-usage.consoleBaseUrl` 在服务器 `app.yml` 里配成 `https://<站点域名>`，
   否则侧栏链接会指向访客本机的 `127.0.0.1`。
+- 邮件用 163 SMTP（`smtp.163.com:465`，TLS），沿用 `/opt/aihot-digest/.env` 的账号：
+  授权码写在 `credentials` 的 `dizzyapi/mailer`，`mailer.from` **必须与该授权账号一致**，
+  否则 163 回 `553 Mail from must equal authorized user`。
 - 服务器 `app.yml` 的 `account-priority.httpListen` 用 `18080`：仓库默认的 `8080` 在 `<生产服务器>`
   属于 sub2api，`18080` 原属已删除的 dsh-proxy。
 - 服务器无法直连私有 GitHub 仓库：用本地 `git archive` + `scp` 部署，不要覆盖服务器
@@ -380,6 +385,14 @@ pnpm build:go         # 产出 bin/gatewayd(.exe)
 - 预览用 `pnpm preview:console`；它没有 `/api/*`，真实进程用 `pnpm dev`。
 - 静态资源的 `<base>` 已带尾斜杠，不要重复补 `/`。
 - CSP `img-src` 放行 `data:` 与 `https:`；`http://` 头像能存但会被拦。
+
+### 测试
+
+- **`account-priority` 的用例会因机器负载偶发失败**：它真的 spawn 子进程
+  （`node test/fixtures/fake-gatewayd.mjs`）。同时开着常驻预览服务 / 别的构建时，子进程
+  启动会慢于断言，`status().pid` 还是 `null`，用例报「卸载插件会停止子进程」或
+  「等待条件超时」。这不是功能回归：**先停掉常驻预览服务再单独复跑**，绿了就是负载问题。
+- 验证「是不是我改坏的」用 `git stash push -- <改动文件>` 做对照，跑完记得 `git stash pop`。
 
 ---
 
