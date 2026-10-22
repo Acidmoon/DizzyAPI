@@ -15,6 +15,7 @@
     "test:go": "go test ./...",
     "test:all": "pnpm test && pnpm test:go",
     "preview:console": "node --import tsx packages/console/src/preview-main.ts",
+    "preview:deepseek-usage": "node --import tsx packages/deepseek-usage/src/preview-main.ts",
     "typecheck": "tsc -p tsconfig.json && tsc -p packages/console/tsconfig.json"
   },
   "dependencies": {
@@ -35,6 +36,7 @@
     "@dizzyapi/plugin-auth": "workspace:*",
     "@dizzyapi/plugin-catalog": "workspace:*",
     "@dizzyapi/plugin-credentials": "workspace:*",
+    "@dizzyapi/plugin-deepseek-usage": "workspace:*",
     "@dizzyapi/plugin-frontend": "workspace:*",
     "@dizzyapi/plugin-identity": "workspace:*",
     "@dizzyapi/plugin-kit": "workspace:*",

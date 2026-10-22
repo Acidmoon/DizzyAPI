@@ -177,6 +177,17 @@
     apiBase: /api
     mode: rest
 
+# 「用量信息」页：DeepSeek 开放平台用量页的像素级复刻，独立成页，不改 packages/console 的控制台。
+# 它自己起一个 127.0.0.1 的 HTTP 服务（7793），数据只经 usage / user / auth 三个服务的只读接口拿。
+# 端口冲突直接失败，不静默换端口。
+- id: deepseek-usage
+  name: '@dizzyapi/plugin-deepseek-usage'
+  config:
+    port: 7793
+    basePath: /console/usage
+    enabled: true
+    sessionCookieName: dizzyapi_session
+
 # 产品 HTTP 入口：同源提供 SPA 静态资源与 /api/*（界面请求）。
 # 静态字节从 frontend 的版本目录读盘；/api/* 在进程内调用控制面服务，不走控制桥。
 # 只绑 127.0.0.1；会话只进 HttpOnly cookie，API key 的完整值只在创建 / 轮换时出现一次。
