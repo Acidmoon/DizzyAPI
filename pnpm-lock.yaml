@@ -74,6 +74,9 @@ importers:
       '@dizzyapi/plugin-mailer':
         specifier: workspace:*
         version: link:packages/mailer
+      '@dizzyapi/plugin-page-template':
+        specifier: workspace:*
+        version: link:packages/page-template
       '@dizzyapi/plugin-pricing':
         specifier: workspace:*
         version: link:packages/pricing
@@ -86,6 +89,9 @@ importers:
       '@dizzyapi/plugin-user':
         specifier: workspace:*
         version: link:packages/user
+      '@dizzyapi/plugin-web':
+        specifier: workspace:*
+        version: link:packages/web
       cordis:
         specifier: ^4.0.0-rc.11
         version: 4.0.0-rc.11(@cordisjs/plugin-include@1.1.1)(@cordisjs/plugin-loader@1.0.0-rc.8)
@@ -240,6 +246,12 @@ importers:
         specifier: workspace:*
         version: link:../credentials
 
+  packages/page-template:
+    dependencies:
+      cordis:
+        specifier: ^4.0.0-rc.11
+        version: 4.0.0-rc.11(@cordisjs/plugin-include@1.1.1)(@cordisjs/plugin-loader@1.0.0-rc.8)
+
   packages/pricing:
     dependencies:
       '@dizzyapi/plugin-kit':
@@ -285,6 +297,15 @@ importers:
       '@dizzyapi/plugin-kit':
         specifier: workspace:*
         version: link:../kit
+      cordis:
+        specifier: ^4.0.0-rc.11
+        version: 4.0.0-rc.11(@cordisjs/plugin-include@1.1.1)(@cordisjs/plugin-loader@1.0.0-rc.8)
+
+  packages/web:
+    dependencies:
+      '@dizzyapi/plugin-page-template':
+        specifier: workspace:*
+        version: link:../page-template
       cordis:
         specifier: ^4.0.0-rc.11
         version: 4.0.0-rc.11(@cordisjs/plugin-include@1.1.1)(@cordisjs/plugin-loader@1.0.0-rc.8)

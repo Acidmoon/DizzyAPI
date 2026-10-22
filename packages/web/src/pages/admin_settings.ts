@@ -1,0 +1,40 @@
+/** 管理台 · 设置：只读展示各命名空间；写入仍由设置面板 / settings 服务负责。 */
+import { pageHeader, renderAdminShell, type PageModule } from '../layout.ts'
+
+export const adminSettingsPage: PageModule = {
+  path: '/admin/settings',
+  area: 'admin',
+  title: '设置',
+  auth: true,
+  admin: true,
+
+  async render(ctx) {
+    const t = ctx.t
+    const settings = ctx.services.settings
+    if (settings === undefined) {
+      return renderAdminShell(ctx, pageHeader(ctx, '设置') + t.renderNotice({ kind: 'err', text: '设置服务未运行' }))
+    }
+    const namespaces = await settings.describe()
+    const blocks = namespaces.map((ns) => {
+      const rows = ns.fields.map((field) => [
+        t.escapeText(field.key),
+        t.escapeText(field.label),
+        t.escapeText(field.kind),
+        field.secret === true
+          ? t.renderBadge('秘密', 'warn')
+          : t.escapeText(field.value === undefined ? '—' : String(field.value)),
+        field.writable === true ? t.renderBadge('可写', 'ok') : t.renderBadge('只读'),
+      ])
+      const table = t.renderTable({
+        columns: [{ label: '字段' }, { label: '名称' }, { label: '类型' }, { label: '当前值' }, { label: '写' }],
+        rows,
+        empty: '没有字段',
+      })
+      return `${t.renderSectionTitle(ns.label ?? ns.ns)}<p class="muted">${t.escapeText(ns.ns)}${ns.revision === undefined ? '' : ` · revision ${t.escapeText(ns.revision)}`}</p>${table}`
+    })
+    return renderAdminShell(ctx, [
+      pageHeader(ctx, '设置', '秘密字段只显示状态，不回显值。'),
+      ...(blocks.length === 0 ? [t.renderEmpty('没有可展示的命名空间')] : blocks),
+    ].join('\n'))
+  },
+}

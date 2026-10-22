@@ -142,14 +142,16 @@ export default FooService
 | `@dizzyapi/plugin-account-admin` | `accountAdmin` | identity 的管理门面：新建 / 修改 / 导入凭据 / 启停 / 删除 |
 | `@dizzyapi/plugin-account-priority` | `accountPriority` | 策略组唯一写者；拉起 gatewayd；推送账号与 key 快照 |
 | `@dizzyapi/plugin-catalog` | `catalog` | 插件能力目录（只读，反射 + 声明） |
-| `@dizzyapi/plugin-frontend` | `frontend` | SPA 静态资源版本 / 清单 / 回滚 |
+| `@dizzyapi/plugin-frontend` | `frontend` | SPA 静态资源版本 / 清单 / 回滚（**已禁用**，由 `web` 取代） |
 | `@dizzyapi/plugin-api` | `api` | 产品 HTTP 入口：SPA + `/api/*`，进程内调用控制面服务 |
 | `@dizzyapi/plugin-settings` | `settings` | 运行期配置覆盖；`app.yml` 是基线 |
 | `@dizzyapi/plugin-admin` | `admin` | 开发者面板：依赖图、概览、改设置、重启插件、退出 |
 | `@dizzyapi/plugin-pricing` | `pricing` | 模型价格表唯一写者：每百万 token 的单价（元，十进制字符串）；`data/pricing.json`；读不设限，写要求 actor 在白名单 |
 | `@dizzyapi/plugin-usage` | `usage` | 用量明细唯一存储者：轮询 Go 的 `usage.since`、幂等落 `data/usage.db`、按用户/管理员口径查询；费用在**读取时**按 pricing 计算 |
 | `@dizzyapi/plugin-kit` | — | 共用底座：配置 schema + 原子写 JSON 存储 |
-| `@dizzyapi/plugin-deepseek-usage` | `deepseekUsage` | 独立成页的「用量信息」页（DeepSeek 开放平台用量页的像素级复刻）：自起 `127.0.0.1:7793`，数据只经 `usage` / `user` / `auth` 的只读接口拿 |
+| `@dizzyapi/plugin-deepseek-usage` | `deepseekUsage` | 独立成页的「用量信息」页（DeepSeek 开放平台用量页的像素级复刻）：自起 `127.0.0.1:7793`；**已禁用**，保留为像素级参考 |
+| `@dizzyapi/plugin-page-template` | `pageTemplate` | 页面模板：从 deepseek-usage 原样抽出的设计 token、侧栏/卡片/表格/表单、堆叠柱状图与面积折线图、线性图标；纯服务，不起 HTTP、不读写存储 |
+| `@dizzyapi/plugin-web` | `web` | 服务端渲染前端：**一页一个文件**（`packages/web/src/pages/*.ts`），数据走进程内服务，写操作是表单 POST + 303；监听 `127.0.0.1:7792` |
 
 ### 4.2 Go 模块
 
@@ -177,8 +179,9 @@ export default FooService
   `data/pricing.json`、`data/usage.db`、`data/frontend/`。
 - 用量只有 `usage` 插件写 `usage.db`；价格只有 `pricing` 插件写 `pricing.json`；
   Go 只把用量放进内存环形缓冲，不落盘。
-- 本地端口：`api` `127.0.0.1:7791`、gatewayd `127.0.0.1:8080`、面板 `127.0.0.1:7788`、
-  `deepseek-usage` 页面 `127.0.0.1:7793`（预览 `7794`）。
+- 本地端口：`web` `127.0.0.1:7792`（服务端渲染前端）、`api` `127.0.0.1:7791`、
+  gatewayd `127.0.0.1:8080`、面板 `127.0.0.1:7788`。旧的 `frontend` SPA 与
+  `deepseek-usage`（7793）已禁用。
 - 生产服务器：`<生产服务器>` / `<SERVER_IP>`，gatewayd `127.0.0.1:18080`，入口
   `https://<站点域名>`（宝塔 nginx `80/443`）；`sub2api` 并存于 `127.0.0.1:8080`
   （`<站点域名>`），不要动。
@@ -207,7 +210,7 @@ export default FooService
   用量费用在**读取时**按价格表计算（整数微元，1 元 = 1_000_000 微元），当前没有真实扣费
 - 管理员概览 `/api/admin/stats`：用户 / 账号 / key 计数 + 今日与累计 token（入 / 出 / 总）、
   请求数、费用、近 30 天序列、Top 模型与 Top 用户
-- SPA + `/api/*` 产品入口；设置、目录、健康、用户管理、账号管理
+- 服务端渲染页面 + `/api/*` JSON 入口；设置、目录、健康、用户管理、账号管理
 - 部署：systemd + nginx（宝塔）+ fail2ban；`sub2api` 暂并存于同一台机器
 
 ---
@@ -247,15 +250,19 @@ pnpm test:go
 
 - 新增插件必须有 `test/*.test.ts`；新增 Go 模块必须有单测。
 - 测试失败先修实现，不允许删断言或放宽断言来变绿。
-- 当前基线：`pnpm test` 404 个用例（403 通过 / 1 跳过），`pnpm typecheck` 干净，
+- 当前基线：`pnpm test` 426 个用例（425 通过 / 1 跳过），`pnpm typecheck` 干净，
   `go test ./...` 全绿，`gofmt -l .` 与 `go vet ./...` 无输出。这个数字会变，以实际输出为准。
 
 ### 5.5 前端
 
-- 当前只保证**功能正确 + 契约正确**：页面来自 manifest，插件禁用时页面 / 设置卡自动消失。
-- **视觉设计留待以后单独打磨**：没有 owner 的参考稿时，不要自创大改版式。
-- 数据来自真实 REST；mock 只用于 `pnpm preview:console`。
-- 不把完整 key 写进 localStorage / URL / 日志；列表复制走显式按钮。
+- 产品前端是 `web` 插件：**服务端渲染、一页一个文件**（`packages/web/src/pages/*.ts`）。
+- 页面通过 `pageTemplate` 服务拿像素级外壳、卡片、表格、表单与图表；样式与脚本走
+  `/assets/app.css` / `/assets/app.js`，CSP 保持 `'self'`（不放开 inline）。
+- 数据直接调进程内服务，不经过 JSON HTTP；写操作是表单 POST + 303（PRG）。
+  一次性 secret（新建 / 轮换 API key）只在下一次渲染出现，5 分钟后自动清理。
+- 旧的 `frontend` SPA（`packages/console`）已禁用：`/assets/frontend/*` 与 SPA 路由不再提供，
+  `/api/*` JSON 入口仍由 `api` 插件保留。
+- 不把完整 key 写进 localStorage / URL / 日志；页面只在创建 / 轮换后显示一次。
 
 ---
 
@@ -276,12 +283,14 @@ pnpm build:go         # 产出 bin/gatewayd(.exe)
 
 - 生产服务器 `<生产服务器>` / `<SERVER_IP>`（root），代码 `/opt/dizzyapi`，systemd `dizzyapi.service`；
   公网入口 `https://<站点域名>`：宝塔 nginx 把 `/v1/*` 与 `/healthz` 反代 gatewayd
-  `18080`、`/console/usage` 反代 `7793`、其余反代 `7791`。
+  `18080`、其余反代 `web` 的 `7792`（旧的 `/console/usage → 7793` 与 `/ → 7791` 规则已过时，
+  切换时把 `Host` 改写成 `127.0.0.1:7792`，与旧规则同理）。
 - `tx`（`<OLD_SERVER_IP>`）上的旧部署已于 2026-10-23 下线，`data/` 备份在本地 `temp/`。
 - 服务器没有 Go 工具链：本地 `GOOS=linux GOARCH=amd64 go build -trimpath -o bin/gatewayd ./cmd/gatewayd`
   交叉编译后 scp `bin/gatewayd`；服务器 Node 26，用 `npx pnpm@11.21.0 install --frozen-lockfile`。
-- 反向代理必须把 `Host` / `Origin` 改写成回环（`127.0.0.1:7791` / `127.0.0.1:7793`）：
-  `api` 与 `deepseek-usage` 都校验它们来挡 DNS rebinding，原样转发会 403 / 500。
+- 反向代理必须把 `Host` 改写成回环（`127.0.0.1:7792` / `127.0.0.1:7791`）：
+  `web` 与 `api` 都校验 Host 来挡 DNS rebinding，原样转发会 403；表单 POST 还要求
+  `Origin` 与站点同源。
 - `deepseek-usage.consoleBaseUrl` 在服务器 `app.yml` 里配成 `https://<站点域名>`，
   否则侧栏链接会指向访客本机的 `127.0.0.1`。
 - 邮件用 163 SMTP（`smtp.163.com:465`，TLS），沿用 `/opt/aihot-digest/.env` 的账号：

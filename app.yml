@@ -36,6 +36,7 @@
       - '@dizzyapi/plugin-admin'
       - '@dizzyapi/plugin-auth'
       - '@dizzyapi/plugin-api'
+      - '@dizzyapi/plugin-web'
 
 # API key 插件：用户 API key 的唯一写者（签发 / 改名 / 启停 / 轮换 / 删除）。
 # 存储是 SQLite（Node 24 内置 node:sqlite），只落 sha256 哈希与掩码，永不落明文；
@@ -110,6 +111,7 @@
     adminPlugins:
       - '@dizzyapi/plugin-admin'
       - '@dizzyapi/plugin-api'
+      - '@dizzyapi/plugin-web'
     maxBatchSize: 100
 
 # 账号请求优先级：策略组的唯一写者 + gatewayd 的监管者。
@@ -145,6 +147,7 @@
     dataPath: ./data/pricing.json
     adminPlugins:
       - '@dizzyapi/plugin-api'
+      - '@dizzyapi/plugin-web'
 
 # 用量明细：接收 Go 经控制桥送来的请求用量（轮询 `usage.since`），落 SQLite。
 # 只存 token 事实，不存费用；费用由读取方按 pricing 的当前价格表计算。
@@ -171,17 +174,34 @@
 # 开发时用 `pnpm preview:console` 看 mock 数据的预览（只绑 127.0.0.1，不经过这个 entry）。
 - id: frontend
   name: '@dizzyapi/plugin-frontend'
+  # 旧 SPA 已由 `web`（服务端渲染，一页一文件）取代；宿主暂时保留，禁用后页面清单与
+  # 静态资源版本管理都不再运行，`/assets/frontend/*` 与 SPA 路由会 404。
+  disabled: true
   config:
     dataPath: ./data/frontend
     publicBase: /assets/frontend
     apiBase: /api
     mode: rest
 
+# 页面模板：从 deepseek-usage 抽出的像素级外壳、卡片、过滤行、图表与设计 token。
+# 它是纯服务（pageTemplate）：不起 HTTP、不读写存储、不依赖别的插件；
+# 页面插件经服务拿同一套 DOM 与样式，避免每个新页面重抄一遍视觉规格。
+- id: page-template
+  name: '@dizzyapi/plugin-page-template'
+
+# 服务端渲染前端：一页一个文件（packages/web/src/pages），数据走进程内服务。
+# 写操作是表单 POST + 303；样式与脚本由 /assets/app.* 外链，CSP 保持 'self'。
+- id: web
+  name: '@dizzyapi/plugin-web'
+  config:
+    port: 7792
+    sessionCookieName: dizzyapi_session
+
 # 「用量信息」页：DeepSeek 开放平台用量页的像素级复刻，独立成页，不改 packages/console 的控制台。
-# 它自己起一个 127.0.0.1 的 HTTP 服务（7793），数据只经 usage / user / auth 三个服务的只读接口拿。
-# 端口冲突直接失败，不静默换端口。
+# 页面模板已抽成 page-template 插件；本插件保留为像素级参考，默认禁用（web 已接管 /console/usage）。
 - id: deepseek-usage
   name: '@dizzyapi/plugin-deepseek-usage'
+  disabled: true
   config:
     port: 7793
     basePath: /console/usage
@@ -208,6 +228,7 @@
     adminPlugins:
       - '@dizzyapi/plugin-admin'
       - '@dizzyapi/plugin-api'
+      - '@dizzyapi/plugin-web'
 
 # 开发者控制面板：看插件与服务的依赖图、看运行期概览、改设置、重启单个插件、退出整个进程。
 # 只绑 127.0.0.1；启动日志里会打印一条带一次性 token 的地址，打开后换成 HttpOnly cookie。

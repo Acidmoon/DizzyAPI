@@ -41,10 +41,12 @@
     "@dizzyapi/plugin-identity": "workspace:*",
     "@dizzyapi/plugin-kit": "workspace:*",
     "@dizzyapi/plugin-mailer": "workspace:*",
+    "@dizzyapi/plugin-page-template": "workspace:*",
     "@dizzyapi/plugin-pricing": "workspace:*",
     "@dizzyapi/plugin-settings": "workspace:*",
     "@dizzyapi/plugin-usage": "workspace:*",
     "@dizzyapi/plugin-user": "workspace:*",
+    "@dizzyapi/plugin-web": "workspace:*",
     "cordis": "^4.0.0-rc.11"
   },
   "devDependencies": {
