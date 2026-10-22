@@ -37,9 +37,16 @@ export function assertSameOrigin(req: IncomingMessage): void {
     return
   }
   const host = req.headers['x-forwarded-host'] ?? req.headers.host
-  if (typeof host !== 'string') throw new WebError('WEB_ORIGIN', '缺少 Host')
-  const expected = `http${isHttps(req) ? 's' : ''}://${host}`
-  if (origin !== expected) throw new WebError('WEB_ORIGIN', 'Origin 必须与站点同源')
+  let parsed: URL
+  try {
+    parsed = new URL(origin)
+  } catch {
+    throw new WebError('WEB_ORIGIN', 'Origin 不合法')
+  }
+  // 比较 host（含端口），不比较协议：反向代理会把 Origin 改写成回环地址。
+  if (typeof host !== 'string' || parsed.host !== host) {
+    throw new WebError('WEB_ORIGIN', 'Origin 必须与站点同源')
+  }
 }
 
 function isHttps(req: IncomingMessage): boolean {
