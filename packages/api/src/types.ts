@@ -464,6 +464,8 @@ export interface ApiRuntime {
   readonly user: UserPort
   readonly auth: AuthPort
   frontend(): FrontendPort | undefined
+  /** 新前端 `web` 是否在运行；只用于健康检查判断「旧 SPA 已由 web 接管」。 */
+  web(): unknown
   catalog(): CatalogPort | undefined
   accountAdmin(): AccountAdminPort | undefined
   settings(): SettingsPort | undefined

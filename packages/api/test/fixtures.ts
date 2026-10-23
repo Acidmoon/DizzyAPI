@@ -908,6 +908,8 @@ export interface FixtureOptions {
   readonly withApiKey?: boolean
   readonly withSettings?: boolean
   readonly withoutFrontend?: boolean
+  /** 模拟新前端 web 在跑（旧 SPA 缺失时健康检查不再报 degraded）。 */
+  readonly withWeb?: boolean
   readonly withoutCatalog?: boolean
   readonly withoutAccountAdmin?: boolean
   readonly withoutPriority?: boolean
@@ -933,6 +935,7 @@ export async function createFixture(options: FixtureOptions = {}): Promise<Fixtu
     user,
     auth,
     frontend: () => (options.withoutFrontend === true ? undefined : frontend),
+    web: () => options.withWeb === true ? {} : undefined,
     catalog: () => (options.withoutCatalog === true ? undefined : catalog),
     accountAdmin: () => (options.withoutAccountAdmin === true ? undefined : accountAdmin),
     settings: () => (options.withSettings === false ? undefined : settings),

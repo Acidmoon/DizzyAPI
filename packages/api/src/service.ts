@@ -119,6 +119,7 @@ export class ApiService extends Service {
       user: requireService<UserPort>(ctx, 'user', '用户插件'),
       auth: requireService<AuthPort>(ctx, 'auth', '鉴权插件'),
       frontend: () => this.optionalFrontend(),
+      web: () => ctx.get('web', false),
       catalog: () => this.optionalService<CatalogPort>('catalog', ['query']),
       accountAdmin: () =>
         this.optionalService<AccountAdminPort>('accountAdmin', [

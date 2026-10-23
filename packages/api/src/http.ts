@@ -1644,7 +1644,11 @@ export class ApiServer {
 
     const frontend = this.runtime.frontend()
     if (frontend === undefined) {
-      components.push({ name: 'frontend', state: 'degraded', detail: '服务不在运行' })
+      // 只有确认「新前端 web 在跑」时，旧 SPA 未启用才算正常；否则仍是缺失。
+      const web = this.runtime.web()
+      components.push(web === undefined
+        ? { name: 'frontend', state: 'degraded', detail: '服务不在运行' }
+        : { name: 'frontend', state: 'ok', detail: '旧 SPA 未启用（由 web 接管）' })
     } else {
       try {
         const current = await frontend.current()
