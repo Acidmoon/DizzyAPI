@@ -17,20 +17,25 @@ export const adminSettingsPage: PageModule = {
     const namespaces = await settings.describe()
     const blocks = namespaces.map((ns) => {
       const rows = ns.fields.map((field) => [
-        t.escapeText(field.key),
+        t.escapeText(field.path),
         t.escapeText(field.label),
         t.escapeText(field.kind),
         field.secret === true
-          ? t.renderBadge('秘密', 'warn')
+          ? t.renderBadge(field.configured === true ? '已配置' : '未配置', field.configured === true ? 'ok' : 'warn')
           : t.escapeText(field.value === undefined || field.value === null ? '—' : String(field.value)),
-        field.writable === true ? t.renderBadge('可写', 'ok') : t.renderBadge('只读'),
+        field.writable ? t.renderBadge('可写', 'ok') : t.renderBadge('只读'),
       ])
       const table = t.renderTable({
         columns: [{ label: '字段' }, { label: '名称' }, { label: '类型' }, { label: '当前值' }, { label: '写' }],
         rows,
         empty: '没有字段',
       })
-      return `${t.renderSectionTitle(ns.label ?? ns.ns)}<p class="muted">${t.escapeText(ns.ns)}${ns.revision === undefined || ns.revision === null ? '' : ` · revision ${t.escapeText(ns.revision)}`}</p>${table}`
+      const badges = [
+        ns.active ? t.renderBadge('活动', 'ok') : t.renderBadge('未活动'),
+        ns.overridden ? t.renderBadge('有覆盖', 'ok') : '',
+        ns.pending ? t.renderBadge('待应用', 'warn') : '',
+      ].filter((item) => item !== '').join(' ')
+      return `${t.renderSectionTitle(ns.ns)}<p class="muted">${t.escapeText(ns.plugin)} · ${badges}${ns.revision === null ? '' : ` · revision ${t.escapeText(ns.revision)}`}</p>${table}`
     })
     return renderAdminShell(ctx, [
       pageHeader(ctx, '设置', '秘密字段只显示状态，不回显值。'),

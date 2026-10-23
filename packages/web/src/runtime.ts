@@ -171,20 +171,27 @@ export interface PricingLike {
 }
 
 export interface SettingsField {
-  readonly key: string
+  readonly path: string
   readonly label: string
   readonly kind: string
+  readonly writable: boolean
+  readonly secret: boolean
+  readonly credentialRef: boolean
   readonly value?: unknown
-  readonly writable?: boolean
-  readonly secret?: boolean
-  readonly credentialRef?: boolean
+  readonly configured?: boolean
+  readonly children?: readonly SettingsField[]
 }
 
 export interface SettingsNamespaceView {
   readonly ns: string
-  readonly label?: string
+  readonly plugin: string
+  readonly active: boolean
+  readonly disabled: boolean
+  readonly writable: boolean
+  readonly overridden: boolean
+  readonly revision: string | null
+  readonly pending: boolean
   readonly fields: readonly SettingsField[]
-  readonly revision?: string
 }
 
 export interface SettingsLike {
