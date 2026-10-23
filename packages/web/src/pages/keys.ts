@@ -33,13 +33,16 @@ export const keysPage: PageModule = {
       const remove = `<form class="inline-form" method="post" action="/console/api-keys?action=remove" data-confirm="删除后不可恢复，确定？">
 <input type="hidden" name="id" value="${t.escapeAttr(key.id)}">
 <button class="btn small danger" type="submit">删除</button></form>`
+      const copy = key.secret === null
+        ? ''
+        : `<button class="btn small" type="button" data-copy="${t.escapeAttr(key.secret)}">复制</button>`
       return [
         t.escapeText(key.name),
-        `<code class="mono">${t.escapeText(key.masked)}</code>`,
+        `<code class="mono">${t.escapeText(key.maskedKey)}</code>`,
         key.enabled ? t.renderBadge('启用', 'ok') : t.renderBadge('停用'),
         t.escapeText(key.createdAt.slice(0, 10)),
         t.escapeText(key.lastUsedAt === null ? '—' : key.lastUsedAt.slice(0, 10)),
-        `<div class="actions">${toggle}${rotate}${remove}</div>`,
+        `<div class="actions">${copy}${toggle}${rotate}${remove}</div>`,
       ]
     })
 

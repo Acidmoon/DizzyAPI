@@ -42,6 +42,22 @@ document.addEventListener('submit', function (event) {
   var message = form.getAttribute('data-confirm');
   if (message && !window.confirm(message)) event.preventDefault();
 });
+
+document.addEventListener('click', function (event) {
+  var target = event.target;
+  if (!target || !target.closest) return;
+  var button = target.closest('[data-copy]');
+  if (!button) return;
+  var value = button.getAttribute('data-copy');
+  if (!value) return;
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(value).then(function () {
+      var original = button.textContent;
+      button.textContent = '已复制';
+      setTimeout(function () { button.textContent = original; }, 1500);
+    });
+  }
+});
 `
 
 /** 一次性 secret：只给创建后的第一次渲染。 */
@@ -356,7 +372,8 @@ export class WebService extends Service {
 
   private fail(req: IncomingMessage, res: ServerResponse, error: unknown): void {
     const message = error instanceof WebError ? error.message : '页面渲染失败'
-    this.ctx.logger('web').warn(`web 请求失败：${message}`)
+    const detail = error instanceof Error ? (error.stack ?? error.message) : String(error)
+    this.ctx.logger('web').warn(`web 请求失败：${message}\n${detail}`)
     if (req.method === 'POST') {
       // POST 的失败已经由 handleAction 处理；这里兜底成纯文本。
       if (!res.headersSent) this.send(res, 500, 'text/plain; charset=utf-8', message)

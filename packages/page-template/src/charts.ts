@@ -91,7 +91,7 @@ const MINI_LINE_STROKE = '#0C70F3'
  * 渐变段序与配色见 `COST_THEME` / `MINI_THEME`。
  */
 export function renderStackedBarChart(
-  data: readonly { readonly date: string; readonly series: Readonly<Record<string, number>> }[],
+  data: readonly { readonly date: string; readonly label?: string; readonly series: Readonly<Record<string, number>> }[],
   groups: readonly string[],
   theme: ChartTheme = COST_THEME,
   /** 数值单位：金额（元）保留两位小数，计数取整。 */
@@ -168,15 +168,15 @@ export function renderStackedBarChart(
       .map((segment) => `${segment.group} ${formatThousands(segment.value)}`)
       .join(' · ')
     parts.push(
-      `<path class="bar" d="${roundedBarPath(x, top, barWidth, barHeight, radius)}" fill="url(#${gradientId})"><title>${escapeText(point.date)} · ${escapeText(label)}</title></path>`,
+      `<path class="bar" d="${roundedBarPath(x, top, barWidth, barHeight, radius)}" fill="url(#${gradientId})"><title>${escapeText(point.label ?? point.date)} · ${escapeText(label)}</title></path>`,
     )
   }
 
-  // X 轴日期：首、三分之一、三分之二、末
+  // X 轴标签：有 `label` 用 label（小时图），否则按日期短格式。
   for (const index of pickLabelIndexes(data.length)) {
     const center = paddingLeft + slot * (index + 0.5)
     parts.push(
-      `<text class="axis-text" x="${round(center)}" y="261" dominant-baseline="central" text-anchor="middle">${formatAxisDate(data[index].date)}</text>`,
+      `<text class="axis-text" x="${round(center)}" y="261" dominant-baseline="central" text-anchor="middle">${escapeText(data[index].label ?? formatAxisDate(data[index].date))}</text>`,
     )
   }
 

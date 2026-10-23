@@ -67,11 +67,17 @@ export interface UserLike {
 
 export interface ApiKeyView {
   readonly id: string
+  readonly userId: number
   readonly name: string
-  readonly masked: string
+  readonly trackingId: string
+  /** 完整 key；旧库历史行可能为 null。 */
+  readonly secret: string | null
+  readonly maskedKey: string
   readonly enabled: boolean
+  readonly appManaged: boolean
   readonly createdAt: string
   readonly lastUsedAt: string | null
+  readonly rotatedAt: string | null
 }
 
 export interface ApiKeyLike {
@@ -140,6 +146,7 @@ export interface UsageStats {
 export interface UsageLike {
   summary(query: UsageQuery): UsageSummary
   list(query: UsageQuery & { cursor?: number; limit?: number }): UsageListPage
+  exportRows(query: UsageQuery, limit?: number): readonly UsageRow[]
   stats(nowMs?: number): UsageStats
 }
 

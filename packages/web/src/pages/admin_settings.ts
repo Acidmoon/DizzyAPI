@@ -22,7 +22,7 @@ export const adminSettingsPage: PageModule = {
         t.escapeText(field.kind),
         field.secret === true
           ? t.renderBadge('秘密', 'warn')
-          : t.escapeText(field.value === undefined ? '—' : String(field.value)),
+          : t.escapeText(field.value === undefined || field.value === null ? '—' : String(field.value)),
         field.writable === true ? t.renderBadge('可写', 'ok') : t.renderBadge('只读'),
       ])
       const table = t.renderTable({
@@ -30,7 +30,7 @@ export const adminSettingsPage: PageModule = {
         rows,
         empty: '没有字段',
       })
-      return `${t.renderSectionTitle(ns.label ?? ns.ns)}<p class="muted">${t.escapeText(ns.ns)}${ns.revision === undefined ? '' : ` · revision ${t.escapeText(ns.revision)}`}</p>${table}`
+      return `${t.renderSectionTitle(ns.label ?? ns.ns)}<p class="muted">${t.escapeText(ns.ns)}${ns.revision === undefined || ns.revision === null ? '' : ` · revision ${t.escapeText(ns.revision)}`}</p>${table}`
     })
     return renderAdminShell(ctx, [
       pageHeader(ctx, '设置', '秘密字段只显示状态，不回显值。'),

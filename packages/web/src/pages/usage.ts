@@ -1,7 +1,7 @@
 /** 用量信息：指标卡 + 按天成本图 + 模型明细。 */
 import { pageHeader, renderConsoleShell, type PageModule } from '../layout.ts'
 import { formatYuan, microsToYuan } from '../forms.ts'
-import { bucketDaily } from '../series.ts'
+import { bucketDaily, hourlyBuckets } from '../series.ts'
 
 const DAY_MS = 24 * 60 * 60 * 1000
 
@@ -24,8 +24,6 @@ const RANGES: readonly RangeOption[] = [
   { key: 'today', label: '今天', from: () => startOfLocalDay(0), to: () => Date.now() },
   { key: 'yesterday', label: '昨天', from: () => startOfLocalDay(1), to: () => startOfLocalDay(0) },
   { key: '7d', label: '近 7 天', from: () => Date.now() - 7 * DAY_MS, to: () => Date.now() },
-  { key: '30d', label: '近 30 天', from: () => Date.now() - 30 * DAY_MS, to: () => Date.now() },
-  { key: '90d', label: '近 90 天', from: () => Date.now() - 90 * DAY_MS, to: () => Date.now() },
 ]
 
 export const usagePage: PageModule = {
@@ -41,8 +39,8 @@ export const usagePage: PageModule = {
       return renderConsoleShell(ctx, pageHeader(ctx, '用量信息') + t.renderNotice({ kind: 'err', text: '用量服务未运行' }))
     }
 
-    const rangeKey = ctx.query.get('range') ?? '30d'
-    const range = RANGES.find((item) => item.key === rangeKey) ?? RANGES[3]
+    const rangeKey = ctx.query.get('range') ?? '7d'
+    const range = RANGES.find((item) => item.key === rangeKey) ?? RANGES[2]
     const fromMs = range.from()
     const toMs = range.to()
     const query = { fromMs, toMs, userId: ctx.user.userId }
@@ -55,14 +53,25 @@ export const usagePage: PageModule = {
       { label: 'Tokens', value: t.formatThousands(summary.totals.totalTokens) },
     ], 'metrics')
 
-    // 图表固定 7 根柱：30 / 90 天按时间顺序等分聚合。
-    const daily = bucketDaily(summary.daily)
-    const chartData = daily.map((point) => ({
-      date: point.date,
-      series: { 消费金额: microsToYuan(point.costMicros) },
-    }))
+    // 单日（今天 / 昨天）：柱状图只看最近 7 个小时；七天及以上：按天绘制。
+    const singleDay = range.key === 'today' || range.key === 'yesterday'
+    const chartTitle = singleDay ? '消费金额（CNY，最近 7 小时）' : '消费金额（CNY）'
+    let chartData: { date: string; label?: string; series: Record<string, number> }[]
+    if (singleDay) {
+      const rows = usage.exportRows(query, 5000)
+      chartData = hourlyBuckets(rows, toMs, 7).map((bucket) => ({
+        date: bucket.label,
+        label: bucket.label,
+        series: { 消费金额: microsToYuan(bucket.costMicros) },
+      }))
+    } else {
+      chartData = bucketDaily(summary.daily).map((point) => ({
+        date: point.date,
+        series: { 消费金额: microsToYuan(point.costMicros) },
+      }))
+    }
     const chart = t.renderStackedBarChart(chartData, ['消费金额'], undefined, 'currency', 'usage')
-    const chartCard = t.renderChartCard({ title: '消费金额（CNY）', total: formatYuan(summary.totals.costMicros), chart })
+    const chartCard = t.renderChartCard({ title: chartTitle, total: formatYuan(summary.totals.costMicros), chart })
 
     const modelRows = summary.models.map((model) => [
       t.escapeText(model.model),

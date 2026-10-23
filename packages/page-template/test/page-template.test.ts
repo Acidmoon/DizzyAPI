@@ -199,6 +199,17 @@ test('柱状图：7 个槽位逐个标出日期', () => {
   }
 })
 
+test('柱状图：数据点 label 优先作为轴标签（小时图）', () => {
+  const svg = renderStackedBarChart(
+    [{ date: '2026-10-23T12', label: '12:00', series: { 消费金额: 1 } }],
+    ['消费金额'],
+    COST_THEME,
+    'currency',
+    'hourly',
+  )
+  assert.ok(svg.includes('>12:00</text>'))
+})
+
 test('面积图：填充 + 描边两条 path', () => {
   const svg = renderAreaLineChart(
     [

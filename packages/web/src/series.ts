@@ -54,3 +54,35 @@ export function bucketDaily<T extends DailyLike>(points: readonly T[], buckets =
   }
   return result
 }
+
+/** 单日视图的小时桶：从 `toMs` 所在小时往前共 `hours` 个整点。 */
+export interface HourBucket {
+  /** 本地时区的 `HH:00`。 */
+  readonly label: string
+  readonly costMicros: string
+}
+
+const HOUR_MS = 3_600_000
+
+export function hourlyBuckets(
+  rows: readonly { readonly startedAt: string; readonly costMicros: string }[],
+  toMs: number,
+  hours = 7,
+): HourBucket[] {
+  if (hours <= 0) return []
+  // 当前小时也计入：窗口是「最近 7 个整点小时」。
+  const endHour = Math.floor(toMs / HOUR_MS) + 1
+  // 统一用「epoch 小时索引」作 key，避免毫秒与索引混用。
+  const hoursWindow = Array.from({ length: hours }, (_, index) => endHour - hours + index)
+  const sums = new Map<number, bigint>()
+  for (const row of rows) {
+    const at = Date.parse(row.startedAt)
+    if (Number.isNaN(at)) continue
+    const key = Math.floor(at / HOUR_MS)
+    sums.set(key, (sums.get(key) ?? 0n) + BigInt(row.costMicros))
+  }
+  return hoursWindow.map((hour) => ({
+    label: `${String(new Date(hour * HOUR_MS).getHours()).padStart(2, '0')}:00`,
+    costMicros: (sums.get(hour) ?? 0n).toString(),
+  }))
+}
