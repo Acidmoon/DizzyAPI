@@ -267,6 +267,8 @@ pnpm test:go
 - 站点字体是 `font-smiley` 插件：自托管 Smiley Sans（得意黑）v2.0.1（OFL-1.1），
   字体与 LICENSE 在 `packages/font-smiley/assets/`；`scope` 默认 `headings`（只换标题与品牌），
   改 `all` 才换正文。web 负责把 `@font-face` 追加进 `/assets/app.css` 并发送 woff2 字节。
+- 用量页时间维度只有 **今天 / 昨天 / 近 7 天**：单日（今天、昨天）的柱状图看最近 7 个小时
+  （小时桶，标签 `HH:00`），近 7 天按天绘制；图表固定 7 根柱、7 个标签。
 
 ---
 
