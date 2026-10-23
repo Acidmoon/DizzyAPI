@@ -1,12 +1,32 @@
 /** 用量信息：指标卡 + 按天成本图 + 模型明细。 */
 import { pageHeader, renderConsoleShell, type PageModule } from '../layout.ts'
 import { formatYuan, microsToYuan } from '../forms.ts'
+import { bucketDaily } from '../series.ts'
 
-const RANGES = [
-  { key: '7d', label: '近 7 天', days: 7 },
-  { key: '30d', label: '近 30 天', days: 30 },
-  { key: '90d', label: '近 90 天', days: 90 },
-] as const
+const DAY_MS = 24 * 60 * 60 * 1000
+
+/** 本地时区当天 0 点；`offsetDays = 1` 是昨天 0 点。 */
+function startOfLocalDay(offsetDays = 0): number {
+  const date = new Date()
+  date.setHours(0, 0, 0, 0)
+  date.setDate(date.getDate() - offsetDays)
+  return date.getTime()
+}
+
+interface RangeOption {
+  readonly key: string
+  readonly label: string
+  from(): number
+  to(): number
+}
+
+const RANGES: readonly RangeOption[] = [
+  { key: 'today', label: '今天', from: () => startOfLocalDay(0), to: () => Date.now() },
+  { key: 'yesterday', label: '昨天', from: () => startOfLocalDay(1), to: () => startOfLocalDay(0) },
+  { key: '7d', label: '近 7 天', from: () => Date.now() - 7 * DAY_MS, to: () => Date.now() },
+  { key: '30d', label: '近 30 天', from: () => Date.now() - 30 * DAY_MS, to: () => Date.now() },
+  { key: '90d', label: '近 90 天', from: () => Date.now() - 90 * DAY_MS, to: () => Date.now() },
+]
 
 export const usagePage: PageModule = {
   path: '/console/usage',
@@ -22,9 +42,9 @@ export const usagePage: PageModule = {
     }
 
     const rangeKey = ctx.query.get('range') ?? '30d'
-    const range = RANGES.find((item) => item.key === rangeKey) ?? RANGES[1]
-    const toMs = Date.now()
-    const fromMs = toMs - range.days * 24 * 60 * 60 * 1000
+    const range = RANGES.find((item) => item.key === rangeKey) ?? RANGES[3]
+    const fromMs = range.from()
+    const toMs = range.to()
     const query = { fromMs, toMs, userId: ctx.user.userId }
     const summary = usage.summary(query)
     const page = usage.list({ ...query, limit: 20 })
@@ -35,7 +55,9 @@ export const usagePage: PageModule = {
       { label: 'Tokens', value: t.formatThousands(summary.totals.totalTokens) },
     ], 'metrics')
 
-    const chartData = summary.daily.map((point) => ({
+    // 图表固定 7 根柱：30 / 90 天按时间顺序等分聚合。
+    const daily = bucketDaily(summary.daily)
+    const chartData = daily.map((point) => ({
       date: point.date,
       series: { 消费金额: microsToYuan(point.costMicros) },
     }))

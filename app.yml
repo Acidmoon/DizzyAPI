@@ -195,7 +195,7 @@
 - id: font-smiley
   name: '@dizzyapi/plugin-font-smiley'
   config:
-    scope: headings
+    scope: all
 
 # 服务端渲染前端：一页一个文件（packages/web/src/pages），数据走进程内服务。
 # 写操作是表单 POST + 303；样式与脚本由 /assets/app.* 外链，CSP 保持 'self'。

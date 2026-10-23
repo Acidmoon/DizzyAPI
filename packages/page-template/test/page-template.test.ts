@@ -188,6 +188,17 @@ test('柱状图：堆叠段用硬停渐变，id 带 key 避免同页冲突', () 
   assert.ok(!b.includes('dg-main-0'))
 })
 
+test('柱状图：7 个槽位逐个标出日期', () => {
+  const data = Array.from({ length: 7 }, (_, index) => ({
+    date: `2026-10-0${index + 1}`,
+    series: { 消费金额: index + 1 },
+  }))
+  const svg = renderStackedBarChart(data, ['消费金额'], COST_THEME, 'currency', 'seven')
+  for (let day = 1; day <= 7; day += 1) {
+    assert.ok(svg.includes(`>10/${day}</text>`), `缺少 10/${day} 的轴标签`)
+  }
+})
+
 test('面积图：填充 + 描边两条 path', () => {
   const svg = renderAreaLineChart(
     [

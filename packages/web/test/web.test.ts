@@ -12,6 +12,7 @@ import { WebService } from '../src/service.ts'
 import { PAGES } from '../src/pages/index.ts'
 import { WEB_DEFAULTS, validateWebConfig, type ResolvedWebConfig } from '../src/config.ts'
 import { formatYuan, microsToYuan } from '../src/forms.ts'
+import { bucketDaily } from '../src/series.ts'
 
 async function boot(): Promise<{ ctx: Context; base: string; close(): Promise<void> }> {
   const ctx = new Context()
@@ -62,6 +63,26 @@ test('金额：微元 ↔ 元，负数与进位都正确', () => {
   assert.equal(formatYuan(0n), '¥0.00')
   assert.equal(formatYuan(-5_000_000n), '-¥5.00')
   assert.equal(microsToYuan('2500000'), 2.5)
+})
+
+test('序列：30 天压成 7 个桶，金额用整数微元累加', () => {
+  const daily = Array.from({ length: 30 }, (_, index) => ({
+    date: `2026-10-${String(index + 1).padStart(2, '0')}`,
+    costMicros: '1000000',
+    requests: 1,
+    totalTokens: 10,
+    inputTokens: 1,
+    outputTokens: 1,
+    cacheReadTokens: 1,
+    cacheWriteTokens: 1,
+  }))
+  const buckets = bucketDaily(daily)
+  assert.equal(buckets.length, 7)
+  assert.equal(buckets[0].date, '2026-10-01')
+  assert.equal(buckets[6].date, '2026-10-26')
+  const total = buckets.reduce((sum, point) => sum + BigInt(point.costMicros), 0n)
+  assert.equal(total, 30_000_000n)
+  assert.equal(bucketDaily(daily.slice(0, 5)).length, 5)
 })
 
 test('HTTP：登录页 200，未登录访问控制台 302 到 /login', async () => {

@@ -51,10 +51,13 @@ export function validateFontSmileyConfig(value: unknown): ResolvedFontSmileyConf
 
 /** `@font-face` + 作用范围覆盖。 */
 export function renderFontCss(scope: FontScope): string {
-  const stack = `'${FONT_FAMILY}', Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Microsoft YaHei", sans-serif`
+  const original = 'Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Microsoft YaHei", sans-serif'
+  const stack = `'${FONT_FAMILY}', ${original}`
   const targets = scope === 'all'
     ? 'body'
-    : 'h1, h2, .side-word, .side-badge, .page-title, .auth-title, .model-name, .section-title, .chart-title, .value-main'
+    : 'h1, h2, .side-word, .side-badge, .page-title, .auth-title, .section-title, .chart-title, .value-main'
+  // 模型名保持原字体：全站换字体时单独把它覆盖回去（owner 2026-10-23 要求）。
+  const keepModelName = scope === 'all' ? `\n.model-name { font-family: ${original}; }` : ''
   return `@font-face {
   font-family: '${FONT_FAMILY}';
   src: url('${FONT_URL}') format('woff2');
@@ -62,7 +65,7 @@ export function renderFontCss(scope: FontScope): string {
   font-style: normal;
   font-display: swap;
 }
-${targets} { font-family: ${stack}; }`
+${targets} { font-family: ${stack}; }${keepModelName}`
 }
 
 /** 字体字节；进程生命周期内只读一次。 */

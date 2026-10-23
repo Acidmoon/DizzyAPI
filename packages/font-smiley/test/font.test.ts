@@ -29,9 +29,12 @@ test('CSS：@font-face 指向自托管文件，headings 不换正文', () => {
   assert.ok(!css.startsWith('body {'))
 })
 
-test('CSS：scope=all 时正文一起换', () => {
+test('CSS：scope=all 时正文一起换，但模型名保留原字体', () => {
   const css = renderFontCss('all')
   assert.ok(css.includes('body { font-family:'))
+  assert.ok(css.includes('.model-name { font-family: Inter'))
+  // 标题不再单独列规则（body 已覆盖）
+  assert.ok(!css.includes('h1, h2 {'))
 })
 
 test('字体文件：woff2 魔数与非空字节', () => {

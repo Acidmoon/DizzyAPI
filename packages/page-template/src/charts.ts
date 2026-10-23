@@ -347,15 +347,16 @@ function monotoneCurve(points: readonly { readonly x: number; readonly y: number
 }
 
 /**
- * 选 4 个 X 轴标签下标。
+ * 选 X 轴标签下标。
  *
- * 原站（ECharts 分类轴 `interval: 'auto'`）在 30 个槽位上取的是
- * **0 / 10 / 19 / 29**：按 `(n-1) × k/3` 四等分后**四舍五入**，
- * 不是向下取整（向下会得到 0/9/19/29，第二个标签会偏左一格）。
+ * - 不超过 7 个槽位：全部标出（用量页固定 7 根柱，要看到 7 个日期）。
+ * - 更长的序列：原站（ECharts 分类轴 `interval: 'auto'`）在 30 个槽位上取的是
+ *   **0 / 10 / 19 / 29**：按 `(n-1) × k/3` 四等分后**四舍五入**，
+ *   不是向下取整（向下会得到 0/9/19/29，第二个标签会偏左一格）。
  */
 function pickLabelIndexes(count: number): number[] {
   if (count <= 0) return []
-  if (count <= 4) return Array.from({ length: count }, (_, index) => index)
+  if (count <= 7) return Array.from({ length: count }, (_, index) => index)
   const last = count - 1
   const indexes = [0, Math.round(last / 3), Math.round((last * 2) / 3), last]
   return [...new Set(indexes)].sort((a, b) => a - b)
