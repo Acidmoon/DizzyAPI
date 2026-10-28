@@ -89,6 +89,9 @@ importers:
       '@dizzyapi/plugin-pricing':
         specifier: workspace:*
         version: link:packages/pricing
+      '@dizzyapi/plugin-quota':
+        specifier: workspace:*
+        version: link:packages/quota
       '@dizzyapi/plugin-redeem':
         specifier: workspace:*
         version: link:packages/redeem

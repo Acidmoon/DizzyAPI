@@ -46,6 +46,7 @@
     "@dizzyapi/plugin-mailer": "workspace:*",
     "@dizzyapi/plugin-page-template": "workspace:*",
     "@dizzyapi/plugin-pricing": "workspace:*",
+    "@dizzyapi/plugin-quota": "workspace:*",
     "@dizzyapi/plugin-redeem": "workspace:*",
     "@dizzyapi/plugin-settings": "workspace:*",
     "@dizzyapi/plugin-usage": "workspace:*",
