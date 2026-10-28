@@ -1,8 +1,9 @@
 /**
  * 用量记录的对外形状。
  *
- * 这里只存 **token 事实**，不存费用：费用由读取方按 `pricing` 服务的当前价格表算
- * （AGENTS.md §8：真实扣费尚未实现，页面显示的是「应扣费用」）。
+ * 这里只存 **token 事实**，不存费用：费用由读取方按 `pricing` 服务的当前价格表算。
+ * 真实扣费在**拉取时**发生——先经 `billing.settle(records)` 结算，再落统计、推进游标
+ * （见 service.ts 的 pollOnce）；查询侧算的费用仍是「按当前价格表应扣多少」。
  *
  * 金额与费用一律用十进制字符串（整数微元），不用 number/BigInt 直接进 JSON。
  */
@@ -189,6 +190,40 @@ export interface PricingPort {
   quote(model: string, tokens: TokenCountsLike): string
 }
 
+/**
+ * 交给结算服务的单条事实（token 事实 + 归属；**不含金额**——价格事实归 pricing）。
+ *
+ * 与 `billing` 插件的 `SettleCandidate` 结构相同，但这里只用结构面声明，
+ * 不 import 对方实现（AGENTS.md 2.2：插件间只经服务接口通信）。
+ */
+export interface SettleCandidateLike {
+  readonly requestId: string
+  readonly userId: string
+  readonly accountId: string
+  readonly model: string
+  readonly inputTokens: number
+  readonly outputTokens: number
+  readonly cacheReadTokens: number
+  readonly cacheWriteTokens: number
+  /** 请求开始时间（ISO）；结算日按它的 UTC 日期分组。 */
+  readonly startedAt: string
+}
+
+/** 一轮结算的计数结果（只在日志与状态里用，不影响游标推进）。 */
+export interface SettleBatchOutcomeLike {
+  readonly settled: number
+  readonly noPrice: number
+  readonly noUser: number
+  readonly failed: number
+  readonly review: number
+  readonly skipped: number
+}
+
+/** 结算服务的结构面：只依赖一个方法，不 import 实现类。 */
+export interface BillingPort {
+  settle(records: readonly SettleCandidateLike[]): Promise<SettleBatchOutcomeLike>
+}
+
 export interface TokenCountsLike {
   readonly inputTokens: number
   readonly outputTokens: number
@@ -209,6 +244,10 @@ export interface UsageServiceLike {
   listRejected(query?: UsageRejectedQuery): UsageRejectedPage
   /** 把 pending 的隔离记录标记为 ignored（幂等）；不存在或状态不允许时抛错。 */
   ignoreRejected(reqId: string): void
-  /** 按 req_id 重放一条隔离记录；成功则 pending → replayed（幂等，重复重放不重复插入）。 */
-  replayRejected(reqId: string): UsageReplayResult
+  /**
+   * 按 req_id 重放一条隔离记录；成功则 pending → replayed（幂等，重复重放不重复插入）。
+   *
+   * async：重放成功后必须补结算（`billing.settle`），结算插件不在运行时整体失败。
+   */
+  replayRejected(reqId: string): Promise<UsageReplayResult>
 }

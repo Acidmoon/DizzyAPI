@@ -56,6 +56,9 @@ importers:
       '@dizzyapi/plugin-auth':
         specifier: workspace:*
         version: link:packages/auth
+      '@dizzyapi/plugin-billing':
+        specifier: workspace:*
+        version: link:packages/billing
       '@dizzyapi/plugin-catalog':
         specifier: workspace:*
         version: link:packages/catalog
@@ -199,6 +202,19 @@ importers:
       cordis:
         specifier: ^4.0.0-rc.11
         version: 4.0.0-rc.11(@cordisjs/plugin-include@1.1.1)(@cordisjs/plugin-loader@1.0.0-rc.8)
+
+  packages/billing:
+    dependencies:
+      '@dizzyapi/plugin-kit':
+        specifier: workspace:*
+        version: link:../kit
+      cordis:
+        specifier: ^4.0.0-rc.11
+        version: 4.0.0-rc.11(@cordisjs/plugin-include@1.1.1)(@cordisjs/plugin-loader@1.0.0-rc.8)
+    devDependencies:
+      '@dizzyapi/plugin-pricing':
+        specifier: workspace:*
+        version: link:../pricing
 
   packages/catalog:
     dependencies:

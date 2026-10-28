@@ -8,6 +8,8 @@ export type UsageErrorCode =
   | 'USAGE_REJECTED_NOT_FOUND'
   | 'USAGE_REJECTED_STATE'
   | 'USAGE_REJECTED_FAILED'
+  /** 重放要补结算，但结算插件没在运行：fail-closed，不做「只记明细不扣钱」。 */
+  | 'USAGE_SETTLE_UNAVAILABLE'
 
 export class UsageError extends Error {
   readonly code: UsageErrorCode

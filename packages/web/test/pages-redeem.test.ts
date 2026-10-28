@@ -42,6 +42,7 @@ const EMPTY_SERVICES: WebRuntime = {
   catalog: undefined,
   accountAdmin: undefined,
   redeem: undefined,
+  billing: undefined,
   fontSmiley: undefined,
 }
 

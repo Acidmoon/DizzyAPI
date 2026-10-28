@@ -31,6 +31,7 @@ export type ApiErrorCode =
   | 'API_ACCOUNT_CREATE_UNAVAILABLE'
   | 'API_SETTINGS_UNAVAILABLE'
   | 'REDEEM_UNAVAILABLE'
+  | 'BILLING_UNAVAILABLE'
   | 'TOPUP_NOT_IMPLEMENTED'
 
 export class ApiError extends Error {
@@ -139,6 +140,8 @@ const EXPLICIT_STATUS: Readonly<Record<string, number>> = {
   // （记录仍保持 pending，可修好数据后再试），不能伪装成 400。
   USAGE_REJECTED_STATE: 409,
   USAGE_REJECTED_FAILED: 409,
+  // 重放要补结算但结算插件没在运行：依赖缺席 → 503（fail-closed，不静默只记明细）。
+  USAGE_SETTLE_UNAVAILABLE: 503,
   USAGE_QUERY_INVALID: 400,
 }
 

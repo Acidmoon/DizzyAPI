@@ -7,14 +7,21 @@
  *
  * 几条纪律：
  * - 上行用**轮询**而不是事件推送：断线可补拉，TS 重启也不会丢。
+ * - 一轮的顺序固定为 **拉取 → 落库 → 结算 → 推进游标**：结算由 `billing` 服务做
+ *   （`reqId` 幂等），结算抛错就**不推进游标**，下一轮带同一 `afterSeq` 重放
+ *   （记录已在库里，重放只补结算，不会重复扣）。`billing` 不在运行时（被禁用）
+ *   不结算，统计照常落库。
  * - `req_id` 唯一，写入一律 `INSERT OR IGNORE`；`{epoch, lastSeq}` 与记录同一事务落库。
  * - **落库失败不推进游标**：失败记警告并下一轮用同一 `afterSeq` 重试；游标只推进到
  *   实际落库成功的最大 seq（`data/usage.db` 只有本插件写，AGENTS.md §2.4）。
+ * - **坏记录有界隔离**：连续失败到 `rejectAfterFailures` 后逐条独立事务重试，能插的插、
+ *   插不进的进 `usage_rejected`，游标照常前进；被隔离的记录不结算、不扣钱。
  * - 缺口 / epoch 重启 / Go 缓冲健康度（`usage.stats`）都有明确告警，不静默。
  * - 只存 token 事实；费用读取时按 `pricing.quote()` 现算，不落库（AGENTS.md §8）。
  * - token / 费用在内部用 BigInt 聚合，对外 token 是 number（不会超过 2^53），
  *   费用是十进制字符串（整数微元）。
- * - 不 inject `accountPriority` / `pricing`：它们被禁用时本插件仍要能查历史。
+ * - 不 inject `accountPriority` / `pricing` / `billing`：它们被禁用时本插件仍要能查历史
+ *   （D5：禁用只关闭它自己的入口）。
  */
 import { isAbsolute, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -24,7 +31,10 @@ import { USAGE_CONFIG_SCHEMA, USAGE_DEFAULTS, type ResolvedUsageConfig, type Usa
 import { openUsageDatabase } from './db.ts'
 import { UsageError } from './errors.ts'
 import type {
+  BillingPort,
   PricingPort,
+  SettleBatchOutcomeLike,
+  SettleCandidateLike,
   TokenCountsLike,
   UsageEntry,
   UsageListPage,
@@ -127,8 +137,8 @@ export class UsageService extends Service implements UsageServiceLike {
   static Config = USAGE_CONFIG_SCHEMA
 
   /**
-   * 不 inject account-priority 与 pricing：它们被禁用时，用量服务仍应能提供历史查询
-   * （D5：禁用某个插件只关闭它自己的入口）。两者都在运行期按需解析。
+   * 不 inject account-priority / pricing / billing：它们被禁用时，用量服务仍应能提供历史查询
+   * （D5：禁用某个插件只关闭它自己的入口）。三者都在运行期按需解析。
    */
   static inject: readonly string[] = []
 
@@ -332,7 +342,9 @@ export class UsageService extends Service implements UsageServiceLike {
       let rejected = 0
       let persisted: readonly UsageEntry[] = []
       try {
-        const outcome = this.insertEntries(result.records, { epoch: result.epoch, lastSeq })
+        // 明细落库**不带游标**：游标必须在结算之后才写（见下面的 advanceCursor）。
+        // 结算失败时游标原地不动，下一轮带同一 afterSeq 重放。
+        const outcome = this.insertEntries(result.records)
         ingested = outcome.inserted
         persisted = result.records
         this.resetPersistFailures()
@@ -349,7 +361,7 @@ export class UsageService extends Service implements UsageServiceLike {
         }
         // 到达阈值：走有界出口。逐条独立事务重试，能插的插、插不进的进隔离表，游标照常前进。
         try {
-          const isolated = this.isolateBatch(result.records, { epoch: result.epoch, lastSeq })
+          const isolated = this.isolateBatch(result.records)
           ingested = isolated.ingested
           rejected = isolated.rejected
           persisted = isolated.persisted
@@ -364,7 +376,35 @@ export class UsageService extends Service implements UsageServiceLike {
       // ── 结算钩子位置（feat/money-settle）──
       // 只对 `persisted` 结算：正常路径是整批，隔离路径是逐条成功的那些。
       // 被隔离的坏记录不能结算、不能扣钱；结算失败必须抛错，游标不得推进。
+      const billing = this.billingSeam()
+      if (billing !== undefined && persisted.length > 0) {
+        const candidates = persisted.map(settleCandidateOf)
+        const settleable = candidates.filter((item) => item !== null)
+        const invalid = candidates.length - settleable.length
+        if (invalid > 0) {
+          // 缺 requestId / 时间非法的记录不进结算批次（billing 侧也做同样防御）：
+          // 绝不把错抛到整轮——一条坏记录卡死结算和统计，比少扣一笔糟糕得多。
+          this.logger.warn(
+            `本轮有 ${invalid} 条用量缺少 requestId 或时间非法：已跳过结算（不扣费），` +
+              '明细仍在（可见性问题见隔离区）',
+          )
+        }
+        if (settleable.length > 0) {
+          try {
+            const outcome = await billing.settle(settleable)
+            this.reportSettleOutcome(outcome)
+          } catch (error) {
+            // 结算失败：游标原地不动，下一轮带同一 afterSeq 重放——
+            // 记录已在库里（INSERT OR IGNORE 不新增），billing 按 reqId 幂等，不会重复扣。
+            this.logger.warn(`结算失败（本轮不推进游标，下一轮重放）：${describeError(error)}`)
+            return failedOutcome(epochChanged, gap, ingested, rejected)
+          }
+        }
+      }
 
+      // 最后推进游标：走到这里才算这一轮真的落地（结算成功，或根本没有结算服务）。
+      // 游标单独写：结算跨库（billing / user），没法和明细进同一个事务。
+      this.advanceCursor(result.epoch, lastSeq)
       this.epoch = result.epoch
       this.lastSeq = lastSeq
       this.pollFailures = 0
@@ -650,8 +690,11 @@ export class UsageService extends Service implements UsageServiceLike {
    *
    * 幂等：已经是 `replayed` 时直接返回（`inserted: false`），明细靠 `req_id` 唯一约束
    * 不会重复。重放失败时**保持 pending**、更新错误文案并抛错（不会静默丢）。
+   *
+   * 结算补做（fail-closed）：明细写成功后必须调 `billing.settle([entry])` 补一次结算
+   * （`req_id` 幂等）；`billing` 不在运行 → 整体失败（409 语义），不允许「只记明细不扣钱」。
    */
-  replayRejected(reqId: string): UsageReplayResult {
+  async replayRejected(reqId: string): Promise<UsageReplayResult> {
     this.assertReady()
     const db = this.requireDb()
     const row = db.prepare('SELECT * FROM usage_rejected WHERE req_id = ?').get(reqId) as
@@ -680,18 +723,13 @@ export class UsageService extends Service implements UsageServiceLike {
     }
 
     try {
-      const outcome = this.insertEntries([entry], undefined, { emit: false })
+      const outcome = this.insertEntries([entry], { emit: false })
       this.emitAccountUsed(outcome.usedAccounts)
-      // ── 结算补做（seam，由 feat/money-settle 接上）──
-      // owner 定死的规则，实现时不要改成静默降级：
-      //   1. 明细写成功后，如果 billing 在运行，必须调 billing.settle([entry]) 补结算一次；
-      //      靠 req_id 幂等，重复重放不会重复扣。
-      //   2. billing 不在运行 → 本次 replayRejected 必须整体失败（409 稳定错误码，
-      //      提示先启用结算插件），不允许「只记明细不扣钱」。
-      //   3. 位置就在这里：结算失败时要保持 pending（可重试），不能先置 replayed。
-      //   4. billing.settle 是 async：接上时把 replayRejected 改成 async，并同步 await
-      //      `/api/admin/usage/rejected/replay` 与 `/admin/usage` 的 action。
-      this.settleReplayed([entry])
+      // ── 结算补做（fail-closed）──
+      //   1. 明细写成功后调 billing.settle([entry]) 补结算一次（req_id 幂等，重复重放不重复扣）；
+      //   2. billing 不在运行 → 整体失败（记录保持 pending，可重试），不允许「只记明细不扣钱」；
+      //   3. 位置：结算成功之后才置 replayed。
+      await this.settleReplayed([entry])
       db.prepare(
         "UPDATE usage_rejected SET status = 'replayed', updated_at_ms = ? WHERE req_id = ? AND status = 'pending'",
       ).run(Date.now(), reqId)
@@ -702,24 +740,45 @@ export class UsageService extends Service implements UsageServiceLike {
       db.prepare(
         "UPDATE usage_rejected SET error = ?, updated_at_ms = ? WHERE req_id = ? AND status = 'pending'",
       ).run(message, Date.now(), reqId)
+      // 结算插件缺席是**依赖缺席**（503），不是数据冲突：保留原 code，不要压成 409。
+      if (error instanceof UsageError && error.code === 'USAGE_SETTLE_UNAVAILABLE') throw error
       throw new UsageError('USAGE_REJECTED_FAILED', `重放失败：${message}`)
     }
   }
 
   /**
-   * 重放后的结算 seam：留给 `feat/money-settle` 接 `billing.settle`。
+   * 重放后的结算补做：调 `billing.settle([那一条])`（`req_id` 幂等，重复重放不会重复扣）。
    *
-   * 当前分支没有 `billing` 插件，空实现 = 只补明细；实现时必须 fail-closed：
-   * `billing` 不在运行就抛错（让重放整体失败、记录保持 `pending`），不允许静默降级。
+   * fail-closed：`billing` 不在运行就抛错，让整个重放失败、记录保持 `pending` 可重试——
+   * **不允许**「只记明细不扣钱」的静默降级。
    */
-  private settleReplayed(records: readonly UsageEntry[]): void {
-    void records
+  private async settleReplayed(records: readonly UsageEntry[]): Promise<void> {
+    const billing = this.billingSeam()
+    if (billing === undefined) {
+      throw new UsageError(
+        'USAGE_SETTLE_UNAVAILABLE',
+        '结算插件未运行：无法为重放的用量补结算（请先启用 billing 插件；不做只记明细不扣钱）',
+      )
+    }
+    const candidates = records.map(settleCandidateOf).filter((item) => item !== null)
+    if (candidates.length === 0) {
+      throw new UsageError(
+        'USAGE_REJECTED_FAILED',
+        '重放的用量缺少 requestId 或时间非法：无法结算（请在隔离区忽略这条）',
+      )
+    }
+    const outcome = await billing.settle(candidates)
+    this.reportSettleOutcome(outcome)
   }
 
   // ───────────────────────────────── 内部：存储
 
   /**
-   * 落库一批记录（一个事务；`meta` 与记录同事务，保证游标与明细一致）。
+   * 落库一批记录（一个事务）。
+   *
+   * **不写游标**：游标由 `advanceCursor` 在结算之后单独推进——一轮的顺序固定为
+   * 「拉取 → 落库 → 结算 → 推进游标」，游标必须最后写（结算跨库，没法进同一事务；
+   * 结算失败时游标原地不动，下一轮带同一 afterSeq 重放）。
    *
    * 返回 `inserted`（真正新增的条数，重复 req_id 是 0）与 `usedAccounts`
    * （只含真的新落库的账号）。`emit: false` 用于隔离区逐条重试：那时要等整批做完再统一发事件，
@@ -727,11 +786,10 @@ export class UsageService extends Service implements UsageServiceLike {
    */
   private insertEntries(
     entries: readonly UsageEntry[],
-    meta?: { epoch: string; lastSeq: number },
     options: { emit?: boolean } = {},
   ): { inserted: number; usedAccounts: readonly string[] } {
     const db = this.requireDb()
-    if (entries.length === 0 && meta === undefined) return { inserted: 0, usedAccounts: [] }
+    if (entries.length === 0) return { inserted: 0, usedAccounts: [] }
 
     const insert = db.prepare(`
       INSERT OR IGNORE INTO usage_records (
@@ -744,10 +802,6 @@ export class UsageService extends Service implements UsageServiceLike {
         ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
       )
     `)
-    const upsertMeta = db.prepare(
-      'INSERT INTO usage_meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
-    )
-
     const now = Date.now()
     // 只汇报「这一轮真的新落库」的行所对应的账号：重复 req_id 不算一次使用。
     const usedAccounts = new Set<string>()
@@ -793,10 +847,6 @@ export class UsageService extends Service implements UsageServiceLike {
         const accountId = typeof entry.accountId === 'string' ? entry.accountId : ''
         if (accountId !== '') usedAccounts.add(accountId)
       }
-      if (meta !== undefined) {
-        upsertMeta.run('epoch', meta.epoch)
-        upsertMeta.run('lastSeq', String(meta.lastSeq))
-      }
       db.exec('COMMIT')
     } catch (error) {
       try {
@@ -826,16 +876,45 @@ export class UsageService extends Service implements UsageServiceLike {
   }
 
   /**
+   * 推进游标（epoch + lastSeq），**单独一次事务**。
+   *
+   * 为什么不在明细那笔事务里：一轮的顺序是「拉取 → 落库 → 结算 → 推进游标」，
+   * 结算要跨到 billing / user 两个库（没有事务），所以游标必须最后单独写——
+   * 结算失败时这一句根本不执行，游标停在原地，下一轮带同一 afterSeq 重放。
+   */
+  private advanceCursor(epoch: string, lastSeq: number): void {
+    const db = this.requireDb()
+    const upsert = db.prepare(
+      'INSERT INTO usage_meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
+    )
+    db.exec('BEGIN IMMEDIATE')
+    try {
+      upsert.run('epoch', epoch)
+      upsert.run('lastSeq', String(lastSeq))
+      db.exec('COMMIT')
+    } catch (error) {
+      try {
+        db.exec('ROLLBACK')
+      } catch {
+        // 事务可能已经被 SQLite 自动回滚。
+      }
+      throw error instanceof UsageError
+        ? error
+        : new UsageError('USAGE_STORE_FAILED', `用量游标写入失败：${describeError(error)}`)
+    }
+  }
+
+  /**
    * 有界出口：整批落库连续失败到阈值后，逐条独立事务重试。
    *
    * 能插的插（正常记录不受坏记录连累），插不进的写进 `usage_rejected`（一条 req_id 只一行），
-   * 最后把游标推进到该批最大 seq —— 否则坏记录会让轮询（以及下游结算）永久停摆。
+   * 最后由调用方推进游标 —— 否则坏记录会让轮询（以及下游结算）永久停摆。
    *
+   * 游标由调用方在结算之后统一推进（`advanceCursor`），这里只管逐条落库与隔离。
    * 只在异常路径调用；正常路径仍然整批一个事务。
    */
   private isolateBatch(
     entries: readonly UsageEntry[],
-    meta: { epoch: string; lastSeq: number },
   ): { ingested: number; rejected: number; persisted: readonly UsageEntry[] } {
     const persisted: UsageEntry[] = []
     const usedAccounts = new Set<string>()
@@ -845,7 +924,7 @@ export class UsageService extends Service implements UsageServiceLike {
 
     for (const entry of entries) {
       try {
-        const outcome = this.insertEntries([entry], undefined, { emit: false })
+        const outcome = this.insertEntries([entry], { emit: false })
         ingested += outcome.inserted
         for (const accountId of outcome.usedAccounts) usedAccounts.add(accountId)
         persisted.push(entry)
@@ -855,12 +934,10 @@ export class UsageService extends Service implements UsageServiceLike {
       }
     }
 
-    // 游标必须前进，否则坏记录等于永久卡死；epoch 与游标同事务落库。
-    this.insertEntries([], meta)
     this.emitAccountUsed([...usedAccounts])
     this.logger.warn(
-      `用量落库连续失败 ${failures} 轮，已隔离 ${rejected} 条坏记录（同批 ${persisted.length} 条照常落库），` +
-        `游标推进到 seq=${meta.lastSeq}；被隔离的记录未进明细、不会结算`,
+      `用量落库连续失败 ${failures} 轮，已隔离 ${rejected} 条坏记录（同批 ${persisted.length} 条照常落库）；` +
+        '被隔离的记录未进明细、不会结算',
     )
     return { ingested, rejected, persisted }
   }
@@ -1012,6 +1089,33 @@ export class UsageService extends Service implements UsageServiceLike {
     return typeof value?.quote === 'function' ? (value as PricingPort) : undefined
   }
 
+  /**
+   * 运行期解析结算服务，**不 inject**：`billing` 被禁用或正在重启时，用量照常落库、
+   * 只是不结算（D5：禁用某个插件只关闭它自己的入口，不能让用量历史跟着消失）。
+   */
+  private billingSeam(): BillingPort | undefined {
+    const impl = this.ctx.root.reflect._getImpl('billing', false)
+    if (impl === undefined || impl.ctx.fiber.state !== FiberState.ACTIVE) return undefined
+    const value = impl.value as Partial<BillingPort> | undefined
+    return typeof value?.settle === 'function' ? (value as BillingPort) : undefined
+  }
+
+  /** 结算的业务结果只记日志：无价 / 无用户 / 待核查都是终态，不阻塞游标推进。 */
+  private reportSettleOutcome(outcome: SettleBatchOutcomeLike): void {
+    if (outcome.noPrice > 0) {
+      this.logger.warn(`有 ${outcome.noPrice} 笔用量因模型没有价格而按 0 结算（未扣费）`)
+    }
+    if (outcome.noUser > 0) {
+      this.logger.warn(`有 ${outcome.noUser} 笔用量没有用户 id，无法扣费（已记 no-user）`)
+    }
+    if (outcome.failed > 0 || outcome.review > 0) {
+      this.logger.warn(
+        `结算异常：failed=${outcome.failed} review=${outcome.review}；` +
+          '明细见 /admin/billing（这些记录已经消费，不会自动重试）',
+      )
+    }
+  }
+
   /** 运行期解析 account-priority 服务，不 inject（D5）。 */
   private accountPrioritySeam(): AccountPrioritySeam | undefined {
     const impl = this.ctx.root.reflect._getImpl('accountPriority', false)
@@ -1054,8 +1158,13 @@ function skippedOutcome(): UsagePollOutcome {
   return { status: 'skipped', epochChanged: false, gap: 0, ingested: 0, rejected: 0, persisted: [] }
 }
 
-function failedOutcome(epochChanged: boolean, gap: number): UsagePollOutcome {
-  return { status: 'error', epochChanged, gap, ingested: 0, rejected: 0, persisted: [] }
+function failedOutcome(
+  epochChanged: boolean,
+  gap: number,
+  ingested = 0,
+  rejected = 0,
+): UsagePollOutcome {
+  return { status: 'error', epochChanged, gap, ingested, rejected, persisted: [] }
 }
 
 function clampOffset(value: number | undefined): number {
@@ -1252,6 +1361,30 @@ function requireRequestId(entry: UsageEntry): string {
   const value = typeof entry.requestId === 'string' ? entry.requestId : ''
   if (value === '') throw new UsageError('USAGE_STORE_FAILED', '用量记录缺少 requestId')
   return value
+}
+
+/**
+ * 把一条用量记录收成结算事实；不合格返回 null（**绝不抛**）。
+ * 不合格只有两种：缺 `requestId`（没有幂等键就结算不了）与时间非法（算不出结算日）。
+ * 这两类记录不能进结算批次——`.map()` 抛错会让整轮放弃、游标不动，一条坏记录就把
+ * 结算和统计一起卡死（billing 侧也做同样防御，双保险）。
+ */
+function settleCandidateOf(entry: UsageEntry): SettleCandidateLike | null {
+  const requestId = isNonEmptyText(entry.requestId) ? entry.requestId : ''
+  if (requestId === '') return null
+  const startedAtMs = Date.parse(typeof entry.startedAt === 'string' ? entry.startedAt : '')
+  if (!Number.isFinite(startedAtMs)) return null
+  return {
+    requestId,
+    userId: typeof entry.userId === 'string' ? entry.userId : String(entry.userId ?? ''),
+    accountId: typeof entry.accountId === 'string' ? entry.accountId : '',
+    model: typeof entry.model === 'string' ? entry.model : '',
+    inputTokens: integerOf(entry.inputTokens),
+    outputTokens: integerOf(entry.outputTokens),
+    cacheReadTokens: integerOf(entry.cacheReadTokens),
+    cacheWriteTokens: integerOf(entry.cacheWriteTokens),
+    startedAt: new Date(startedAtMs).toISOString(),
+  }
 }
 
 function describeError(error: unknown): string {

@@ -31,6 +31,7 @@ import type {
   ApiKeyPort,
   ApiRuntime,
   AuthPort,
+  BillingPort,
   CatalogPort,
   FrontendPort,
   PricingPort,
@@ -149,6 +150,7 @@ export class ApiService extends Service {
           'resolveRedeeming',
           'stats',
         ]),
+      billing: () => this.optionalService<BillingPort>('billing', ['list', 'summary']),
       now: () => new Date(),
       uptimeSec: () => Math.round(process.uptime()),
       log: (level, message) => {

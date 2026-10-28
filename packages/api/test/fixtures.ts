@@ -18,6 +18,7 @@ import type {
   ApiKeyPort,
   ApiRuntime,
   AuthPort,
+  BillingPort,
   CatalogPluginLike,
   CatalogPort,
   FrontendPageLike,
@@ -33,6 +34,9 @@ import type {
   RedeemStatsLike,
   RedemptionLike,
   SessionViewLike,
+  SettlePageLike,
+  SettleRecordLike,
+  SettleSummaryLike,
   SettingsPort,
   TicketLike,
   UsagePort,
@@ -852,7 +856,7 @@ export class FakeUsage implements UsagePort {
     row.status = 'ignored'
   }
 
-  replayRejected(reqId: string): UsageReplayResultLike {
+  async replayRejected(reqId: string): Promise<UsageReplayResultLike> {
     this.rejectedActions.push({ method: 'replay', reqId })
     const row = this.rejected.find((item) => item.reqId === reqId)
     if (row === undefined) throw new DomainError('USAGE_REJECTED_NOT_FOUND', `没有这条隔离记录：${reqId}`)
@@ -1121,6 +1125,67 @@ export class FakeRedeem implements RedeemPort {
   }
 }
 
+/** 结算服务（`billing`）的假实现：只读面，金额是 bigint 微元。 */
+export class FakeBilling implements BillingPort {
+  readonly calls: { method: string; args: readonly unknown[] }[] = []
+  /** 设置后 list / summary 抛出带这个 code 的 DomainError。 */
+  failCode: string | undefined
+
+  private readonly record: SettleRecordLike = {
+    reqId: 'req-1',
+    userId: 2,
+    accountId: 'account-1',
+    model: 'deepseek-chat',
+    day: '2026-10-19',
+    inputTokens: 1000,
+    outputTokens: 200,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
+    costMicro: 1_750_000n,
+    overdrawn: false,
+    balanceAfter: 8_250_000n,
+    status: 'settled',
+    note: null,
+    attempts: 1,
+    startedAt: '2026-10-19T11:00:00.000Z',
+    claimedAt: '2026-10-19T11:00:02.000Z',
+    settledAt: '2026-10-19T11:00:02.000Z',
+    createdAt: '2026-10-19T11:00:02.000Z',
+    updatedAt: '2026-10-19T11:00:02.000Z',
+  }
+
+  list(
+    _actor: string,
+    query: { readonly status?: string; readonly limit?: number; readonly offset?: number } = {},
+  ): SettlePageLike {
+    this.calls.push({ method: 'list', args: [query] })
+    if (this.failCode !== undefined) throw new DomainError(this.failCode, '测试拒绝：结算读失败')
+    const items = query.status === 'problem' ? [] : [this.record]
+    return { items, total: items.length }
+  }
+
+  summary(_actor: string, nowMs?: number): SettleSummaryLike {
+    this.calls.push({ method: 'summary', args: [nowMs] })
+    if (this.failCode !== undefined) throw new DomainError(this.failCode, '测试拒绝：结算读失败')
+    return {
+      totals: {
+        records: 1,
+        settled: 1,
+        noPrice: 0,
+        noUser: 0,
+        failed: 0,
+        review: 0,
+        settling: 0,
+        overdrawn: 0,
+        chargedMicros: 1_750_000n,
+        todayChargedMicros: 1_750_000n,
+      },
+      daily: [{ date: '2026-10-19', records: 1, settled: 1, chargedMicros: 1_750_000n }],
+      models: [{ model: 'deepseek-chat', records: 1, chargedMicros: 1_750_000n }],
+    }
+  }
+}
+
 export interface Fixture {
   readonly runtime: ApiRuntime
   readonly user: FakeUser
@@ -1134,6 +1199,7 @@ export interface Fixture {
   readonly usage: FakeUsage
   readonly pricing: FakePricing
   readonly redeem: FakeRedeem
+  readonly billing: FakeBilling
   readonly cleanup: () => Promise<void>
 }
 
@@ -1150,6 +1216,7 @@ export interface FixtureOptions {
   readonly withoutUsage?: boolean
   readonly withoutPricing?: boolean
   readonly withoutRedeem?: boolean
+  readonly withoutBilling?: boolean
   readonly pages?: FrontendPageLike[]
 }
 
@@ -1165,6 +1232,7 @@ export async function createFixture(options: FixtureOptions = {}): Promise<Fixtu
   const usage = new FakeUsage()
   const pricing = new FakePricing()
   const redeem = new FakeRedeem()
+  const billing = new FakeBilling()
 
   const runtime: ApiRuntime = {
     config: resolvedConfig(options.config),
@@ -1180,6 +1248,7 @@ export async function createFixture(options: FixtureOptions = {}): Promise<Fixtu
     usage: () => (options.withoutUsage === true ? undefined : usage),
     pricing: () => (options.withoutPricing === true ? undefined : pricing),
     redeem: () => (options.withoutRedeem === true ? undefined : redeem),
+    billing: () => (options.withoutBilling === true ? undefined : billing),
     now: () => new Date('2026-10-19T12:00:00.000Z'),
     uptimeSec: () => 42,
     log: () => undefined,
@@ -1198,6 +1267,7 @@ export async function createFixture(options: FixtureOptions = {}): Promise<Fixtu
     usage,
     pricing,
     redeem,
+    billing,
     async cleanup() {
       await rm(frontend.root, { recursive: true, force: true })
     },

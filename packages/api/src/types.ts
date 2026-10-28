@@ -375,7 +375,7 @@ export interface UsagePort {
   status(): UsageStatusLike
   listRejected(query?: UsageRejectedQueryLike): UsageRejectedPageLike
   ignoreRejected(reqId: string): void
-  replayRejected(reqId: string): UsageReplayResultLike
+  replayRejected(reqId: string): Promise<UsageReplayResultLike>
 }
 
 export interface ModelPriceLike {
@@ -570,6 +570,84 @@ export interface RedeemPort {
   stats(actor: string): Promise<RedeemStatsLike>
 }
 
+// ───────────────────────────── 结算（可选） ─────────────────────────────
+
+/**
+ * 结算服务（`billing`）的端口。
+ *
+ * 只读：真实扣费由 usage 的结算钩子驱动，HTTP 层没有写入口。金额一律 bigint 微元，
+ * HTTP 层负责写成十进制字符串。
+ */
+export interface SettleRecordLike {
+  readonly reqId: string
+  readonly userId: number
+  readonly accountId: string
+  readonly model: string
+  readonly day: string
+  readonly inputTokens: number
+  readonly outputTokens: number
+  readonly cacheReadTokens: number
+  readonly cacheWriteTokens: number
+  readonly costMicro: bigint
+  /** 扣费后余额为负（后付费透支）：稳定布尔事实。 */
+  readonly overdrawn: boolean
+  /** 扣费之后的余额（整数微元）；没扣款时 null。 */
+  readonly balanceAfter: bigint | null
+  readonly status: string
+  readonly note: string | null
+  readonly attempts: number
+  readonly startedAt: string
+  readonly claimedAt: string | null
+  readonly settledAt: string | null
+  readonly createdAt: string
+  readonly updatedAt: string
+}
+
+export interface SettlePageLike {
+  readonly items: readonly SettleRecordLike[]
+  readonly total: number
+}
+
+export interface SettleTotalsLike {
+  readonly records: number
+  readonly settled: number
+  readonly noPrice: number
+  readonly noUser: number
+  readonly failed: number
+  readonly review: number
+  readonly settling: number
+  readonly overdrawn: number
+  readonly chargedMicros: bigint
+  readonly todayChargedMicros: bigint
+}
+
+export interface SettleDailyLike {
+  readonly date: string
+  readonly records: number
+  readonly settled: number
+  readonly chargedMicros: bigint
+}
+
+export interface SettleModelLike {
+  readonly model: string
+  readonly records: number
+  readonly chargedMicros: bigint
+}
+
+export interface SettleSummaryLike {
+  readonly totals: SettleTotalsLike
+  readonly daily: readonly SettleDailyLike[]
+  readonly models: readonly SettleModelLike[]
+}
+
+export interface BillingPort {
+  list(
+    actor: string,
+    query?: { readonly status?: string; readonly userId?: number; readonly limit?: number; readonly offset?: number },
+  ): SettlePageLike
+  summary(actor: string, nowMs?: number): SettleSummaryLike
+}
+
 // ───────────────────────────── 账户优先级（可选） ─────────────────────────────
 
 export interface AccountPriorityStatusLike {
@@ -633,6 +711,8 @@ export interface ApiRuntime {
   pricing(): PricingPort | undefined
   /** 兑换码服务；不在运行时只有兑换相关路由 503（入口本身不受影响）。 */
   redeem(): RedeemPort | undefined
+  /** 结算服务；不在运行时只有 /api/admin/billing 503（扣费暂停，用量照常落库）。 */
+  billing(): BillingPort | undefined
   now(): Date
   uptimeSec(): number
   log(level: 'info' | 'warn' | 'error', message: string): void

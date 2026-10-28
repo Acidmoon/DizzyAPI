@@ -59,6 +59,7 @@ const ADMIN_NAV: readonly { label: string; path: string; icon: NavItem['icon'] }
   { label: '设置', path: '/admin/settings', icon: 'help' },
   { label: '全站用量', path: '/admin/usage', icon: 'bars' },
   { label: '模型价格', path: '/admin/pricing', icon: 'card' },
+  { label: '结算', path: '/admin/billing', icon: 'card' },
   { label: '兑换码', path: '/admin/redeem-codes', icon: 'receipt' },
 ]
 
