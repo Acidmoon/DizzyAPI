@@ -143,6 +143,45 @@ export interface UsageStatus {
   readonly lastError: string | null
   /** 累计观测到的序号缺口条数：这些记录在 Go 缓冲里被覆盖、已经读不回来了。 */
   readonly gapRecords: number
+  /** 隔离区里的记录总数（pending + ignored + replayed）。 */
+  readonly rejectedCount: number
+  /** 隔离区里还没处理的坏记录数（status = pending）；这些记录**没有**进明细、没有结算。 */
+  readonly rejectedPending: number
+}
+
+/** 隔离记录的状态：稳定英文字符串（落库、API、页面共用，不要用枚举数字）。 */
+export type UsageRejectedStatus = 'pending' | 'ignored' | 'replayed'
+
+/** 一条被隔离的坏记录（原始载荷 + 原因 + 失败次数）。 */
+export interface UsageRejectedRow {
+  readonly reqId: string
+  readonly epoch: string
+  readonly seq: number
+  /** 原始载荷 JSON（就是 Go 送来的那条记录，重放时按它重新插入）。 */
+  readonly payload: string
+  readonly error: string
+  readonly failures: number
+  readonly status: UsageRejectedStatus
+  readonly firstFailedAt: string
+  readonly updatedAt: string
+}
+
+export interface UsageRejectedQuery {
+  readonly status?: UsageRejectedStatus
+  readonly limit?: number
+  readonly offset?: number
+}
+
+export interface UsageRejectedPage {
+  readonly items: readonly UsageRejectedRow[]
+  readonly total: number
+  readonly pending: number
+}
+
+/** 重放结果：`inserted` = 这次是否真的新增了一条明细（重复重放是 false）。 */
+export interface UsageReplayResult {
+  readonly status: UsageRejectedStatus
+  readonly inserted: boolean
 }
 
 /** 价格服务的结构面：只依赖一个方法，不 import 实现类。 */
@@ -166,4 +205,10 @@ export interface UsageServiceLike {
   stats(nowMs?: number): UsageStats
   exportRows(query: UsageQuery, limit?: number): readonly UsageRow[]
   status(): UsageStatus
+  /** 隔离区列表（分页 + 计数）；管理面只读。 */
+  listRejected(query?: UsageRejectedQuery): UsageRejectedPage
+  /** 把 pending 的隔离记录标记为 ignored（幂等）；不存在或状态不允许时抛错。 */
+  ignoreRejected(reqId: string): void
+  /** 按 req_id 重放一条隔离记录；成功则 pending → replayed（幂等，重复重放不重复插入）。 */
+  replayRejected(reqId: string): UsageReplayResult
 }

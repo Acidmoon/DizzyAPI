@@ -148,6 +148,36 @@ export interface UsageLike {
   list(query: UsageQuery & { cursor?: number; limit?: number }): UsageListPage
   exportRows(query: UsageQuery, limit?: number): readonly UsageRow[]
   stats(nowMs?: number): UsageStats
+  /** 坏记录隔离区（分页 + 计数）；这些记录没有进明细、也不会结算。 */
+  listRejected(query?: UsageRejectedQuery): UsageRejectedPage
+  /** 把 pending 的隔离记录标记为 ignored（= 明确放弃这笔未结算用量）。 */
+  ignoreRejected(reqId: string): void
+  /** 按 req_id 重放隔离记录；重复重放不会重复插入。 */
+  replayRejected(reqId: string): { readonly status: string; readonly inserted: boolean }
+}
+
+export interface UsageRejectedRow {
+  readonly reqId: string
+  readonly epoch: string
+  readonly seq: number
+  readonly payload: string
+  readonly error: string
+  readonly failures: number
+  readonly status: string
+  readonly firstFailedAt: string
+  readonly updatedAt: string
+}
+
+export interface UsageRejectedQuery {
+  readonly status?: string
+  readonly limit?: number
+  readonly offset?: number
+}
+
+export interface UsageRejectedPage {
+  readonly items: readonly UsageRejectedRow[]
+  readonly total: number
+  readonly pending: number
 }
 
 export interface ModelPrice {

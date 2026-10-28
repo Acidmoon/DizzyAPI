@@ -337,12 +337,45 @@ export interface UsageStatusLike {
   readonly pricingAvailable: boolean
 }
 
+/** 一条被隔离的坏记录（`usage_rejected`）；这些记录没有进明细、也不会结算。 */
+export interface UsageRejectedRowLike {
+  readonly reqId: string
+  readonly epoch: string
+  readonly seq: number
+  readonly payload: string
+  readonly error: string
+  readonly failures: number
+  readonly status: string
+  readonly firstFailedAt: string
+  readonly updatedAt: string
+}
+
+export interface UsageRejectedQueryLike {
+  readonly status?: string
+  readonly limit?: number
+  readonly offset?: number
+}
+
+export interface UsageRejectedPageLike {
+  readonly items: readonly UsageRejectedRowLike[]
+  readonly total: number
+  readonly pending: number
+}
+
+export interface UsageReplayResultLike {
+  readonly status: string
+  readonly inserted: boolean
+}
+
 export interface UsagePort {
   list(query: UsageQueryLike): UsageListPageLike
   summary(query: UsageQueryLike): UsageSummaryLike
   stats(nowMs?: number): UsageStatsLike
   exportRows(query: UsageQueryLike, limit?: number): readonly UsageRowLike[]
   status(): UsageStatusLike
+  listRejected(query?: UsageRejectedQueryLike): UsageRejectedPageLike
+  ignoreRejected(reqId: string): void
+  replayRejected(reqId: string): UsageReplayResultLike
 }
 
 export interface ModelPriceLike {

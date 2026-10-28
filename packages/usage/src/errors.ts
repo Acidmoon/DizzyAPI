@@ -5,6 +5,9 @@ export type UsageErrorCode =
   | 'USAGE_STORE_FAILED'
   | 'USAGE_QUERY_INVALID'
   | 'USAGE_NOT_READY'
+  | 'USAGE_REJECTED_NOT_FOUND'
+  | 'USAGE_REJECTED_STATE'
+  | 'USAGE_REJECTED_FAILED'
 
 export class UsageError extends Error {
   readonly code: UsageErrorCode

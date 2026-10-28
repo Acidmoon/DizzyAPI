@@ -53,6 +53,21 @@ CREATE TABLE IF NOT EXISTS usage_meta (
   key   TEXT PRIMARY KEY,
   value TEXT NOT NULL
 );
+
+-- 落库失败的坏记录隔离区（有界出口，防止一条坏记录永久卡住游标与结算）。
+-- 仍然只有本插件写这张表；状态是稳定英文字符串：pending / ignored / replayed。
+CREATE TABLE IF NOT EXISTS usage_rejected (
+  req_id             TEXT PRIMARY KEY,
+  epoch              TEXT    NOT NULL DEFAULT '',
+  seq                INTEGER NOT NULL DEFAULT 0,
+  payload            TEXT    NOT NULL,
+  error              TEXT    NOT NULL,
+  failures           INTEGER NOT NULL DEFAULT 0,
+  status             TEXT    NOT NULL DEFAULT 'pending',
+  first_failed_at_ms INTEGER NOT NULL,
+  updated_at_ms      INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS usage_rejected_status ON usage_rejected (status, updated_at_ms DESC);
 `
 
 /** 打开用量库。`:memory:` / 空路径用于测试。 */

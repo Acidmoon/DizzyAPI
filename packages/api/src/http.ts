@@ -54,6 +54,8 @@ import type {
   UsageModelBreakdownLike,
   UsagePort,
   UsageQueryLike,
+  UsageRejectedQueryLike,
+  UsageRejectedRowLike,
   UsageRowLike,
   UsageTotalsLike,
   UsageUserBreakdownLike,
@@ -887,6 +889,10 @@ export class ApiServer {
     url: URL,
   ): Promise<void> {
     await this.requireAdmin(req)
+    if (parts[2] === 'rejected') {
+      await this.routeAdminUsageRejected(req, res, parts, url)
+      return
+    }
     if (parts.length > 3 || (parts.length === 3 && parts[2] !== 'export')) {
       throw notFound('没有这个管理员用量接口')
     }
@@ -913,6 +919,9 @@ export class ApiServer {
     const items = await Promise.all(
       page.items.map(async (row) => adminUsageRowOf(row, await nameOf(row.userId))),
     )
+    // 隔离区：主接口给「第一页 + 计数」，完整分页在 `/api/admin/usage/rejected`。
+    // 这些记录没有进明细、不会被结算；管理面必须能看见，否则就是静默免单。
+    const rejected = usage.listRejected({ limit: 20 })
     this.sendJson(req, res, 200, {
       range: spec.range,
       from: spec.from,
@@ -921,9 +930,90 @@ export class ApiServer {
       daily: summary.daily.map(usageDailyOf),
       models: summary.models.map(usageModelOf),
       records: { items, nextCursor: page.nextCursor },
+      rejected: {
+        items: rejected.items.map(rejectedRowOf),
+        total: rejected.total,
+        pending: rejected.pending,
+      },
       pricingAvailable: this.runtime.pricing() !== undefined,
       generatedAt: this.runtime.now().toISOString(),
     })
+  }
+
+  /**
+   * `/api/admin/usage/rejected`：坏记录隔离区（只读列表 + 两个管理动作）。
+   *
+   * - `GET` → `{ items, total, pending, limit, offset }`（`status` 可筛 pending / ignored / replayed）
+   * - `POST .../ignore` `{reqId}` → 标记 ignored（幂等）
+   * - `POST .../replay` `{reqId}` → 按 req_id 重放，成功则 pending → replayed（幂等，不重复插入）
+   *
+   * 这些记录**没有**进用量明细，也不会被结算；管理面必须能看见，否则就是静默免单。
+   */
+  private async routeAdminUsageRejected(
+    req: IncomingMessage,
+    res: ServerResponse,
+    parts: readonly string[],
+    url: URL,
+  ): Promise<void> {
+    const usage = this.requireUsage()
+    if (parts.length === 3) {
+      if (!this.allowRead(req, res)) return
+      this.sendJson(req, res, 200, this.adminRejectedView(usage, url))
+      return
+    }
+    if (parts.length !== 4) throw notFound('没有这个管理员用量接口')
+    const action = parts[3]
+    if (action !== 'ignore' && action !== 'replay') {
+      throw notFound('没有这个隔离记录操作')
+    }
+    if (!this.allowMethod(req, res, ['POST'])) return
+    const body = await this.jsonBody(req)
+    assertOnlyKeys(body, ['reqId'])
+    const reqId = requiredString(body, 'reqId')
+
+    if (action === 'ignore') {
+      usage.ignoreRejected(reqId)
+      this.sendJson(req, res, 200, { reqId, status: 'ignored' })
+      return
+    }
+
+    this.sendJson(req, res, 200, { reqId, ...usage.replayRejected(reqId) })
+  }
+
+  /** 隔离区列表视图：分页与状态筛选都在这里校验，非法值明确 400。 */
+  private adminRejectedView(
+    usage: UsagePort,
+    url: URL,
+  ): {
+    items: ReturnType<typeof rejectedRowOf>[]
+    total: number
+    pending: number
+    limit: number
+    offset: number
+  } {
+    const limit = parseIntegerParam(url.searchParams.get('limit'), 'limit', 20, 1, 200) ?? 20
+    const offset = parseIntegerParam(url.searchParams.get('offset'), 'offset', 0, 0, 10_000_000) ?? 0
+    let status: string | undefined
+    const raw = url.searchParams.get('status')
+    if (raw !== null && raw !== '') {
+      if (raw !== 'pending' && raw !== 'ignored' && raw !== 'replayed') {
+        throw badRequest('status 只能是 pending / ignored / replayed')
+      }
+      status = raw
+    }
+    const query: UsageRejectedQueryLike = {
+      limit,
+      offset,
+      ...(status === undefined ? {} : { status }),
+    }
+    const page = usage.listRejected(query)
+    return {
+      items: page.items.map(rejectedRowOf),
+      total: page.total,
+      pending: page.pending,
+      limit,
+      offset,
+    }
   }
 
   /**
@@ -2473,6 +2563,21 @@ function usageModelOf(item: UsageModelBreakdownLike) {
 
 function usageUserOf(item: UsageUserBreakdownLike, name: string | null) {
   return { userId: item.userId, name, ...usageTotalsOf(item) }
+}
+
+/** 隔离区一行：原始载荷 + 原因 + 失败次数 + 状态（稳定英文字符串）。 */
+function rejectedRowOf(row: UsageRejectedRowLike) {
+  return {
+    reqId: row.reqId,
+    epoch: row.epoch,
+    seq: row.seq,
+    payload: row.payload,
+    error: row.error,
+    failures: row.failures,
+    status: row.status,
+    firstFailedAt: row.firstFailedAt,
+    updatedAt: row.updatedAt,
+  }
 }
 
 /** 管理员明细行：用户侧字段 + userName / accountId / attempts。 */

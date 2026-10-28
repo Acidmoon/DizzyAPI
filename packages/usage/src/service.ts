@@ -29,6 +29,11 @@ import type {
   UsageEntry,
   UsageListPage,
   UsageQuery,
+  UsageRejectedPage,
+  UsageRejectedQuery,
+  UsageRejectedRow,
+  UsageRejectedStatus,
+  UsageReplayResult,
   UsageRow,
   UsageServiceLike,
   UsageStats,
@@ -42,9 +47,12 @@ const DEFAULT_LIST_LIMIT = 20
 const MAX_LIST_LIMIT = 200
 const DEFAULT_EXPORT_LIMIT = 5_000
 const MAX_EXPORT_LIMIT = 20_000
+const DEFAULT_REJECTED_LIMIT = 20
+const MAX_REJECTED_LIMIT = 200
 const PRUNE_BATCH = 1_000
 /** 失败重试时每多少轮再报一次警（1s 一轮，避免刷屏又不静默）。 */
 const POLL_FAILURE_LOG_EVERY = 30
+const REJECTED_STATUSES: readonly UsageRejectedStatus[] = ['pending', 'ignored', 'replayed']
 
 /** `usage.since` 的返回形状（控制消息载荷，不 import account-priority 的实现）。 */
 interface UsageSinceResultLike {
@@ -86,6 +94,15 @@ export interface UsagePollOutcome {
   /** `firstSeq` 与本地 lastSeq 之间缺了多少条（环形缓冲回绕）。 */
   readonly gap: number
   readonly ingested: number
+  /** 本轮被隔离的坏记录条数（0 = 正常）；被隔离的记录**没有**进明细、也不能结算。 */
+  readonly rejected: number
+  /**
+   * 本轮**实际落库成功**的记录：正常路径是整批，隔离路径是逐条成功的那些。
+   *
+   * 结算钩子（`billing.settle`）只能拿这个数组，绝不能拿整批 `result.records`：
+   * 否则被隔离的记录会被"静默扣钱"。
+   */
+  readonly persisted: readonly UsageEntry[]
 }
 
 interface TotalsAccumulator {
@@ -125,7 +142,14 @@ export class UsageService extends Service implements UsageServiceLike {
       },
     ],
     bridge: [],
-    storage: [{ key: 'dataPath', kind: 'file', description: 'SQLite 用量库（token 事实，不含费用）' }],
+    storage: [
+      {
+        key: 'dataPath',
+        kind: 'file',
+        description:
+          'SQLite 用量库：usage_records 明细 + usage_rejected 坏记录隔离区（都不含费用；隔离记录不结算）',
+      },
+    ],
     shapes: {
       UsageRow: {
         description: '一条请求用量；costMicros 是读取时按价格表算的',
@@ -146,6 +170,20 @@ export class UsageService extends Service implements UsageServiceLike {
           startedAt: { type: 'string' },
         },
       },
+      UsageRejectedRow: {
+        description: '被隔离的坏记录；状态是 pending / ignored / replayed，不结算',
+        fields: {
+          reqId: { type: 'string' },
+          epoch: { type: 'string' },
+          seq: { type: 'integer' },
+          payload: { type: 'string' },
+          error: { type: 'string' },
+          failures: { type: 'integer' },
+          status: { type: 'string' },
+          firstFailedAt: { type: 'string' },
+          updatedAt: { type: 'string' },
+        },
+      },
     },
   } as const
 
@@ -161,6 +199,9 @@ export class UsageService extends Service implements UsageServiceLike {
   private gapRecords = 0
   /** 已经按哪个游标位置报过缺口：落库失败重试时游标不动，不能重复告警/累计。 */
   private gapCountedAtSeq = -1
+  /** 同一游标位置上连续落库失败了几轮（与拉取失败分开计数，否则桥抖动会误判坏记录）。 */
+  private persistFailures = 0
+  private persistFailureSeq = -1
   private pollTimer: NodeJS.Timeout | undefined
   private pruneTimer: NodeJS.Timeout | undefined
 
@@ -171,6 +212,7 @@ export class UsageService extends Service implements UsageServiceLike {
       retentionDays: config.retentionDays ?? USAGE_DEFAULTS.retentionDays,
       pollIntervalMs: config.pollIntervalMs ?? USAGE_DEFAULTS.pollIntervalMs,
       maxBatch: config.maxBatch ?? USAGE_DEFAULTS.maxBatch,
+      rejectAfterFailures: config.rejectAfterFailures ?? USAGE_DEFAULTS.rejectAfterFailures,
     }
     this.logger = ctx.logger('usage')
   }
@@ -181,7 +223,7 @@ export class UsageService extends Service implements UsageServiceLike {
     this.ready = true
     this.logger.info(
       `用量插件已装载：存储 ${this.config.dataPath ?? ':memory:'}；保留 ${this.config.retentionDays} 天；` +
-        `轮询 ${this.config.pollIntervalMs}ms`,
+        `轮询 ${this.config.pollIntervalMs}ms；坏记录连续失败 ${this.config.rejectAfterFailures} 轮后隔离`,
     )
 
     this.pollTimer = setInterval(() => {
@@ -227,20 +269,22 @@ export class UsageService extends Service implements UsageServiceLike {
    * 公开是为了单测能直接驱动轮询；日常由 `pollIntervalMs` 定时器调用。
    * account-priority / 桥不在时返回 `skipped`，不抛错。
    *
-   * 可靠性纪律：
+  * 可靠性纪律：
    * - **落库失败不推进游标、不推进 epoch**：下一轮带同一个 `afterSeq` 重试，
    *   `req_id` 唯一 + `INSERT OR IGNORE` 让重放幂等；
    * - 失败不吞：记 warning（首轮 + 每 30 轮）并暴露在 `status()` 里；
+   * - **有界出口**：同一游标位置连续落库失败达到 `rejectAfterFailures` 轮后，逐条独立事务重试，
+   *   插不进的坏记录进 `usage_rejected`、游标照常前进（否则一条坏记录会让结算永久停摆）；
    * - 缺口（`firstSeq > lastSeq+1`）按游标位置只报一次，并尽量带上 Go 缓冲健康度；
    * - epoch 变化（gatewayd 重启）时把游标重置到 0，再按新 epoch 重新对齐。
    */
   async pollOnce(): Promise<UsagePollOutcome> {
     const priority = this.accountPrioritySeam()
     if (priority === undefined) {
-      return { status: 'skipped', epochChanged: false, gap: 0, ingested: 0 }
+      return skippedOutcome()
     }
     if (this.polling) {
-      return { status: 'skipped', epochChanged: false, gap: 0, ingested: 0 }
+      return skippedOutcome()
     }
 
     this.polling = true
@@ -256,7 +300,7 @@ export class UsageService extends Service implements UsageServiceLike {
         result = await priority.usageSince(params)
       } catch (error) {
         this.recordPollFailure('拉取', error)
-        return { status: 'error', epochChanged: false, gap: 0, ingested: 0 }
+        return failedOutcome(false, 0)
       }
 
       const epochChanged = this.epoch !== null && this.epoch !== result.epoch
@@ -284,14 +328,42 @@ export class UsageService extends Service implements UsageServiceLike {
         lastSeq = Math.max(lastSeq, integerOf(record.seq))
       }
 
-      let ingested: number
+      let ingested = 0
+      let rejected = 0
+      let persisted: readonly UsageEntry[] = []
       try {
-        ingested = this.insertEntries(result.records, { epoch: result.epoch, lastSeq })
+        const outcome = this.insertEntries(result.records, { epoch: result.epoch, lastSeq })
+        ingested = outcome.inserted
+        persisted = result.records
+        this.resetPersistFailures()
       } catch (error) {
-        // 不吞错：游标与 epoch 都停在原处，下一轮用同一 afterSeq 重试。
+        // 不吞错：游标与 epoch 停在原处，下一轮用同一 afterSeq 重试。
         this.recordPollFailure('落库', error)
-        return { status: 'error', epochChanged, gap, ingested: 0 }
+        if (this.persistFailureSeq !== previousLast) {
+          this.persistFailureSeq = previousLast
+          this.persistFailures = 0
+        }
+        this.persistFailures += 1
+        if (this.persistFailures < (this.config.rejectAfterFailures ?? USAGE_DEFAULTS.rejectAfterFailures)) {
+          return failedOutcome(epochChanged, gap)
+        }
+        // 到达阈值：走有界出口。逐条独立事务重试，能插的插、插不进的进隔离表，游标照常前进。
+        try {
+          const isolated = this.isolateBatch(result.records, { epoch: result.epoch, lastSeq })
+          ingested = isolated.ingested
+          rejected = isolated.rejected
+          persisted = isolated.persisted
+          this.resetPersistFailures()
+        } catch (isolationError) {
+          // 连隔离都写不进去（比如磁盘/锁问题）：仍然不推进游标，下轮整个流程重来。
+          this.recordPollFailure('隔离', isolationError)
+          return failedOutcome(epochChanged, gap)
+        }
       }
+
+      // ── 结算钩子位置（feat/money-settle）──
+      // 只对 `persisted` 结算：正常路径是整批，隔离路径是逐条成功的那些。
+      // 被隔离的坏记录不能结算、不能扣钱；结算失败必须抛错，游标不得推进。
 
       this.epoch = result.epoch
       this.lastSeq = lastSeq
@@ -300,10 +372,16 @@ export class UsageService extends Service implements UsageServiceLike {
       if (failuresBefore > 0) {
         this.logger.info(`用量轮询已恢复：此前连续失败 ${failuresBefore} 轮，游标推进到 seq=${lastSeq}`)
       }
-      return { status: 'ok', epochChanged, gap, ingested }
+      return { status: 'ok', epochChanged, gap, ingested, rejected, persisted }
     } finally {
       this.polling = false
     }
+  }
+
+  /** 清空「同一游标位置连续落库失败」计数（落库成功或隔离完成后）。 */
+  private resetPersistFailures(): void {
+    this.persistFailures = 0
+    this.persistFailureSeq = -1
   }
 
   /**
@@ -311,7 +389,7 @@ export class UsageService extends Service implements UsageServiceLike {
    *
    * 既不能吞错（否则「测试全绿、账上没数据」），也不能 1s 一条刷屏。
    */
-  private recordPollFailure(stage: '拉取' | '落库', error: unknown): void {
+  private recordPollFailure(stage: '拉取' | '落库' | '隔离', error: unknown): void {
     this.pollFailures += 1
     this.lastPollError = describeError(error)
     if (this.pollFailures === 1 || this.pollFailures % POLL_FAILURE_LOG_EVERY === 0) {
@@ -466,14 +544,143 @@ export class UsageService extends Service implements UsageServiceLike {
       consecutiveFailures: this.pollFailures,
       lastError: this.lastPollError,
       gapRecords: this.gapRecords,
+      rejectedCount: this.countRejected(),
+      rejectedPending: this.countRejected('pending'),
+    }
+  }
+
+  // ───────────────────────────────── 隔离区（坏记录的有界出口）
+
+  /**
+   * 隔离区列表（分页 + 计数）。只读。
+   *
+   * 这些记录**没有**进 `usage_records`、也**不会**被结算；管理面必须能看见，
+   * 否则就是静默免单。
+   */
+  listRejected(query: UsageRejectedQuery = {}): UsageRejectedPage {
+    this.assertReady()
+    const db = this.requireDb()
+    const limit = clampLimit(query.limit, DEFAULT_REJECTED_LIMIT, MAX_REJECTED_LIMIT)
+    const offset = clampOffset(query.offset)
+    let status: UsageRejectedStatus | undefined
+    if (query.status !== undefined) {
+      if (!REJECTED_STATUSES.includes(query.status)) {
+        throw new UsageError(
+          'USAGE_QUERY_INVALID',
+          `隔离记录状态只能是 ${REJECTED_STATUSES.join(' / ')}`,
+        )
+      }
+      status = query.status
+    }
+    const where = status === undefined ? '' : ' WHERE status = ?'
+    const params: SQLInputValue[] = status === undefined ? [] : [status]
+    const rows = db
+      .prepare(`SELECT * FROM usage_rejected${where} ORDER BY updated_at_ms DESC, req_id ASC LIMIT ? OFFSET ?`)
+      .all(...params, limit, offset) as Record<string, SQLOutputValue>[]
+    const counted = db.prepare(`SELECT COUNT(*) AS n FROM usage_rejected${where}`).get(...params) as
+      | Record<string, SQLOutputValue>
+      | undefined
+    return {
+      items: rows.map((row) => this.rejectedRowOf(row)),
+      total: counted === undefined ? 0 : integerOf(counted.n),
+      pending: this.countRejected('pending'),
+    }
+  }
+
+  /** 把 pending 的隔离记录标记为 ignored（= 明确放弃这笔未结算的用量）；幂等。 */
+  ignoreRejected(reqId: string): void {
+    this.assertReady()
+    const db = this.requireDb()
+    const changes = Number(
+      db
+        .prepare(
+          "UPDATE usage_rejected SET status = 'ignored', updated_at_ms = ? WHERE req_id = ? AND status = 'pending'",
+        )
+        .run(Date.now(), reqId).changes,
+    )
+    if (changes > 0) {
+      this.logger.info(`隔离记录已忽略：${reqId}（不会结算、也不会再进明细）`)
+      return
+    }
+    const row = db.prepare('SELECT status FROM usage_rejected WHERE req_id = ?').get(reqId) as
+      | Record<string, SQLOutputValue>
+      | undefined
+    if (row === undefined) throw new UsageError('USAGE_REJECTED_NOT_FOUND', `没有这条隔离记录：${reqId}`)
+    const status = textOf(row.status)
+    if (status === 'ignored') return
+    throw new UsageError('USAGE_REJECTED_STATE', `隔离记录已是 ${status}，不能再忽略`)
+  }
+
+  /**
+   * 按 `req_id` 重放一条隔离记录：用原始载荷重新插入明细，成功则 `pending → replayed`。
+   *
+   * 幂等：已经是 `replayed` 时直接返回（`inserted: false`），明细靠 `req_id` 唯一约束
+   * 不会重复。重放失败时**保持 pending**、更新错误文案并抛错（不会静默丢）。
+   */
+  replayRejected(reqId: string): UsageReplayResult {
+    this.assertReady()
+    const db = this.requireDb()
+    const row = db.prepare('SELECT * FROM usage_rejected WHERE req_id = ?').get(reqId) as
+      | Record<string, SQLOutputValue>
+      | undefined
+    if (row === undefined) throw new UsageError('USAGE_REJECTED_NOT_FOUND', `没有这条隔离记录：${reqId}`)
+    const current = this.rejectedRowOf(row)
+    if (current.status === 'ignored') {
+      throw new UsageError('USAGE_REJECTED_STATE', '已忽略的隔离记录不再重放')
+    }
+    if (current.status === 'replayed') return { status: 'replayed', inserted: false }
+
+    let entry: UsageEntry
+    try {
+      const parsed: unknown = JSON.parse(current.payload)
+      if (typeof parsed !== 'object' || parsed === null) throw new Error('载荷不是对象')
+      entry = parsed as UsageEntry
+    } catch (error) {
+      throw new UsageError(
+        'USAGE_REJECTED_FAILED',
+        `隔离记录的原始载荷不可用：${describeError(error)}`,
+      )
+    }
+    if (textOf(entry.requestId) !== reqId) {
+      throw new UsageError('USAGE_REJECTED_FAILED', '隔离记录的载荷与 req_id 不一致，拒绝重放')
+    }
+
+    try {
+      const outcome = this.insertEntries([entry], undefined, { emit: false })
+      this.emitAccountUsed(outcome.usedAccounts)
+      // ── 结算钩子位置（feat/money-settle）──
+      // 重放补写的是明细：如果这条记录最终要扣钱，这里必须用同一 req_id 结算一次
+      // （billing 的 req_id 幂等会让重复重放不重复扣），否则会变成「只记统计不扣钱」。
+      db.prepare(
+        "UPDATE usage_rejected SET status = 'replayed', updated_at_ms = ? WHERE req_id = ? AND status = 'pending'",
+      ).run(Date.now(), reqId)
+      this.logger.info(`隔离记录已重放：${reqId}（新增明细 ${outcome.inserted} 条）`)
+      return { status: 'replayed', inserted: outcome.inserted > 0 }
+    } catch (error) {
+      const message = describeError(error)
+      db.prepare(
+        "UPDATE usage_rejected SET error = ?, updated_at_ms = ? WHERE req_id = ? AND status = 'pending'",
+      ).run(message, Date.now(), reqId)
+      throw new UsageError('USAGE_REJECTED_FAILED', `重放失败：${message}`)
     }
   }
 
   // ───────────────────────────────── 内部：存储
 
-  private insertEntries(entries: readonly UsageEntry[], meta?: { epoch: string; lastSeq: number }): number {
+  /**
+   * 落库一批记录（一个事务；`meta` 与记录同事务，保证游标与明细一致）。
+   *
+   * 返回 `inserted`（真正新增的条数，重复 req_id 是 0）与 `usedAccounts`
+   * （只含真的新落库的账号）。`emit: false` 用于隔离区逐条重试：那时要等整批做完再统一发事件，
+   * 不能让几百条记录变成几百个 `usage/account-used`。
+   */
+  private insertEntries(
+    entries: readonly UsageEntry[],
+    meta?: { epoch: string; lastSeq: number },
+    options: { emit?: boolean } = {},
+  ): { inserted: number; usedAccounts: readonly string[] } {
     const db = this.requireDb()
-    if (entries.length === 0 && meta === undefined) return 0
+    if (entries.length === 0 && meta === undefined) return { inserted: 0, usedAccounts: [] }
 
     const insert = db.prepare(`
       INSERT OR IGNORE INTO usage_records (
@@ -553,13 +760,112 @@ export class UsageService extends Service implements UsageServiceLike {
 
     // 落库成功后再报告：监听方（account-admin）据此节流汇报 `lastUsedAt`。
     // 这里不直接写 identity——usage 不是账号记录的写者（AGENTS.md 2.4）。
-    if (usedAccounts.size > 0) {
-      this.ctx.emit('usage/account-used', {
-        accountIds: [...usedAccounts],
-        at: new Date(now).toISOString(),
-      })
+    if (options.emit !== false) {
+      this.emitAccountUsed([...usedAccounts], now)
     }
-    return inserted
+    return { inserted, usedAccounts: [...usedAccounts] }
+  }
+
+  private emitAccountUsed(accountIds: readonly string[], nowMs: number = Date.now()): void {
+    if (accountIds.length === 0) return
+    this.ctx.emit('usage/account-used', {
+      accountIds: [...accountIds],
+      at: new Date(nowMs).toISOString(),
+    })
+  }
+
+  /**
+   * 有界出口：整批落库连续失败到阈值后，逐条独立事务重试。
+   *
+   * 能插的插（正常记录不受坏记录连累），插不进的写进 `usage_rejected`（一条 req_id 只一行），
+   * 最后把游标推进到该批最大 seq —— 否则坏记录会让轮询（以及下游结算）永久停摆。
+   *
+   * 只在异常路径调用；正常路径仍然整批一个事务。
+   */
+  private isolateBatch(
+    entries: readonly UsageEntry[],
+    meta: { epoch: string; lastSeq: number },
+  ): { ingested: number; rejected: number; persisted: readonly UsageEntry[] } {
+    const persisted: UsageEntry[] = []
+    const usedAccounts = new Set<string>()
+    let ingested = 0
+    let rejected = 0
+    const failures = this.persistFailures
+
+    for (const entry of entries) {
+      try {
+        const outcome = this.insertEntries([entry], undefined, { emit: false })
+        ingested += outcome.inserted
+        for (const accountId of outcome.usedAccounts) usedAccounts.add(accountId)
+        persisted.push(entry)
+      } catch (error) {
+        rejected += 1
+        this.recordRejected(entry, error, failures)
+      }
+    }
+
+    // 游标必须前进，否则坏记录等于永久卡死；epoch 与游标同事务落库。
+    this.insertEntries([], meta)
+    this.emitAccountUsed([...usedAccounts])
+    this.logger.warn(
+      `用量落库连续失败 ${failures} 轮，已隔离 ${rejected} 条坏记录（同批 ${persisted.length} 条照常落库），` +
+        `游标推进到 seq=${meta.lastSeq}；被隔离的记录未进明细、不会结算`,
+    )
+    return { ingested, rejected, persisted }
+  }
+
+  /** 把一条坏记录写进隔离区；同一 `req_id` 只有一行（重复隔离只更新原因与次数）。 */
+  private recordRejected(entry: UsageEntry, error: unknown, failures: number): void {
+    const db = this.requireDb()
+    const now = Date.now()
+    const reqId = isNonEmptyText(entry.requestId) ? entry.requestId : `missing-req-id:${textOf(entry.epoch)}:${integerOf(entry.seq)}`
+    const statement = db.prepare(`
+      INSERT INTO usage_rejected (req_id, epoch, seq, payload, error, failures, status, first_failed_at_ms, updated_at_ms)
+      VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?)
+      ON CONFLICT(req_id) DO UPDATE SET
+        error = excluded.error,
+        failures = excluded.failures,
+        updated_at_ms = excluded.updated_at_ms
+    `)
+    statement.run(
+      reqId,
+      textOf(entry.epoch),
+      integerOf(entry.seq),
+      safeJsonOf(entry),
+      describeError(error),
+      failures,
+      now,
+      now,
+    )
+  }
+
+  /** 隔离记录的状态列 → 稳定英文字符串；库里出现未知值时按 pending 处理并返回 undefined 之外的兜底。 */
+  private rejectedRowOf(row: Record<string, SQLOutputValue>): UsageRejectedRow {
+    const raw = textOf(row.status)
+    const status: UsageRejectedStatus =
+      raw === 'ignored' || raw === 'replayed' || raw === 'pending' ? raw : 'pending'
+    return {
+      reqId: String(row.req_id ?? ''),
+      epoch: String(row.epoch ?? ''),
+      seq: integerOf(row.seq),
+      payload: String(row.payload ?? ''),
+      error: String(row.error ?? ''),
+      failures: integerOf(row.failures),
+      status,
+      firstFailedAt: new Date(integerOf(row.first_failed_at_ms)).toISOString(),
+      updatedAt: new Date(integerOf(row.updated_at_ms)).toISOString(),
+    }
+  }
+
+  private countRejected(status?: UsageRejectedStatus): number {
+    const db = this.db
+    if (db === undefined) return 0
+    const row = status === undefined
+      ? (db.prepare('SELECT COUNT(*) AS n FROM usage_rejected').get() as Record<string, SQLOutputValue> | undefined)
+      : (db.prepare('SELECT COUNT(*) AS n FROM usage_rejected WHERE status = ?').get(status) as
+          | Record<string, SQLOutputValue>
+          | undefined)
+    return row === undefined ? 0 : integerOf(row.n)
   }
 
   private loadMeta(): void {
@@ -692,6 +998,39 @@ export class UsageService extends Service implements UsageServiceLike {
 }
 
 // ───────────────────────────────── 纯函数
+
+function skippedOutcome(): UsagePollOutcome {
+  return { status: 'skipped', epochChanged: false, gap: 0, ingested: 0, rejected: 0, persisted: [] }
+}
+
+function failedOutcome(epochChanged: boolean, gap: number): UsagePollOutcome {
+  return { status: 'error', epochChanged, gap, ingested: 0, rejected: 0, persisted: [] }
+}
+
+function clampOffset(value: number | undefined): number {
+  if (value === undefined || !Number.isFinite(value)) return 0
+  return Math.min(Math.max(Math.trunc(value), 0), 1_000_000)
+}
+
+function textOf(value: unknown): string {
+  return typeof value === 'string' ? value : ''
+}
+
+function isNonEmptyText(value: unknown): value is string {
+  return typeof value === 'string' && value !== ''
+}
+
+/**
+ * 隔离区的原始载荷。理论上 Go 送来的记录都能序列化；这里只是保证
+ * 「记隔离」本身不会因为一条坏记录再抛一次异常。
+ */
+function safeJsonOf(entry: UsageEntry): string {
+  try {
+    return JSON.stringify(entry)
+  } catch {
+    return JSON.stringify({ requestId: textOf(entry.requestId), seq: integerOf(entry.seq) })
+  }
+}
 
 function resolveDataPath(ctx: Context, path: string | undefined): string | undefined {
   if (path === undefined || path === '' || path === ':memory:' || isAbsolute(path)) {
