@@ -23,6 +23,7 @@ import type {
   RedeemLike,
   SessionView,
   SettingsLike,
+  TopupLike,
   UsageLike,
   UserLike,
   WebRuntime,
@@ -159,6 +160,7 @@ export class WebService extends Service {
       accountAdmin: get<AccountAdminLike>('accountAdmin'),
       redeem: get<RedeemLike>('redeem'),
       billing: get<BillingLike>('billing'),
+      topup: get<TopupLike>('topup'),
       fontSmiley: get<FontLike>('fontSmiley'),
     }
   }

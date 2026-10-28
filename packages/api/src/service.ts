@@ -37,6 +37,7 @@ import type {
   PricingPort,
   RedeemPort,
   SettingsPort,
+  TopupPort,
   UsagePort,
   UserPort,
 } from './types.ts'
@@ -151,6 +152,18 @@ export class ApiService extends Service {
           'stats',
         ]),
       billing: () => this.optionalService<BillingPort>('billing', ['list', 'summary']),
+      topup: () =>
+        this.optionalService<TopupPort>('topup', [
+          'options',
+          'createOrder',
+          'listMine',
+          'getMine',
+          'cancelMine',
+          'list',
+          'confirmPaid',
+          'cancel',
+          'stats',
+        ]),
       now: () => new Date(),
       uptimeSec: () => Math.round(process.uptime()),
       log: (level, message) => {

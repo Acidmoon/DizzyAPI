@@ -56,6 +56,10 @@ import type {
   SettleSummaryLike,
   SettleTotalsLike,
   SettingsPort,
+  TopupOptionsLike,
+  TopupOrderLike,
+  TopupPort,
+  TopupStatsLike,
   UsageDailyPointLike,
   UsageModelBreakdownLike,
   UsagePort,
@@ -101,18 +105,6 @@ const CONTENT_TYPES: Readonly<Record<string, string>> = {
   '.txt': 'text/plain; charset=utf-8',
   '.map': 'application/json; charset=utf-8',
 }
-
-const TOPUP_OPTIONS = {
-  currency: 'CNY',
-  amountsCents: [1_000, 2_000, 5_000, 10_000, 30_000, 50_000],
-  minCents: 100,
-  maxCents: 1_000_000,
-  methods: [
-    { id: 'alipay', label: '支付宝', enabled: true, note: '支付模块尚未实现，本页只能预先查看选项。' },
-    { id: 'wechat', label: '微信支付', enabled: true, note: '支付模块尚未实现，本页只能预先查看选项。' },
-  ],
-  notice: '支付模块尚未实现：这里只返回充值选项，创建订单会返回 501。前端不接触支付凭据。',
-} as const
 
 const USAGE_RANGE_DAYS: Readonly<Record<string, number>> = { '7d': 7, '30d': 30, '90d': 90 }
 
@@ -435,7 +427,7 @@ export class ApiServer {
       return
     }
     if (parts[0] === 'topup') {
-      await this.routeTopup(req, res, parts)
+      await this.routeTopup(req, res, parts, url)
       return
     }
     if (parts[0] === 'redeem') {
@@ -458,6 +450,10 @@ export class ApiServer {
     }
     if (parts[0] === 'admin' && parts[1] === 'billing') {
       await this.routeAdminBilling(req, res, parts, url)
+      return
+    }
+    if (parts[0] === 'admin' && parts[1] === 'topup-orders') {
+      await this.routeAdminTopupOrders(req, res, parts, url)
       return
     }
     if (parts[0] === 'admin' && parts[1] === 'usage') {
@@ -1204,18 +1200,147 @@ export class ApiServer {
     }
   }
 
-  private async routeTopup(req: IncomingMessage, res: ServerResponse, parts: readonly string[]): Promise<void> {
-    await this.requireSession(req)
+  /**
+   * 用户面：`GET /api/topup/options`、`GET/POST /api/topup/orders`、
+   * `GET /api/topup/orders/<orderNo>`、`POST /api/topup/orders/<orderNo>/cancel`。
+   *
+   * 订单金额只接受「元」的十进制字符串（服务层换整数微元）；响应里金额一律十进制字符串。
+   * 本批没有在线支付：订单创建后返回 `instructions`（人工确认说明），不会自动到账。
+   */
+  private async routeTopup(
+    req: IncomingMessage,
+    res: ServerResponse,
+    parts: readonly string[],
+    url: URL,
+  ): Promise<void> {
+    const view = await this.requireSession(req)
+    const topup = this.requireTopup()
+
     if (parts.length === 2 && parts[1] === 'options') {
       if (!this.allowRead(req, res)) return
-      this.sendJson(req, res, 200, TOPUP_OPTIONS)
+      this.sendJson(req, res, 200, topupOptionsOf(topup.options()))
       return
     }
+
     if (parts.length === 2 && parts[1] === 'orders') {
-      if (!this.allowMethod(req, res, ['POST'])) return
-      throw new ApiError('TOPUP_NOT_IMPLEMENTED', 501, '支付模块尚未实现，暂时不能创建充值订单')
+      if (req.method === 'GET' || req.method === 'HEAD') {
+        const limit = parseIntegerParam(url.searchParams.get('limit'), 'limit', 20, 1, 100)
+        const page = topup.listMine(view.userId, limit)
+        this.sendJson(req, res, 200, {
+          items: page.items.map(topupOrderOf),
+          total: page.total,
+        })
+        return
+      }
+      if (req.method === 'POST') {
+        const body = await this.jsonBody(req)
+        assertOnlyKeys(body, ['amountYuan', 'provider', 'note'])
+        const amountYuan = requiredString(body, 'amountYuan')
+        const provider = optionalString(body, 'provider')
+        const note = Object.hasOwn(body, 'note') ? nullableString(body, 'note') : undefined
+        const created = await topup.createOrder({
+          userId: view.userId,
+          amountYuan,
+          ...(provider === undefined ? {} : { provider }),
+          ...(note === undefined ? {} : { note }),
+        })
+        this.sendJson(req, res, 200, {
+          order: topupOrderOf(created.order),
+          instructions: created.order.instructions,
+        })
+        return
+      }
+      this.sendMethodNotAllowed(req, res, ['GET', 'HEAD', 'POST'])
+      return
     }
+
+    if (parts.length === 3 && parts[1] === 'orders') {
+      if (!this.allowRead(req, res)) return
+      this.sendJson(req, res, 200, topupOrderOf(topup.getMine(view.userId, parts[2] as string)))
+      return
+    }
+
+    if (parts.length === 4 && parts[1] === 'orders' && parts[3] === 'cancel') {
+      if (!this.allowMethod(req, res, ['POST'])) return
+      const canceled = topup.cancelMine(view.userId, parts[2] as string)
+      this.sendJson(req, res, 200, topupOrderOf(canceled))
+      return
+    }
+
     throw notFound('没有这个充值接口')
+  }
+
+  /**
+   * 管理面：`GET /api/admin/topup-orders`（列表 + 筛选）、`.../stats`、
+   * `POST .../<orderNo>/confirm`（人工确认到账）、`POST .../<orderNo>/cancel`。
+   *
+   * 确认到账会**真的加余额**（走 user.adjustBalance，幂等）：重复确认只回 `credited: false`，
+   * 不会重复加钱。本批没有支付回调路由——没有验签的回调一律不挂。
+   */
+  private async routeAdminTopupOrders(
+    req: IncomingMessage,
+    res: ServerResponse,
+    parts: readonly string[],
+    url: URL,
+  ): Promise<void> {
+    await this.requireAdmin(req)
+    const topup = this.requireTopup()
+
+    if (parts.length === 2) {
+      if (!this.allowRead(req, res)) return
+      const query: {
+        status?: string
+        userId?: number
+        fromMs?: number
+        toMs?: number
+        limit?: number
+        offset?: number
+      } = {}
+      const status = queryStringOf(url, 'status')
+      if (status !== undefined) query.status = status
+      const userId = parseIntegerParam(url.searchParams.get('userId'), 'userId', 0, 0, Number.MAX_SAFE_INTEGER)
+      if (userId !== undefined && userId > 0) query.userId = userId
+      const fromMs = parseIntegerParam(url.searchParams.get('from'), 'from', 0, 0, Number.MAX_SAFE_INTEGER)
+      if (fromMs !== undefined && fromMs > 0) query.fromMs = fromMs
+      const toMs = parseIntegerParam(url.searchParams.get('to'), 'to', 0, 0, Number.MAX_SAFE_INTEGER)
+      if (toMs !== undefined && toMs > 0) query.toMs = toMs
+      const limit = parseIntegerParam(url.searchParams.get('limit'), 'limit', 50, 1, 200)
+      const offset = parseIntegerParam(url.searchParams.get('offset'), 'offset', 0, 0, 10_000_000)
+      if (limit !== undefined) query.limit = limit
+      if (offset !== undefined) query.offset = offset
+      const page = await topup.list(API_ACTOR, query)
+      this.sendJson(req, res, 200, {
+        items: page.items.map(topupOrderOf),
+        total: page.total,
+      })
+      return
+    }
+
+    if (parts.length === 3 && parts[2] === 'stats') {
+      if (!this.allowRead(req, res)) return
+      this.sendJson(req, res, 200, topupStatsOf(await topup.stats(API_ACTOR)))
+      return
+    }
+
+    if (parts.length === 4) {
+      const orderNo = parts[2] as string
+      if (parts[3] === 'confirm') {
+        if (!this.allowMethod(req, res, ['POST'])) return
+        const result = await topup.confirmPaid(API_ACTOR, orderNo)
+        this.sendJson(req, res, 200, {
+          order: topupOrderOf(result.order),
+          credited: result.credited,
+        })
+        return
+      }
+      if (parts[3] === 'cancel') {
+        if (!this.allowMethod(req, res, ['POST'])) return
+        this.sendJson(req, res, 200, topupOrderOf(await topup.cancel(API_ACTOR, orderNo)))
+        return
+      }
+    }
+
+    throw notFound('没有这个充值订单接口')
   }
 
   // ───────────────────────────────── 兑换码 ─────────────────────────────────
@@ -2136,6 +2261,14 @@ export class ApiServer {
     return billing
   }
 
+  private requireTopup(): TopupPort {
+    const topup = this.runtime.topup()
+    if (topup === undefined) {
+      throw new ApiError('TOPUP_UNAVAILABLE', 503, '充值订单服务不在运行：暂时不能下单或确认到账')
+    }
+    return topup
+  }
+
   private allowRead(req: IncomingMessage, res: ServerResponse): boolean {
     if (req.method === 'GET' || req.method === 'HEAD') return true
     this.sendMethodNotAllowed(req, res, ['GET', 'HEAD'])
@@ -2919,6 +3052,50 @@ function redeemStatsOf(stats: RedeemStatsLike): Record<string, unknown> {
     used: stats.used,
     expired: stats.expired,
     redeemedAmountMicro: stats.redeemedAmountMicro.toString(),
+  }
+}
+
+// ───────────────────────────────── 充值订单 ─────────────────────────────────
+
+function topupOrderOf(order: TopupOrderLike): Record<string, unknown> {
+  return {
+    orderNo: order.orderNo,
+    userId: order.userId,
+    amountMicro: order.amountMicro.toString(),
+    status: order.status,
+    provider: order.provider,
+    providerLabel: order.providerLabel,
+    providerOrderId: order.providerOrderId,
+    instructions: order.instructions,
+    note: order.note,
+    createdAt: order.createdAt,
+    expiresAt: order.expiresAt,
+    paidAt: order.paidAt,
+    canceledAt: order.canceledAt,
+  }
+}
+
+function topupOptionsOf(options: TopupOptionsLike): Record<string, unknown> {
+  return {
+    currency: options.currency,
+    providerId: options.providerId,
+    providerLabel: options.providerLabel,
+    online: options.online,
+    minAmountMicros: options.minAmountMicros.toString(),
+    maxAmountMicros: options.maxAmountMicros.toString(),
+    expiresMinutes: options.expiresMinutes,
+    notice: options.notice,
+  }
+}
+
+function topupStatsOf(stats: TopupStatsLike): Record<string, unknown> {
+  return {
+    todayPaidCount: stats.todayPaidCount,
+    todayPaidMicros: stats.todayPaidMicros.toString(),
+    totalPaidCount: stats.totalPaidCount,
+    totalPaidMicros: stats.totalPaidMicros.toString(),
+    pendingCount: stats.pendingCount,
+    expiredCount: stats.expiredCount,
   }
 }
 

@@ -39,6 +39,12 @@ import type {
   SettleSummaryLike,
   SettingsPort,
   TicketLike,
+  TopupOptionsLike,
+  TopupOrderLike,
+  TopupOrderPageLike,
+  TopupPort,
+  TopupStatsLike,
+  ConfirmTopupResultLike,
   UsagePort,
   UsageQueryLike,
   UsageRejectedPageLike,
@@ -1186,6 +1192,108 @@ export class FakeBilling implements BillingPort {
   }
 }
 
+/** 充值订单服务（`topup`）的假实现：只覆盖 HTTP 层要观察的行为。 */
+export class FakeTopup implements TopupPort {
+  readonly calls: { method: string; args: readonly unknown[] }[] = []
+  /** 设置后 createOrder / confirmPaid 抛出带这个 code 的 DomainError。 */
+  failCode: string | undefined
+  confirmCredited = true
+
+  private readonly order: TopupOrderLike = {
+    orderNo: 'T20261019110000ABCD1234',
+    userId: 2,
+    amountMicro: 100_000_000n,
+    status: 'pending',
+    provider: 'manual',
+    providerLabel: '人工确认（线下转账）',
+    providerOrderId: null,
+    instructions: '请联系管理员线下转账，并在备注里写明单号；管理员确认后到账。',
+    note: '对公转账',
+    createdAt: '2026-10-19T11:00:00.000Z',
+    expiresAt: '2026-10-19T11:30:00.000Z',
+    paidAt: null,
+    canceledAt: null,
+  }
+
+  options(): TopupOptionsLike {
+    return {
+      currency: 'CNY',
+      providerId: 'manual',
+      providerLabel: '人工确认（线下转账）',
+      online: false,
+      minAmountMicros: 1_000_000n,
+      maxAmountMicros: 10_000_000_000n,
+      expiresMinutes: 30,
+      notice: '当前仅支持人工确认到账，不会自动到账。',
+    }
+  }
+
+  async createOrder(input: {
+    readonly userId: number
+    readonly amountYuan: unknown
+  }): Promise<{ readonly order: TopupOrderLike }> {
+    this.calls.push({ method: 'createOrder', args: [input] })
+    if (this.failCode !== undefined) throw new DomainError(this.failCode, '测试拒绝：创建订单失败')
+    return { order: this.order }
+  }
+
+  listMine(userId: number, limit?: number): TopupOrderPageLike {
+    this.calls.push({ method: 'listMine', args: [userId, limit] })
+    return { items: [this.order], total: 1 }
+  }
+
+  getMine(userId: number, orderNo: string): TopupOrderLike {
+    this.calls.push({ method: 'getMine', args: [userId, orderNo] })
+    return this.order
+  }
+
+  cancelMine(userId: number, orderNo: string): TopupOrderLike {
+    this.calls.push({ method: 'cancelMine', args: [userId, orderNo] })
+    return { ...this.order, status: 'canceled', canceledAt: '2026-10-19T11:05:00.000Z' }
+  }
+
+  list(
+    _actor: string,
+    query: {
+      readonly status?: string
+      readonly userId?: number
+      readonly fromMs?: number
+      readonly toMs?: number
+      readonly limit?: number
+      readonly offset?: number
+    } = {},
+  ): TopupOrderPageLike {
+    this.calls.push({ method: 'list', args: [query] })
+    return { items: [this.order], total: 1 }
+  }
+
+  async confirmPaid(actor: string, orderNo: string): Promise<ConfirmTopupResultLike> {
+    this.calls.push({ method: 'confirmPaid', args: [actor, orderNo] })
+    if (this.failCode !== undefined) throw new DomainError(this.failCode, '测试拒绝：确认到账失败')
+    return {
+      order: this.confirmCredited ? this.order : { ...this.order, status: 'paid' },
+      credited: this.confirmCredited,
+    }
+  }
+
+  cancel(actor: string, orderNo: string): TopupOrderLike {
+    this.calls.push({ method: 'cancel', args: [actor, orderNo] })
+    return { ...this.order, status: 'canceled', canceledAt: '2026-10-19T11:05:00.000Z' }
+  }
+
+  stats(_actor: string, nowMs?: number): TopupStatsLike {
+    this.calls.push({ method: 'stats', args: [nowMs] })
+    return {
+      todayPaidCount: 1,
+      todayPaidMicros: 100_000_000n,
+      totalPaidCount: 2,
+      totalPaidMicros: 300_000_000n,
+      pendingCount: 3,
+      expiredCount: 4,
+    }
+  }
+}
+
 export interface Fixture {
   readonly runtime: ApiRuntime
   readonly user: FakeUser
@@ -1200,6 +1308,7 @@ export interface Fixture {
   readonly pricing: FakePricing
   readonly redeem: FakeRedeem
   readonly billing: FakeBilling
+  readonly topup: FakeTopup
   readonly cleanup: () => Promise<void>
 }
 
@@ -1217,6 +1326,7 @@ export interface FixtureOptions {
   readonly withoutPricing?: boolean
   readonly withoutRedeem?: boolean
   readonly withoutBilling?: boolean
+  readonly withoutTopup?: boolean
   readonly pages?: FrontendPageLike[]
 }
 
@@ -1233,6 +1343,7 @@ export async function createFixture(options: FixtureOptions = {}): Promise<Fixtu
   const pricing = new FakePricing()
   const redeem = new FakeRedeem()
   const billing = new FakeBilling()
+  const topup = new FakeTopup()
 
   const runtime: ApiRuntime = {
     config: resolvedConfig(options.config),
@@ -1249,6 +1360,7 @@ export async function createFixture(options: FixtureOptions = {}): Promise<Fixtu
     pricing: () => (options.withoutPricing === true ? undefined : pricing),
     redeem: () => (options.withoutRedeem === true ? undefined : redeem),
     billing: () => (options.withoutBilling === true ? undefined : billing),
+    topup: () => (options.withoutTopup === true ? undefined : topup),
     now: () => new Date('2026-10-19T12:00:00.000Z'),
     uptimeSec: () => 42,
     log: () => undefined,
@@ -1268,6 +1380,7 @@ export async function createFixture(options: FixtureOptions = {}): Promise<Fixtu
     pricing,
     redeem,
     billing,
+    topup,
     async cleanup() {
       await rm(frontend.root, { recursive: true, force: true })
     },

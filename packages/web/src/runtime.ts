@@ -361,7 +361,73 @@ export interface BillingLike {
   summary(actor: string, nowMs?: number): SettleSummaryView
 }
 
-export interface SettingsField {  readonly path: string
+// ───────────────────────────── 充值订单 ─────────────────────────────
+
+export interface TopupOrderView {
+  readonly orderNo: string
+  readonly userId: number
+  readonly amountMicro: bigint
+  readonly status: string
+  readonly provider: string
+  readonly providerLabel: string
+  readonly providerOrderId: string | null
+  readonly instructions: string | null
+  readonly note: string | null
+  readonly createdAt: string
+  readonly expiresAt: string
+  readonly paidAt: string | null
+  readonly canceledAt: string | null
+}
+
+export interface TopupOptionsView {
+  readonly currency: 'CNY'
+  readonly providerId: string
+  readonly providerLabel: string
+  readonly online: boolean
+  readonly minAmountMicros: bigint
+  readonly maxAmountMicros: bigint
+  readonly expiresMinutes: number
+  readonly notice: string
+}
+
+export interface TopupStatsView {
+  readonly todayPaidCount: number
+  readonly todayPaidMicros: bigint
+  readonly totalPaidCount: number
+  readonly totalPaidMicros: bigint
+  readonly pendingCount: number
+  readonly expiredCount: number
+}
+
+/** 充值订单服务（只读 + 三个写动作）；页面不 import 插件实现。 */
+export interface TopupLike {
+  options(): TopupOptionsView
+  createOrder(input: {
+    readonly userId: number
+    readonly amountYuan: unknown
+    readonly provider?: string
+    readonly note?: string | null
+  }): Promise<{ readonly order: TopupOrderView }>
+  listMine(
+    userId: number,
+    limit?: number,
+  ): { readonly items: readonly TopupOrderView[]; readonly total: number }
+  getMine(userId: number, orderNo: string): TopupOrderView
+  cancelMine(userId: number, orderNo: string): TopupOrderView
+  list(
+    actor: string,
+    query?: { readonly status?: string; readonly userId?: number; readonly limit?: number; readonly offset?: number },
+  ): { readonly items: readonly TopupOrderView[]; readonly total: number }
+  confirmPaid(
+    actor: string,
+    orderNo: string,
+  ): Promise<{ readonly order: TopupOrderView; readonly credited: boolean }>
+  cancel(actor: string, orderNo: string): TopupOrderView
+  stats(actor: string, nowMs?: number): TopupStatsView
+}
+
+export interface SettingsField {
+  readonly path: string
   readonly label: string
   readonly kind: string
   readonly writable: boolean
@@ -560,6 +626,7 @@ export interface WebRuntime {
   readonly accountAdmin: AccountAdminLike | undefined
   readonly redeem: RedeemLike | undefined
   readonly billing: BillingLike | undefined
+  readonly topup: TopupLike | undefined
   readonly fontSmiley: FontLike | undefined
 }
 

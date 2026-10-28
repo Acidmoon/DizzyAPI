@@ -713,7 +713,7 @@ test('设置插件缺失时 503', async (t) => {
   assert.equal(reply.json.error.code, 'API_SETTINGS_UNAVAILABLE')
 })
 
-test('用量：余额按 BigInt 换算成分，历史不伪造；充值选项与 501 订单', async (t) => {
+test('用量：余额按 BigInt 换算成分，历史不伪造；充值选项与人工确认订单', async (t) => {
   const { server, auth } = await setup(t)
   const { cookie } = await login(server)
 
@@ -748,20 +748,36 @@ test('用量：余额按 BigInt 换算成分，历史不伪造；充值选项与
   const invalid = await call(server, '/api/usage?range=1d', { cookie })
   assert.equal(invalid.status, 400)
 
+  // 充值走人工确认（没有在线支付）：选项来自 topup 插件，金额是整数微元的十进制字符串。
   const options = await call(server, '/api/topup/options', { cookie })
-  assert.equal(options.status, 200)
+  assert.equal(options.status, 200, options.text)
   assert.equal(options.json.currency, 'CNY')
-  assert.deepEqual(options.json.amountsCents, [1_000, 2_000, 5_000, 10_000, 30_000, 50_000])
-  assert.equal(options.json.maxCents, 1_000_000)
-  assert.ok(options.json.methods.every((method: any) => method.enabled === true))
+  assert.equal(options.json.providerId, 'manual')
+  assert.equal(options.json.online, false)
+  assert.match(options.json.minAmountMicros, /^[0-9]+$/)
+  assert.equal(options.json.maxAmountMicros, '10000000000')
+  assert.equal(options.json.expiresMinutes, 30)
 
   const order = await call(server, '/api/topup/orders', {
     method: 'POST',
     cookie,
+    body: JSON.stringify({ amountYuan: '100' }),
+  })
+  assert.equal(order.status, 200, order.text)
+  assert.equal(order.json.order.amountMicro, '100000000')
+  assert.equal(order.json.order.status, 'pending')
+  assert.equal(order.json.order.provider, 'manual')
+  assert.equal(typeof order.json.instructions, 'string')
+  assert.ok(order.json.instructions.length > 0)
+
+  // 旧的 501 契约（分 + method + alipay）已经不存在：未知字段明确 400，不再假装「未实现」。
+  const legacy = await call(server, '/api/topup/orders', {
+    method: 'POST',
+    cookie,
     body: JSON.stringify({ amountCents: 10_000, method: 'alipay' }),
   })
-  assert.equal(order.status, 501)
-  assert.equal(order.json.error.code, 'TOPUP_NOT_IMPLEMENTED')
+  assert.equal(legacy.status, 400)
+  assert.equal(legacy.json.error.code, 'API_BAD_REQUEST')
 })
 
 // ───────────────────────────────── 静态与 SPA ─────────────────────────────────

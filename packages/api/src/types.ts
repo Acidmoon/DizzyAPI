@@ -570,6 +570,88 @@ export interface RedeemPort {
   stats(actor: string): Promise<RedeemStatsLike>
 }
 
+// ───────────────────────────── 充值订单（可选） ─────────────────────────────
+
+/**
+ * 充值订单服务（`topup`）的端口。
+ *
+ * 金额一律 bigint 微元，HTTP 层写成十进制字符串；订单状态是稳定英文串。
+ * 本批只有 `manual`（人工确认到账）——**没有在线支付**，也没有回调路由。
+ */
+export interface TopupOrderLike {
+  readonly orderNo: string
+  readonly userId: number
+  readonly amountMicro: bigint
+  readonly status: string
+  readonly provider: string
+  readonly providerLabel: string
+  readonly providerOrderId: string | null
+  readonly instructions: string | null
+  readonly note: string | null
+  readonly createdAt: string
+  readonly expiresAt: string
+  readonly paidAt: string | null
+  readonly canceledAt: string | null
+}
+
+export interface TopupOrderPageLike {
+  readonly items: readonly TopupOrderLike[]
+  readonly total: number
+}
+
+export interface TopupOptionsLike {
+  readonly currency: 'CNY'
+  readonly providerId: string
+  readonly providerLabel: string
+  readonly online: boolean
+  readonly minAmountMicros: bigint
+  readonly maxAmountMicros: bigint
+  readonly expiresMinutes: number
+  readonly notice: string
+}
+
+export interface TopupStatsLike {
+  readonly todayPaidCount: number
+  readonly todayPaidMicros: bigint
+  readonly totalPaidCount: number
+  readonly totalPaidMicros: bigint
+  readonly pendingCount: number
+  readonly expiredCount: number
+}
+
+export interface ConfirmTopupResultLike {
+  readonly order: TopupOrderLike
+  /** false = 这笔订单此前已经到账（幂等命中，没有再加钱）。 */
+  readonly credited: boolean
+}
+
+export interface TopupPort {
+  options(): TopupOptionsLike
+  createOrder(input: {
+    readonly userId: number
+    readonly amountYuan: unknown
+    readonly provider?: string
+    readonly note?: string | null
+  }): Promise<{ readonly order: TopupOrderLike }>
+  listMine(userId: number, limit?: number): TopupOrderPageLike
+  getMine(userId: number, orderNo: string): TopupOrderLike
+  cancelMine(userId: number, orderNo: string): TopupOrderLike
+  list(
+    actor: string,
+    query?: {
+      readonly status?: string
+      readonly userId?: number
+      readonly fromMs?: number
+      readonly toMs?: number
+      readonly limit?: number
+      readonly offset?: number
+    },
+  ): TopupOrderPageLike
+  confirmPaid(actor: string, orderNo: string): Promise<ConfirmTopupResultLike>
+  cancel(actor: string, orderNo: string): TopupOrderLike
+  stats(actor: string, nowMs?: number): TopupStatsLike
+}
+
 // ───────────────────────────── 结算（可选） ─────────────────────────────
 
 /**
@@ -713,6 +795,8 @@ export interface ApiRuntime {
   redeem(): RedeemPort | undefined
   /** 结算服务；不在运行时只有 /api/admin/billing 503（扣费暂停，用量照常落库）。 */
   billing(): BillingPort | undefined
+  /** 充值订单服务；不在运行时只有充值相关路由 503（页面本身仍可打开）。 */
+  topup(): TopupPort | undefined
   now(): Date
   uptimeSec(): number
   log(level: 'info' | 'warn' | 'error', message: string): void

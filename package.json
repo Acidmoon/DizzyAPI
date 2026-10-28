@@ -49,6 +49,7 @@
     "@dizzyapi/plugin-quota": "workspace:*",
     "@dizzyapi/plugin-redeem": "workspace:*",
     "@dizzyapi/plugin-settings": "workspace:*",
+    "@dizzyapi/plugin-topup": "workspace:*",
     "@dizzyapi/plugin-usage": "workspace:*",
     "@dizzyapi/plugin-user": "workspace:*",
     "@dizzyapi/plugin-web": "workspace:*",
