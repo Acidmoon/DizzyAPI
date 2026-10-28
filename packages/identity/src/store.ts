@@ -20,7 +20,11 @@ export function emptySnapshot(): IdentitySnapshot {
 
 const PROVIDERS = new Set(['claude', 'openai', 'custom'])
 const KINDS = new Set(['oauth', 'api_key'])
-const STATUSES = new Set(['active', 'needs_reauth'])
+const STATUSES = new Set(['active', 'needs_reauth', 'auto_disabled'])
+/** 与 Go 侧 `contracts.HealthState` 对齐；未知（空 / 缺失）按 `unknown` 处理。 */
+const HEALTHS = new Set(['unknown', 'healthy', 'degraded', 'unhealthy'])
+/** 权重上限：与 `service.ts` 的 `normalizeWeight` 和 Go 的 `accounts.MaxWeight` 同口径。 */
+const WEIGHT_MAX = 1_000_000
 
 function corrupt(detail: string): never {
   throw new IdentityError('IDENTITY_STORE_CORRUPT', `账号存储损坏：${detail}`)
@@ -81,6 +85,29 @@ function readOptionalNullableInteger(
   return value
 }
 
+/**
+ * 缺失按 `null`；权重是**有限正数**（允许小数，与 `service.ts` 的 `normalizeWeight`、
+ * Go 侧 `Weight *float64` 同口径）。形状不对明确失败：`weight: "abc"` / `0` / 负数 /
+ * 超过上限都不能静默当成「未声明」，否则重启后调度输入会被悄悄改掉。
+ */
+function readOptionalNullableWeight(
+  source: Record<string, unknown>,
+  key: string,
+  where: string,
+): number | null {
+  const value = source[key]
+  if (value === undefined || value === null) return null
+  if (
+    typeof value !== 'number' ||
+    !Number.isFinite(value) ||
+    value <= 0 ||
+    value > WEIGHT_MAX
+  ) {
+    corrupt(`${where}.${key} 必须是 (0, ${WEIGHT_MAX}] 的有限数值或 null`)
+  }
+  return value
+}
+
 /** 缺失按 `null`；形状不对（非数组 / 含非字符串）明确失败，不静默降级。 */
 function readOptionalStringArray(source: Record<string, unknown>, key: string, where: string): string[] | null {
   const value = source[key]
@@ -105,6 +132,24 @@ function readOptionalStringMap(
     if (typeof entryValue !== 'string') corrupt(`${where}.${key}.${entryKey} 必须是字符串`)
   }
   return value as Record<string, string>
+}
+
+/**
+ * 标签数组：缺失（旧快照）按空数组处理，形状不对明确失败。
+ * 存储层不解释 label 的语义（`key:value` 约定属于 account-priority 的标签映射）。
+ */
+function readOptionalLabels(source: Record<string, unknown>, where: string): string[] {
+  return readOptionalStringArray(source, 'labels', where) ?? []
+}
+
+/** 健康状态：缺失（旧快照）按 `unknown`；非法值明确失败，不静默当成健康。 */
+function readOptionalHealth(source: Record<string, unknown>, where: string): string {
+  const value = source.health
+  if (value === undefined || value === null) return 'unknown'
+  if (typeof value !== 'string' || !HEALTHS.has(value)) {
+    corrupt(`${where}.health 只能是 unknown / healthy / degraded / unhealthy`)
+  }
+  return value
 }
 
 function decodeAccount(raw: unknown, key: string): IdentityAccount {
@@ -135,6 +180,13 @@ function decodeAccount(raw: unknown, key: string): IdentityAccount {
     models: readOptionalStringArray(source, 'models', where),
     modelMap: readOptionalStringMap(source, 'modelMap', where),
     priority: readOptionalInteger(source, 'priority', where),
+    labels: readOptionalLabels(source, where),
+    weight: readOptionalNullableWeight(source, 'weight', where),
+    concurrency: readOptionalNullableInteger(source, 'concurrency', where),
+    health: readOptionalHealth(source, where) as IdentityAccount['health'],
+    autoDisabledAt: readOptionalNullableString(source, 'autoDisabledAt', where),
+    autoDisabledReason: readOptionalNullableString(source, 'autoDisabledReason', where),
+    lastUsedAt: readOptionalNullableString(source, 'lastUsedAt', where),
     accessExpiresAt: readNullableString(source, 'accessExpiresAt', where),
     refreshDueAt: readNullableString(source, 'refreshDueAt', where),
     lastRefreshAt: readNullableString(source, 'lastRefreshAt', where),

@@ -34,6 +34,7 @@ import { GatewayProcess } from './supervisor.ts'
 import type { BridgeClient } from './bridge.ts'
 import { DEFAULT_STRATEGY } from './types.ts'
 import type {
+  AccountPriorityHealth,
   AccountPriorityStatus,
   ChildState,
   GatewayAccount,
@@ -56,6 +57,7 @@ import {
   validateStrategyCollection,
   validateStrategyGroup,
 } from './validate.ts'
+import { labelsToTags } from './tags.ts'
 
 /**
  * identity 的结构性视图：只声明本插件用到的两个方法，不 import 它的实现。
@@ -73,6 +75,14 @@ interface IdentitySeam {
     readonly models?: readonly string[] | null
     readonly modelMap?: Readonly<Record<string, string>> | null
     readonly priority: number
+    /** 多标签数组；`null` / 缺失 = 旧实现没有这个字段。 */
+    readonly labels?: readonly string[] | null
+    /** 权重；`null` / 缺失 = 未声明（快照里不带这个键）。 */
+    readonly weight?: number | null
+    /** 并发上限；`null` / 缺失 = 未声明。 */
+    readonly concurrency?: number | null
+    /** 健康状态；`null` / 缺失 = 未知。 */
+    readonly health?: string | null
     readonly accessExpiresAt: string | null
   }[]
   getAccessToken(id: string): Promise<string>
@@ -766,6 +776,9 @@ export class AccountPriorityService extends Service {
         try {
           const token = await identity.getAccessToken(account.id)
           if (token.trim() === '') continue
+          // 标签 → Go tags 的约定只在 tags.ts 一处；空标签不占快照体积。
+          const tags = labelsToTags(account.labels)
+          const health = healthOf(account.health)
           accounts.push({
             accountId: account.id,
             provider: account.provider,
@@ -776,6 +789,15 @@ export class AccountPriorityService extends Service {
             ...(account.modelMap === null || account.modelMap === undefined ? {} : { modelMap: account.modelMap }),
             token,
             priority: account.priority,
+            ...(Object.keys(tags).length === 0 ? {} : { tags }),
+            // 没声明（null / undefined）时不带这个键：旧快照形状不被破坏，Go 侧按未知处理。
+            ...(typeof account.weight === 'number' && Number.isFinite(account.weight)
+              ? { weight: account.weight }
+              : {}),
+            ...(typeof account.concurrency === 'number' && Number.isInteger(account.concurrency)
+              ? { concurrency: account.concurrency }
+              : {}),
+            ...(health === undefined ? {} : { health }),
             ...(account.accessExpiresAt === null ? {} : { expiresAt: account.accessExpiresAt }),
           })
         } catch (error) {
@@ -1038,4 +1060,18 @@ function chooseDefault(
     if (target !== undefined && target.enabled !== false) return preferred
   }
   return firstEnabled
+}
+
+/**
+ * 健康状态透传前的白名单过滤。
+ *
+ * Go 的 `accounts.replace` 用 `DisallowUnknownFields` 并逐字段校验：**一个非法值会让整份
+ * 快照被拒、账号缓存被清空、全部 LLM 请求 503**。所以这里宁可当成「未声明」（不带这个键，
+ * Go 按 unknown 处理），也不把来路不明的字符串推过去。
+ */
+function healthOf(value: string | null | undefined): AccountPriorityHealth | undefined {
+  if (value === 'unknown' || value === 'healthy' || value === 'degraded' || value === 'unhealthy') {
+    return value
+  }
+  return undefined
 }

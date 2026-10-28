@@ -145,7 +145,14 @@ export interface GatewayAccount {
   readonly token: string
   readonly expiresAt?: string
   readonly priority?: number
+  /** 账号标签转成的 Go tags（`map<string,string>`，精确匹配）；账号没打标签时不带这个键。 */
   readonly tags?: Readonly<Record<string, string>>
+  /** 权重（> 0）；账号没声明时不带这个键，Go 侧按「未知」处理。 */
+  readonly weight?: number
+  /** 并发上限（>= 1）；账号没声明时不带这个键。 */
+  readonly concurrency?: number
+  /** 健康状态；账号没声明时不带这个键，Go 侧按 unknown 处理。 */
+  readonly health?: AccountPriorityHealth
 }
 
 export interface GatewayAccountsResult {

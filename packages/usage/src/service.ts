@@ -96,7 +96,13 @@ export class UsageService extends Service implements UsageServiceLike {
 
   static catalog = {
     capabilities: ['usage-log', 'usage-query'],
-    events: [],
+    events: [
+      {
+        name: 'usage/account-used',
+        description: '一轮用量落库后报告「这些上游账号刚被用过」（集合化，节流由监听方做）',
+        payload: 'accountIds: string[], at: string',
+      },
+    ],
     bridge: [],
     storage: [{ key: 'dataPath', kind: 'file', description: 'SQLite 用量库（token 事实，不含费用）' }],
     shapes: {
@@ -389,10 +395,12 @@ export class UsageService extends Service implements UsageServiceLike {
       'INSERT INTO usage_meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
     )
 
+    const now = Date.now()
+    // 只汇报「这一轮真的新落库」的行所对应的账号：重复 req_id 不算一次使用。
+    const usedAccounts = new Set<string>()
+    let inserted = 0
     db.exec('BEGIN IMMEDIATE')
     try {
-      let inserted = 0
-      const now = Date.now()
       for (const entry of entries) {
         const startedAtMs = parseStartedAt(entry)
         const values: SQLInputValue[] = [
@@ -426,14 +434,17 @@ export class UsageService extends Service implements UsageServiceLike {
           integerOf(entry.attempts),
           now,
         ]
-        inserted += Number(insert.run(...values).changes)
+        const changes = Number(insert.run(...values).changes)
+        inserted += changes
+        if (changes === 0) continue
+        const accountId = typeof entry.accountId === 'string' ? entry.accountId : ''
+        if (accountId !== '') usedAccounts.add(accountId)
       }
       if (meta !== undefined) {
         upsertMeta.run('epoch', meta.epoch)
         upsertMeta.run('lastSeq', String(meta.lastSeq))
       }
       db.exec('COMMIT')
-      return inserted
     } catch (error) {
       try {
         db.exec('ROLLBACK')
@@ -444,6 +455,16 @@ export class UsageService extends Service implements UsageServiceLike {
         ? error
         : new UsageError('USAGE_STORE_FAILED', `用量写入失败：${describeError(error)}`)
     }
+
+    // 落库成功后再报告：监听方（account-admin）据此节流汇报 `lastUsedAt`。
+    // 这里不直接写 identity——usage 不是账号记录的写者（AGENTS.md 2.4）。
+    if (usedAccounts.size > 0) {
+      this.ctx.emit('usage/account-used', {
+        accountIds: [...usedAccounts],
+        at: new Date(now).toISOString(),
+      })
+    }
+    return inserted
   }
 
   private loadMeta(): void {

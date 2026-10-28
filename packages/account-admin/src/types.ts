@@ -15,8 +15,15 @@ export type AccountProtocol = 'openai-chat' | 'openai-responses' | 'anthropic'
 /** 订阅账号（OAuth，可刷新）与静态 API key。 */
 export type AccountKind = 'oauth' | 'api_key'
 
-/** `active` 正常；`needs_reauth` 需要重新导入凭据。停用是独立的 `enabled` 开关。 */
-export type AccountStatus = 'active' | 'needs_reauth'
+/**
+ * `active` 正常；`needs_reauth` 需要重新导入凭据；
+ * `auto_disabled` 是健康检查连续失败后的系统自动停用（一次成功即恢复）。
+ * 人的停用是独立的 `enabled` 开关，自动化不会覆盖它。
+ */
+export type AccountStatus = 'active' | 'needs_reauth' | 'auto_disabled'
+
+/** 健康状态；与 Go 侧 `contracts.HealthState` 对齐，未知是一等状态。 */
+export type AccountHealth = 'unknown' | 'healthy' | 'degraded' | 'unhealthy'
 
 /** identity 账号记录的结构性视图（刻意不含任何令牌字段）。 */
 export interface AccountRecord {
@@ -39,6 +46,20 @@ export interface AccountRecord {
   /** 对外模型名 → 上游真实模型名；null / 空 = 不改写模型名。 */
   readonly modelMap: Record<string, string> | null
   readonly priority: number
+  /** 多标签数组；空数组 = 未打标签。 */
+  readonly labels: readonly string[]
+  /** 权重（> 0）；`null` = 未声明。 */
+  readonly weight: number | null
+  /** 并发上限（>= 1）；`null` = 未声明。 */
+  readonly concurrency: number | null
+  /** 健康状态；未知是一等状态，默认 `unknown`。 */
+  readonly health: AccountHealth
+  /** 自动停用时间（ISO）；未自动停用时为 `null`。 */
+  readonly autoDisabledAt: string | null
+  /** 自动停用原因（已脱敏）；未自动停用时为 `null`。 */
+  readonly autoDisabledReason: string | null
+  /** 最近一次被 LLM 请求使用的时间（ISO）；`null` = 还没有用量的回报。 */
+  readonly lastUsedAt: string | null
   readonly accessExpiresAt: string | null
   readonly refreshDueAt: string | null
   readonly lastRefreshAt: string | null
@@ -67,6 +88,43 @@ export interface AccountListQuery {
   readonly status?: AccountStatus
   /** 不区分大小写，匹配 id / label / email / subject。 */
   readonly search?: string
+  /** 多标签过滤：**AND** 语义，账号必须包含列出的每一个标签。 */
+  readonly labels?: readonly string[]
+  /** 只返回这个健康状态的账号。 */
+  readonly health?: AccountHealth
+}
+
+/**
+ * 列表精简视图（`list(query, { view: 'lite' })`）。
+ *
+ * 列表只放「一眼要看、点一下要用」的字段；详情字段（baseUrl / models / modelMap /
+ * 凭据时间线等）走 `get()`。字段变多之后列表页不该被撑爆（参考 sub2api 的 lite DTO）。
+ */
+export interface AccountListItem {
+  readonly id: string
+  readonly label: string
+  readonly provider: AccountProvider
+  readonly kind: AccountKind
+  readonly enabled: boolean
+  readonly status: AccountStatus
+  readonly credentialConfigured: boolean
+  readonly priority: number
+  readonly labels: readonly string[]
+  readonly weight: number | null
+  readonly concurrency: number | null
+  readonly health: AccountHealth
+  readonly autoDisabledAt: string | null
+  readonly autoDisabledReason: string | null
+  readonly lastUsedAt: string | null
+  readonly lastTestAt: string | null
+  readonly lastTestOk: boolean | null
+  readonly lastTestError: string | null
+  readonly lastTestLatencyMs: number | null
+}
+
+/** `list()` 的视图选择；默认 `full`（不破坏既有页面与测试）。 */
+export interface AccountListOptions {
+  readonly view?: 'lite' | 'full'
 }
 
 /** 凭据格式。`auto` 会按 payload 的形状推断。 */
@@ -135,7 +193,43 @@ export interface UpdateAccountInput {
   /** `undefined` = 不改；`null` 或空对象 = 清空为不改写。 */
   readonly modelMap?: Record<string, string> | null
   readonly priority?: number
+  /** `undefined` = 不改；`null` 或空数组 = 清空标签。 */
+  readonly labels?: string[] | null
+  /** `undefined` = 不改；`null` = 清空为未声明。 */
+  readonly weight?: number | null
+  /** `undefined` = 不改；`null` = 清空为未声明。 */
+  readonly concurrency?: number | null
 }
+
+// ───────────────────────────── 批量操作 ─────────────────────────────
+
+/** 批量操作单项失败：稳定 code + 可读消息（不含秘密）。 */
+export interface BulkFailure {
+  readonly code: string
+  readonly message: string
+}
+
+/** 批量操作的一项结果：逐项成功或失败，互不阻塞。 */
+export interface BulkOperationItemResult {
+  readonly id: string
+  readonly ok: boolean
+  readonly account: AccountView | null
+  readonly error: BulkFailure | null
+}
+
+/** 批量启用 / 停用 / 改字段的统一结果。 */
+export interface BulkOperationResult {
+  readonly total: number
+  readonly succeeded: number
+  readonly failed: number
+  readonly items: readonly BulkOperationItemResult[]
+}
+
+/**
+ * 批量改字段的输入：与单条 `update` 同形，**只提交声明过的字段**。
+ * 关闭类字段用显式的 `null`（而不是省略键）。
+ */
+export type BulkUpdateInput = UpdateAccountInput
 
 /** 向已有账号导入 / 重新授权一份凭据。 */
 export interface ImportCredentialsInput {

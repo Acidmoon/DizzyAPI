@@ -23,10 +23,19 @@ export type IdentityProtocol = 'openai-chat' | 'openai-responses' | 'anthropic'
 export type IdentityAccountKind = 'oauth' | 'api_key'
 
 /**
- * `active`：正常参与调度；`needs_reauth`：RT 已失效或被撤销，等人工重新导入。
- * 「停用」是独立的 `enabled` 开关，不占用状态——停用是人的决定，不是故障。
+ * `active`：正常参与调度；`needs_reauth`：RT 已失效或被撤销，等人工重新导入；
+ * `auto_disabled`：健康检查连续失败后由系统自动停用，一次成功即恢复。
+ *
+ * 三种语义是分开的：人的停用是 `enabled = false`，凭据失效是 `needs_reauth`，
+ * 系统自动停用是 `auto_disabled`。自动化只碰 `auto_disabled`，绝不覆盖人的开关。
  */
-export type IdentityAccountStatus = 'active' | 'needs_reauth'
+export type IdentityAccountStatus = 'active' | 'needs_reauth' | 'auto_disabled'
+
+/**
+ * 健康状态。取值与 Go 侧 `contracts.HealthState` 一一对应：
+ * `unknown` / `healthy` / `degraded` / `unhealthy`。**未知是一等状态，不是「默认健康」**。
+ */
+export type IdentityHealth = 'unknown' | 'healthy' | 'degraded' | 'unhealthy'
 
 /** 放进 credentials 的令牌包。永远不落地到账号文件。 */
 export interface IdentityTokenBundle {
@@ -65,6 +74,24 @@ export interface IdentityAccount {
   readonly modelMap: Record<string, string> | null
   /** 该账号在 account-priority 评分里的 priority 因子；默认 0。 */
   readonly priority: number
+  /**
+   * 多标签数组（取代「分组实体」）。空数组 = 未打标签。
+   * Go 侧 `Filter.Tags` 是精确匹配的 `map<string, string>`，由 account-priority
+   * 按约定把 label 转成 tag（见该插件的 `labelsToTags`）。
+   */
+  readonly labels: string[]
+  /** 权重（> 0）；`null` = 未声明，Go 侧按「未知」处理。 */
+  readonly weight: number | null
+  /** 并发上限（>= 1）；`null` = 未声明。 */
+  readonly concurrency: number | null
+  /** 健康状态；未知是一等状态，默认 `unknown`。 */
+  readonly health: IdentityHealth
+  /** 自动停用的时间（ISO）；未自动停用时为 `null`。 */
+  readonly autoDisabledAt: string | null
+  /** 自动停用的原因（已脱敏）；未自动停用时为 `null`。 */
+  readonly autoDisabledReason: string | null
+  /** 最近一次被 LLM 请求使用的时间（ISO）；由 usage 事件节流回报。 */
+  readonly lastUsedAt: string | null
   /** 访问令牌过期时间（ISO）；`null` = 尚未导入令牌。 */
   readonly accessExpiresAt: string | null
   /** 下一次应该尝试刷新的时间；`null` = 不需要刷新（api_key）。 */
@@ -126,6 +153,12 @@ export interface UpdateIdentityAccountInput {
   /** `undefined` = 不改；`null` 或空对象 = 清空为不改写。 */
   readonly modelMap?: Record<string, string> | null
   readonly priority?: number
+  /** `undefined` = 不改；`null` 或空数组 = 清空标签。 */
+  readonly labels?: string[] | null
+  /** `undefined` = 不改；`null` = 清空为未声明。 */
+  readonly weight?: number | null
+  /** `undefined` = 不改；`null` = 清空为未声明。 */
+  readonly concurrency?: number | null
   readonly enabled?: boolean
 }
 

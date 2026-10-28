@@ -549,3 +549,305 @@ test('卸载插件：服务与调度一起消失（D5）', async (t) => {
   await world.fiber.dispose()
   assert.equal(world.ctx.get('identity'), undefined)
 })
+
+// ───────────────────────────── 运营字段：标签 / 权重 / 并发 / 健康 ─────────────────────────────
+
+const OPERATIONAL_FIELDS = [
+  'labels',
+  'weight',
+  'concurrency',
+  'health',
+  'autoDisabledAt',
+  'autoDisabledReason',
+  'lastUsedAt',
+]
+
+test('旧 accounts.json 缺运营字段也能读出：标签空、权重与并发为 null、健康是 unknown', async (t) => {
+  const first = await boot(t)
+  const account = await first.identity.create({
+    provider: 'custom',
+    kind: 'api_key',
+    label: '旧快照',
+    secret: { apiKey: 'sk-legacy' },
+  })
+  await first.fiber.dispose()
+
+  const path = join(first.dir, 'accounts.json')
+  const snapshot = JSON.parse(await readFile(path, 'utf8')) as {
+    accounts: Record<string, Record<string, unknown>>
+  }
+  for (const key of OPERATIONAL_FIELDS) delete snapshot.accounts[account.id]?.[key]
+  await writeFile(path, JSON.stringify(snapshot), 'utf8')
+
+  const ctx = new Context()
+  await ctx.plugin(CredentialsService, { dataPath: join(first.dir, 'credentials.json') })
+  const fiber = await ctx.plugin(IdentityService, { dataPath: path })
+  t.after(() => fiber.dispose())
+
+  const identity = ctx.get('identity') as IdentityService
+  const restored = identity.get(account.id)
+  assert.deepEqual(restored.labels, [])
+  assert.equal(restored.weight, null)
+  assert.equal(restored.concurrency, null)
+  assert.equal(restored.health, 'unknown')
+  assert.equal(restored.autoDisabledAt, null)
+  assert.equal(restored.autoDisabledReason, null)
+  assert.equal(restored.lastUsedAt, null)
+})
+
+test('标签 / 权重 / 并发上限：归一去重、无变化不写盘、非法值明确失败', async (t) => {
+  const world = await boot(t)
+  const account = await world.identity.create({
+    provider: 'custom',
+    kind: 'api_key',
+    label: '运营字段',
+    secret: { apiKey: 'sk-op' },
+  })
+  assert.deepEqual(account.labels, [])
+  assert.equal(account.weight, null)
+  assert.equal(account.concurrency, null)
+  assert.equal(account.health, 'unknown')
+
+  let updated = 0
+  world.ctx.on('identity/account-updated', () => {
+    updated += 1
+  })
+
+  const labeled = await world.identity.setLabels(account.id, [' tier:pro ', 'tier:pro', '', 'team:ops'])
+  assert.deepEqual(labeled.labels, ['tier:pro', 'team:ops'])
+  assert.equal(updated, 1)
+
+  const same = await world.identity.setLabels(account.id, ['tier:pro', 'team:ops'])
+  assert.equal(updated, 1, '形状没变化的写入不该产生事件')
+  assert.equal(same.updatedAt, labeled.updatedAt, '形状没变化就不该改 updatedAt')
+
+  assert.equal((await world.identity.setWeight(account.id, 2.5)).weight, 2.5)
+  assert.equal((await world.identity.setConcurrency(account.id, 3)).concurrency, 3)
+
+  // 通用 update 也能改权重 / 并发；null = 清空为未声明。
+  const cleared = await world.identity.update(account.id, { weight: null, concurrency: null })
+  assert.equal(cleared.weight, null)
+  assert.equal(cleared.concurrency, null)
+
+  await assert.rejects(
+    world.identity.setWeight(account.id, 0),
+    (error: unknown) => isIdentityError(error) && error.code === 'IDENTITY_ACCOUNT_INVALID',
+  )
+  await assert.rejects(
+    world.identity.setWeight(account.id, Number.NaN),
+    (error: unknown) => isIdentityError(error) && error.code === 'IDENTITY_ACCOUNT_INVALID',
+  )
+  await assert.rejects(
+    world.identity.setWeight(account.id, Number.POSITIVE_INFINITY),
+    (error: unknown) => isIdentityError(error) && error.code === 'IDENTITY_ACCOUNT_INVALID',
+  )
+  await assert.rejects(
+    world.identity.setConcurrency(account.id, 0),
+    (error: unknown) => isIdentityError(error) && error.code === 'IDENTITY_ACCOUNT_INVALID',
+  )
+  await assert.rejects(
+    world.identity.setConcurrency(account.id, 1.5),
+    (error: unknown) => isIdentityError(error) && error.code === 'IDENTITY_ACCOUNT_INVALID',
+  )
+  await assert.rejects(
+    world.identity.setLabels(account.id, [1] as never),
+    (error: unknown) => isIdentityError(error) && error.code === 'IDENTITY_ACCOUNT_INVALID',
+  )
+  await assert.rejects(
+    world.identity.setLabels(account.id, ['a'.repeat(101)]),
+    (error: unknown) => isIdentityError(error) && error.code === 'IDENTITY_ACCOUNT_INVALID',
+  )
+
+  // `null` = 清空标签。
+  assert.deepEqual((await world.identity.setLabels(account.id, null)).labels, [])
+
+  // 落盘后仍然读得到：权重允许小数（Go 侧同口径），重载不能把它当成损坏文件。
+  const reloaded = await world.identity.setWeight(account.id, 1.5)
+  assert.equal(reloaded.weight, 1.5)
+  await world.fiber.dispose()
+
+  const ctx = new Context()
+  await ctx.plugin(CredentialsService, { dataPath: join(world.dir, 'credentials.json') })
+  const fiber = await ctx.plugin(IdentityService, { dataPath: join(world.dir, 'accounts.json') })
+  t.after(() => fiber.dispose())
+
+  const restored = (ctx.get('identity') as IdentityService).get(account.id)
+  assert.equal(restored.weight, 1.5, '小数权重必须能重新读回（不能按整数解析）')
+  assert.equal(restored.concurrency, null)
+})
+
+test('读取权重：小数合法；"abc" / 0 / 负数 / 超上限明确失败，不静默当未声明', async (t) => {
+  const first = await boot(t)
+  const account = await first.identity.create({
+    provider: 'custom',
+    kind: 'api_key',
+    label: '权重读回',
+    secret: { apiKey: 'sk-weight' },
+  })
+  await first.identity.setWeight(account.id, 1.5)
+  await first.fiber.dispose()
+  const path = join(first.dir, 'accounts.json')
+
+  // 合法：小数权重原样读回，不触发 corrupt。
+  const ctx = new Context()
+  await ctx.plugin(CredentialsService, { dataPath: join(first.dir, 'credentials.json') })
+  const fiber = await ctx.plugin(IdentityService, { dataPath: path })
+  t.after(() => fiber.dispose())
+  assert.equal((ctx.get('identity') as IdentityService).get(account.id).weight, 1.5)
+
+  const original = JSON.parse(await readFile(path, 'utf8')) as {
+    accounts: Record<string, Record<string, unknown>>
+  }
+  const originalRecord = original.accounts[account.id]
+  assert.ok(originalRecord !== undefined)
+
+  for (const bad of ['abc', 0, -1, 1_000_001] as const) {
+    const snapshot = structuredClone(original)
+    const record = snapshot.accounts[account.id]
+    assert.ok(record !== undefined)
+    record.weight = bad
+    await writeFile(path, JSON.stringify(snapshot), 'utf8')
+
+    const failing = new Context()
+    await failing.plugin(CredentialsService, { dataPath: join(first.dir, 'credentials.json') })
+    await assert.rejects(
+      async () => {
+        await failing.plugin(IdentityService, { dataPath: path })
+      },
+      (error: unknown) => isIdentityError(error) && error.code === 'IDENTITY_STORE_CORRUPT',
+      `weight=${String(bad)} 必须让整份账号文件明确失败`,
+    )
+  }
+})
+
+test('健康状态：四个取值合法、非法值明确失败、进调度所以发 updated 事件', async (t) => {
+  const world = await boot(t)
+  const account = await world.identity.create({
+    provider: 'custom',
+    kind: 'api_key',
+    label: '健康状态',
+    secret: { apiKey: 'sk-health' },
+  })
+
+  let updated = 0
+  world.ctx.on('identity/account-updated', () => {
+    updated += 1
+  })
+
+  for (const health of ['healthy', 'degraded', 'unhealthy', 'unknown'] as const) {
+    assert.equal((await world.identity.setHealth(account.id, health)).health, health)
+  }
+  assert.equal(updated, 4)
+
+  // 相同值不制造写入。
+  await world.identity.setHealth(account.id, 'unknown')
+  assert.equal(updated, 4)
+
+  await assert.rejects(
+    world.identity.setHealth(account.id, 'sick' as never),
+    (error: unknown) => isIdentityError(error) && error.code === 'IDENTITY_ACCOUNT_INVALID',
+  )
+})
+
+test('自动停用 / 自动恢复：只动 status，绝不覆盖 enabled 与 needs_reauth', async (t) => {
+  const world = await boot(t)
+  const account = await world.identity.create({
+    provider: 'openai',
+    kind: 'api_key',
+    label: '自动停用',
+    secret: { apiKey: 'sk-auto' },
+  })
+
+  let updated = 0
+  world.ctx.on('identity/account-updated', () => {
+    updated += 1
+  })
+
+  const disabled = await world.identity.autoDisable(account.id, '连续失败 3 次：HTTP 502')
+  assert.equal(disabled.status, 'auto_disabled')
+  assert.equal(disabled.enabled, true, '自动停用不得改人的开关')
+  assert.equal(disabled.autoDisabledReason, '连续失败 3 次：HTTP 502')
+  assert.ok(disabled.autoDisabledAt !== null)
+  assert.equal(updated, 1)
+
+  // 人的「停用」与系统的「自动停用」是两条线：enabled=false 不会抹掉 auto_disabled。
+  await world.identity.update(account.id, { enabled: false })
+  const manualDisabled = world.identity.get(account.id)
+  assert.equal(manualDisabled.status, 'auto_disabled')
+  assert.equal(manualDisabled.enabled, false)
+
+  // 自动恢复只把 auto_disabled 改回 active；已关闭的账号仍然保持关闭。
+  const restored = await world.identity.autoEnable(account.id)
+  assert.equal(restored.status, 'active')
+  assert.equal(restored.enabled, false, '自动恢复不得把人的停用打开')
+  assert.equal(restored.autoDisabledAt, null)
+  assert.equal(restored.autoDisabledReason, null)
+
+  // 已经 active 时再 autoEnable 是 no-op（不写盘、不发事件）。
+  const before = world.identity.get(account.id).updatedAt
+  const eventsBefore = updated
+  assert.equal((await world.identity.autoEnable(account.id)).updatedAt, before)
+  assert.equal(updated, eventsBefore)
+
+  // needs_reauth 只能人工重新导入凭据：自动恢复不得碰它，自动停用也不得改写它。
+  mockFetch(t, async () => new Response(JSON.stringify({ error: 'invalid_client' }), { status: 401 }))
+  const oauth = await dueOauth(world.identity)
+  await world.identity.runRefreshPass()
+  assert.equal(world.identity.get(oauth.id).status, 'needs_reauth')
+  assert.equal((await world.identity.autoEnable(oauth.id)).status, 'needs_reauth')
+  assert.equal((await world.identity.autoDisable(oauth.id, '再失败一次')).status, 'needs_reauth')
+
+  // 原因不能为空，过长的会截断。
+  await assert.rejects(
+    world.identity.autoDisable(account.id, '   '),
+    (error: unknown) => isIdentityError(error) && error.code === 'IDENTITY_ACCOUNT_INVALID',
+  )
+  const longReason = 'x'.repeat(600)
+  const truncated = await world.identity.update(account.id, { enabled: true })
+  assert.equal(truncated.enabled, true)
+  const autoDisabled = await world.identity.autoDisable(account.id, longReason)
+  assert.equal(autoDisabled.autoDisabledReason?.length, 501, '超长原因截断到 500 字符 + 省略号')
+})
+
+test('lastUsedAt 回报：只前进不后退、不改 updatedAt、不发 account-updated、未知账号 no-op', async (t) => {
+  const world = await boot(t)
+  const account = await world.identity.create({
+    provider: 'custom',
+    kind: 'api_key',
+    label: '最近使用',
+    secret: { apiKey: 'sk-used' },
+  })
+
+  let updated = 0
+  world.ctx.on('identity/account-updated', () => {
+    updated += 1
+  })
+  const updatedAtBefore = world.identity.get(account.id).updatedAt
+
+  await world.identity.reportUsed(account.id, '2026-10-27T10:00:00.000Z')
+  assert.equal(world.identity.get(account.id).lastUsedAt, '2026-10-27T10:00:00.000Z')
+
+  // 更早的时间不倒退。
+  await world.identity.reportUsed(account.id, '2026-10-27T09:00:00.000Z')
+  assert.equal(world.identity.get(account.id).lastUsedAt, '2026-10-27T10:00:00.000Z')
+
+  assert.equal(world.identity.get(account.id).updatedAt, updatedAtBefore, '用量回报不是业务修改')
+  assert.equal(updated, 0, '用量回报不该推账号更新事件')
+
+  // 未知账号是 no-op，不抛错。
+  await world.identity.reportUsed('acc-does-not-exist', '2026-10-27T10:00:00.000Z')
+
+  await assert.rejects(
+    world.identity.reportUsed(account.id, 'nope'),
+    (error: unknown) => isIdentityError(error) && error.code === 'IDENTITY_ACCOUNT_INVALID',
+  )
+
+  // 落盘后仍然读得到。
+  await world.fiber.dispose()
+  const ctx = new Context()
+  await ctx.plugin(CredentialsService, { dataPath: join(world.dir, 'credentials.json') })
+  const fiber = await ctx.plugin(IdentityService, { dataPath: join(world.dir, 'accounts.json') })
+  t.after(() => fiber.dispose())
+  const identity = ctx.get('identity') as IdentityService
+  assert.equal(identity.get(account.id).lastUsedAt, '2026-10-27T10:00:00.000Z')
+})

@@ -28,6 +28,7 @@ import type {
   CreateIdentityAccountInput,
   IdentityAccount,
   IdentityAccountKind,
+  IdentityHealth,
   IdentityProvider,
   IdentityProtocol,
   IdentityRefreshResult,
@@ -79,6 +80,18 @@ export class IdentityService extends Service {
       recordTestResult: {
         description:
           '写入最近一次连通性测试结果（lastTest*）；这是运营元数据，不触发 identity/account-updated，也不影响调度',
+      },
+      setLabels: { description: '写入多标签数组；进 Go 快照的 tags，触发 account-updated' },
+      setWeight: { description: '写入权重（> 0）或 null（未声明）；进 Go 快照，触发 account-updated' },
+      setConcurrency: { description: '写入并发上限（>= 1）或 null（未声明）；进 Go 快照，触发 account-updated' },
+      setHealth: { description: '写入健康状态（unknown / healthy / degraded / unhealthy）；触发 account-updated' },
+      autoDisable: {
+        description: '系统自动停用：只把 status 改成 auto_disabled，不动 enabled；非 active 账号是 no-op',
+      },
+      autoEnable: { description: '系统自动恢复：只把 auto_disabled 改回 active，不碰 needs_reauth 与 enabled' },
+      reportUsed: {
+        description:
+          '回报账号最近使用时间（lastUsedAt）：只前进不后退、不改 updatedAt、不发 account-updated；未知账号是 no-op',
       },
     },
   } as const
@@ -174,6 +187,13 @@ export class IdentityService extends Service {
         models: normalizeModels(input.models),
         modelMap: normalizeModelMap(input.modelMap),
         priority: normalizePriority(input.priority, 0),
+        labels: [],
+        weight: null,
+        concurrency: null,
+        health: 'unknown',
+        autoDisabledAt: null,
+        autoDisabledReason: null,
+        lastUsedAt: null,
         accessExpiresAt: bundle?.expiresAt ?? null,
         refreshDueAt: input.kind === 'oauth' ? dueIso(bundle?.expiresAt, this.config.refreshLeadMs) : null,
         lastRefreshAt: null,
@@ -218,6 +238,10 @@ export class IdentityService extends Service {
         models: patch.models === undefined ? account.models : normalizeModels(patch.models),
         modelMap: patch.modelMap === undefined ? account.modelMap : normalizeModelMap(patch.modelMap),
         priority: patch.priority === undefined ? account.priority : normalizePriority(patch.priority, account.priority),
+        labels: patch.labels === undefined ? account.labels : normalizeLabels(patch.labels),
+        weight: patch.weight === undefined ? account.weight : normalizeWeight(patch.weight),
+        concurrency:
+          patch.concurrency === undefined ? account.concurrency : normalizeConcurrency(patch.concurrency),
         enabled: patch.enabled === undefined ? account.enabled : patch.enabled,
         updatedAt: nowIso(),
       }
@@ -379,6 +403,116 @@ export class IdentityService extends Service {
       const next = new Map(this.accounts)
       next.set(id, updated)
       await this.commit(next)
+      return copyAccount(updated)
+    })
+  }
+
+  // ───────────────────────────────── 运营元数据：标签 / 权重 / 并发 / 健康
+
+  /**
+   * 标签集合。标签进 Go 快照（经 account-priority 转成 tags），会改变调度输入，
+   * 因此照常发 `identity/account-updated`。`null` / 空数组 = 清空。
+   */
+  setLabels(id: string, labels: readonly string[] | null): Promise<IdentityAccount> {
+    return this.patchAccount(id, (account) => {
+      const next = normalizeLabels(labels)
+      return sameStringArray(account.labels, next) ? undefined : { labels: next }
+    })
+  }
+
+  /** 权重（> 0）；`null` = 未声明。未声明进快照时不带这个键，Go 侧按未知处理。 */
+  setWeight(id: string, weight: number | null): Promise<IdentityAccount> {
+    return this.patchAccount(id, (account) => {
+      const next = normalizeWeight(weight)
+      return next === account.weight ? undefined : { weight: next }
+    })
+  }
+
+  /** 并发上限（>= 1）；`null` = 未声明。 */
+  setConcurrency(id: string, concurrency: number | null): Promise<IdentityAccount> {
+    return this.patchAccount(id, (account) => {
+      const next = normalizeConcurrency(concurrency)
+      return next === account.concurrency ? undefined : { concurrency: next }
+    })
+  }
+
+  /**
+   * 健康状态。它是调度输入（Go 的 `Filter.Health` 会按它过滤），因此发 updated 事件；
+   * 与 `recordTestResult` 那种纯运营元数据不同。
+   */
+  async setHealth(id: string, health: IdentityHealth): Promise<IdentityAccount> {
+    const next = normalizeHealth(health)
+    return this.patchAccount(id, (account) => (account.health === next ? undefined : { health: next }))
+  }
+
+  /**
+   * 系统自动停用：**只改 `status → 'auto_disabled'`，绝不动 `enabled`**。
+   * 人的手动开关与自动化是两条线，自动化不得覆盖人的决定。
+   * 只有当前 `active` 的账号会被改；已停用 / 待重新授权 / 已经自动停用的都是 no-op。
+   */
+  async autoDisable(id: string, reason: string): Promise<IdentityAccount> {
+    const text = normalizeAutoDisableReason(reason)
+    return this.patchAccount(id, (account) => {
+      if (account.status !== 'active') return undefined
+      return { status: 'auto_disabled', autoDisabledAt: nowIso(), autoDisabledReason: text }
+    })
+  }
+
+  /**
+   * 自动恢复：只把 `auto_disabled` 改回 `active`，**不得**碰 `needs_reauth`，
+   * 也**不得**把 `enabled = false` 的账号打开（那条开关只由人决定）。
+   */
+  autoEnable(id: string): Promise<IdentityAccount> {
+    return this.patchAccount(id, (account) => {
+      if (account.status !== 'auto_disabled') return undefined
+      return { status: 'active', autoDisabledAt: null, autoDisabledReason: null }
+    })
+  }
+
+  /**
+   * 回报「这个账号刚被用过」。由 usage 插件经事件上报、account-admin 节流后调用：
+   * `accounts.json` 是整文件原子重写，别为每条用量写一次盘。
+   *
+   * 对未知账号是 no-op（账号可能刚好被删）；只前进不后退；不改 `updatedAt`、
+   * 不发 `identity/account-updated`——它不改变任何调度输入。
+   */
+  async reportUsed(id: string, at: string): Promise<void> {
+    this.assertReady()
+    const account = this.accounts.get(id)
+    if (account === undefined) return
+    const usedAt = normalizeUsedAt(at)
+    const previous = account.lastUsedAt === null ? Number.NEGATIVE_INFINITY : Date.parse(account.lastUsedAt)
+    if (Date.parse(usedAt) <= previous) return
+    await this.exclusive(async () => {
+      const current = this.accounts.get(id)
+      if (current === undefined) return
+      const previousNow =
+        current.lastUsedAt === null ? Number.NEGATIVE_INFINITY : Date.parse(current.lastUsedAt)
+      if (Date.parse(usedAt) <= previousNow) return
+      const next = new Map(this.accounts)
+      next.set(id, { ...current, lastUsedAt: usedAt })
+      await this.commit(next)
+    })
+  }
+
+  /**
+   * 写一个「运营元数据」补丁：形状不变就不写盘、不发事件。
+   * 所有新写口都走这里，保证一次写盘 + 一次事件。
+   */
+  private patchAccount(
+    id: string,
+    build: (account: IdentityAccount) => Partial<IdentityAccount> | undefined,
+  ): Promise<IdentityAccount> {
+    this.assertReady()
+    return this.exclusive(async () => {
+      const account = this.requireAccount(id)
+      const patch = build(account)
+      if (patch === undefined) return copyAccount(account)
+      const updated: IdentityAccount = { ...account, ...patch, updatedAt: nowIso() }
+      const next = new Map(this.accounts)
+      next.set(id, updated)
+      await this.commit(next)
+      this.ctx.emit('identity/account-updated', id, 'updated')
       return copyAccount(updated)
     })
   }
@@ -786,6 +920,104 @@ function normalizePriority(value: number | undefined, fallback: number): number 
     throw new IdentityError('IDENTITY_ACCOUNT_INVALID', 'priority 必须是 0–1000 的整数')
   }
   return value
+}
+
+const LABELS_MAX_ENTRIES = 50
+const LABEL_MAX_LENGTH = 100
+const WEIGHT_MAX = 1_000_000
+const CONCURRENCY_MAX = 10_000
+const AUTO_DISABLE_REASON_MAX = 500
+
+/**
+ * 标签集合：trim、丢弃空串、去重、保序；`null` / `undefined` → 空数组。
+ * 存储层不解释 `key:value` 约定——那是 account-priority 的标签映射。
+ */
+function normalizeLabels(value: readonly string[] | null | undefined): string[] {
+  if (value === undefined || value === null) return []
+  if (!Array.isArray(value)) {
+    throw new IdentityError('IDENTITY_ACCOUNT_INVALID', 'labels 必须是字符串数组或 null')
+  }
+  if (value.length > LABELS_MAX_ENTRIES) {
+    throw new IdentityError('IDENTITY_ACCOUNT_INVALID', `labels 最多 ${LABELS_MAX_ENTRIES} 个`)
+  }
+  const result: string[] = []
+  const seen = new Set<string>()
+  for (const item of value) {
+    if (typeof item !== 'string') {
+      throw new IdentityError('IDENTITY_ACCOUNT_INVALID', 'labels 的元素必须是字符串')
+    }
+    const label = item.trim()
+    if (label === '') continue
+    if (label.length > LABEL_MAX_LENGTH) {
+      throw new IdentityError('IDENTITY_ACCOUNT_INVALID', `单个标签最长 ${LABEL_MAX_LENGTH} 个字符`)
+    }
+    rejectControlCharacters(label, '标签')
+    if (seen.has(label)) continue
+    seen.add(label)
+    result.push(label)
+  }
+  return result
+}
+
+/** 权重：`null` = 未声明；否则必须是大于 0 且有限的数值（Go 侧同口径）。 */
+function normalizeWeight(value: number | null): number | null {
+  if (value === null) return null
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0 || value > WEIGHT_MAX) {
+    throw new IdentityError(
+      'IDENTITY_ACCOUNT_INVALID',
+      `weight 必须是大于 0 且不超过 ${WEIGHT_MAX} 的有限数值，或 null`,
+    )
+  }
+  return value
+}
+
+/** 并发上限：`null` = 未声明；否则是 1–10000 的整数（0 不是「无上限」，是非法）。 */
+function normalizeConcurrency(value: number | null): number | null {
+  if (value === null) return null
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 1 || value > CONCURRENCY_MAX) {
+    throw new IdentityError(
+      'IDENTITY_ACCOUNT_INVALID',
+      `concurrency 必须是 1–${CONCURRENCY_MAX} 的整数，或 null`,
+    )
+  }
+  return value
+}
+
+/** 健康状态：只接受与 Go 侧 `contracts.HealthState` 对齐的四个值。 */
+function normalizeHealth(value: unknown): IdentityHealth {
+  if (value === 'unknown' || value === 'healthy' || value === 'degraded' || value === 'unhealthy') {
+    return value
+  }
+  throw new IdentityError(
+    'IDENTITY_ACCOUNT_INVALID',
+    'health 只能是 unknown / healthy / degraded / unhealthy',
+  )
+}
+
+function normalizeAutoDisableReason(value: string): string {
+  if (typeof value !== 'string') {
+    throw new IdentityError('IDENTITY_ACCOUNT_INVALID', '自动停用原因必须是字符串')
+  }
+  const reason = value.trim()
+  if (reason === '') {
+    throw new IdentityError('IDENTITY_ACCOUNT_INVALID', '自动停用原因不能为空')
+  }
+  return reason.length > AUTO_DISABLE_REASON_MAX ? `${reason.slice(0, AUTO_DISABLE_REASON_MAX)}…` : reason
+}
+
+function normalizeUsedAt(value: string): string {
+  if (typeof value !== 'string') {
+    throw new IdentityError('IDENTITY_ACCOUNT_INVALID', 'lastUsedAt 必须是可识别的时间')
+  }
+  const parsed = Date.parse(value)
+  if (!Number.isFinite(parsed)) {
+    throw new IdentityError('IDENTITY_ACCOUNT_INVALID', 'lastUsedAt 必须是可识别的时间')
+  }
+  return new Date(parsed).toISOString()
+}
+
+function sameStringArray(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length && left.every((value, index) => value === right[index])
 }
 
 const MODELS_MAX_ENTRIES = 200

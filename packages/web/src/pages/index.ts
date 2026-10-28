@@ -10,6 +10,7 @@ import { transactionsPage } from './transactions.ts'
 import { profilePage } from './profile.ts'
 import { adminUsersPage } from './admin_users.ts'
 import { adminAccountsPage } from './admin_accounts.ts'
+import { adminAccountDetailPage } from './admin_account_detail.ts'
 import { adminCatalogPage } from './admin_catalog.ts'
 import { adminSettingsPage } from './admin_settings.ts'
 import { adminUsagePage } from './admin_usage.ts'
@@ -27,6 +28,7 @@ export const PAGES: readonly PageModule[] = [
   profilePage,
   adminUsersPage,
   adminAccountsPage,
+  adminAccountDetailPage,
   adminCatalogPage,
   adminSettingsPage,
   adminUsagePage,

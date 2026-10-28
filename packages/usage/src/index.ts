@@ -13,6 +13,19 @@ declare module 'cordis' {
   interface Context {
     usage: UsageService
   }
+
+  interface Events {
+    /**
+     * 一轮用量落库后，报告「这些上游账号刚被用过」。
+     *
+     * 集合化而不是每行一个事件：一轮轮询可能带几百条记录，逐条发事件会把监听方
+     * （account-admin 的节流汇报）压垮。`at` 是这一轮落库的时间（ISO）。
+     *
+     * 写者边界：usage 不直接写 identity；account-admin 收到后节流，再经 identity 写回
+     * `lastUsedAt`（AGENTS.md 2.4：一个数据一个写者）。
+     */
+    'usage/account-used'(payload: { readonly accountIds: readonly string[]; readonly at: string }): void
+  }
 }
 
 export { UsageService }
