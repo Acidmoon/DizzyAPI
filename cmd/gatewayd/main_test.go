@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Acidmoon/DizzyAPI/contracts"
 	"github.com/Acidmoon/DizzyAPI/internal/accounts"
@@ -243,5 +244,26 @@ func TestUsageStatsWithoutRing(t *testing.T) {
 	}
 	if stats, ok := result.(usagelog.StatsResult); !ok || stats != (usagelog.StatsResult{}) {
 		t.Fatalf("没有环形缓冲时应返回零值，得到 %+v", result)
+	}
+}
+
+func TestAccountCooldownConfig(t *testing.T) {
+	// 合法值：0 = 关闭冷却；上限值刚好合法。
+	if got, err := parseAccountCooldown(0); err != nil || got != 0 {
+		t.Fatalf("0 应当表示关闭冷却：duration=%v err=%v", got, err)
+	}
+	if got, err := parseAccountCooldown(30_000); err != nil || got != 30*time.Second {
+		t.Fatalf("30s 应当合法：duration=%v err=%v", got, err)
+	}
+	if got, err := parseAccountCooldown(maxAccountCooldownMs); err != nil ||
+		got != time.Duration(maxAccountCooldownMs)*time.Millisecond {
+		t.Fatalf("上限值应当合法：duration=%v err=%v", got, err)
+	}
+
+	// 非法值：负数 / 超过上限都必须让进程起不来，不能静默回落默认值。
+	for _, invalid := range []int{-1, maxAccountCooldownMs + 1} {
+		if _, err := parseAccountCooldown(invalid); err == nil {
+			t.Fatalf("-account-cooldown-ms=%d 必须报错", invalid)
+		}
 	}
 }

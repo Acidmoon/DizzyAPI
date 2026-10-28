@@ -78,6 +78,14 @@ var DefaultDialects = map[contracts.Protocol]Dialect{
 	},
 }
 
+// LimitRecorder 是「上游限流 / 额度耗尽」的回报面。
+//
+// 由组合根注入（internal/accountruntime），transport 只做事实回报：
+// 该账号在接下来一段时间不应再被选中。可为 nil（不记录冷却）。
+type LimitRecorder interface {
+	RecordLimit(accountID string)
+}
+
 // Config 是 transport 的运行参数。
 type Config struct {
 	// RequestTimeoutMs 只约束非流式请求；流式请求靠客户端取消与 HeaderTimeout。
@@ -94,6 +102,8 @@ type Config struct {
 	Dialects map[contracts.Protocol]Dialect
 	// UserAgent 为空时使用 gatewayd/0.1。
 	UserAgent string
+	// LimitRecorder 在 429 / 额度耗尽时记录短期冷却；nil = 不记录。
+	LimitRecorder LimitRecorder
 }
 
 func (c Config) resolved() Config {
@@ -250,7 +260,14 @@ func (s *Stage) Run(ctx *contracts.Ctx) (contracts.Decision, error) {
 
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		defer response.Body.Close()
-		return contracts.Decision{}, s.upstreamError(response, credential.AccessToken)
+		payload, _ := io.ReadAll(io.LimitReader(response.Body, s.config.MaxErrorBytes))
+		// 429 与明确的额度耗尽：该账号短期不可用。回报给运行时记冷却（纯内存，
+		// 不落盘、不回写 TS），并把错误标成可重试，让 engine 换下一个账号。
+		limitHit := shouldCoolDown(response.StatusCode, payload)
+		if limitHit && s.config.LimitRecorder != nil {
+			s.config.LimitRecorder.RecordLimit(accountID)
+		}
+		return contracts.Decision{}, upstreamError(response.StatusCode, payload, credential.AccessToken, limitHit)
 	}
 
 	headers := map[string]string{}
@@ -359,25 +376,65 @@ func (s *Stage) networkError(ctx *contracts.Ctx, err error, token string) error 
 	return retryableError(http.StatusBadGateway, "UPSTREAM_UNAVAILABLE", "上游不可用：%s", truncate(message, 512))
 }
 
-func (s *Stage) upstreamError(response *http.Response, token string) error {
-	payload, _ := io.ReadAll(io.LimitReader(response.Body, s.config.MaxErrorBytes))
+func upstreamError(status int, payload []byte, token string, limitHit bool) error {
 	message := sanitize(upstreamMessage(payload), token)
 
+	// 限流 / 额度耗尽：都按「可重试 + 429」渲染，让 engine 换账号，
+	// 客户端看到的是统一的「上游限流」，不会拿到账号级细节。
+	if limitHit {
+		if status == http.StatusTooManyRequests {
+			return retryableError(http.StatusTooManyRequests, "UPSTREAM_RATE_LIMITED", "上游限流：%s", message)
+		}
+		return retryableError(http.StatusTooManyRequests, "UPSTREAM_QUOTA_EXHAUSTED", "上游账号额度不足：%s", message)
+	}
+
 	switch {
-	case response.StatusCode == http.StatusUnauthorized || response.StatusCode == http.StatusForbidden:
+	case status == http.StatusUnauthorized || status == http.StatusForbidden:
 		// 不把上游的认证错误正文透给客户端：它可能回显账号或令牌。
 		return retryableError(http.StatusBadGateway, "UPSTREAM_AUTH_FAILED", "上游拒绝了该账号的凭据")
-	case response.StatusCode == http.StatusTooManyRequests:
-		return retryableError(http.StatusTooManyRequests, "UPSTREAM_RATE_LIMITED", "上游限流：%s", message)
-	case response.StatusCode == http.StatusNotFound:
+	case status == http.StatusNotFound:
 		return contracts.Errorf(http.StatusNotFound, "UPSTREAM_NOT_FOUND", "上游资源不存在")
-	case response.StatusCode >= 500:
+	case status >= 500:
 		return retryableError(http.StatusBadGateway, "UPSTREAM_ERROR", "上游错误：%s", message)
-	case response.StatusCode >= 400:
-		return contracts.Errorf(response.StatusCode, "UPSTREAM_INVALID_REQUEST", "上游拒绝了请求：%s", message)
+	case status >= 400:
+		return contracts.Errorf(status, "UPSTREAM_INVALID_REQUEST", "上游拒绝了请求：%s", message)
 	default:
-		return contracts.Errorf(http.StatusBadGateway, "UPSTREAM_REJECTED", "上游返回了非预期状态 %d", response.StatusCode)
+		return contracts.Errorf(http.StatusBadGateway, "UPSTREAM_REJECTED", "上游返回了非预期状态 %d", status)
 	}
+}
+
+// quotaMarkers 是上游「额度耗尽」错误正文里的已知标记（小写匹配）。
+//
+// 各家写法不同（OpenAI 的 insufficient_quota、Anthropic 的 credit balance 等），
+// 这里只做保守识别：命中才冷却，认不出来就按普通错误处理（fail-open 到换账号，
+// 不会误伤正常账号）。
+var quotaMarkers = []string{
+	"insufficient_quota",
+	"quota_exceeded",
+	"exceeded your current quota",
+	"billing_hard_limit",
+	"credit balance is too low",
+	"余额不足",
+	"额度不足",
+	"额度已用尽",
+}
+
+// shouldCoolDown 判断这次上游失败是否意味着「该账号短期不可用」：
+// 429 一律冷却；402（Payment Required）与正文命中额度标记的 400/403 也冷却。
+func shouldCoolDown(status int, payload []byte) bool {
+	if status == http.StatusTooManyRequests || status == http.StatusPaymentRequired {
+		return true
+	}
+	if status != http.StatusBadRequest && status != http.StatusForbidden {
+		return false
+	}
+	text := strings.ToLower(string(payload))
+	for _, marker := range quotaMarkers {
+		if strings.Contains(text, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 func retryableError(status int, code, format string, args ...any) *contracts.StageError {
