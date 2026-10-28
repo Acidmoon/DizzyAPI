@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -134,6 +135,57 @@ func TestSaturatedGateCodeIsVisibleInResponseBody(t *testing.T) {
 	}
 	if got := dispatchCalls.Load(); got != 0 {
 		t.Fatalf("重复请求也不许进入 dispatch，累计执行了 %d 次", got)
+	}
+}
+
+// TestAnthropicGateCodeIsVisibleInResponseBody：走 /v1/messages 的客户端也必须能在
+// 响应体里读到稳定码（owner 2026-10-29 拍板的 B 方案：anthropic 的 error 对象里加 code）。
+func TestAnthropicGateCodeIsVisibleInResponseBody(t *testing.T) {
+	tracker := accountruntime.New(0)
+	handler, dispatchCalls := priorityGateHandler(t, tracker, []accounts.Account{
+		{AccountID: "acc-1", Provider: "anthropic", Kind: "api_key", BaseURL: "https://upstream.example/v1", Token: "sk-1", Concurrency: 1},
+		{AccountID: "acc-2", Provider: "anthropic", Kind: "api_key", BaseURL: "https://upstream.example/v1", Token: "sk-2", Concurrency: 1},
+	})
+	release1, ok := tracker.Acquire("acc-1", 1)
+	if !ok {
+		t.Fatal("acc-1 应当能预留槽位")
+	}
+	defer release1()
+	release2, ok := tracker.Acquire("acc-2", 1)
+	if !ok {
+		t.Fatal("acc-2 应当能预留槽位")
+	}
+	defer release2()
+
+	request := httptest.NewRequest(http.MethodPost, "/v1/messages",
+		strings.NewReader(`{"model":"m","max_tokens":16,"messages":[]}`))
+	request.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusServiceUnavailable {
+		t.Fatalf("期望 503，得到 %d：%s", recorder.Code, recorder.Body.String())
+	}
+	var payload struct {
+		Type  string `json:"type"`
+		Error struct {
+			Type    string `json:"type"`
+			Message string `json:"message"`
+			Code    string `json:"code"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("错误体不是 JSON：%v（%s）", err, recorder.Body.String())
+	}
+	if payload.Type != "error" || payload.Error.Type != "api_error" {
+		t.Fatalf("anthropic 顶层形状被改了：%s", recorder.Body.String())
+	}
+	if payload.Error.Code != contracts.CodeAllAccountsSaturated {
+		t.Fatalf("anthropic 响应体的 error.code 应为 %s，得到 %q：%s",
+			contracts.CodeAllAccountsSaturated, payload.Error.Code, recorder.Body.String())
+	}
+	if got := dispatchCalls.Load(); got != 0 {
+		t.Fatalf("闸门拒绝的请求不许进入 dispatch，实际执行了 %d 次", got)
 	}
 }
 
