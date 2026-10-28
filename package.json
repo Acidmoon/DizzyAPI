@@ -29,6 +29,7 @@
     "@cordisjs/plugin-logger-console": "^1.0.0",
     "@cordisjs/plugin-timer": "^1.1.4",
     "@dizzyapi/plugin-account-admin": "workspace:*",
+    "@dizzyapi/plugin-account-health": "workspace:*",
     "@dizzyapi/plugin-account-priority": "workspace:*",
     "@dizzyapi/plugin-admin": "workspace:*",
     "@dizzyapi/plugin-api": "workspace:*",

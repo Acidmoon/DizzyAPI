@@ -143,8 +143,7 @@ test('ingest 幂等：同一 reqId 落两次只有一行', async (t) => {
   assert.equal(listed.items[0]?.startedAt, BASE_TIME)
 })
 
-test('keyset 分页不重不漏', async (t) => {
-  const { service } = await boot(t)
+test('keyset 分页不重不漏', async (t) => {  const { service } = await boot(t)
   for (let index = 0; index < 5; index += 1) service.ingest(entry())
 
   const first = service.list({ ...ALL_TIME, limit: 2 })
@@ -442,4 +441,59 @@ test('轮询：account-priority 不在时跳过，不抛错', async (t) => {
   const { service } = await boot(t)
   const outcome = await service.pollOnce()
   assert.deepEqual(outcome, { status: 'skipped', epochChanged: false, gap: 0, ingested: 0 })
+})
+
+// ───────────────────────────── 账号使用上报（usage/account-used） ─────────────────────────────
+
+test('落库后发 usage/account-used：按账号集合化，重复 req_id 不算新使用', async (t) => {
+  const priority = fakePriority()
+  const world = await boot(t, { priority })
+  const events: { accountIds: readonly string[]; at: string }[] = []
+  world.ctx.on('usage/account-used', (payload) => {
+    events.push(payload)
+  })
+
+  priority.result = {
+    epoch: 'e1',
+    firstSeq: 1,
+    lastSeq: 3,
+    dropped: 0,
+    records: [
+      entry({ seq: 1, requestId: 'used-1', accountId: 'acc-a' }),
+      entry({ seq: 2, requestId: 'used-2', accountId: 'acc-a' }),
+      entry({ seq: 3, requestId: 'used-3', accountId: 'acc-b' }),
+    ],
+  }
+  await world.service.pollOnce()
+  assert.equal(events.length, 1, '一轮只发一个事件')
+  assert.deepEqual([...events[0].accountIds].sort(), ['acc-a', 'acc-b'], '同一账号只出现一次')
+  assert.ok(Number.isFinite(Date.parse(events[0].at)))
+
+  // 同样的记录再落一次（INSERT OR IGNORE 全被忽略）→ 没有新落库就不该再发事件。
+  priority.result = { ...priority.result, records: [
+    entry({ seq: 1, requestId: 'used-1', accountId: 'acc-a' }),
+    entry({ seq: 2, requestId: 'used-2', accountId: 'acc-a' }),
+    entry({ seq: 3, requestId: 'used-3', accountId: 'acc-b' }),
+  ] }
+  await world.service.pollOnce()
+  assert.equal(events.length, 1)
+})
+
+test('没有账号 id 的用量不发使用事件', async (t) => {
+  const priority = fakePriority()
+  const world = await boot(t, { priority })
+  const events: unknown[] = []
+  world.ctx.on('usage/account-used', (payload) => {
+    events.push(payload)
+  })
+
+  priority.result = {
+    epoch: 'e1',
+    firstSeq: 1,
+    lastSeq: 1,
+    dropped: 0,
+    records: [entry({ seq: 1, requestId: 'no-account', accountId: undefined })],
+  }
+  await world.service.pollOnce()
+  assert.equal(events.length, 0)
 })

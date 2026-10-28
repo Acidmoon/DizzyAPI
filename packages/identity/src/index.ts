@@ -47,6 +47,7 @@ export type {
   IdentityAccount,
   IdentityAccountKind,
   IdentityAccountStatus,
+  IdentityHealth,
   IdentityProvider,
   IdentityProtocol,
   IdentityRefreshResult,

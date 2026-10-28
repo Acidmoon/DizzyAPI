@@ -112,7 +112,27 @@
       - '@dizzyapi/plugin-admin'
       - '@dizzyapi/plugin-api'
       - '@dizzyapi/plugin-web'
+      # 健康检查要经门面写状态（setHealth / autoDisable / autoEnable）。
+      - '@dizzyapi/plugin-account-health'
     maxBatchSize: 100
+
+# 账号健康检查：定时对可参与调度的账号做连通性测试，连续失败自动停用、一次成功即恢复。
+# 它自己不存任何数据：读列表、写状态全部走 account-admin 门面（账号记录仍由 identity 独占写）。
+# 后台任务只有定时器（ctx.setInterval 挂在 effect 上，随插件卸载回收），禁用即停；
+# 没有 HTTP 路由与桥命令。
+# adminPlugins 是「允许手动触发一轮检查」的白名单（runOnce），不挂 HTTP。
+- id: account-health
+  name: '@dizzyapi/plugin-account-health'
+  config:
+    enabled: true
+    intervalMs: 60000          # 60 秒一轮：自用场景够用，也不会把上游打成压力测试
+    failureThreshold: 3        # 连续失败 3 次才自动停用，避免上游抖动误禁
+    recoverySuccesses: 1       # 一次成功即恢复
+    maxConcurrent: 4
+    adminPlugins:
+      - '@dizzyapi/plugin-admin'
+      - '@dizzyapi/plugin-api'
+      - '@dizzyapi/plugin-web'
 
 # 账号请求优先级：策略组的唯一写者 + gatewayd 的监管者。
 # 打分与排序发生在 Go 侧（modules/accountpriority）；本插件只持有策略、拉起进程、

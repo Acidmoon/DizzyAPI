@@ -9,8 +9,10 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"math"
 	"net/url"
 	"sort"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -35,6 +37,10 @@ const (
 	MaxModelNameBytes = 256
 	// ExpirySafety 是「即将过期」的提前量；低于它的令牌不再参与选择。
 	ExpirySafety = 30 * time.Second
+	// MaxConcurrency 是单个账号并发上限的上限（与 TS 侧 identity 的校验口径一致）。
+	MaxConcurrency = 10_000
+	// MaxWeight 是账号权重的上限（与 TS 侧 identity 的校验口径一致）。
+	MaxWeight = 1_000_000.0
 )
 
 // Snapshot 是 TS 推来的完整账号快照。任何一条不合法就整份拒绝，绝不部分应用。
@@ -54,6 +60,13 @@ type Account struct {
 	ExpiresAt *time.Time        `json:"expiresAt,omitempty"`
 	Priority  int               `json:"priority,omitempty"`
 	Tags      map[string]string `json:"tags,omitempty"`
+	// Weight 是账号声明的权重（> 0）。用指针表达「未声明」与「已知值」的区别：
+	// 空 = 旧快照没这个字段，必须合法（打分时按未知处理）。
+	Weight *float64 `json:"weight,omitempty"`
+	// Concurrency 是账号级并发上限；0 = 未声明（不是「并发为 0」）。
+	Concurrency int `json:"concurrency,omitempty"`
+	// Health 是账号健康状态；空 = 未声明，转成 contracts.HealthUnknown 透传。
+	Health string `json:"health,omitempty"`
 	// Protocol 是账号声明的上游协议。空 = 旧快照（未声明），合法。
 	Protocol string `json:"protocol,omitempty"`
 	// Models 是这个账号服务的对外模型名；ModelMap 是「对外模型名 → 上游真实模型名」。
@@ -190,6 +203,9 @@ func (c *Cache) Models() []string {
 }
 
 // Candidates 返回可参与打分的候选快照。不可用账号直接不出现。
+//
+// weight / concurrency / health / tags 全部从快照透传：调度模块早就实现了按标签与
+// 健康状态过滤、按权重与并发容量打分，这里少透传一个字段，那些实现就是死数据。
 func (c *Cache) Candidates() []contracts.AccountCandidate {
 	snap := c.snap.Load()
 	now := time.Now()
@@ -200,16 +216,27 @@ func (c *Cache) Candidates() []contracts.AccountCandidate {
 			continue
 		}
 		out = append(out, contracts.AccountCandidate{
-			AccountID: account.AccountID,
-			Provider:  account.Provider,
-			Kind:      account.Kind,
-			Priority:  account.Priority,
-			Health:    contracts.HealthUnknown,
-			Tags:      cloneTags(account.Tags),
-			Models:    cloneStrings(account.Models),
+			AccountID:   account.AccountID,
+			Provider:    account.Provider,
+			Kind:        account.Kind,
+			Priority:    account.Priority,
+			Weight:      account.Weight,
+			Concurrency: account.Concurrency,
+			Health:      healthStateOf(account.Health),
+			Tags:        cloneTags(account.Tags),
+			Models:      cloneStrings(account.Models),
 		})
 	}
 	return out
+}
+
+// healthStateOf 把快照里的健康状态透传给评分层；空（旧快照 / 未声明）是
+// contracts.HealthUnknown——未知是一等状态，不是「默认健康」（AGENTS.md D17）。
+func healthStateOf(health string) contracts.HealthState {
+	if health == "" {
+		return contracts.HealthUnknown
+	}
+	return contracts.HealthState(health)
 }
 
 func usable(account Account, now time.Time) bool {
@@ -290,6 +317,19 @@ func validateAccount(account Account) error {
 	if account.ExpiresAt != nil && account.ExpiresAt.IsZero() {
 		return newError("ACCOUNTS_INVALID_ACCOUNT", "账号 %s 的 expiresAt 不合法", account.AccountID)
 	}
+	if err := validateWeight(account.AccountID, account.Weight); err != nil {
+		return err
+	}
+	if account.Concurrency < 0 {
+		return newError("ACCOUNTS_INVALID_ACCOUNT", "账号 %s 的 concurrency 不能为负数", account.AccountID)
+	}
+	if account.Concurrency > MaxConcurrency {
+		return newError("ACCOUNTS_INVALID_ACCOUNT",
+			"账号 %s 的 concurrency 最多 %d，收到 %d", account.AccountID, MaxConcurrency, account.Concurrency)
+	}
+	if account.Health != "" && !validHealth(account.Health) {
+		return newError("ACCOUNTS_INVALID_ACCOUNT", "账号 %s 的 health 不合法：%s", account.AccountID, account.Health)
+	}
 	if err := validateModels(account.AccountID, account.Models); err != nil {
 		return err
 	}
@@ -364,6 +404,33 @@ func validProtocol(protocol string) bool {
 	}
 }
 
+// validateWeight 校验权重：nil 合法（未声明）；否则必须是大于 0 的有限数值。
+// 0 不是「无权重」，是非法值——不能让它悄悄变成评分里的 0 分。
+func validateWeight(accountID string, weight *float64) error {
+	if weight == nil {
+		return nil
+	}
+	value := *weight
+	if math.IsNaN(value) || math.IsInf(value, 0) || value <= 0 || value > MaxWeight {
+		return newError("ACCOUNTS_INVALID_ACCOUNT",
+			"账号 %s 的 weight 必须是 (0, %g] 的有限数值", accountID, MaxWeight)
+	}
+	return nil
+}
+
+// validHealth 是健康状态的白名单，与 contracts.HealthState 一一对应。空串合法（旧快照）。
+func validHealth(health string) bool {
+	switch contracts.HealthState(health) {
+	case contracts.HealthUnknown,
+		contracts.HealthHealthy,
+		contracts.HealthDegraded,
+		contracts.HealthUnhealthy:
+		return true
+	default:
+		return false
+	}
+}
+
 // revisionOf 对快照内容（含令牌）做哈希。只输出哈希，不输出令牌。
 func revisionOf(accounts map[string]Account, order []string) string {
 	hash := sha256.New()
@@ -373,6 +440,14 @@ func revisionOf(accounts map[string]Account, order []string) string {
 		hash.Write([]byte(account.Token))
 		fmt.Fprintf(hash, "\x00%s\x00", account.Protocol)
 		fmt.Fprintf(hash, "\x00%d\x00", account.Priority)
+		// weight / concurrency / health 也进内容哈希：只改权重也必须换 revision，
+		// 否则诊断与「快照变了没有」的判断都会失真。
+		hash.Write([]byte{0})
+		if account.Weight != nil {
+			hash.Write([]byte(strconv.FormatFloat(*account.Weight, 'g', -1, 64)))
+		}
+		hash.Write([]byte{0})
+		fmt.Fprintf(hash, "%d\x00%s\x00", account.Concurrency, account.Health)
 		if account.ExpiresAt != nil {
 			hash.Write([]byte(account.ExpiresAt.UTC().Format(time.RFC3339Nano)))
 		}

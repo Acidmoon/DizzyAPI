@@ -35,10 +35,13 @@ import {
   runConnectionTest,
 } from './test-connection.ts'
 import type {
+  AccountHealth,
   AccountImportPreview,
   AccountImportPreviewItem,
   AccountImportSourceInput,
   AccountKind,
+  AccountListItem,
+  AccountListOptions,
   AccountListQuery,
   AccountProvider,
   AccountProtocol,
@@ -50,6 +53,9 @@ import type {
   BulkImportItem,
   BulkImportItemResult,
   BulkImportResult,
+  BulkOperationItemResult,
+  BulkOperationResult,
+  BulkUpdateInput,
   CreateAccountInput,
   ParsedImportItem,
   CredentialImportFormat,
@@ -85,9 +91,25 @@ interface IdentitySeam {
       readonly label?: string
       readonly email?: string | null
       readonly subject?: string | null
+      readonly baseUrl?: string | null
+      readonly protocol?: AccountProtocol | null
+      readonly models?: string[] | null
+      readonly modelMap?: Record<string, string> | null
+      readonly priority?: number
+      readonly labels?: string[] | null
+      readonly weight?: number | null
+      readonly concurrency?: number | null
       readonly enabled?: boolean
     },
   ): Promise<AccountRecord>
+  /** 健康状态：与通用 update 分开，语义不同（调度输入，不是人改的字段）。 */
+  setHealth(id: string, health: AccountHealth): Promise<AccountRecord>
+  /** 系统自动停用：只改 status → auto_disabled，不动 enabled。 */
+  autoDisable(id: string, reason: string): Promise<AccountRecord>
+  /** 系统自动恢复：只把 auto_disabled 改回 active。 */
+  autoEnable(id: string): Promise<AccountRecord>
+  /** 最近使用时间回报；只前进不后退，未知账号 no-op。 */
+  reportUsed(id: string, at: string): Promise<void>
   importCredentials(id: string, secret: CredentialBundle): Promise<AccountRecord>
   remove(id: string): Promise<void>
   credentialStatus(id: string): { readonly ref: string; readonly configured: boolean }
@@ -108,7 +130,7 @@ const EMAIL_MAX_LENGTH = 320
 const SUBJECT_MAX_LENGTH = 200
 const SEARCH_MAX_LENGTH = 200
 
-const QUERY_KEYS = ['provider', 'kind', 'enabled', 'status', 'search'] as const
+const QUERY_KEYS = ['provider', 'kind', 'enabled', 'status', 'search', 'labels', 'health'] as const
 const UPDATE_KEYS = [
   'label',
   'email',
@@ -118,8 +140,28 @@ const UPDATE_KEYS = [
   'models',
   'modelMap',
   'priority',
+  'labels',
+  'weight',
+  'concurrency',
 ] as const
 const BULK_DEFAULT_KEYS = ['format', 'provider', 'kind', 'enabled', 'labelPrefix'] as const
+
+/**
+ * 用量事件 → `lastUsedAt` 的节流窗口。
+ *
+ * `accounts.json` 是整文件原子重写，用量却是持续的：30 秒聚合一次，
+ * 既能让「最近使用」足够新，也不会把磁盘打成热写。
+ */
+const USAGE_REPORT_THROTTLE_MS = 30_000
+
+/** root 事件总线的结构视图：只声明监听用，不 import cordis 的实现细节。 */
+interface EventRoot {
+  on(
+    name: string,
+    listener: (...args: unknown[]) => void,
+    options?: { global?: boolean },
+  ): () => void
+}
 
 export class AccountAdminService extends Service {
   static Config = ACCOUNT_ADMIN_CONFIG_SCHEMA
@@ -134,6 +176,9 @@ export class AccountAdminService extends Service {
       'upstream-account-admin',
       'account-connectivity-test',
       'account-import-source',
+      'account-bulk-update',
+      'account-health-management',
+      'account-last-used-report',
     ],
     events: [],
     bridge: [],
@@ -145,6 +190,16 @@ export class AccountAdminService extends Service {
       },
       previewImportSource: { description: '把 new-api / sub2api / 纯 key 文本归一化并逐条预检，不含凭据' },
       importSource: { description: '按导入来源批量创建账号；部分成功，逐条返回错误' },
+      bulkUpdate: { description: '批量改标签 / 权重 / 并发等字段；只提交声明过的字段，逐项返回结果' },
+      bulkEnable: { description: '批量启用（人的手动开关），逐项返回结果' },
+      bulkDisable: { description: '批量停用（人的手动开关），逐项返回结果' },
+      setHealth: { description: '写入健康状态；Go 侧 Filter.Health 会用它过滤候选' },
+      autoDisable: { description: '健康检查连续失败后自动停用：只改 status，不动 enabled' },
+      autoEnable: { description: '健康恢复后自动启用：只把 auto_disabled 改回 active' },
+      flushUsage: {
+        description:
+          '把 usage/account-used 事件聚合出的 lastUsedAt 立即写回 identity（节流窗口默认 30 秒）',
+      },
     },
     shapes: {
       AccountView: {
@@ -165,6 +220,13 @@ export class AccountAdminService extends Service {
           models: { type: 'array<string>', optional: true },
           modelMap: { type: 'map<string, string>', optional: true },
           priority: { type: 'number' },
+          labels: { type: 'array<string>' },
+          weight: { type: 'number', optional: true },
+          concurrency: { type: 'number', optional: true },
+          health: { type: 'string' },
+          autoDisabledAt: { type: 'string', optional: true },
+          autoDisabledReason: { type: 'string', optional: true },
+          lastUsedAt: { type: 'string', optional: true },
           lastTestAt: { type: 'string', optional: true },
           lastTestOk: { type: 'boolean', optional: true },
           lastTestError: { type: 'string', optional: true },
@@ -194,6 +256,10 @@ export class AccountAdminService extends Service {
   private readonly logger: Logger
   /** 测试可替换；生产用全局 fetch。 */
   private fetchImpl: typeof fetch = (input, init) => globalThis.fetch(input, init)
+  /** 待汇报的 `lastUsedAt`：accountId → 最近一次使用时间（ISO）。 */
+  private readonly pendingUsage = new Map<string, string>()
+  private usageTimer: NodeJS.Timeout | undefined
+  private disposed = false
 
   constructor(ctx: Context, config: ResolvedAccountAdminConfig = {}) {
     super(ctx, 'accountAdmin')
@@ -215,15 +281,50 @@ export class AccountAdminService extends Service {
     }
   }
 
+  /**
+   * 监听用量事件并节流汇报 `lastUsedAt`。
+   *
+   * 为什么经本插件转一手：`usage` 落库后只知道「哪些账号刚被用过」，而账号记录的写者是
+   * identity；`accounts.json` 是整文件原子重写，不能为每条用量写一次盘。所以这里聚合并
+   * 节流（`USAGE_REPORT_THROTTLE_MS`），再经 identity 的 `reportUsed` 写回。
+   *
+   * 监听器挂在 root 上并带 global（与 account-priority 的 watch 同一写法）；
+   * 摘除函数由 `[Service.init]` 生成器 `yield` 出去，和 `ctx.effect` 一样随插件卸载回收（D5）：
+   * 禁用后不再接收事件，也不留定时器。
+   */
+  async *[Service.init](): AsyncGenerator<() => void> {
+    const root = this.ctx.root as unknown as EventRoot
+    const off = root.on(
+      'usage/account-used',
+      (...args: unknown[]) => this.noteAccountUsage(args[0]),
+      { global: true },
+    )
+    yield () => {
+      this.disposed = true
+      off()
+      this.clearUsageTimer()
+      // 卸载不带病回填：最多丢掉一个节流窗口内的 lastUsedAt 精度。
+      this.pendingUsage.clear()
+    }
+  }
+
   // ───────────────────────────── 读面：不限权 ─────────────────────────────
 
-  list(query: AccountListQuery = {}): AccountView[] {
+  list(query?: AccountListQuery): AccountView[]
+  list(query: AccountListQuery, options: { view: 'full' }): AccountView[]
+  list(query: AccountListQuery, options: { view: 'lite' }): AccountListItem[]
+  list(query: AccountListQuery, options: AccountListOptions): AccountView[] | AccountListItem[]
+  list(query: AccountListQuery = {}, options: AccountListOptions = {}): AccountView[] | AccountListItem[] {
     const filter = query === undefined ? {} : normalizeQuery(query)
+    const view = normalizeListView(options)
     const identity = this.identity()
     return identity
       .list()
       .filter((account) => matches(account, filter))
-      .map((account) => toView(account, identity.credentialStatus(account.id).configured))
+      .map((account) => {
+        const configured = identity.credentialStatus(account.id).configured
+        return view === 'lite' ? toListItem(account, configured) : toView(account, configured)
+      })
   }
 
   get(id: string): AccountView {
@@ -461,6 +562,9 @@ export class AccountAdminService extends Service {
       models?: string[] | null
       modelMap?: Record<string, string> | null
       priority?: number
+      labels?: string[] | null
+      weight?: number | null
+      concurrency?: number | null
     } = {}
     if ('label' in patch) normalized.label = normalizeLabel(patch.label)
     if ('email' in patch) normalized.email = normalizeNullableText(patch.email, 'email', EMAIL_MAX_LENGTH)
@@ -470,6 +574,9 @@ export class AccountAdminService extends Service {
     if ('models' in patch) normalized.models = normalizeNullableModels(patch.models)
     if ('modelMap' in patch) normalized.modelMap = normalizeNullableModelMap(patch.modelMap)
     if ('priority' in patch) normalized.priority = normalizeRequiredPriority(patch.priority)
+    if ('labels' in patch) normalized.labels = normalizeNullableLabels(patch.labels)
+    if ('weight' in patch) normalized.weight = normalizeNullableWeight(patch.weight)
+    if ('concurrency' in patch) normalized.concurrency = normalizeNullableConcurrency(patch.concurrency)
 
     // 空 patch 是幂等的读：不制造一次无意义的写盘与 updatedAt 变化。
     if (Object.keys(normalized).length === 0) return this.get(accountId)
@@ -570,7 +677,157 @@ export class AccountAdminService extends Service {
     return toView(account, identity.credentialStatus(account.id).configured)
   }
 
+  // ───────────────────────── 健康与自动停用（仍是 identity 写） ─────────────────────────
+
+  /** 写入健康状态。它是调度输入（Go 的 Filter.Health 会用到），所以走独立方法而不是通用 update。 */
+  async setHealth(actor: string, id: string, health: AccountHealth): Promise<AccountView> {
+    this.assertAdmin(actor)
+    const accountId = normalizeId(id)
+    const account = await this.identity().setHealth(accountId, requireHealth(health))
+    return this.view(account)
+  }
+
+  /**
+   * 健康检查连续失败后的自动停用：只改 `status → auto_disabled`，
+   * **不动 `enabled`**（人的手动开关不能被自动化覆盖）。
+   */
+  async autoDisable(actor: string, id: string, reason: string): Promise<AccountView> {
+    this.assertAdmin(actor)
+    const accountId = normalizeId(id)
+    const account = await this.identity().autoDisable(accountId, normalizeAutoDisableReason(reason))
+    return this.view(account)
+  }
+
+  /** 健康恢复：只把 `auto_disabled` 改回 `active`，不碰 needs_reauth 与 enabled。 */
+  async autoEnable(actor: string, id: string): Promise<AccountView> {
+    this.assertAdmin(actor)
+    const account = await this.identity().autoEnable(normalizeId(id))
+    return this.view(account)
+  }
+
+  // ───────────────────────── 批量操作 ─────────────────────────
+
+  /**
+   * 批量改字段：只提交声明过的字段，逐项成功或失败，互不阻塞。
+   * `ids` 去重保序，长度受 `maxBatchSize` 限制。
+   */
+  async bulkUpdate(actor: string, ids: readonly string[], patch: BulkUpdateInput): Promise<BulkOperationResult> {
+    this.assertAdmin(actor)
+    const targets = normalizeIds(ids, this.maxBatchSize)
+    if (!isRecord(patch)) failInput('bulkUpdate 的 patch 必须是对象')
+    if (Object.keys(patch).length === 0) failInput('bulkUpdate 至少要声明一个字段')
+    for (const key of Object.keys(patch)) {
+      if (!(UPDATE_KEYS as readonly string[]).includes(key)) {
+        failInput(`bulkUpdate 不支持字段 ${key}；启用 / 停用请用 bulkEnable / bulkDisable`)
+      }
+    }
+    return this.applyAll(targets, (id) => this.update(actor, id, patch))
+  }
+
+  /** 批量启用：逐项结果，不受个别失败影响。 */
+  async bulkEnable(actor: string, ids: readonly string[]): Promise<BulkOperationResult> {
+    this.assertAdmin(actor)
+    return this.applyAll(normalizeIds(ids, this.maxBatchSize), (id) => this.setEnabled(id, true))
+  }
+
+  /** 批量停用：逐项结果，不受个别失败影响。 */
+  async bulkDisable(actor: string, ids: readonly string[]): Promise<BulkOperationResult> {
+    this.assertAdmin(actor)
+    return this.applyAll(normalizeIds(ids, this.maxBatchSize), (id) => this.setEnabled(id, false))
+  }
+
   // ───────────────────────────────── 内部 ─────────────────────────────────
+
+  /** 读一份视图：凭据配置状态必须与账号记录同一次读取，避免两处口径不一。 */
+  private view(account: AccountRecord): AccountView {
+    return toView(account, this.identity().credentialStatus(account.id).configured)
+  }
+
+  /** 收一条用量事件：只记「更新的时间」，不立刻写盘（节流由定时器做）。 */
+  private noteAccountUsage(payload: unknown): void {
+    if (!isRecord(payload)) return
+    const ids = payload.accountIds
+    const at = payload.at
+    if (!Array.isArray(ids) || typeof at !== 'string') return
+    const parsed = new Date(at)
+    if (Number.isNaN(parsed.getTime())) return
+    const value = parsed.toISOString()
+    let changed = false
+    for (const raw of ids) {
+      if (typeof raw !== 'string') continue
+      const accountId = raw.trim()
+      if (accountId === '') continue
+      const previous = this.pendingUsage.get(accountId)
+      if (previous !== undefined && previous >= value) continue
+      this.pendingUsage.set(accountId, value)
+      changed = true
+    }
+    if (changed) this.scheduleUsageFlush()
+  }
+
+  /**
+   * 立即把待汇报的 `lastUsedAt` 写回 identity（节流窗口到了 / 测试与运维手动触发）。
+   * 返回成功写入的条数；单个账号失败只记日志，不影响其它账号。
+   */
+  async flushUsage(): Promise<number> {
+    this.clearUsageTimer()
+    if (this.pendingUsage.size === 0) return 0
+    const entries = [...this.pendingUsage]
+    this.pendingUsage.clear()
+    const identity = this.ctx.get('identity', false) as IdentitySeam | undefined
+    if (identity === undefined || identity === null) {
+      this.logger.warn('identity 不可用：本轮 lastUsedAt 汇报被丢弃')
+      return 0
+    }
+    let written = 0
+    for (const [id, at] of entries) {
+      try {
+        await identity.reportUsed(id, at)
+        written += 1
+      } catch (error) {
+        this.logger.warn(`账号 ${id} 的 lastUsedAt 汇报失败：${describeError(error)}`)
+      }
+    }
+    return written
+  }
+
+  private scheduleUsageFlush(): void {
+    if (this.disposed || this.usageTimer !== undefined) return
+    this.usageTimer = setTimeout(() => {
+      this.usageTimer = undefined
+      void this.flushUsage()
+    }, USAGE_REPORT_THROTTLE_MS)
+    this.usageTimer.unref?.()
+  }
+
+  private clearUsageTimer(): void {
+    if (this.usageTimer !== undefined) {
+      clearTimeout(this.usageTimer)
+      this.usageTimer = undefined
+    }
+  }
+
+  /** 批量执行：每项独立 try/catch，最后汇总成功 / 失败。 */
+  private async applyAll(
+    targets: readonly string[],
+    action: (id: string) => Promise<AccountView>,
+  ): Promise<BulkOperationResult> {
+    const items: BulkOperationItemResult[] = []
+    for (const id of targets) {
+      try {
+        items.push({ id, ok: true, account: await action(id), error: null })
+      } catch (error) {
+        items.push({
+          id,
+          ok: false,
+          account: null,
+          error: { code: errorCodeOf(error), message: describeError(error) },
+        })
+      }
+    }
+    const succeeded = items.filter((item) => item.ok).length
+    return { total: items.length, succeeded, failed: items.length - succeeded, items }
+  }
 
   private async persistTestResult(
     identity: IdentitySeam,
@@ -701,6 +958,13 @@ function toView(account: AccountRecord, credentialConfigured: boolean): AccountV
     models: account.models,
     modelMap: account.modelMap,
     priority: account.priority,
+    labels: [...account.labels],
+    weight: account.weight,
+    concurrency: account.concurrency,
+    health: account.health,
+    autoDisabledAt: account.autoDisabledAt,
+    autoDisabledReason: account.autoDisabledReason,
+    lastUsedAt: account.lastUsedAt,
     accessExpiresAt: account.accessExpiresAt,
     refreshDueAt: account.refreshDueAt,
     lastRefreshAt: account.lastRefreshAt,
@@ -722,6 +986,8 @@ function matches(account: AccountRecord, query: AccountListQuery): boolean {
   if (query.kind !== undefined && account.kind !== query.kind) return false
   if (query.enabled !== undefined && account.enabled !== query.enabled) return false
   if (query.status !== undefined && account.status !== query.status) return false
+  if (query.health !== undefined && account.health !== query.health) return false
+  if (query.labels !== undefined && !query.labels.every((label) => account.labels.includes(label))) return false
   if (query.search !== undefined) {
     const haystack = [account.id, account.label, account.email ?? '', account.subject ?? '']
       .join('\n')
@@ -729,6 +995,34 @@ function matches(account: AccountRecord, query: AccountListQuery): boolean {
     if (!haystack.includes(query.search)) return false
   }
   return true
+}
+
+/**
+ * 列表精简视图：只放列表页要看 / 要点的字段。
+ * 详情字段（baseUrl / models / modelMap / 凭据时间线）走 `get()`，避免列表 DTO 越滚越大。
+ */
+function toListItem(account: AccountRecord, credentialConfigured: boolean): AccountListItem {
+  return {
+    id: account.id,
+    label: account.label,
+    provider: account.provider,
+    kind: account.kind,
+    enabled: account.enabled,
+    status: account.status,
+    credentialConfigured,
+    priority: account.priority,
+    labels: [...account.labels],
+    weight: account.weight,
+    concurrency: account.concurrency,
+    health: account.health,
+    autoDisabledAt: account.autoDisabledAt,
+    autoDisabledReason: account.autoDisabledReason,
+    lastUsedAt: account.lastUsedAt,
+    lastTestAt: account.lastTestAt,
+    lastTestOk: account.lastTestOk,
+    lastTestError: account.lastTestError,
+    lastTestLatencyMs: account.lastTestLatencyMs,
+  }
 }
 
 function defaultLabel(parsed: ParsedCredential): string {
@@ -920,6 +1214,71 @@ function normalizeRequiredPriority(value: unknown): number {
   return value
 }
 
+const LABELS_MAX_ENTRIES = 50
+const LABEL_VALUE_MAX_LENGTH = 100
+const WEIGHT_MAX = 1_000_000
+const CONCURRENCY_MAX = 10_000
+const AUTO_DISABLE_REASON_MAX = 500
+
+function requireHealth(value: unknown): AccountHealth {
+  if (value !== 'unknown' && value !== 'healthy' && value !== 'degraded' && value !== 'unhealthy') {
+    failInput('health 只能是 unknown / healthy / degraded / unhealthy')
+  }
+  return value
+}
+
+/** trim、丢弃空串、去重、保序；空数组保留为空数组（= 清空标签）。 */
+function requireLabels(value: unknown): string[] {
+  if (!Array.isArray(value)) failInput('labels 必须是字符串数组或 null')
+  if (value.length > LABELS_MAX_ENTRIES) failInput(`labels 最多 ${LABELS_MAX_ENTRIES} 个`)
+  const result: string[] = []
+  const seen = new Set<string>()
+  for (const item of value) {
+    if (typeof item !== 'string') failInput('labels 的元素必须是字符串')
+    const label = item.trim()
+    if (label === '') continue
+    if (label.length > LABEL_VALUE_MAX_LENGTH) failInput(`单个标签最长 ${LABEL_VALUE_MAX_LENGTH} 个字符`)
+    rejectControlCharacters(label, '标签')
+    if (seen.has(label)) continue
+    seen.add(label)
+    result.push(label)
+  }
+  return result
+}
+
+function normalizeNullableLabels(value: unknown): string[] | null {
+  if (value === null) return null
+  return requireLabels(value)
+}
+
+/** `null` = 清空为未声明；否则大于 0 的有限数值（与 identity / Go 同口径）。 */
+function normalizeNullableWeight(value: unknown): number | null {
+  if (value === null) return null
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0 || value > WEIGHT_MAX) {
+    failInput(`weight 必须是大于 0 且不超过 ${WEIGHT_MAX} 的有限数值，或 null`)
+  }
+  return value
+}
+
+/** `null` = 清空为未声明；否则 1–10000 的整数。 */
+function normalizeNullableConcurrency(value: unknown): number | null {
+  if (value === null) return null
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 1 || value > CONCURRENCY_MAX) {
+    failInput(`concurrency 必须是 1–${CONCURRENCY_MAX} 的整数，或 null`)
+  }
+  return value
+}
+
+function normalizeAutoDisableReason(value: unknown): string {
+  if (typeof value !== 'string') failInput('自动停用原因必须是字符串')
+  const reason = value.trim()
+  if (reason === '') failInput('自动停用原因不能为空')
+  const singleLine = reason.replace(/[\r\n]+/g, ' ')
+  return singleLine.length > AUTO_DISABLE_REASON_MAX
+    ? `${singleLine.slice(0, AUTO_DISABLE_REASON_MAX)}…`
+    : singleLine
+}
+
 function requireProvider(value: unknown): AccountProvider {
   const provider = normalizeProviderHint(value)
   if (provider === undefined) failInput('provider 必填（claude / openai / custom）')
@@ -944,10 +1303,21 @@ function normalizeQuery(value: unknown): AccountListQuery {
 
   let status: AccountStatus | undefined
   if (value.status !== undefined) {
-    if (value.status !== 'active' && value.status !== 'needs_reauth') {
-      failInput('status 只能是 active / needs_reauth')
+    if (value.status !== 'active' && value.status !== 'needs_reauth' && value.status !== 'auto_disabled') {
+      failInput('status 只能是 active / needs_reauth / auto_disabled')
     }
     status = value.status
+  }
+
+  let health: AccountHealth | undefined
+  if (value.health !== undefined) {
+    health = requireHealth(value.health)
+  }
+
+  let labels: string[] | undefined
+  if (value.labels !== undefined) {
+    const normalized = requireLabels(value.labels)
+    labels = normalized === null ? [] : normalized
   }
 
   let search: string | undefined
@@ -963,8 +1333,43 @@ function normalizeQuery(value: unknown): AccountListQuery {
     ...(kind !== undefined ? { kind } : {}),
     ...(enabled !== undefined ? { enabled } : {}),
     ...(status !== undefined ? { status } : {}),
+    ...(health !== undefined ? { health } : {}),
+    ...(labels !== undefined ? { labels } : {}),
     ...(search !== undefined ? { search } : {}),
   }
+}
+
+/** `list` 的视图选择：只认 `view`，默认 full；非法值明确失败。 */
+function normalizeListView(value: unknown): 'lite' | 'full' {
+  if (!isRecord(value)) failInput('list 选项必须是对象')
+  for (const key of Object.keys(value)) {
+    if (key !== 'view') failInput(`不支持的 list 选项：${key}`)
+  }
+  const view = value.view
+  if (view === undefined) return 'full'
+  if (view !== 'lite' && view !== 'full') failInput('view 只能是 lite / full')
+  return view
+}
+
+/** 批量操作的 id 列表：非空、受批量上限约束、去重保序。 */
+function normalizeIds(value: unknown, maxBatchSize: number): string[] {
+  if (!Array.isArray(value)) failInput('ids 必须是账号 id 数组')
+  if (value.length === 0) failInput('ids 不能为空')
+  if (value.length > maxBatchSize) {
+    throw new AccountAdminError(
+      'ACCOUNT_ADMIN_BATCH_TOO_LARGE',
+      `一次最多操作 ${maxBatchSize} 个账号，收到 ${value.length} 个`,
+    )
+  }
+  const result: string[] = []
+  const seen = new Set<string>()
+  for (const item of value) {
+    const id = normalizeId(item)
+    if (seen.has(id)) continue
+    seen.add(id)
+    result.push(id)
+  }
+  return result
 }
 
 function normalizeBulkDefaults(value: unknown): BulkImportDefaults {

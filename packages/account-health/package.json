@@ -1,0 +1,22 @@
+{
+  "name": "@dizzyapi/plugin-account-health",
+  "version": "0.1.0",
+  "private": true,
+  "description": "DizzyAPI · 账号健康检查：定时测连通性、连续失败自动停用、一次成功即恢复；自己不存任何状态",
+  "type": "module",
+  "license": "MIT",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./package.json": "./package.json"
+  },
+  "scripts": {
+    "test": "node --import tsx --test \"test/*.test.ts\""
+  },
+  "dependencies": {
+    "@cordisjs/plugin-timer": "^1.1.4",
+    "@dizzyapi/plugin-kit": "workspace:*",
+    "cordis": "^4.0.0-rc.11"
+  }
+}

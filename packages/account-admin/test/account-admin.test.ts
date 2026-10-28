@@ -566,6 +566,183 @@ test('依赖未满足时停在 PENDING：没有 identity 就不构造服务', as
   assert.equal(ctx.get('accountAdmin'), undefined)
 })
 
+// ───────────────────────── 运营字段：标签 / 权重 / 并发 / 健康 ─────────────────────────
+
+test('标签 / 权重 / 并发：UPDATE_KEYS 接受、AccountView 带出、health 走独立方法', async (t) => {
+  const world = await boot(t)
+  const view = await world.admin.create(ACTOR, { provider: 'custom', kind: 'api_key', label: '运营字段' })
+
+  // 新账号的默认值：标签空、权重 / 并发未声明、健康未知。
+  assert.deepEqual(view.labels, [])
+  assert.equal(view.weight, null)
+  assert.equal(view.concurrency, null)
+  assert.equal(view.health, 'unknown')
+  assert.equal(view.autoDisabledAt, null)
+  assert.equal(view.autoDisabledReason, null)
+  assert.equal(view.lastUsedAt, null)
+
+  const updated = await world.admin.update(ACTOR, view.id, {
+    labels: ['tier:pro', 'team:ops'],
+    weight: 2,
+    concurrency: 5,
+  })
+  assert.deepEqual(updated.labels, ['tier:pro', 'team:ops'])
+  assert.equal(updated.weight, 2)
+  assert.equal(updated.concurrency, 5)
+
+  // identity 仍是唯一写者：门面只转发。
+  const record = world.identity.get(view.id)
+  assert.deepEqual(record.labels, ['tier:pro', 'team:ops'])
+  assert.equal(record.weight, 2)
+  assert.equal(record.concurrency, 5)
+
+  // health 不在 UPDATE_KEYS：语义不同，必须走 setHealth。
+  await assert.rejects(
+    world.admin.update(ACTOR, view.id, { health: 'healthy' } as never),
+    hasCode('ACCOUNT_ADMIN_INPUT_INVALID'),
+  )
+  assert.equal((await world.admin.setHealth(ACTOR, view.id, 'degraded')).health, 'degraded')
+  await assert.rejects(
+    world.admin.setHealth(ACTOR, view.id, 'sick' as never),
+    hasCode('ACCOUNT_ADMIN_INPUT_INVALID'),
+  )
+
+  // 非法值明确失败，不静默降级。
+  await assert.rejects(world.admin.update(ACTOR, view.id, { weight: 0 }), hasCode('ACCOUNT_ADMIN_INPUT_INVALID'))
+  await assert.rejects(
+    world.admin.update(ACTOR, view.id, { concurrency: 0 }),
+    hasCode('ACCOUNT_ADMIN_INPUT_INVALID'),
+  )
+  await assert.rejects(
+    world.admin.update(ACTOR, view.id, { labels: [1] as never }),
+    hasCode('ACCOUNT_ADMIN_INPUT_INVALID'),
+  )
+
+  // null = 清空。
+  const cleared = await world.admin.update(ACTOR, view.id, { labels: null, weight: null, concurrency: null })
+  assert.deepEqual(cleared.labels, [])
+  assert.equal(cleared.weight, null)
+  assert.equal(cleared.concurrency, null)
+
+  assert.ok('labels' in AccountAdminService.catalog.shapes.AccountView.fields)
+  assert.ok('weight' in AccountAdminService.catalog.shapes.AccountView.fields)
+  assert.ok('concurrency' in AccountAdminService.catalog.shapes.AccountView.fields)
+  assert.ok('health' in AccountAdminService.catalog.shapes.AccountView.fields)
+})
+
+test('list 过滤：多标签 AND、health、auto_disabled', async (t) => {
+  const world = await boot(t)
+  const pro = await world.admin.create(ACTOR, { provider: 'custom', kind: 'api_key', label: 'pro' })
+  const ops = await world.admin.create(ACTOR, { provider: 'custom', kind: 'api_key', label: 'ops' })
+  await world.admin.update(ACTOR, pro.id, { labels: ['tier:pro', 'team:core'], weight: 3 })
+  await world.admin.update(ACTOR, ops.id, { labels: ['team:ops'] })
+  await world.admin.setHealth(ACTOR, ops.id, 'unhealthy')
+  await world.admin.autoDisable(ACTOR, ops.id, '连续失败 3 次：HTTP 502')
+
+  assert.equal(world.admin.list({ labels: ['tier:pro'] }).length, 1)
+  assert.equal(world.admin.list({ labels: ['team:core', 'tier:pro'] }).length, 1)
+  assert.equal(world.admin.list({ labels: ['tier:pro', 'team:ops'] }).length, 0, '多标签是 AND 语义')
+  assert.equal(world.admin.list({ labels: [] }).length, 2, '空标签数组不过滤')
+  assert.equal(world.admin.list({ health: 'unhealthy' }).length, 1)
+  assert.equal(world.admin.list({ health: 'unknown' }).length, 1)
+  assert.equal(world.admin.list({ status: 'auto_disabled' }).length, 1)
+
+  const autoDisabled = world.admin.get(ops.id)
+  assert.equal(autoDisabled.status, 'auto_disabled')
+  assert.equal(autoDisabled.enabled, true, '自动停用不得改人的开关')
+  assert.equal(autoDisabled.autoDisabledReason, '连续失败 3 次：HTTP 502')
+
+  assert.throws(() => world.admin.list({ health: 'sick' } as never), hasCode('ACCOUNT_ADMIN_INPUT_INVALID'))
+})
+
+test('批量：逐项结果、只提交声明字段、actor 白名单、空 patch 与非法字段', async (t) => {
+  const world = await boot(t)
+  const first = await world.admin.create(ACTOR, { provider: 'custom', kind: 'api_key', label: '批量 1' })
+  const second = await world.admin.create(ACTOR, { provider: 'custom', kind: 'api_key', label: '批量 2' })
+  await world.admin.update(ACTOR, first.id, { concurrency: 3 })
+
+  const bulk = await world.admin.bulkUpdate(ACTOR, [first.id, second.id, 'acc-missing'], {
+    weight: 2,
+    labels: ['batch'],
+  })
+  assert.equal(bulk.total, 3)
+  assert.equal(bulk.succeeded, 2)
+  assert.equal(bulk.failed, 1)
+  assert.equal(bulk.items[2]?.error?.code, 'IDENTITY_ACCOUNT_NOT_FOUND')
+  assert.equal(world.identity.get(first.id).weight, 2)
+  assert.deepEqual(world.identity.get(second.id).labels, ['batch'])
+  assert.equal(world.identity.get(first.id).concurrency, 3, '没声明的字段不该被改动')
+
+  // 批量启停是人的开关。
+  const disabled = await world.admin.bulkDisable(ACTOR, [first.id, second.id, first.id])
+  assert.equal(disabled.total, 2, '重复 id 去重')
+  assert.equal(disabled.succeeded, 2)
+  assert.equal(world.identity.get(first.id).enabled, false)
+  const enabled = await world.admin.bulkEnable(ACTOR, [first.id, second.id])
+  assert.equal(enabled.succeeded, 2)
+  assert.equal(world.identity.get(second.id).enabled, true)
+
+  await assert.rejects(
+    world.admin.bulkEnable('@dizzyapi/plugin-intruder', [first.id]),
+    hasCode('ACCOUNT_ADMIN_ACTOR_FORBIDDEN'),
+  )
+  await assert.rejects(world.admin.bulkUpdate(ACTOR, [first.id], {}), hasCode('ACCOUNT_ADMIN_INPUT_INVALID'))
+  await assert.rejects(world.admin.bulkUpdate(ACTOR, [], { weight: 1 }), hasCode('ACCOUNT_ADMIN_INPUT_INVALID'))
+  await assert.rejects(
+    world.admin.bulkUpdate(ACTOR, [first.id], { enabled: false } as never),
+    hasCode('ACCOUNT_ADMIN_INPUT_INVALID'),
+  )
+  await assert.rejects(
+    world.admin.bulkUpdate(ACTOR, [first.id], { health: 'healthy' } as never),
+    hasCode('ACCOUNT_ADMIN_INPUT_INVALID'),
+  )
+})
+
+test('批量上限：超过 maxBatchSize 整批拒绝，不部分执行', async (t) => {
+  const world = await boot(t, { admin: { maxBatchSize: 2 } })
+  const first = await world.admin.create(ACTOR, { provider: 'custom', kind: 'api_key', label: '上限 1' })
+  const second = await world.admin.create(ACTOR, { provider: 'custom', kind: 'api_key', label: '上限 2' })
+  const third = await world.admin.create(ACTOR, { provider: 'custom', kind: 'api_key', label: '上限 3' })
+
+  await assert.rejects(
+    world.admin.bulkDisable(ACTOR, [first.id, second.id, third.id]),
+    hasCode('ACCOUNT_ADMIN_BATCH_TOO_LARGE'),
+  )
+  assert.equal(world.identity.get(first.id).enabled, true, '被拒的批量不该部分执行')
+})
+
+test('lite 视图：只给列表字段，不夹带详情与凭据引用；默认仍是 full', async (t) => {
+  const world = await boot(t)
+  const view = await world.admin.create(ACTOR, {
+    provider: 'custom',
+    kind: 'api_key',
+    label: '精简视图',
+    baseUrl: 'https://upstream.example.com/v1',
+    models: ['gpt-5'],
+  })
+  await world.admin.update(ACTOR, view.id, { labels: ['tier:pro'], weight: 1.5, concurrency: 2 })
+
+  const [lite] = world.admin.list({}, { view: 'lite' })
+  assert.ok(lite !== undefined)
+  assert.equal(lite.id, view.id)
+  assert.equal(lite.label, '精简视图')
+  assert.equal(lite.weight, 1.5)
+  assert.equal(lite.concurrency, 2)
+  assert.deepEqual(lite.labels, ['tier:pro'])
+  assert.ok(!('baseUrl' in lite), '精简视图不该带 baseUrl')
+  assert.ok(!('models' in lite), '精简视图不该带 models')
+  assert.ok(!('credentialRef' in lite), '精简视图不该带凭据引用')
+
+  const [full] = world.admin.list({}, { view: 'full' })
+  assert.ok(full !== undefined && 'baseUrl' in full)
+  const [byDefault] = world.admin.list()
+  assert.ok(byDefault !== undefined && 'baseUrl' in byDefault, '默认是 full，不破坏既有页面与测试')
+  assert.throws(
+    () => world.admin.list({}, { view: 'tiny' } as never),
+    hasCode('ACCOUNT_ADMIN_INPUT_INVALID'),
+  )
+})
+
 test('配置 schema：未知键拒绝，默认 adminPlugins 为空', async (t) => {
   const bad = ACCOUNT_ADMIN_CONFIG_SCHEMA['~standard'].validate({ nope: true })
   assert.ok('issues' in bad)
@@ -587,4 +764,52 @@ test('配置 schema：未知键拒绝，默认 adminPlugins 为空', async (t) =
   await assert.rejects(async () => {
     await ctx.plugin(AccountAdminService, { nope: true } as never)
   }, ValidationError)
+})
+
+// ───────────────────────────── 最近使用回报（usage/account-used） ─────────────────────────────
+
+/** `usage/account-used` 的类型声明在 usage 插件里；这里不 import 它，走结构化 emit。 */
+function emitUsage(ctx: Context, accountIds: readonly string[], at: string): void {
+  ;(ctx as unknown as { emit(name: string, payload: unknown): void }).emit('usage/account-used', {
+    accountIds,
+    at,
+  })
+}
+
+test('用量事件 → 节流汇报 lastUsedAt：窗口内不写盘，flush 后写回', async (t) => {
+  const world = await boot(t)
+  const account = await world.admin.create(ACTOR, { provider: 'custom', kind: 'api_key', label: '用量回报' })
+
+  emitUsage(world.ctx, [account.id], '2026-10-27T10:00:00.000Z')
+  assert.equal(world.identity.get(account.id).lastUsedAt, null, '节流窗口内不该为一条用量写一次盘')
+
+  assert.equal(await world.admin.flushUsage(), 1)
+  assert.equal(world.identity.get(account.id).lastUsedAt, '2026-10-27T10:00:00.000Z')
+
+  // 同一个账号多轮事件：取最近的时间，早到的不倒退。
+  emitUsage(world.ctx, [account.id], '2026-10-27T12:00:00.000Z')
+  emitUsage(world.ctx, [account.id], '2026-10-27T11:00:00.000Z')
+  await world.admin.flushUsage()
+  assert.equal(world.identity.get(account.id).lastUsedAt, '2026-10-27T12:00:00.000Z')
+
+  // 未知账号是 no-op（identity 的 reportUsed 不抛），不影响其它账号。
+  emitUsage(world.ctx, ['acc-ghost'], '2026-10-27T12:00:00.000Z')
+  assert.equal(await world.admin.flushUsage(), 1)
+
+  // 非法载荷被静默忽略（事件可能来自较早版本的插件）。
+  ;(world.ctx as unknown as { emit(name: string, payload: unknown): void }).emit('usage/account-used', {
+    accountIds: 'nope',
+    at: 'x',
+  })
+  assert.equal(await world.admin.flushUsage(), 0)
+})
+
+test('D5：account-admin 卸载后不再接收用量事件，也不留定时器', async (t) => {
+  const world = await boot(t)
+  const account = await world.admin.create(ACTOR, { provider: 'custom', kind: 'api_key', label: '卸载后' })
+  await world.disposeAdmin()
+
+  emitUsage(world.ctx, [account.id], '2026-10-27T10:00:00.000Z')
+  await new Promise((resolve) => setTimeout(resolve, 20))
+  assert.equal(world.identity.get(account.id).lastUsedAt, null, '卸载后不该再写 lastUsedAt')
 })

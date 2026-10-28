@@ -224,19 +224,132 @@ export interface AccountView {
   readonly status: string
   readonly credentialConfigured: boolean
   readonly priority: number
+  readonly labels: readonly string[]
+  readonly weight: number | null
+  readonly concurrency: number | null
+  readonly health: string
+  readonly autoDisabledAt: string | null
+  readonly autoDisabledReason: string | null
+  readonly lastUsedAt: string | null
+  /** 凭据在 credentials 里的引用名——只是名字，不是秘密。 */
+  readonly credentialRef: string
+  readonly email: string | null
+  readonly subject: string | null
+  readonly baseUrl: string | null
+  readonly protocol: string | null
   readonly models: readonly string[] | null
+  readonly modelMap: Readonly<Record<string, string>> | null
+  readonly accessExpiresAt: string | null
+  readonly refreshDueAt: string | null
+  readonly lastRefreshAt: string | null
+  readonly lastError: string | null
+  readonly failureCount: number
+  readonly backoffUntil: string | null
   readonly lastTestOk: boolean | null
   readonly lastTestAt: string | null
   readonly lastTestError: string | null
   readonly lastTestLatencyMs: number | null
+  readonly createdAt: string
+  readonly updatedAt: string
 }
 
+/** 列表精简视图（`list(query, { view: 'lite' })`）；详情字段不在里面。 */
+export interface AccountListItem {
+  readonly id: string
+  readonly label: string
+  readonly provider: string
+  readonly kind: string
+  readonly enabled: boolean
+  readonly status: string
+  readonly credentialConfigured: boolean
+  readonly priority: number
+  readonly labels: readonly string[]
+  readonly weight: number | null
+  readonly concurrency: number | null
+  readonly health: string
+  readonly autoDisabledAt: string | null
+  readonly autoDisabledReason: string | null
+  readonly lastUsedAt: string | null
+  readonly lastTestAt: string | null
+  readonly lastTestOk: boolean | null
+  readonly lastTestError: string | null
+  readonly lastTestLatencyMs: number | null
+}
+
+/** 列表过滤条件（与 account-admin 的 AccountListQuery 同形）。 */
+export interface AccountListQuery {
+  readonly provider?: string
+  readonly kind?: string
+  readonly enabled?: boolean
+  readonly status?: string
+  readonly search?: string
+  readonly labels?: readonly string[]
+  readonly health?: string
+}
+
+/** 单条改字段：只提交声明过的字段，`null` 表示清空。 */
+export interface AccountUpdatePatch {
+  readonly label?: string
+  readonly email?: string | null
+  readonly subject?: string | null
+  readonly baseUrl?: string | null
+  readonly protocol?: string | null
+  readonly models?: readonly string[] | null
+  readonly modelMap?: Readonly<Record<string, string>> | null
+  readonly priority?: number
+  readonly labels?: readonly string[] | null
+  readonly weight?: number | null
+  readonly concurrency?: number | null
+}
+
+/** 批量操作的一项结果。 */
+export interface AccountBulkItemResult {
+  readonly id: string
+  readonly ok: boolean
+  readonly account: AccountView | null
+  readonly error: { readonly code: string; readonly message: string } | null
+}
+
+export interface AccountBulkResult {
+  readonly total: number
+  readonly succeeded: number
+  readonly failed: number
+  readonly items: readonly AccountBulkItemResult[]
+}
+
+/**
+ * 账号管理门面的结构视图。
+ *
+ * 注意签名与真实服务一致：**写操作都要显式 actor**（`WEB_ACTOR`），启用 / 停用走
+ * `enable` / `disable`（`update` 不接受 `enabled`）。少了 actor 或走错方法，服务会
+ * 用 `ACCOUNT_ADMIN_ACTOR_REQUIRED` / `ACCOUNT_ADMIN_INPUT_INVALID` 明确拒绝——
+ * 2026-10 管理台「停用 / 删除」按钮失效就是撞在这两条上。
+ */
 export interface AccountAdminLike {
-  list(): AccountView[]
+  list(query?: AccountListQuery): AccountView[]
+  list(query: AccountListQuery, options: { readonly view: 'lite' }): AccountListItem[]
   get(id: string): AccountView
-  update(id: string, patch: { enabled?: boolean; label?: string; priority?: number }): Promise<AccountView>
-  remove(id: string): Promise<void>
-  testConnection(id: string, input?: { model?: string }): Promise<{ readonly ok: boolean; readonly status: number | null; readonly latencyMs: number; readonly model: string | null; readonly error: string | null }>
+  update(actor: string, id: string, patch: AccountUpdatePatch): Promise<AccountView>
+  remove(actor: string, id: string): Promise<void>
+  enable(actor: string, id: string): Promise<AccountView>
+  disable(actor: string, id: string): Promise<AccountView>
+  refresh(actor: string, id: string): Promise<AccountView>
+  setHealth(actor: string, id: string, health: string): Promise<AccountView>
+  autoDisable(actor: string, id: string, reason: string): Promise<AccountView>
+  autoEnable(actor: string, id: string): Promise<AccountView>
+  bulkUpdate(actor: string, ids: readonly string[], patch: AccountUpdatePatch): Promise<AccountBulkResult>
+  bulkEnable(actor: string, ids: readonly string[]): Promise<AccountBulkResult>
+  bulkDisable(actor: string, ids: readonly string[]): Promise<AccountBulkResult>
+  testConnection(
+    id: string,
+    input?: { model?: string },
+  ): Promise<{
+    readonly ok: boolean
+    readonly status: number | null
+    readonly latencyMs: number
+    readonly model: string | null
+    readonly error: string | null
+  }>
 }
 
 /** 站点字体：web 只用到这两件事。 */

@@ -139,7 +139,8 @@ export default FooService
 | `@dizzyapi/plugin-mailer` | `mailer` | 发邮件；`log` / `smtp` 两种投递 |
 | `@dizzyapi/plugin-credentials` | `credentials` | 秘密唯一存放处；别的插件只持有引用名 |
 | `@dizzyapi/plugin-identity` | `identity` | 上游账号与令牌刷新；`accounts.json` + `credentials` |
-| `@dizzyapi/plugin-account-admin` | `accountAdmin` | identity 的管理门面：新建 / 修改 / 导入凭据 / 启停 / 删除 |
+| `@dizzyapi/plugin-account-admin` | `accountAdmin` | identity 的管理门面：新建 / 修改 / 导入凭据 / 启停 / 删除 / 批量改字段 / 标签与健康过滤 |
+| `@dizzyapi/plugin-account-health` | `accountHealth` | 定时健康检查：连续失败自动停用、一次成功即恢复；**只经 account-admin 门面写**，自己不存数据 |
 | `@dizzyapi/plugin-account-priority` | `accountPriority` | 策略组唯一写者；拉起 gatewayd；推送账号与 key 快照 |
 | `@dizzyapi/plugin-catalog` | `catalog` | 插件能力目录（只读，反射 + 声明） |
 | `@dizzyapi/plugin-frontend` | `frontend` | SPA 静态资源版本 / 清单 / 回滚（**已禁用**，由 `web` 取代） |
@@ -194,6 +195,20 @@ export default FooService
 - 上游账号池：新建 / 编辑（含 Base URL、优先级、上游协议）/ 导入凭据 / 启停 / 删除；
   每个账号可做**连通性测试**（发一条最小真实请求，结果与耗时写回账号）；
   批量导入支持 new-api Channel JSON、sub2api 导出文件、一行一个 key（未知渠道类型明确失败）
+- 账号运营字段与调度联动（五段链路：identity → account-admin → account-priority 快照类型与推送
+  → Go `internal/accounts` → `modules/accountpriority`，`contracts/` 与 `modules/` 未改）：
+  - **多标签** `labels: string[]`（不做分组实体）；快照里按约定转成 Go 的 `tags`
+    （`key:value` → `{key: value}`，纯标签 → `{标签名: ''}`，同一 key 先出现的胜出）
+  - **权重** `weight`、**并发上限** `concurrency`、**健康状态** `health`
+    （`unknown / healthy / degraded / unhealthy`，未知是一等状态）
+  - `status` 增加 `auto_disabled`：人的手动停用仍是 `enabled=false`，系统自动停用是
+    `status=auto_disabled`，两者互不覆盖
+  - 批量改标签 / 权重 / 并发 / 优先级与批量启停；列表支持标签（AND）与健康过滤，
+    列表页走精简 DTO（`list(query, { view: 'lite' })`），详情页分组折叠
+- 自动健康检查（`account-health`）：定时连通性测试，连续失败 3 次自动停用、
+  一次成功即恢复；只经 `accountAdmin` 门面写，自己不存数据，禁用即停定时器
+- `lastUsedAt` 回报：`usage` 落库后发 `usage/account-used`（集合化），
+  `account-admin` 聚合节流 30 秒后经 identity 的 `reportUsed` 写回
 - 账号优先级策略与 gatewayd 监管；账号与 key 快照推送
 - 协议转换：客户端按入口路径声明协议（`/v1/chat/completions` → openai-chat、
   `/v1/responses` → openai-responses、`/v1/messages` → anthropic），网关按选中账号声明的
@@ -251,8 +266,8 @@ pnpm test:go
 
 - 新增插件必须有 `test/*.test.ts`；新增 Go 模块必须有单测。
 - 测试失败先修实现，不允许删断言或放宽断言来变绿。
-- 当前基线：`pnpm test` 436 个用例（435 通过 / 1 跳过），`pnpm typecheck` 干净，
-  `go test ./...` 全绿，`gofmt -l .` 与 `go vet ./...` 无输出。这个数字会变，以实际输出为准。
+- 当前基线：`pnpm test` 477 个用例（476 通过 / 1 跳过），`pnpm typecheck` 干净，
+  `go test ./...` 14 包全 ok，`gofmt -l .` 与 `go vet ./...` 无输出。这个数字会变，以实际输出为准。
 
 ### 5.5 前端
 
@@ -329,6 +344,10 @@ pnpm build:go         # 产出 bin/gatewayd(.exe)
 - `fiber.dispose()` 返回 `void`，要捕获异常用 `try { await fiber.dispose() } catch {}`。
 - `server.close()` 会被 SSE / keep-alive 挂住，配 `closeAllConnections()`。
 - `EventSource` 发不了自定义请求头；SSE 客户端要用 `fetch` + `ReadableStream`。
+- `ctx.setInterval` / `ctx.timeout` 是 `@cordisjs/plugin-timer` 往 Context 上 mixin 的方法，
+  **必须把 `'timer'` 写进 `static inject`**；否则访问 `ctx.timer` 时直接抛
+  `cannot get property "timer" without inject`（`ctx.get('timer', false)` 也救不了）。
+  `@dizzyapi/plugin-account-health` 就是这么写的：没有 timer 时停在 PENDING。
 
 ### Go
 
@@ -424,8 +443,12 @@ pnpm build:go         # 产出 bin/gatewayd(.exe)
   真正的结算要另做（幂等 reqId、预扣 → 按真实 usage 补退、余额原子调整）
 - 用量的投递边界：Go 只有内存环形缓冲（8192）+ TS 轮询，gatewayd 重启、长时间断线
   或缓冲回绕会丢记录（gap 会记警告）；请求 / 响应正文不落库
-- 自动健康检查与自动禁用、账号级并发 / 限流、`lastUsedAt` 回报
-- `account-state`（健康、限流、额度、并发）、粘性会话
+- **账号级运行期限流 / 并发闸门**：`concurrency` 已随快照透传到 Go 的 `AccountCandidate`，
+  但 Go 侧没有运行时 in-flight 数据源（`InFlight` 恒为 0），`excludeSaturated` 目前不会真正限流；
+  权重 / 标签 / 健康只影响打分与过滤，不构成并发控制。
+- 自动禁用只按「连续失败 3 次」（可配）；**不做响应时间阈值**，也不做冷却 / 过载 / 临时不可调度
+  三时钟（缺 Go 的失败回报数据源）。
+- `account-state`（限流、额度、并发等运行时状态）、粘性会话
 - Gemini 协议（`contracts.ProtocolGemini` 已预留，未注册 codec；请求它会被
   `PROTOCOL_CODEC_UNAVAILABLE` fail-closed 拒绝）
 - 跨协议转换的**有损面**：`thinking.signature` 不回传、`cache_control` 丢弃、OpenAI 专有采样

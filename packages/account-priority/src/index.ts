@@ -86,6 +86,7 @@ export {
   validateStrategyGroup,
   type StrategyCollection,
 } from './validate.ts'
+export { labelsToTags } from './tags.ts'
 export {
   BRIDGE_MAX_FRAME_BYTES,
   BRIDGE_PROTOCOL_VERSION,
