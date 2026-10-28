@@ -129,7 +129,7 @@ export default FooService
 
 ## 4. 现状地图
 
-### 4.1 TS 插件（22 个包；`console` 是已禁用的 SPA，`kit` 是共用底座）
+### 4.1 TS 插件（23 个包；`console` 是已禁用的 SPA，`kit` 是共用底座）
 
 | 包 | 服务 | 职责 |
 |---|---|---|
@@ -143,13 +143,14 @@ export default FooService
 | `@dizzyapi/plugin-account-health` | `accountHealth` | 定时健康检查：连续失败自动停用、一次成功即恢复；**只经 account-admin 门面写**，自己不存数据 |
 | `@dizzyapi/plugin-account-priority` | `accountPriority` | 策略组唯一写者；拉起 gatewayd；推送账号与 key 快照 |
 | `@dizzyapi/plugin-redeem` | `redeem` | 兑换码唯一写者：批次 / 生成 / 兑换 / 启停 / 人工核查；SQLite `data/redeem.db`；**只落 sha256 与末 4 位掩码**，明文只在生成响应出现一次；加余额只经 `user.adjustBalance` |
+| `@dizzyapi/plugin-billing` | `billing` | 真实扣费的唯一执行者：`usage` 每轮拉到用量后调 `settle`，按 `req_id` 幂等（CAS `pending → settling → settled`）、用 `pricing` 复算整数微元、只经 `user.adjustBalance` 扣款（余额允许为负 = 后付费，记 `overdrawn` + 扣后余额）；SQLite `data/billing.db`；**不预扣、无支付通道** |
 | `@dizzyapi/plugin-catalog` | `catalog` | 插件能力目录（只读，反射 + 声明） |
 | `@dizzyapi/plugin-frontend` | `frontend` | SPA 静态资源版本 / 清单 / 回滚（**已禁用**，由 `web` 取代） |
 | `@dizzyapi/plugin-api` | `api` | 产品 HTTP 入口：SPA + `/api/*`，进程内调用控制面服务 |
 | `@dizzyapi/plugin-settings` | `settings` | 运行期配置覆盖；`app.yml` 是基线 |
 | `@dizzyapi/plugin-admin` | `admin` | 开发者面板：依赖图、概览、改设置、重启插件、退出 |
 | `@dizzyapi/plugin-pricing` | `pricing` | 模型价格表唯一写者：每百万 token 的单价（元，十进制字符串）；`data/pricing.json`；读不设限，写要求 actor 在白名单 |
-| `@dizzyapi/plugin-usage` | `usage` | 用量明细唯一存储者：轮询 Go 的 `usage.since`、幂等落 `data/usage.db`、按用户/管理员口径查询；费用在**读取时**按 pricing 计算 |
+| `@dizzyapi/plugin-usage` | `usage` | 用量明细唯一存储者：轮询 Go 的 `usage.since`（默认 1s）、幂等落 `data/usage.db`、按用户/管理员口径查询；一轮顺序是「拉取 → 落库 → 结算 → 推进游标」，坏记录进 `usage_rejected` 隔离表（管理面忽略 / 重放）；费用在**读取时**按 pricing 计算 |
 | `@dizzyapi/plugin-kit` | — | 共用底座：配置 schema + 原子写 JSON 存储 |
 | `@dizzyapi/plugin-deepseek-usage` | `deepseekUsage` | 独立成页的「用量信息」页（DeepSeek 开放平台用量页的像素级复刻）：自起 `127.0.0.1:7793`；**已禁用**，保留为像素级参考 |
 | `@dizzyapi/plugin-page-template` | `pageTemplate` | 页面模板：从 deepseek-usage 原样抽出的设计 token、侧栏/卡片/表格/表单、堆叠柱状图与面积折线图、线性图标；纯服务，不起 HTTP、不读写存储 |
@@ -170,7 +171,7 @@ export default FooService
 | `internal/engine/` | pre → dispatch → post 调度；失败转移；统一错误渲染 |
 | `internal/accounts/` | 账号 / 令牌只读快照缓存 |
 | `internal/apikeys/` | API key 哈希快照缓存；`Ready()` 区分「没收到」与「空快照」 |
-| `internal/usagelog/` | 用量环形缓冲（容量 8192，满了丢最旧并计数）；`Seq` + `Epoch`，经 `usage.since` 给 TS 轮询 |
+| `internal/usagelog/` | 用量环形缓冲（容量可配，默认 32768，边界 1..1048576，非法值启动失败；满了丢最旧并计数 `dropped`，其中「没被任何 reader 取走就被覆盖」单独记 `gap`）；`Seq` + `Epoch`，经 `usage.since` 给 TS 轮询，`usage.stats` 给 TS 告警 |
 | `internal/usageprobe/` | 用 codec 从**发回客户端**的响应字节里提取 usage（流式只观察不改字节）；按上游协议归一化四桶 |
 | `internal/httpapi/` | `POST /v1/chat/completions`、`POST /v1/responses`、`POST /v1/messages`、`GET /v1/models`、`GET /healthz`；请求结束写用量记录 |
 | `cmd/gatewayd/` | 组合根：注册模块、启动 HTTP 入口与控制桥 |
@@ -179,8 +180,9 @@ export default FooService
 
 - 数据：`data/users.db`、`data/auth.db`、`data/api-keys.db`、`data/accounts.json`、
   `data/credentials.json`、`data/settings.json`、`data/account-priority.json`、
-  `data/pricing.json`、`data/usage.db`、`data/redeem.db`、`data/frontend/`。
-- 用量只有 `usage` 插件写 `usage.db`；价格只有 `pricing` 插件写 `pricing.json`；
+  `data/pricing.json`、`data/usage.db`、`data/redeem.db`、`data/billing.db`、`data/frontend/`。
+- 用量只有 `usage` 插件写 `usage.db`（含 `usage_rejected` 隔离表）；结算账本只有 `billing`
+  插件写 `billing.db`；价格只有 `pricing` 插件写 `pricing.json`；
   兑换码只有 `redeem` 插件写 `redeem.db`（只存 sha256 与掩码）；
   Go 只把用量放进内存环形缓冲，不落盘。
 - 本地端口：`web` `127.0.0.1:7792`（服务端渲染前端）、`api` `127.0.0.1:7791`、
@@ -232,7 +234,21 @@ export default FooService
   `/api/admin/usage`（全站）提供明细、汇总、按天/按模型/按用户聚合与 CSV 导出；
   `/console/usage` 只加明细表，`/admin/usage` 是独立页面
 - 模型价格：`/api/pricing` 读、`/api/pricing/:model` 读写（写需管理员），`/admin/pricing` 页面；
-  用量费用在**读取时**按价格表计算（整数微元，1 元 = 1_000_000 微元），当前没有真实扣费
+  用量费用在**读取时**按价格表计算（整数微元，1 元 = 1_000_000 微元）
+- **真实扣费（`billing`，后付费）**：`usage` 每轮 `usage.since` 拉到用量后，按
+  「拉取 → 落库 → 结算 → 推进游标」的顺序调 `billing.settle(本轮**落库成功**的记录)`；
+  `req_id` 唯一键 + CAS `pending → settling → settled` 保证同一请求只扣一次，价格用 `pricing`
+  快照复算（不信 Go 传的金额），扣款只经 `user.adjustBalance`（余额允许为负，记 `overdrawn`
+  + 扣后余额）；结算失败**不推进游标**，下一轮带同一 `afterSeq` 重放补结算；
+  `settling` 崩溃残留靠「余额流水里有没有这笔扣款」判定收尾，判不出就转 `review` 人工核查
+  （宁可少收一笔，绝不重复扣款）。`/admin/billing` 与 `/api/admin/billing` 可查记录、透支与汇总。
+  **没有预扣、没有支付通道**：充值订单仍是 501
+- 坏记录有界隔离（`usage_rejected`）：同一条用量连续落库失败到 `rejectAfterFailures`（默认 10）
+  后不再重试，改逐条独立事务——能插的插、插不进的写隔离表，游标推进到该批最大 seq；
+  被隔离的记录**不结算不扣钱**，`/admin/usage` 可看原因并「忽略 / 重放」（重放靠 `req_id` 幂等，
+  `billing` 不在运行时重放明确失败，不做「只记明细不扣钱」的降级）
+- 用量投递健康度：`usage.stats` 桥命令给 TS 报 `capacity/size/dropped/gap/epoch/lastSeq`，
+  `gap` 只统计「真丢」的部分；轮询默认 1s，落库失败不吞错、游标只推进到实际落库的最大 seq
 - 管理员概览 `/api/admin/stats`：用户 / 账号 / key 计数 + 今日与累计 token（入 / 出 / 总）、
   请求数、费用、近 30 天序列、Top 模型与 Top 用户
 - 服务端渲染页面 + `/api/*` JSON 入口；设置、目录、健康、用户管理、账号管理
@@ -275,8 +291,9 @@ pnpm test:go
 
 - 新增插件必须有 `test/*.test.ts`；新增 Go 模块必须有单测。
 - 测试失败先修实现，不允许删断言或放宽断言来变绿。
-- 当前基线：`pnpm test` 509 个用例（508 通过 / 1 跳过），`pnpm typecheck` 干净，
-  `go test ./...` 14 包全 ok，`gofmt -l .` 与 `go vet ./...` 无输出。这个数字会变，以实际输出为准。
+- 当前基线（2026-10-29 实测，main `c9bd57b`）：`pnpm test` 566 个用例（565 通过 / 1 跳过），
+  `pnpm typecheck` 干净，`go test ./...` 14 包全 ok，`gofmt -l .` 与 `go vet ./...` 无输出。
+  这个数字会变，以实际输出为准。
 
 ### 5.5 前端
 
@@ -424,6 +441,16 @@ pnpm build:go         # 产出 bin/gatewayd(.exe)
   DizzyAPI 的 `baseUrl` 自带版本前缀；导入时只给「路径为空或 `/`」的裸源站补 `/v1`。
 - **CSV 导出**：UTF-8 BOM + `= + - @` 开头加前导 `'`（防公式注入）；接口返回 JSON
   `{filename, content}`，由页面生成 Blob 下载。
+- **桥的拓扑是「Go 服务端 + TS 客户端」**：`internal/bridge` 是 Server，TS 侧 `BridgeClient`
+  才是发起方。所以结算**不能**设计成 Go 主动调 TS；正确形态是 TS 拉到用量后同步结算。
+  要 Go 主动推，只能新增反向通道，那是新架构。
+- **结算必须夹在「落库成功」与「推进游标」之间**：先结算后落库会让被隔离的坏记录也被扣钱
+  （扣了一笔明细里查不到的钱）；游标和明细写在同一个事务里则会出现「钱还没结算、游标已落库」，
+  崩溃后这批钱被永久跳过。所以游标写成独立的 `advanceCursor()`，结算失败就不推进。
+- **坏记录不许抛到整轮**：`settleCandidateOf` 之类把记录映射成结算事实的函数，遇到缺
+  `requestId` / 时间非法的记录要跳过 + 计数 + 告警，绝不能抛——抛一次就是结算和统计一起停摆。
+- **`app.yml` 会覆盖插件默认值**：`usage.pollIntervalMs` 在 `app.yml` 里写着 `1000`，
+  改代码里的默认值时别忘了同步改配置文件，否则线上仍走旧值。
 
 ### 前端
 
@@ -453,10 +480,12 @@ pnpm build:go         # 产出 bin/gatewayd(.exe)
 - 描述符下发、profile 编排、按 profile 切换阶段
 - `quota-check`、`content-audit`、`settle`
 - Go 侧用户 / 额度 / 计费 / 支付；充值订单目前 501
-- **真实扣费**：用量页的「费用」是按价格表在读取时算出的**应扣金额**，不扣余额；
-  真正的结算要另做（幂等 reqId、预扣 → 按真实 usage 补退、余额原子调整）
-- 用量的投递边界：Go 只有内存环形缓冲（8192）+ TS 轮询，gatewayd 重启、长时间断线
-  或缓冲回绕会丢记录（gap 会记警告）；请求 / 响应正文不落库
+- **扣费仍是「后付费 + 无闸门」**：结算已做（幂等 reqId、读时算价→按真实 usage 结算、余额原子调整），
+  但**没有预扣/预检**，余额 0 也能继续打；余额不足照实扣成负数。额度闸门（余额快照 + pre 相位预检）
+  仍未做。用量页的「费用」与 `billing` 的真实扣费是两套口径，同一条记录可能不同（没配价的模型尤其）
+- 用量的投递边界：Go 只有内存环形缓冲（默认 32768 条）+ TS 轮询（默认 1s），gatewayd 重启
+  或长时间断线仍会丢记录（`gap` 会记警告、`usage.stats` 可查）；请求 / 响应正文不落库；
+  被隔离的坏记录不结算、需要人工在 `/admin/usage` 处理
 - **账号级运行期限流 / 并发闸门**：`concurrency` 已随快照透传到 Go 的 `AccountCandidate`，
   但 Go 侧没有运行时 in-flight 数据源（`InFlight` 恒为 0），`excludeSaturated` 目前不会真正限流；
   权重 / 标签 / 健康只影响打分与过滤，不构成并发控制。
