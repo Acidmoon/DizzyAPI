@@ -129,7 +129,7 @@ export default FooService
 
 ## 4. 现状地图
 
-### 4.1 TS 插件（15 个 + kit）
+### 4.1 TS 插件（22 个包；`console` 是已禁用的 SPA，`kit` 是共用底座）
 
 | 包 | 服务 | 职责 |
 |---|---|---|
@@ -142,6 +142,7 @@ export default FooService
 | `@dizzyapi/plugin-account-admin` | `accountAdmin` | identity 的管理门面：新建 / 修改 / 导入凭据 / 启停 / 删除 / 批量改字段 / 标签与健康过滤 |
 | `@dizzyapi/plugin-account-health` | `accountHealth` | 定时健康检查：连续失败自动停用、一次成功即恢复；**只经 account-admin 门面写**，自己不存数据 |
 | `@dizzyapi/plugin-account-priority` | `accountPriority` | 策略组唯一写者；拉起 gatewayd；推送账号与 key 快照 |
+| `@dizzyapi/plugin-redeem` | `redeem` | 兑换码唯一写者：批次 / 生成 / 兑换 / 启停 / 人工核查；SQLite `data/redeem.db`；**只落 sha256 与末 4 位掩码**，明文只在生成响应出现一次；加余额只经 `user.adjustBalance` |
 | `@dizzyapi/plugin-catalog` | `catalog` | 插件能力目录（只读，反射 + 声明） |
 | `@dizzyapi/plugin-frontend` | `frontend` | SPA 静态资源版本 / 清单 / 回滚（**已禁用**，由 `web` 取代） |
 | `@dizzyapi/plugin-api` | `api` | 产品 HTTP 入口：SPA + `/api/*`，进程内调用控制面服务 |
@@ -178,8 +179,9 @@ export default FooService
 
 - 数据：`data/users.db`、`data/auth.db`、`data/api-keys.db`、`data/accounts.json`、
   `data/credentials.json`、`data/settings.json`、`data/account-priority.json`、
-  `data/pricing.json`、`data/usage.db`、`data/frontend/`。
+  `data/pricing.json`、`data/usage.db`、`data/redeem.db`、`data/frontend/`。
 - 用量只有 `usage` 插件写 `usage.db`；价格只有 `pricing` 插件写 `pricing.json`；
+  兑换码只有 `redeem` 插件写 `redeem.db`（只存 sha256 与掩码）；
   Go 只把用量放进内存环形缓冲，不落盘。
 - 本地端口：`web` `127.0.0.1:7792`（服务端渲染前端）、`api` `127.0.0.1:7791`、
   gatewayd `127.0.0.1:8080`、面板 `127.0.0.1:7788`。旧的 `frontend` SPA 与
@@ -210,6 +212,13 @@ export default FooService
 - `lastUsedAt` 回报：`usage` 落库后发 `usage/account-used`（集合化），
   `account-admin` 聚合节流 30 秒后经 identity 的 `reportUsed` 写回
 - 账号优先级策略与 gatewayd 监管；账号与 key 快照推送
+- 兑换码与兑换额度（`redeem`）：批次生成（1–100 张、单批事务）/ 列表（只给末 4 位掩码）/
+  停用启用 / 批量删除（拒删已用）/ 统计 / 人工核查；用户面 `POST /api/redeem` 兑换进余额
+  （整数微元，走 `user.adjustBalance`）；`/console/redeem` 与 `/admin/redeem-codes` 两个页面，
+  明文码只在生成后的一次性区块出现（`stashSecret`，5 分钟）。
+  **幂等靠 CAS**：`enabled → redeeming → used` 条件更新，并发下同一码只有一次能加钱；
+  跨库（`redeem.db` / `users.db`）不能同一事务，所以 `redeeming` 崩溃残留**不自动回收**，
+  由管理页人工核查「标记为已用 / 退回可用」
 - 协议转换：客户端按入口路径声明协议（`/v1/chat/completions` → openai-chat、
   `/v1/responses` → openai-responses、`/v1/messages` → anthropic），网关按选中账号声明的
   `protocol` 自动翻译请求与响应（含流式）；同协议直通不做任何改写
@@ -266,7 +275,7 @@ pnpm test:go
 
 - 新增插件必须有 `test/*.test.ts`；新增 Go 模块必须有单测。
 - 测试失败先修实现，不允许删断言或放宽断言来变绿。
-- 当前基线：`pnpm test` 477 个用例（476 通过 / 1 跳过），`pnpm typecheck` 干净，
+- 当前基线：`pnpm test` 509 个用例（508 通过 / 1 跳过），`pnpm typecheck` 干净，
   `go test ./...` 14 包全 ok，`gofmt -l .` 与 `go vet ./...` 无输出。这个数字会变，以实际输出为准。
 
 ### 5.5 前端
@@ -424,6 +433,11 @@ pnpm build:go         # 产出 bin/gatewayd(.exe)
 
 ### 测试
 
+- **写侧放宽、读侧收紧 = 重启后整份文件读不出来**。`identity` 的 `weight` 允许小数，
+  但 `decodeAccount` 曾用「整数」读回：写 `weight: 1.5` 能成功、也落了盘，进程重启时
+  `IDENTITY_STORE_CORRUPT` → identity 插件装载失败 → 账号缓存清空 → 全部 503。
+  加字段时**写侧与读侧的校验必须同口径**，而且要有一条「真重开 store」的用例守着；
+  只断言内存里的返回值抓不到这类问题。
 - **`account-priority` 的用例会因机器负载偶发失败**：它真的 spawn 子进程
   （`node test/fixtures/fake-gatewayd.mjs`）。同时开着常驻预览服务 / 别的构建时，子进程
   启动会慢于断言，`status().pid` 还是 `null`，用例报「卸载插件会停止子进程」或
