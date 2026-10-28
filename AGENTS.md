@@ -311,7 +311,7 @@ pnpm test:go
 
 - 新增插件必须有 `test/*.test.ts`；新增 Go 模块必须有单测。
 - 测试失败先修实现，不允许删断言或放宽断言来变绿。
-- 当前基线（2026-10-29 实测）：`pnpm test` 574 个用例（573 通过 / 1 跳过），`pnpm typecheck` 干净，
+- 当前基线（2026-10-29 实测）：`pnpm test` 577 个用例（576 通过 / 1 跳过），`pnpm typecheck` 干净，
   `go test ./...` 17 包全 ok，`gofmt -l .` 与 `go vet ./...` 无输出。
   这个数字会变，以实际输出为准。
 
@@ -523,6 +523,11 @@ pnpm build:go         # 产出 bin/gatewayd(.exe)
   （`node test/fixtures/fake-gatewayd.mjs`）。同时开着常驻预览服务 / 别的构建时，子进程
   启动会慢于断言，`status().pid` 还是 `null`，用例报「卸载插件会停止子进程」或
   「等待条件超时」。这不是功能回归：**先停掉常驻预览服务再单独复跑**，绿了就是负载问题。
+- **`fetch` 屏蔽端口会造成随机假失败**：测试用 `WebService({ port: 0 })` 拿随机端口，偶尔会分到
+  WHATWG fetch 规范屏蔽的端口（`0`、低位端口、`6665–6669`、`6697`、`10080` 等），undici 在发请求前
+  就抛 `bad port`——单独复跑必绿、全量并行偶发红。web 测试统一走
+  `packages/web/test/helpers/fetch-port.ts` 的 `listenFetchable()`（命中就关掉重绑，最多 12 次），
+  新写「起临时 server + fetch 打自己」的用例必须用它，不要直接 `port: 0` + `fetch`。
 - 验证「是不是我改坏的」用 `git stash push -- <改动文件>` 做对照，跑完记得 `git stash pop`。
 
 ---
