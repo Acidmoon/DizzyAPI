@@ -14,7 +14,7 @@ export interface UsageConfig {
   readonly dataPath?: string
   /** 明细保留天数；默认 90。过期记录由每日清理分批删除。 */
   readonly retentionDays?: number
-  /** 向 Go 轮询新记录的间隔（毫秒）；默认 2000。 */
+  /** 向 Go 轮询新记录的间隔（毫秒）；默认 1000（1s）。 */
   readonly pollIntervalMs?: number
   /** 单次轮询最多拉多少条；默认 500。 */
   readonly maxBatch?: number
@@ -30,7 +30,8 @@ export interface ResolvedUsageConfig {
 export const USAGE_DEFAULTS = {
   dataPath: './data/usage.db',
   retentionDays: 90,
-  pollIntervalMs: 2000,
+  // 1s：Go 缓冲默认 32768 条，1s 一轮在正常流量下离回绕很远；只改默认值，不做运行时热改。
+  pollIntervalMs: 1000,
   maxBatch: 500,
 } as const
 

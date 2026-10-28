@@ -21,6 +21,16 @@ interface PriorityCall {
   readonly limit?: number
 }
 
+interface PriorityStats {
+  epoch: string
+  capacity: number
+  size: number
+  firstSeq: number
+  lastSeq: number
+  dropped: number
+  gap: number
+}
+
 interface PriorityFake {
   result: {
     epoch: string
@@ -29,8 +39,11 @@ interface PriorityFake {
     dropped: number
     records: UsageEntry[]
   }
+  stats: PriorityStats
   readonly calls: PriorityCall[]
+  statsCalls: number
   usageSince(params: PriorityCall): Promise<PriorityFake['result']>
+  usageStats?(): Promise<PriorityStats>
 }
 
 interface BootOptions {
@@ -102,14 +115,22 @@ function entry(overrides: Partial<UsageEntry> = {}): UsageEntry {
   }
 }
 
-function fakePriority(): PriorityFake {
+function fakePriority(options: { withStats?: boolean } = {}): PriorityFake {
   const fake: PriorityFake = {
     result: { epoch: 'e1', firstSeq: 1, lastSeq: 0, dropped: 0, records: [] },
+    stats: { epoch: 'e1', capacity: 32768, size: 0, firstSeq: 0, lastSeq: 0, dropped: 0, gap: 0 },
     calls: [],
+    statsCalls: 0,
     async usageSince(params: PriorityCall) {
       fake.calls.push(params)
       return fake.result
     },
+  }
+  if (options.withStats !== false) {
+    fake.usageStats = async () => {
+      fake.statsCalls += 1
+      return fake.stats
+    }
   }
   return fake
 }
@@ -441,6 +462,169 @@ test('轮询：account-priority 不在时跳过，不抛错', async (t) => {
   const { service } = await boot(t)
   const outcome = await service.pollOnce()
   assert.deepEqual(outcome, { status: 'skipped', epochChanged: false, gap: 0, ingested: 0 })
+})
+
+test('轮询：落库失败不推进游标，下一轮用同一游标重试成功', async (t) => {
+  const priority = fakePriority()
+  const { service } = await boot(t, { priority })
+
+  priority.result = {
+    epoch: 'e1',
+    firstSeq: 1,
+    lastSeq: 2,
+    dropped: 0,
+    records: [entry({ seq: 1, requestId: 'ok-1' }), entry({ seq: 2, requestId: 'ok-2' })],
+  }
+  assert.equal((await service.pollOnce()).status, 'ok')
+  assert.equal(service.status().lastSeq, 2)
+
+  // 一条记录时间非法 → 整批回滚：不能只写一半，游标也不能动。
+  priority.result = {
+    epoch: 'e1',
+    firstSeq: 3,
+    lastSeq: 4,
+    dropped: 0,
+    records: [
+      entry({ seq: 3, requestId: 'bad-3', startedAt: 'not-a-timestamp' }),
+      entry({ seq: 4, requestId: 'ok-4' }),
+    ],
+  }
+  const failed = await service.pollOnce()
+  assert.equal(failed.status, 'error')
+  assert.equal(service.status().lastSeq, 2, '落库失败不得推进游标')
+  assert.equal(service.status().records, 2, '失败那一批整体回滚')
+  assert.equal(service.status().consecutiveFailures, 1)
+  assert.match(service.status().lastError ?? '', /时间不合法/)
+
+  // 重试：还在游标 2，修好后两条一起落库，游标才推进。
+  assert.deepEqual(priority.calls[1], { epoch: 'e1', afterSeq: 2, limit: 500 })
+  priority.result = {
+    epoch: 'e1',
+    firstSeq: 3,
+    lastSeq: 4,
+    dropped: 0,
+    records: [entry({ seq: 3, requestId: 'retry-3' }), entry({ seq: 4, requestId: 'retry-4' })],
+  }
+  const retried = await service.pollOnce()
+  assert.deepEqual(retried, { status: 'ok', epochChanged: false, gap: 0, ingested: 2 })
+  assert.deepEqual(priority.calls[2], { epoch: 'e1', afterSeq: 2, limit: 500 })
+  assert.equal(service.status().lastSeq, 4)
+  assert.equal(service.status().consecutiveFailures, 0)
+  assert.equal(service.status().lastError, null)
+  assert.equal(service.status().records, 4)
+})
+
+test('轮询：缺口按游标只告警一次，并读 usage.stats 补充缓冲上下文', async (t) => {
+  const priority = fakePriority()
+  const { service } = await boot(t, { priority })
+
+  priority.result = {
+    epoch: 'e1',
+    firstSeq: 1,
+    lastSeq: 1,
+    dropped: 0,
+    records: [entry({ seq: 1, requestId: 'gap-1' })],
+  }
+  await service.pollOnce()
+
+  // 游标 1，服务端从 10 开始：缺 8 条；这一批落库失败 → 游标仍停在 1。
+  priority.stats = { epoch: 'e1', capacity: 32768, size: 32768, firstSeq: 10, lastSeq: 20, dropped: 9, gap: 9 }
+  priority.result = {
+    epoch: 'e1',
+    firstSeq: 10,
+    lastSeq: 10,
+    dropped: 9,
+    records: [entry({ seq: 10, requestId: 'gap-bad', startedAt: 'nope' })],
+  }
+  const first = await service.pollOnce()
+  assert.equal(first.status, 'error')
+  assert.equal(first.gap, 8)
+  assert.equal(service.status().gapRecords, 8)
+  assert.equal(priority.statsCalls, 1, '缺口时读一次 Go 缓冲状态')
+
+  // 同一游标重试：缺口不重复累计，也不再查一次 stats。
+  priority.result = {
+    epoch: 'e1',
+    firstSeq: 10,
+    lastSeq: 10,
+    dropped: 9,
+    records: [entry({ seq: 10, requestId: 'gap-10' })],
+  }
+  const retried = await service.pollOnce()
+  assert.deepEqual(retried, { status: 'ok', epochChanged: false, gap: 8, ingested: 1 })
+  assert.equal(service.status().gapRecords, 8)
+  assert.equal(priority.statsCalls, 1)
+  assert.equal(service.status().lastSeq, 10)
+})
+
+test('轮询：门面没有 usage.stats 时缺口告警仍生效，不抛错', async (t) => {
+  const priority = fakePriority({ withStats: false })
+  const { service } = await boot(t, { priority })
+
+  priority.result = {
+    epoch: 'e1',
+    firstSeq: 5,
+    lastSeq: 5,
+    dropped: 4,
+    records: [entry({ seq: 5, requestId: 'no-stats-5' })],
+  }
+  const outcome = await service.pollOnce()
+  assert.deepEqual(outcome, { status: 'ok', epochChanged: false, gap: 4, ingested: 1 })
+  assert.equal(service.status().gapRecords, 4)
+  assert.equal(service.status().lastSeq, 5)
+})
+
+test('轮询：usage.stats 读取失败只少一段上下文，不影响落库', async (t) => {
+  const priority = fakePriority()
+  priority.usageStats = async () => {
+    throw new Error('bridge down')
+  }
+  const { service } = await boot(t, { priority })
+
+  priority.result = {
+    epoch: 'e1',
+    firstSeq: 3,
+    lastSeq: 3,
+    dropped: 2,
+    records: [entry({ seq: 3, requestId: 'stats-down-3' })],
+  }
+  const outcome = await service.pollOnce()
+  assert.deepEqual(outcome, { status: 'ok', epochChanged: false, gap: 2, ingested: 1 })
+  assert.equal(service.status().lastSeq, 3)
+  assert.equal(service.status().records, 1)
+})
+
+test('轮询：拉取失败也计入连续失败，成功后清零', async (t) => {
+  const priority = fakePriority()
+  const { service } = await boot(t, { priority })
+
+  const original = priority.usageSince
+  priority.usageSince = async () => {
+    throw new Error('bridge not ready')
+  }
+  const first = await service.pollOnce()
+  assert.equal(first.status, 'error')
+  assert.equal(service.status().consecutiveFailures, 1)
+  assert.match(service.status().lastError ?? '', /bridge not ready/)
+  assert.equal(service.status().lastSeq, 0)
+
+  await service.pollOnce()
+  assert.equal(service.status().consecutiveFailures, 2)
+  assert.equal(service.status().lastSeq, 0, '拉取失败不能推进游标')
+
+  priority.usageSince = original
+  priority.result = {
+    epoch: 'e1',
+    firstSeq: 1,
+    lastSeq: 1,
+    dropped: 0,
+    records: [entry({ seq: 1, requestId: 'recover-1' })],
+  }
+  const recovered = await service.pollOnce()
+  assert.equal(recovered.status, 'ok')
+  assert.equal(service.status().consecutiveFailures, 0)
+  assert.equal(service.status().lastError, null)
+  assert.equal(service.status().lastSeq, 1)
 })
 
 // ───────────────────────────── 账号使用上报（usage/account-used） ─────────────────────────────

@@ -137,6 +137,12 @@ export interface UsageStatus {
   readonly lastSeq: number
   readonly polling: boolean
   readonly pricingAvailable: boolean
+  /** 连续失败的轮询轮数；0 = 最近一轮成功（落库失败会一直重试，游标不动）。 */
+  readonly consecutiveFailures: number
+  /** 最近一轮失败的原因；成功后清空。 */
+  readonly lastError: string | null
+  /** 累计观测到的序号缺口条数：这些记录在 Go 缓冲里被覆盖、已经读不回来了。 */
+  readonly gapRecords: number
 }
 
 /** 价格服务的结构面：只依赖一个方法，不 import 实现类。 */

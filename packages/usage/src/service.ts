@@ -8,6 +8,9 @@
  * 几条纪律：
  * - 上行用**轮询**而不是事件推送：断线可补拉，TS 重启也不会丢。
  * - `req_id` 唯一，写入一律 `INSERT OR IGNORE`；`{epoch, lastSeq}` 与记录同一事务落库。
+ * - **落库失败不推进游标**：失败记警告并下一轮用同一 `afterSeq` 重试；游标只推进到
+ *   实际落库成功的最大 seq（`data/usage.db` 只有本插件写，AGENTS.md §2.4）。
+ * - 缺口 / epoch 重启 / Go 缓冲健康度（`usage.stats`）都有明确告警，不静默。
  * - 只存 token 事实；费用读取时按 `pricing.quote()` 现算，不落库（AGENTS.md §8）。
  * - token / 费用在内部用 BigInt 聚合，对外 token 是 number（不会超过 2^53），
  *   费用是十进制字符串（整数微元）。
@@ -40,6 +43,8 @@ const MAX_LIST_LIMIT = 200
 const DEFAULT_EXPORT_LIMIT = 5_000
 const MAX_EXPORT_LIMIT = 20_000
 const PRUNE_BATCH = 1_000
+/** 失败重试时每多少轮再报一次警（1s 一轮，避免刷屏又不静默）。 */
+const POLL_FAILURE_LOG_EVERY = 30
 
 /** `usage.since` 的返回形状（控制消息载荷，不 import account-priority 的实现）。 */
 interface UsageSinceResultLike {
@@ -50,12 +55,28 @@ interface UsageSinceResultLike {
   readonly records: readonly UsageEntry[]
 }
 
+/** `usage.stats` 的返回形状：Go 环形缓冲的容量与投递健康度（整数）。 */
+interface UsageStatsResultLike {
+  readonly epoch: string
+  readonly capacity: number
+  readonly size: number
+  readonly firstSeq: number
+  readonly lastSeq: number
+  readonly dropped: number
+  readonly gap: number
+}
+
 interface AccountPrioritySeam {
   usageSince(params: {
     readonly epoch?: string
     readonly afterSeq?: number
     readonly limit?: number
   }): Promise<UsageSinceResultLike>
+  /**
+   * 可选：只在异常路径上调用（缺口 / 连续失败）。老版本门面没有这个方法时，
+   * 告警只是少一段缓冲上下文，不影响轮询与落库。
+   */
+  usageStats?(): Promise<UsageStatsResultLike>
 }
 
 /** 一轮轮询的可观察结果；公开给测试，Timer 不关心返回值。 */
@@ -133,9 +154,13 @@ export class UsageService extends Service implements UsageServiceLike {
   private db: DatabaseSync | undefined
   private ready = false
   private polling = false
-  private pollErrorLogged = false
   private epoch: string | null = null
   private lastSeq = 0
+  private pollFailures = 0
+  private lastPollError: string | null = null
+  private gapRecords = 0
+  /** 已经按哪个游标位置报过缺口：落库失败重试时游标不动，不能重复告警/累计。 */
+  private gapCountedAtSeq = -1
   private pollTimer: NodeJS.Timeout | undefined
   private pruneTimer: NodeJS.Timeout | undefined
 
@@ -155,7 +180,8 @@ export class UsageService extends Service implements UsageServiceLike {
     this.loadMeta()
     this.ready = true
     this.logger.info(
-      `用量插件已装载：存储 ${this.config.dataPath ?? ':memory:'}；保留 ${this.config.retentionDays} 天`,
+      `用量插件已装载：存储 ${this.config.dataPath ?? ':memory:'}；保留 ${this.config.retentionDays} 天；` +
+        `轮询 ${this.config.pollIntervalMs}ms`,
     )
 
     this.pollTimer = setInterval(() => {
@@ -200,6 +226,13 @@ export class UsageService extends Service implements UsageServiceLike {
    *
    * 公开是为了单测能直接驱动轮询；日常由 `pollIntervalMs` 定时器调用。
    * account-priority / 桥不在时返回 `skipped`，不抛错。
+   *
+   * 可靠性纪律：
+   * - **落库失败不推进游标、不推进 epoch**：下一轮带同一个 `afterSeq` 重试，
+   *   `req_id` 唯一 + `INSERT OR IGNORE` 让重放幂等；
+   * - 失败不吞：记 warning（首轮 + 每 30 轮）并暴露在 `status()` 里；
+   * - 缺口（`firstSeq > lastSeq+1`）按游标位置只报一次，并尽量带上 Go 缓冲健康度；
+   * - epoch 变化（gatewayd 重启）时把游标重置到 0，再按新 epoch 重新对齐。
    */
   async pollOnce(): Promise<UsagePollOutcome> {
     const priority = this.accountPrioritySeam()
@@ -211,25 +244,37 @@ export class UsageService extends Service implements UsageServiceLike {
     }
 
     this.polling = true
+    const failuresBefore = this.pollFailures
     try {
       const params =
         this.epoch === null
           ? { limit: this.config.maxBatch }
           : { epoch: this.epoch, afterSeq: this.lastSeq, limit: this.config.maxBatch }
-      const result = await priority.usageSince(params)
+
+      let result: UsageSinceResultLike
+      try {
+        result = await priority.usageSince(params)
+      } catch (error) {
+        this.recordPollFailure('拉取', error)
+        return { status: 'error', epochChanged: false, gap: 0, ingested: 0 }
+      }
 
       const epochChanged = this.epoch !== null && this.epoch !== result.epoch
       const previousLast = epochChanged ? 0 : this.lastSeq
       if (epochChanged) {
+        // 新进程的 seq 从 1 重来，缺口去重标记也要重置（否则第二次重启的缺口会被吞掉）。
+        this.gapCountedAtSeq = -1
         this.logger.warn(`用量 epoch 变化：${this.epoch ?? '(空)'} → ${result.epoch || '(空)'}，lastSeq 重置为 0`)
       }
 
       const firstSeq = integerOf(result.firstSeq)
+      const dropped = integerOf(result.dropped)
       const gap = firstSeq > previousLast + 1 ? firstSeq - previousLast - 1 : 0
-      if (gap > 0) {
-        this.logger.warn(
-          `用量序号缺口：缺少 ${gap} 条（firstSeq=${firstSeq}，本地 lastSeq=${previousLast}），继续落库`,
-        )
+      if (gap > 0 && this.gapCountedAtSeq !== previousLast) {
+        // 落库失败会带着同一个游标重试，所以按「游标位置」只报一次，避免 1s 一条刷屏。
+        this.gapCountedAtSeq = previousLast
+        this.gapRecords += gap
+        await this.warnGap(priority, { gap, firstSeq, previousLast, dropped })
       }
 
       // 游标只推进到**实际拿到的记录**，不能用 result.lastSeq：它是环形缓冲的尾部，
@@ -239,20 +284,67 @@ export class UsageService extends Service implements UsageServiceLike {
         lastSeq = Math.max(lastSeq, integerOf(record.seq))
       }
 
-      const ingested = this.insertEntries(result.records, { epoch: result.epoch, lastSeq })
+      let ingested: number
+      try {
+        ingested = this.insertEntries(result.records, { epoch: result.epoch, lastSeq })
+      } catch (error) {
+        // 不吞错：游标与 epoch 都停在原处，下一轮用同一 afterSeq 重试。
+        this.recordPollFailure('落库', error)
+        return { status: 'error', epochChanged, gap, ingested: 0 }
+      }
+
       this.epoch = result.epoch
       this.lastSeq = lastSeq
-      this.pollErrorLogged = false
-      return { status: 'ok', epochChanged, gap, ingested }
-    } catch (error) {
-      if (!this.pollErrorLogged) {
-        this.logger.warn(`拉取用量失败（本轮跳过，后续继续重试）：${describeError(error)}`)
-        this.pollErrorLogged = true
+      this.pollFailures = 0
+      this.lastPollError = null
+      if (failuresBefore > 0) {
+        this.logger.info(`用量轮询已恢复：此前连续失败 ${failuresBefore} 轮，游标推进到 seq=${lastSeq}`)
       }
-      return { status: 'error', epochChanged: false, gap: 0, ingested: 0 }
+      return { status: 'ok', epochChanged, gap, ingested }
     } finally {
       this.polling = false
     }
+  }
+
+  /**
+   * 报告一轮失败：第一条必报，之后每 `POLL_FAILURE_LOG_EVERY` 轮再报一次。
+   *
+   * 既不能吞错（否则「测试全绿、账上没数据」），也不能 1s 一条刷屏。
+   */
+  private recordPollFailure(stage: '拉取' | '落库', error: unknown): void {
+    this.pollFailures += 1
+    this.lastPollError = describeError(error)
+    if (this.pollFailures === 1 || this.pollFailures % POLL_FAILURE_LOG_EVERY === 0) {
+      this.logger.warn(
+        `用量${stage}失败（连续第 ${this.pollFailures} 轮，游标停在 seq=${this.lastSeq}，下一轮重试）：${this.lastPollError}`,
+      )
+    }
+  }
+
+  /**
+   * 记缺口告警，并尽量补一段 Go 缓冲上下文。
+   *
+   * 上下文取不到（桥断开 / 门面没有 `usage.stats`）只是少一句话，不影响告警本身。
+   */
+  private async warnGap(
+    priority: AccountPrioritySeam,
+    info: { gap: number; firstSeq: number; previousLast: number; dropped: number },
+  ): Promise<void> {
+    let context = ''
+    if (typeof priority.usageStats === 'function') {
+      try {
+        const stats = await priority.usageStats()
+        context =
+          `；Go 缓冲 ${integerOf(stats.size)}/${integerOf(stats.capacity)} 条，` +
+          `累计丢弃 ${integerOf(stats.dropped)}（其中真丢 ${integerOf(stats.gap)}）`
+      } catch (error) {
+        context = `；读取 Go 缓冲状态失败：${describeError(error)}`
+      }
+    }
+    this.logger.warn(
+      `用量序号缺口：缺少 ${info.gap} 条（firstSeq=${info.firstSeq}，本地已落库游标=${info.previousLast}，` +
+        `Go 累计丢弃 ${info.dropped}）${context}；继续落库`,
+    )
   }
 
   /**
@@ -371,6 +463,9 @@ export class UsageService extends Service implements UsageServiceLike {
       lastSeq: this.lastSeq,
       polling: this.polling,
       pricingAvailable: this.pricingSeam() !== undefined,
+      consecutiveFailures: this.pollFailures,
+      lastError: this.lastPollError,
+      gapRecords: this.gapRecords,
     }
   }
 
