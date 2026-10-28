@@ -129,7 +129,7 @@ export default FooService
 
 ## 4. 现状地图
 
-### 4.1 TS 插件（23 个包；`console` 是已禁用的 SPA，`kit` 是共用底座）
+### 4.1 TS 插件（24 个包；`console` 是已禁用的 SPA，`kit` 是共用底座）
 
 | 包 | 服务 | 职责 |
 |---|---|---|
@@ -144,6 +144,7 @@ export default FooService
 | `@dizzyapi/plugin-account-priority` | `accountPriority` | 策略组唯一写者；拉起 gatewayd；推送账号与 key 快照 |
 | `@dizzyapi/plugin-redeem` | `redeem` | 兑换码唯一写者：批次 / 生成 / 兑换 / 启停 / 人工核查；SQLite `data/redeem.db`；**只落 sha256 与末 4 位掩码**，明文只在生成响应出现一次；加余额只经 `user.adjustBalance` |
 | `@dizzyapi/plugin-billing` | `billing` | 真实扣费的唯一执行者：`usage` 每轮拉到用量后调 `settle`，按 `req_id` 幂等（CAS `pending → settling → settled`）、用 `pricing` 复算整数微元、只经 `user.adjustBalance` 扣款（余额允许为负 = 后付费，记 `overdrawn` + 扣后余额）；SQLite `data/billing.db`；**不预扣、无支付通道** |
+| `@dizzyapi/plugin-quota` | `quota` | 余额只读快照推送：把 `user` 的全量余额周期（默认 5s）+ 变更后 debounce（1s）推给 Go 的额度闸门（桥命令 `quota.replace`）；**不存数据、不写余额、不做判断**，也不拥有控制桥（桥在 `account-priority`） |
 | `@dizzyapi/plugin-catalog` | `catalog` | 插件能力目录（只读，反射 + 声明） |
 | `@dizzyapi/plugin-frontend` | `frontend` | SPA 静态资源版本 / 清单 / 回滚（**已禁用**，由 `web` 取代） |
 | `@dizzyapi/plugin-api` | `api` | 产品 HTTP 入口：SPA + `/api/*`，进程内调用控制面服务 |
@@ -163,6 +164,7 @@ export default FooService
 |---|---|
 | `contracts/` | 唯一共享契约；`Ctx` / `Stage` / `Decision` / `Registry` / DTO；规范化 IR 与 `Codec` 接口（`ir.go` / `protocol.go`）；用量记录与桥事件（`usage.go`）；只依赖标准库 |
 | `modules/accountpriority/` | 账号打分、排序、选择；候选全被闸门挡住时区分 `ALL_ACCOUNTS_SATURATED` / `ALL_ACCOUNTS_COOLING`（都是 503、不可重试） |
+| `modules/quotagate/` | pre 相位额度闸门：按 `ctx.Key.UserID` 查余额只读快照，余额 ≤ 阈值（默认 0）返回 402 `INSUFFICIENT_BALANCE`（不可重试、不转发上游）；快照未就绪 / 过期默认放行 + 告警，`-quota-require-snapshot` 打开严格模式则 503 `QUOTA_SNAPSHOT_UNAVAILABLE` |
 | `modules/modelroute/` | 模型路由（pre 相位按账号 `models` 过滤候选）+ 模型映射（dispatch 相位按账号 `modelMap` 改写 body 顶层 `model`） |
 | `modules/protoconv/` | 协议转换中间件：dispatch 相位阶段（请求方向）+ 响应转换器；Chat / Responses / Anthropic 三个 codec |
 | `modules/transport/` | 按选中账号发上游请求，透传普通响应与 SSE；按协议的方言表决定路径与鉴权头；429 / 额度耗尽（`insufficient_quota` 等）记账号冷却并回可重试错误 |
@@ -172,6 +174,7 @@ export default FooService
 | `internal/accounts/` | 账号 / 令牌只读快照缓存 |
 | `internal/accountruntime/` | 账号运行时状态（纯进程内）：真实 in-flight 计数 + 429 / 额度耗尽短期冷却；`Apply` 把真实值写进候选快照给打分用、`Acquire` 原子预留槽位（release 幂等）；不落盘、不上桥、不回写 TS |
 | `internal/apikeys/` | API key 哈希快照缓存；`Ready()` 区分「没收到」与「空快照」 |
+| `internal/quota/` | 余额只读快照缓存：`Ready()` / `Lookup()` / `Age()` / `Stale()` / `State()`；金额是十进制 bigint 字符串，整份校验、任一条不合法整份拒绝；`generation` 回退明确拒绝（不覆盖旧快照） |
 | `internal/usagelog/` | 用量环形缓冲（容量可配，默认 32768，边界 1..1048576，非法值启动失败；满了丢最旧并计数 `dropped`，其中「没被任何 reader 取走就被覆盖」单独记 `gap`）；`Seq` + `Epoch`，经 `usage.since` 给 TS 轮询，`usage.stats` 给 TS 告警 |
 | `internal/usageprobe/` | 用 codec 从**发回客户端**的响应字节里提取 usage（流式只观察不改字节）；按上游协议归一化四桶 |
 | `internal/httpapi/` | `POST /v1/chat/completions`、`POST /v1/responses`、`POST /v1/messages`、`GET /v1/models`、`GET /healthz`；请求结束写用量记录；响应（**含整个流**）写完后释放并发槽位 |
@@ -243,11 +246,18 @@ export default FooService
   + 扣后余额）；结算失败**不推进游标**，下一轮带同一 `afterSeq` 重放补结算；
   `settling` 崩溃残留靠「余额流水里有没有这笔扣款」判定收尾，判不出就转 `review` 人工核查
   （宁可少收一笔，绝不重复扣款）。`/admin/billing` 与 `/api/admin/billing` 可查记录、透支与汇总。
-  **没有预扣、没有支付通道**：充值订单仍是 501
+  **没有预扣 / 冻结**；额度闸门见下条；**没有支付通道**：充值订单仍是 501
 - 坏记录有界隔离（`usage_rejected`）：同一条用量连续落库失败到 `rejectAfterFailures`（默认 10）
   后不再重试，改逐条独立事务——能插的插、插不进的写隔离表，游标推进到该批最大 seq；
   被隔离的记录**不结算不扣钱**，`/admin/usage` 可看原因并「忽略 / 重放」（重放靠 `req_id` 幂等，
   `billing` 不在运行时重放明确失败，不做「只记明细不扣钱」的降级）
+- **额度闸门（余额只读快照 + pre 相位预检）**：`quota` 插件把 `user` 的全量余额推给 Go
+  （`quota.replace`，金额是**十进制 bigint 字符串**，不经浮点），Go `internal/quota` 缓存 +
+  `modules/quotagate` 在 pre 相位判断：余额 ≤ 阈值（`-quota-min-balance-micros`，默认 0）→
+  **402 `INSUFFICIENT_BALANCE`、不可重试、不转发上游**；没有 userId（静态 key / 无 key）不预检。
+  快照未就绪 / 过期 / 查不到用户 → 默认**放行 + 节流告警**（可用性优先，后付费结算兜底），
+  `-quota-require-snapshot` 打开严格模式改为 503 `QUOTA_SNAPSHOT_UNAVAILABLE`。
+  快照 TTL 由 Go 的 `-quota-snapshot-ttl-ms` 定（默认 15000），**必须 ≥ 3 × TS 的 `pollIntervalMs`**
 - 用量投递健康度：`usage.stats` 桥命令给 TS 报 `capacity/size/dropped/gap/epoch/lastSeq`，
   `gap` 只统计「真丢」的部分；轮询默认 1s，落库失败不吞错、游标只推进到实际落库的最大 seq
 - **账号并发闸门与短期冷却（Go 侧，纯进程内）**：每个 attempt 按账号 `concurrency` 原子预留槽位，
@@ -301,8 +311,8 @@ pnpm test:go
 
 - 新增插件必须有 `test/*.test.ts`；新增 Go 模块必须有单测。
 - 测试失败先修实现，不允许删断言或放宽断言来变绿。
-- 当前基线（2026-10-29 实测，main `991691f`）：`pnpm test` 566 个用例（565 通过 / 1 跳过），
-  `pnpm typecheck` 干净，`go test ./...` 15 包全 ok，`gofmt -l .` 与 `go vet ./...` 无输出。
+- 当前基线（2026-10-29 实测）：`pnpm test` 574 个用例（573 通过 / 1 跳过），`pnpm typecheck` 干净，
+  `go test ./...` 17 包全 ok，`gofmt -l .` 与 `go vet ./...` 无输出。
   这个数字会变，以实际输出为准。
 
 ### 5.5 前端
@@ -462,6 +472,24 @@ pnpm build:go         # 产出 bin/gatewayd(.exe)
 - **`app.yml` 会覆盖插件默认值**：`usage.pollIntervalMs` 在 `app.yml` 里写着 `1000`，
   改代码里的默认值时别忘了同步改配置文件，否则线上仍走旧值。
 
+### 额度闸门
+
+- **新增插件必须同时登记两处**：`app.yml` 的 `entries` **和** 根 `package.json` 的
+  `dependencies`（`"@dizzyapi/plugin-x": "workspace:*"`）。只加 `app.yml` 会解析不到——
+  cordis 按包名加载，包没被 workspace 根依赖登记就没有 `node_modules` 链接，
+  `pnpm test` 也照样全绿（测试用相对路径 import），只有真启动进程才会炸。
+- **部署顺序「先 Go 后 TS」**：新桥命令（`quota.replace`）在旧 Go 上返回
+  `BRIDGE_METHOD_NOT_FOUND`，新 TS 会重试 + 节流告警但 LLM 请求不受影响；
+  反过来「新 Go + 旧 TS」等于没有快照，默认策略放行、行为与上线前一致。
+- **严格模式（`-quota-require-snapshot`）必须等新 TS 上线后再开**：否则从未收到快照，
+  所有带 userId 的请求全 503。
+- **快照顺序用 `generation` 判，不是 `revision`**：`revision` 是内容哈希（无序），
+  `generation` 由 TS 取 `max(Date.now(), last+1)`；Go 侧「更小的 generation → 拒绝且不覆盖」，
+  「相等 + revision 相同 → 幂等」，「相等但内容不同 → 拒绝」。
+- **金额跨层一律十进制字符串**：JSON number 会丢 `> 2^53` 精度，Go 解析失败即整份拒绝快照。
+- **TTL 与推送间隔耦合**：调大 TS 的 `pollIntervalMs` 必须同步把 `-quota-snapshot-ttl-ms`
+  提到 ≥ 3 倍，否则严格模式下会周期性 503。
+
 ### 并发闸门与冷却
 
 - **槽位的生命周期是「预留 → 转交 → 释放」**：engine 预留成功才把它交给 `ctx.ReleaseInFlight`，
@@ -506,9 +534,10 @@ pnpm build:go         # 产出 bin/gatewayd(.exe)
 - 描述符下发、profile 编排、按 profile 切换阶段
 - `quota-check`、`content-audit`、`settle`
 - Go 侧用户 / 额度 / 计费 / 支付；充值订单目前 501
-- **扣费仍是「后付费 + 无闸门」**：结算已做（幂等 reqId、读时算价→按真实 usage 结算、余额原子调整），
-  但**没有预扣/预检**，余额 0 也能继续打；余额不足照实扣成负数。额度闸门（余额快照 + pre 相位预检）
-  仍未做。用量页的「费用」与 `billing` 的真实扣费是两套口径，同一条记录可能不同（没配价的模型尤其）
+- **扣费是「后付费 + 闸门」**：结算已做（幂等 reqId、读时算价→按真实 usage 结算、余额原子调整），
+  额度闸门也已做（余额快照 + pre 相位 402）。仍缺：**预扣 / 冻结**（没有「最多能花多少」的上界）、
+  **并发中的花费不会计入预检**（同一用户在结算前可以连续打多笔）、严格模式默认关。
+  用量页的「费用」与 `billing` 的真实扣费是两套口径，同一条记录可能不同（没配价的模型尤其）
 - 用量的投递边界：Go 只有内存环形缓冲（默认 32768 条）+ TS 轮询（默认 1s），gatewayd 重启
   或长时间断线仍会丢记录（`gap` 会记警告、`usage.stats` 可查）；请求 / 响应正文不落库；
   被隔离的坏记录不结算、需要人工在 `/admin/usage` 处理
