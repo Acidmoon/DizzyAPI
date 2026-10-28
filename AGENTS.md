@@ -162,18 +162,19 @@ export default FooService
 | 路径 | 职责 |
 |---|---|
 | `contracts/` | 唯一共享契约；`Ctx` / `Stage` / `Decision` / `Registry` / DTO；规范化 IR 与 `Codec` 接口（`ir.go` / `protocol.go`）；用量记录与桥事件（`usage.go`）；只依赖标准库 |
-| `modules/accountpriority/` | 账号打分、排序、选择 |
+| `modules/accountpriority/` | 账号打分、排序、选择；候选全被闸门挡住时区分 `ALL_ACCOUNTS_SATURATED` / `ALL_ACCOUNTS_COOLING`（都是 503、不可重试） |
 | `modules/modelroute/` | 模型路由（pre 相位按账号 `models` 过滤候选）+ 模型映射（dispatch 相位按账号 `modelMap` 改写 body 顶层 `model`） |
 | `modules/protoconv/` | 协议转换中间件：dispatch 相位阶段（请求方向）+ 响应转换器；Chat / Responses / Anthropic 三个 codec |
-| `modules/transport/` | 按选中账号发上游请求，透传普通响应与 SSE；按协议的方言表决定路径与鉴权头 |
+| `modules/transport/` | 按选中账号发上游请求，透传普通响应与 SSE；按协议的方言表决定路径与鉴权头；429 / 额度耗尽（`insufficient_quota` 等）记账号冷却并回可重试错误 |
 | `modules/keyauth/` | 动态 API key 哈希快照校验 |
 | `internal/bridge/` | 控制桥：长度前缀 JSON、UDS / 回环 TCP、优雅关闭 |
-| `internal/engine/` | pre → dispatch → post 调度；失败转移；统一错误渲染 |
+| `internal/engine/` | pre → dispatch → post 调度；失败转移；统一错误渲染；**并发闸门**（dispatch 前按 `concurrency` 原子预留，预留失败换下一个账号、全饱和直接 503 不排队） |
 | `internal/accounts/` | 账号 / 令牌只读快照缓存 |
+| `internal/accountruntime/` | 账号运行时状态（纯进程内）：真实 in-flight 计数 + 429 / 额度耗尽短期冷却；`Apply` 把真实值写进候选快照给打分用、`Acquire` 原子预留槽位（release 幂等）；不落盘、不上桥、不回写 TS |
 | `internal/apikeys/` | API key 哈希快照缓存；`Ready()` 区分「没收到」与「空快照」 |
 | `internal/usagelog/` | 用量环形缓冲（容量可配，默认 32768，边界 1..1048576，非法值启动失败；满了丢最旧并计数 `dropped`，其中「没被任何 reader 取走就被覆盖」单独记 `gap`）；`Seq` + `Epoch`，经 `usage.since` 给 TS 轮询，`usage.stats` 给 TS 告警 |
 | `internal/usageprobe/` | 用 codec 从**发回客户端**的响应字节里提取 usage（流式只观察不改字节）；按上游协议归一化四桶 |
-| `internal/httpapi/` | `POST /v1/chat/completions`、`POST /v1/responses`、`POST /v1/messages`、`GET /v1/models`、`GET /healthz`；请求结束写用量记录 |
+| `internal/httpapi/` | `POST /v1/chat/completions`、`POST /v1/responses`、`POST /v1/messages`、`GET /v1/models`、`GET /healthz`；请求结束写用量记录；响应（**含整个流**）写完后释放并发槽位 |
 | `cmd/gatewayd/` | 组合根：注册模块、启动 HTTP 入口与控制桥 |
 
 ### 4.3 数据与端口
@@ -249,6 +250,15 @@ export default FooService
   `billing` 不在运行时重放明确失败，不做「只记明细不扣钱」的降级）
 - 用量投递健康度：`usage.stats` 桥命令给 TS 报 `capacity/size/dropped/gap/epoch/lastSeq`，
   `gap` 只统计「真丢」的部分；轮询默认 1s，落库失败不吞错、游标只推进到实际落库的最大 seq
+- **账号并发闸门与短期冷却（Go 侧，纯进程内）**：每个 attempt 按账号 `concurrency` 原子预留槽位，
+  预留失败换下一个候选、全饱和时返回 `ALL_ACCOUNTS_SATURATED`（503、不可重试，不排队、不放行）；
+  上游 429 / 额度耗尽把账号标记进冷却（`-account-cooldown-ms`，默认 30s，0 = 关闭，非法值启动失败），
+  冷却期内不打分、到期自动恢复；额度耗尽改成可重试错误，好让 failover 换号。
+  所有结束路径（正常 / 上游失败 / 客户端取消 / 流中断）都保证槽位归零。
+  `accounts.status` 桥响应只增不改地追加 `runtime: {active, cooling}`（全站聚合，无账号级明细）
+- Anthropic 形状的错误体在 `error` 对象里增量输出稳定 `code`（官方 schema 只有 `type` / `message`；
+  空 code 不输出该键，老客户端看到的形状不变），这样 `/v1/messages` 也能机器可读地看到
+  `ALL_ACCOUNTS_SATURATED` / `ALL_ACCOUNTS_COOLING` 等拒因
 - 管理员概览 `/api/admin/stats`：用户 / 账号 / key 计数 + 今日与累计 token（入 / 出 / 总）、
   请求数、费用、近 30 天序列、Top 模型与 Top 用户
 - 服务端渲染页面 + `/api/*` JSON 入口；设置、目录、健康、用户管理、账号管理
@@ -291,8 +301,8 @@ pnpm test:go
 
 - 新增插件必须有 `test/*.test.ts`；新增 Go 模块必须有单测。
 - 测试失败先修实现，不允许删断言或放宽断言来变绿。
-- 当前基线（2026-10-29 实测，main `c9bd57b`）：`pnpm test` 566 个用例（565 通过 / 1 跳过），
-  `pnpm typecheck` 干净，`go test ./...` 14 包全 ok，`gofmt -l .` 与 `go vet ./...` 无输出。
+- 当前基线（2026-10-29 实测，main `991691f`）：`pnpm test` 566 个用例（565 通过 / 1 跳过），
+  `pnpm typecheck` 干净，`go test ./...` 15 包全 ok，`gofmt -l .` 与 `go vet ./...` 无输出。
   这个数字会变，以实际输出为准。
 
 ### 5.5 前端
@@ -452,6 +462,22 @@ pnpm build:go         # 产出 bin/gatewayd(.exe)
 - **`app.yml` 会覆盖插件默认值**：`usage.pollIntervalMs` 在 `app.yml` 里写着 `1000`，
   改代码里的默认值时别忘了同步改配置文件，否则线上仍走旧值。
 
+### 并发闸门与冷却
+
+- **槽位的生命周期是「预留 → 转交 → 释放」**：engine 预留成功才把它交给 `ctx.ReleaseInFlight`，
+  **HTTP 入口必须在响应（含整个流）写完之后才调 release**；失败 / panic / 客户端取消由 engine
+  兜底释放。release 必须幂等，否则 panic 兜底 + handler defer 会双减。
+- **`concurrency <= 0` = 不限制**，但仍计数：旧快照没有这个字段，不能被静默变成「不可选」。
+- **饱和不排队**：全饱和直接 503 `ALL_ACCOUNTS_SATURATED`，不要改成等待或静默放行——排队会把
+  延迟堆到网关里。
+- **`Apply` 必须在 pre 之前跑**：否则 `exclude_saturated` / `exclude_cooling` 看到的还是上一轮的值。
+- **注入面按消费者拆**：engine 只依赖 `Apply` / `Acquire`，transport 只依赖 `RecordLimit`，
+  `modules/*` 之间零 import，实现在 `internal/accountruntime`，组装只允许在 `main.go`。
+- **`accounts.status` 加字段用 `omitempty`**：没有注入运行时（测试 / 旧装配）时该键不出现，
+  响应与改动前逐字节一致。
+- **anthropic 错误体加 `code` 是纯增量**：别把 `code` 放顶层，也别在空 code 时输出 `"code":""`；
+  OpenAI 两个入口的错误体必须逐字节不变（有断言守着）。
+
 ### 前端
 
 - 预览用 `pnpm preview:console`；它没有 `/api/*`，真实进程用 `pnpm dev`。
@@ -486,9 +512,9 @@ pnpm build:go         # 产出 bin/gatewayd(.exe)
 - 用量的投递边界：Go 只有内存环形缓冲（默认 32768 条）+ TS 轮询（默认 1s），gatewayd 重启
   或长时间断线仍会丢记录（`gap` 会记警告、`usage.stats` 可查）；请求 / 响应正文不落库；
   被隔离的坏记录不结算、需要人工在 `/admin/usage` 处理
-- **账号级运行期限流 / 并发闸门**：`concurrency` 已随快照透传到 Go 的 `AccountCandidate`，
-  但 Go 侧没有运行时 in-flight 数据源（`InFlight` 恒为 0），`excludeSaturated` 目前不会真正限流；
-  权重 / 标签 / 健康只影响打分与过滤，不构成并发控制。
+- 冷却只有「429 / 额度耗尽」这一种触发，且只在进程内：**没有**响应时间阈值，也没有
+  过热 / 过载 / 临时不可调度三时钟；`accountpriority` 的 preview / pick 仍看 TS 传来的
+  `InFlight`（LLM 链路已用真实值，预览不反映闸门）
 - 自动禁用只按「连续失败 3 次」（可配）；**不做响应时间阈值**，也不做冷却 / 过载 / 临时不可调度
   三时钟（缺 Go 的失败回报数据源）。
 - `account-state`（限流、额度、并发等运行时状态）、粘性会话
