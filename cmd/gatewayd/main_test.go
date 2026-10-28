@@ -7,8 +7,10 @@ import (
 	"log/slog"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Acidmoon/DizzyAPI/contracts"
+	"github.com/Acidmoon/DizzyAPI/internal/accountruntime"
 	"github.com/Acidmoon/DizzyAPI/internal/accounts"
 	"github.com/Acidmoon/DizzyAPI/internal/apikeys"
 	"github.com/Acidmoon/DizzyAPI/internal/bridge"
@@ -243,5 +245,95 @@ func TestUsageStatsWithoutRing(t *testing.T) {
 	}
 	if stats, ok := result.(usagelog.StatsResult); !ok || stats != (usagelog.StatsResult{}) {
 		t.Fatalf("没有环形缓冲时应返回零值，得到 %+v", result)
+	}
+}
+
+func TestAccountsStatusCarriesAggregatedRuntime(t *testing.T) {
+	h := testHandler(t)
+	tracker := accountruntime.New(30 * time.Second)
+	h.runtime = tracker
+	if _, err := h.accounts.Replace(accounts.Snapshot{
+		Version: accounts.SnapshotVersion,
+		Accounts: []accounts.Account{
+			{AccountID: "acc-1", Provider: "openai", Kind: "api_key", BaseURL: "https://upstream.example/v1", Token: "sk-1", Concurrency: 2},
+			{AccountID: "acc-2", Provider: "openai", Kind: "api_key", BaseURL: "https://upstream.example/v1", Token: "sk-2", Concurrency: 2},
+		},
+	}); err != nil {
+		t.Fatalf("accounts.Replace: %v", err)
+	}
+	release, ok := tracker.Acquire("acc-1", 2)
+	if !ok {
+		t.Fatal("acc-1 应当能预留槽位")
+	}
+	defer release()
+	tracker.RecordLimit("acc-2")
+
+	result, err := h.Handle(context.Background(), bridge.MethodAccountsStatus, nil)
+	if err != nil {
+		t.Fatalf("accounts.status: %v", err)
+	}
+	payload, err := json.Marshal(result)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	var decoded struct {
+		Accounts int `json:"accounts"`
+		Runtime  struct {
+			Active  int `json:"active"`
+			Cooling int `json:"cooling"`
+		} `json:"runtime"`
+	}
+	if err := json.Unmarshal(payload, &decoded); err != nil {
+		t.Fatalf("Unmarshal: %v（%s）", err, payload)
+	}
+	if decoded.Accounts != 2 {
+		t.Fatalf("原有字段必须原样保留：%s", payload)
+	}
+	if decoded.Runtime.Active != 1 || decoded.Runtime.Cooling != 1 {
+		t.Fatalf("runtime 应为 active=1 cooling=1：%s", payload)
+	}
+	// 只增不改：不含账号级明细，也不含任何令牌。
+	if strings.Contains(string(payload), "acc-1") || strings.Contains(string(payload), "sk-") {
+		t.Fatalf("accounts.status 不许回显账号级明细或秘密：%s", payload)
+	}
+}
+
+func TestAccountsStatusOmitsRuntimeWithoutTracker(t *testing.T) {
+	h := testHandler(t)
+	result, err := h.Handle(context.Background(), bridge.MethodAccountsStatus, nil)
+	if err != nil {
+		t.Fatalf("accounts.status: %v", err)
+	}
+	payload, err := json.Marshal(result)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(payload, &raw); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if _, ok := raw["runtime"]; ok {
+		t.Fatalf("没有运行时状态时不许输出 runtime 字段：%s", payload)
+	}
+}
+
+func TestAccountCooldownConfig(t *testing.T) {
+	// 合法值：0 = 关闭冷却；上限值刚好合法。
+	if got, err := parseAccountCooldown(0); err != nil || got != 0 {
+		t.Fatalf("0 应当表示关闭冷却：duration=%v err=%v", got, err)
+	}
+	if got, err := parseAccountCooldown(30_000); err != nil || got != 30*time.Second {
+		t.Fatalf("30s 应当合法：duration=%v err=%v", got, err)
+	}
+	if got, err := parseAccountCooldown(maxAccountCooldownMs); err != nil ||
+		got != time.Duration(maxAccountCooldownMs)*time.Millisecond {
+		t.Fatalf("上限值应当合法：duration=%v err=%v", got, err)
+	}
+
+	// 非法值：负数 / 超过上限都必须让进程起不来，不能静默回落默认值。
+	for _, invalid := range []int{-1, maxAccountCooldownMs + 1} {
+		if _, err := parseAccountCooldown(invalid); err == nil {
+			t.Fatalf("-account-cooldown-ms=%d 必须报错", invalid)
+		}
 	}
 }

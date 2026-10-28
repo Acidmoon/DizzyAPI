@@ -97,6 +97,12 @@ type Ctx struct {
 	// AccountRoute 是本阶段的输出：排好序的账号与最终选中的那一个。
 	AccountRoute *AccountRoute
 
+	// ReleaseInFlight 由 engine 在成功预留并发槽位后写入；HTTP 入口在响应
+	// （含整个流）写完之后调用。engine 在失败转移 / panic 出口也会调用同一个
+	// release，所以它必须幂等（重复调用只减一次）。
+	// 它只在 Go 进程内使用，不参与任何桥帧或快照。
+	ReleaseInFlight func()
+
 	// Attempts 是 dispatch 阶段的失败转移记录（账号 id + 状态码/错误码）。
 	// 不含秘密，可安全写入日志。
 	Attempts []AccountAttempt
@@ -337,6 +343,17 @@ func (r *Registry) Lookup(name string) (any, bool) {
 func (r *Registry) Stages() []Stage {
 	return r.stages
 }
+
+// 账号闸门相关的稳定错误码（engine 与 accountpriority 共用，避免两边拼字符串）。
+//
+// 它们都是 503 且不可重试：让客户端明确知道「现在没有可用容量」，而不是
+// 排队等待或静默放行。
+const (
+	// CodeAllAccountsSaturated 表示所有候选账号都已达到并发上限。
+	CodeAllAccountsSaturated = "ALL_ACCOUNTS_SATURATED"
+	// CodeAllAccountsCooling 表示所有候选账号都在限流冷却中。
+	CodeAllAccountsCooling = "ALL_ACCOUNTS_COOLING"
+)
 
 // HealthState 是账号健康状态。未知必须是一等状态，而不是「默认健康」（AGENTS.md D17）。
 type HealthState string

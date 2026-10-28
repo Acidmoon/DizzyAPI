@@ -113,7 +113,10 @@ func (r *CodecRegistry) Protocols() []Protocol {
 //
 //   - protocol == "" 或 openai-* → {"error":{"message","type","code"}}，
 //     与 internal/engine 现有 render 完全同键同形状；
-//   - anthropic → {"type":"error","error":{"type","message"}}。
+//   - anthropic → {"type":"error","error":{"type","message","code"}}：
+//     官方 schema 只有 type / message，`code` 是**纯增量**的超集字段，让客户端
+//     能机器可读地区分网关拒因（例如 ALL_ACCOUNTS_SATURATED）；code 为空时
+//     不输出该键，保持与老形状完全一致。
 //
 // 状态码越界（<400 或 >599）一律按 500 渲染，与 engine 一致。
 func RenderError(protocol Protocol, status int, code, message string) []byte {
@@ -121,12 +124,17 @@ func RenderError(protocol Protocol, status int, code, message string) []byte {
 		status = http.StatusInternalServerError
 	}
 	if protocol == ProtocolAnthropic {
+		detail := map[string]any{
+			"type":    anthropicErrorType(status),
+			"message": message,
+		}
+		// 稳定错误码只增不改：空 code 不写，老客户端看到的形状与以前逐字节一致。
+		if code != "" {
+			detail["code"] = code
+		}
 		body, err := json.Marshal(map[string]any{
-			"type": "error",
-			"error": map[string]any{
-				"type":    anthropicErrorType(status),
-				"message": message,
-			},
+			"type":  "error",
+			"error": detail,
 		})
 		if err != nil {
 			return []byte(`{"type":"error","error":{"type":"api_error","message":"网关内部错误"}}`)

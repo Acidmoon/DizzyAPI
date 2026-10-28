@@ -28,6 +28,7 @@ import (
 	"time"
 
 	"github.com/Acidmoon/DizzyAPI/contracts"
+	"github.com/Acidmoon/DizzyAPI/internal/accountruntime"
 	"github.com/Acidmoon/DizzyAPI/internal/accounts"
 	"github.com/Acidmoon/DizzyAPI/internal/apikeys"
 	"github.com/Acidmoon/DizzyAPI/internal/bridge"
@@ -47,9 +48,29 @@ type handler struct {
 	accounts *accounts.Cache
 	keys     *apikeys.Cache
 	usage    *usagelog.Ring
+	runtime  *accountruntime.Tracker
 	logger   *slog.Logger
 	shutdown chan struct{}
 	stopOnce sync.Once
+}
+
+// accountsStatus 是桥命令 accounts.status 的响应：accounts.State 原样保留，
+// 只增一个**全站聚合**的 runtime 字段（active / cooling）。
+//
+// omitempty + 只增不改：旧 TS 读到未知字段不受影响；没有运行时（测试或未注入）
+// 时字段直接不出现，响应与改动前逐字节一致。
+type accountsStatus struct {
+	accounts.State
+	Runtime *accountruntime.Stats `json:"runtime,omitempty"`
+}
+
+func (h *handler) accountsStatus() accountsStatus {
+	state := h.accounts.State()
+	if h.runtime == nil {
+		return accountsStatus{State: state}
+	}
+	stats := h.runtime.Summary()
+	return accountsStatus{State: state, Runtime: &stats}
 }
 
 func (h *handler) Handle(_ context.Context, method string, params json.RawMessage) (any, error) {
@@ -117,7 +138,7 @@ func (h *handler) Handle(_ context.Context, method string, params json.RawMessag
 		return result, nil
 
 	case bridge.MethodAccountsStatus:
-		return h.accounts.State(), nil
+		return h.accountsStatus(), nil
 
 	case bridge.MethodReplaceKeys:
 		var snapshot apikeys.Snapshot
@@ -198,6 +219,22 @@ func newUsageRing(capacity int) (*usagelog.Ring, error) {
 	return ring, nil
 }
 
+// maxAccountCooldownMs 是账号冷却时间的上限（10 分钟）：再长就等于把账号判死刑，
+// 那属于管理面停用，不是运行时冷却。
+const maxAccountCooldownMs = 600_000
+
+// parseAccountCooldown 校验账号冷却配置。0 = 关闭冷却；负数或超过上限明确失败。
+func parseAccountCooldown(ms int) (time.Duration, error) {
+	if ms == 0 {
+		return 0, nil
+	}
+	if ms < 0 || ms > maxAccountCooldownMs {
+		return 0, fmt.Errorf("账号冷却时间配置（-account-cooldown-ms）非法：必须在 0..%d ms 之间（0 = 关闭冷却），得到 %d",
+			maxAccountCooldownMs, ms)
+	}
+	return time.Duration(ms) * time.Millisecond, nil
+}
+
 func decodeParams(raw json.RawMessage, target any) error {
 	if len(bytes.TrimSpace(raw)) == 0 {
 		raw = []byte("{}")
@@ -240,6 +277,9 @@ func run() error {
 	usageRingCapacity := flag.Int("usage-ring-capacity", usagelog.DefaultCapacity,
 		fmt.Sprintf("Go 侧用量环形缓冲容量（条）；超出 %d..%d 直接启动失败",
 			usagelog.MinCapacity, usagelog.MaxCapacity))
+	accountCooldownMs := flag.Int("account-cooldown-ms", 30_000,
+		fmt.Sprintf("上游 429 / 额度耗尽后该账号的冷却时间（毫秒）；0 = 关闭冷却，超出 0..%d 直接启动失败",
+			maxAccountCooldownMs))
 	flag.Parse()
 
 	logger := newLogger(*logFormat)
@@ -262,6 +302,15 @@ func run() error {
 	if err := requireLoopback(*httpListen); err != nil {
 		return fmt.Errorf("LLM 请求入口拒绝非回环监听：%w", err)
 	}
+
+	// 账号冷却配置非法时进程直接起不来，不静默回落默认值（AGENTS.md §2.4.5）。
+	accountCooldown, err := parseAccountCooldown(*accountCooldownMs)
+	if err != nil {
+		return err
+	}
+	// 账号运行时状态：真实 in-flight 计数 + 429/额度耗尽的短期冷却。
+	// 纯内存、不落盘、不回写 TS；engine 与 transport 各依赖自己声明的那一小块接口。
+	accountRuntime := accountruntime.New(accountCooldown)
 
 	// 组合根是唯一组装点：注册顺序就是阶段顺序 pre → dispatch → post。
 	//
@@ -314,10 +363,13 @@ func run() error {
 	if _, err := transport.Register(registry, transport.Config{
 		RequestTimeoutMs: *requestTimeout,
 		HeaderTimeoutMs:  *headerTimeout,
+		// 429 / 额度耗尽由 transport 回报给运行时，后续请求打分时排除该账号。
+		LimitRecorder: accountRuntime,
 	}, accountCache, converter.Transcoder()); err != nil {
 		return fmt.Errorf("初始化 transport 模块失败：%w", err)
 	}
-	requestEngine, err := engine.New(registry.Stages(), logger)
+	// 注入账号运行时：pre 阶段前写入真实 in-flight/冷却，dispatch 前原子预留并发槽位。
+	requestEngine, err := engine.New(registry.Stages(), logger, engine.WithAccountRuntime(accountRuntime))
 	if err != nil {
 		return fmt.Errorf("初始化 LLM 请求 engine 失败：%w", err)
 	}
@@ -361,6 +413,8 @@ func run() error {
 		accounts: accountCache,
 		keys:     keyCache,
 		usage:    usageRing,
+		// 运行时状态只给桥命令看汇总（active / cooling），不进公网 /healthz。
+		runtime:  accountRuntime,
 		logger:   logger,
 		shutdown: stop,
 	}
@@ -399,6 +453,7 @@ func run() error {
 		"usageRingCapacity", usageRing.Stats().Capacity,
 	)
 	logger.Info(keyStage.Describe())
+	logger.Info(accountRuntime.Describe())
 
 	// cordis 用这一行拿到实际地址（TCP :0 时端口是系统分配的）。
 	ready, err := json.Marshal(map[string]any{

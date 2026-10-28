@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -230,5 +231,102 @@ func TestJoinURL(t *testing.T) {
 		if got != tc.want {
 			t.Fatalf("joinURL(%q) = %q，期望 %q", tc.base, got, tc.want)
 		}
+	}
+}
+
+// ───────────────────────────── 限流 / 额度耗尽 → 冷却回报 ─────────────────────────────
+
+type limitRecorder struct {
+	mu       sync.Mutex
+	accounts []string
+}
+
+func (r *limitRecorder) RecordLimit(accountID string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.accounts = append(r.accounts, accountID)
+}
+
+func (r *limitRecorder) recorded() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]string(nil), r.accounts...)
+}
+
+func upstreamStatus(t *testing.T, status int, body string) *httptest.Server {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(status)
+		_, _ = io.WriteString(w, body)
+	}))
+	t.Cleanup(server.Close)
+	return server
+}
+
+func TestRateLimitRecordsCooldownAndIsRetryable(t *testing.T) {
+	recorder := &limitRecorder{}
+	upstream := upstreamStatus(t, http.StatusTooManyRequests, `{"error":{"message":"rate limited"}}`)
+	stage := newStage(t, upstream.URL, "sk-upstream", Config{LimitRecorder: recorder})
+
+	_, err := stage.Run(requestContext(false))
+	var stageErr *contracts.StageError
+	if !errors.As(err, &stageErr) || !stageErr.Retryable || stageErr.Code != "UPSTREAM_RATE_LIMITED" {
+		t.Fatalf("429 必须可重试且带 UPSTREAM_RATE_LIMITED，得到 %v", err)
+	}
+	if got := recorder.recorded(); len(got) != 1 || got[0] != "acc-1" {
+		t.Fatalf("429 必须给该账号记冷却：%v", got)
+	}
+}
+
+func TestQuotaExhaustedRecordsCooldownAndIsRetryable(t *testing.T) {
+	recorder := &limitRecorder{}
+	upstream := upstreamStatus(t, http.StatusBadRequest,
+		`{"error":{"code":"insufficient_quota","message":"You exceeded your current quota"}}`)
+	stage := newStage(t, upstream.URL, "sk-upstream", Config{LimitRecorder: recorder})
+
+	_, err := stage.Run(requestContext(false))
+	var stageErr *contracts.StageError
+	if !errors.As(err, &stageErr) || !stageErr.Retryable {
+		t.Fatalf("额度耗尽必须可重试（换账号），得到 %v", err)
+	}
+	if stageErr.Code != "UPSTREAM_QUOTA_EXHAUSTED" {
+		t.Fatalf("额度耗尽的错误码 = %q，期望 UPSTREAM_QUOTA_EXHAUSTED", stageErr.Code)
+	}
+	if got := recorder.recorded(); len(got) != 1 || got[0] != "acc-1" {
+		t.Fatalf("额度耗尽必须给该账号记冷却：%v", got)
+	}
+}
+
+func TestOrdinaryUpstreamErrorsDoNotRecordCooldown(t *testing.T) {
+	cases := []struct {
+		name   string
+		status int
+		body   string
+	}{
+		{"invalid request", http.StatusBadRequest, `{"error":{"message":"missing model"}}`},
+		{"auth", http.StatusForbidden, `{"error":{"message":"forbidden"}}`},
+		{"server error", http.StatusInternalServerError, `{"error":{"message":"boom"}}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			recorder := &limitRecorder{}
+			upstream := upstreamStatus(t, tc.status, tc.body)
+			stage := newStage(t, upstream.URL, "sk-upstream", Config{LimitRecorder: recorder})
+			if _, err := stage.Run(requestContext(false)); err == nil {
+				t.Fatal("期望错误")
+			}
+			if got := recorder.recorded(); len(got) != 0 {
+				t.Fatalf("%s 不该记冷却：%v", tc.name, got)
+			}
+		})
+	}
+}
+
+func TestNilLimitRecorderIsSafe(t *testing.T) {
+	upstream := upstreamStatus(t, http.StatusTooManyRequests, `{"error":{"message":"rate limited"}}`)
+	stage := newStage(t, upstream.URL, "sk-upstream", Config{})
+	if _, err := stage.Run(requestContext(false)); err == nil {
+		t.Fatal("429 必须返回错误")
 	}
 }

@@ -243,6 +243,14 @@ func (s *Server) llmHandler(protocol contracts.Protocol, path string) http.Handl
 			ClientIP:          s.clientIP(r),
 		}
 
+		// 并发槽位必须等响应（含整个流）真正写完才释放；engine 在失败转移 / panic
+		// 出口会调用同一个 release，所以它是幂等的，这里重复调用安全。
+		defer func() {
+			if ctx.ReleaseInFlight != nil {
+				ctx.ReleaseInFlight()
+			}
+		}()
+
 		started := time.Now()
 		decision := s.engine.Run(ctx)
 		if r.Context().Err() != nil {
