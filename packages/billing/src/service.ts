@@ -190,6 +190,7 @@ export class BillingService extends Service implements BillingServiceLike {
       failed: safeCount(totalsRow.failed),
       review: safeCount(totalsRow.review),
       settling: safeCount(totalsRow.settling),
+      overdrawn: safeCount(totalsRow.overdrawn),
       chargedMicros: totalsRow.charged,
       todayChargedMicros: store.chargedOnDay(today),
     }
@@ -227,14 +228,15 @@ export class BillingService extends Service implements BillingServiceLike {
       if (existing !== undefined && existing.status === 'settling') {
         // 崩溃残留：先看余额流水里有没有这笔扣款，绝不盲目重扣。
         const resolution = await this.resolveResidue(existing)
-        if (resolution === 'settled') {
-          store.finish(
+        if (resolution.kind === 'settled') {
+          const overdrawn = resolution.balanceAfter < 0n
+          store.markSettled(
             reqId,
-            'settled',
             existing.cost_micro,
             '残留结算收尾：余额流水里已能找到这笔扣款，未重复扣费',
             now,
-            ['settling'],
+            overdrawn,
+            resolution.balanceAfter,
           )
           settled += 1
           chargedMicros += existing.cost_micro
@@ -292,8 +294,9 @@ export class BillingService extends Service implements BillingServiceLike {
         continue
       }
 
+      let balance: bigint
       try {
-        await this.ctx.user.adjustBalance(BILLING_ACTOR, userId, -costMicros, chargeReason(reqId))
+        balance = await this.ctx.user.adjustBalance(BILLING_ACTOR, userId, -costMicros, chargeReason(reqId))
       } catch (error) {
         const code = errorCodeOf(error)
         if (code === 'USER_NOT_FOUND') {
@@ -320,12 +323,18 @@ export class BillingService extends Service implements BillingServiceLike {
         throw new BillingError('BILLING_SETTLE_FAILED', `结算失败（请求 ${reqId}）：${describeError(error)}`)
       }
 
-      if (!store.finish(reqId, 'settled', costMicros, null, now, ['settling'])) {
+      // 余额允许为负（后付费）：扣成负数不算失败，但要留成稳定事实供管理面查。
+      const overdrawn = balance < 0n
+      const note = overdrawn ? `余额不足：扣费后余额 ${balance} 微元（后付费允许为负）` : null
+      if (!store.markSettled(reqId, costMicros, note, now, overdrawn, balance)) {
         // 理论上不可能：进程内只有本插件写账本，且这一轮已串行化。钱已扣，行留在 settling，
         // 下一轮按 reqId + 余额流水重放收敛，不会重复扣费。
         this.logger.error(`请求 ${reqId} 已扣费但未能标记为已结算：下一轮会按流水核对（不会重复扣费）`)
         failed += 1
         continue
+      }
+      if (overdrawn) {
+        this.warnFailure(`用户 #${userId} 扣费后余额为负（${balance} 微元）：已按透支记账，见 /admin/billing`)
       }
       settled += 1
       chargedMicros += costMicros
@@ -340,17 +349,20 @@ export class BillingService extends Service implements BillingServiceLike {
    * 这是唯一能跨库判断「钱到底扣了没有」的事实来源。查不到（或流水读不出来）一律
    * 判 review：宁可少收一笔留人工核查，也绝不重复扣款。
    */
-  private async resolveResidue(row: SettleRow): Promise<'settled' | 'review'> {
+  private async resolveResidue(
+    row: SettleRow,
+  ): Promise<{ kind: 'settled'; balanceAfter: bigint } | { kind: 'review' }> {
     const marker = chargeReason(row.req_id)
     try {
       const entries = await this.ctx.user.listBalanceEntries(Number(row.user_id), LEDGER_SCAN_LIMIT)
-      const found = entries.some(
+      const hit = entries.find(
         (entry) => typeof entry.reason === 'string' && entry.reason.startsWith(marker),
       )
-      return found ? 'settled' : 'review'
+      // 流水里带着扣款后的余额：顺手把「是否透支」也补回账本。
+      return hit === undefined ? { kind: 'review' } : { kind: 'settled', balanceAfter: hit.balanceAfter }
     } catch (error) {
       this.logger.warn(`读取余额流水失败，残留结算转人工核查：${describeError(error)}`)
-      return 'review'
+      return { kind: 'review' }
     }
   }
 

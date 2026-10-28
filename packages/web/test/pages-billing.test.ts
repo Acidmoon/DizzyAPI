@@ -79,6 +79,8 @@ function billingStub(): BillingLike {
           cacheReadTokens: 0,
           cacheWriteTokens: 0,
           costMicro: 1_750_000n,
+          overdrawn: false,
+          balanceAfter: 8_250_000n,
           status: 'settled',
           note: null,
           attempts: 1,
@@ -96,11 +98,32 @@ function billingStub(): BillingLike {
           cacheReadTokens: 0,
           cacheWriteTokens: 0,
           costMicro: 0n,
+          overdrawn: false,
+          balanceAfter: null,
           status: 'no-price',
           note: '模型没有配置价格：按 0 结算，未动余额',
           attempts: 1,
           startedAt: '2026-10-19T12:00:00.000Z',
           settledAt: null,
+        },
+        {
+          reqId: 'req-overdrawn',
+          userId: 5,
+          accountId: 'account-2',
+          model: 'deepseek-chat',
+          day: '2026-10-19',
+          inputTokens: 900,
+          outputTokens: 100,
+          cacheReadTokens: 0,
+          cacheWriteTokens: 0,
+          costMicro: 2_000_000n,
+          overdrawn: true,
+          balanceAfter: -500_000n,
+          status: 'settled',
+          note: '余额不足：扣费后余额 -500000 微元（后付费允许为负）',
+          attempts: 1,
+          startedAt: '2026-10-19T13:00:00.000Z',
+          settledAt: '2026-10-19T13:00:02.000Z',
         },
       ]
       const filtered = query?.status === 'problem' ? items.filter((item) => item.status !== 'settled') : items
@@ -116,6 +139,7 @@ function billingStub(): BillingLike {
           failed: 0,
           review: 0,
           settling: 0,
+          overdrawn: 1,
           chargedMicros: 1_750_000n,
           todayChargedMicros: 1_750_000n,
         },
@@ -144,6 +168,9 @@ test('有数据：金额、状态与请求 ID 都渲染出来', async () => {
   assert.match(html, /已结算/)
   assert.match(html, /无价格/)
   assert.match(html, /模型没有配置价格/)
+  // 余额不足扣成负数：状态仍是稳定字符串 settled，页面显示「（透支）」并给出扣后余额。
+  assert.match(html, /（透支）/)
+  assert.match(html, /-¥0\.50/)
   assert.match(html, /2026-10-19/)
   assert.ok(!html.includes('undefined'))
 })

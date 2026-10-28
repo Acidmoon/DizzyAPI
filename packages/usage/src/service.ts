@@ -342,9 +342,7 @@ export class UsageService extends Service implements UsageServiceLike {
       let rejected = 0
       let persisted: readonly UsageEntry[] = []
       try {
-        // 明细落库**不带游标**：游标必须在结算之后才写（见下面的 advanceCursor）。
-        // 结算失败时游标原地不动，下一轮带同一 afterSeq 重放。
-        const outcome = this.insertEntries(result.records)
+        const outcome = this.insertEntries(result.records, { epoch: result.epoch, lastSeq })
         ingested = outcome.inserted
         persisted = result.records
         this.resetPersistFailures()
@@ -361,7 +359,7 @@ export class UsageService extends Service implements UsageServiceLike {
         }
         // 到达阈值：走有界出口。逐条独立事务重试，能插的插、插不进的进隔离表，游标照常前进。
         try {
-          const isolated = this.isolateBatch(result.records)
+          const isolated = this.isolateBatch(result.records, { epoch: result.epoch, lastSeq })
           ingested = isolated.ingested
           rejected = isolated.rejected
           persisted = isolated.persisted
@@ -402,9 +400,6 @@ export class UsageService extends Service implements UsageServiceLike {
         }
       }
 
-      // 最后推进游标：走到这里才算这一轮真的落地（结算成功，或根本没有结算服务）。
-      // 游标单独写：结算跨库（billing / user），没法和明细进同一个事务。
-      this.advanceCursor(result.epoch, lastSeq)
       this.epoch = result.epoch
       this.lastSeq = lastSeq
       this.pollFailures = 0
@@ -723,7 +718,7 @@ export class UsageService extends Service implements UsageServiceLike {
     }
 
     try {
-      const outcome = this.insertEntries([entry], { emit: false })
+      const outcome = this.insertEntries([entry], undefined, { emit: false })
       this.emitAccountUsed(outcome.usedAccounts)
       // ── 结算补做（fail-closed）──
       //   1. 明细写成功后调 billing.settle([entry]) 补结算一次（req_id 幂等，重复重放不重复扣）；
@@ -774,11 +769,7 @@ export class UsageService extends Service implements UsageServiceLike {
   // ───────────────────────────────── 内部：存储
 
   /**
-   * 落库一批记录（一个事务）。
-   *
-   * **不写游标**：游标由 `advanceCursor` 在结算之后单独推进——一轮的顺序固定为
-   * 「拉取 → 落库 → 结算 → 推进游标」，游标必须最后写（结算跨库，没法进同一事务；
-   * 结算失败时游标原地不动，下一轮带同一 afterSeq 重放）。
+   * 落库一批记录（一个事务；`meta` 与记录同事务，保证游标与明细一致）。
    *
    * 返回 `inserted`（真正新增的条数，重复 req_id 是 0）与 `usedAccounts`
    * （只含真的新落库的账号）。`emit: false` 用于隔离区逐条重试：那时要等整批做完再统一发事件，
@@ -786,10 +777,11 @@ export class UsageService extends Service implements UsageServiceLike {
    */
   private insertEntries(
     entries: readonly UsageEntry[],
+    meta?: { epoch: string; lastSeq: number },
     options: { emit?: boolean } = {},
   ): { inserted: number; usedAccounts: readonly string[] } {
     const db = this.requireDb()
-    if (entries.length === 0) return { inserted: 0, usedAccounts: [] }
+    if (entries.length === 0 && meta === undefined) return { inserted: 0, usedAccounts: [] }
 
     const insert = db.prepare(`
       INSERT OR IGNORE INTO usage_records (
@@ -802,6 +794,10 @@ export class UsageService extends Service implements UsageServiceLike {
         ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
       )
     `)
+    const upsertMeta = db.prepare(
+      'INSERT INTO usage_meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
+    )
+
     const now = Date.now()
     // 只汇报「这一轮真的新落库」的行所对应的账号：重复 req_id 不算一次使用。
     const usedAccounts = new Set<string>()
@@ -847,6 +843,10 @@ export class UsageService extends Service implements UsageServiceLike {
         const accountId = typeof entry.accountId === 'string' ? entry.accountId : ''
         if (accountId !== '') usedAccounts.add(accountId)
       }
+      if (meta !== undefined) {
+        upsertMeta.run('epoch', meta.epoch)
+        upsertMeta.run('lastSeq', String(meta.lastSeq))
+      }
       db.exec('COMMIT')
     } catch (error) {
       try {
@@ -876,45 +876,16 @@ export class UsageService extends Service implements UsageServiceLike {
   }
 
   /**
-   * 推进游标（epoch + lastSeq），**单独一次事务**。
-   *
-   * 为什么不在明细那笔事务里：一轮的顺序是「拉取 → 落库 → 结算 → 推进游标」，
-   * 结算要跨到 billing / user 两个库（没有事务），所以游标必须最后单独写——
-   * 结算失败时这一句根本不执行，游标停在原地，下一轮带同一 afterSeq 重放。
-   */
-  private advanceCursor(epoch: string, lastSeq: number): void {
-    const db = this.requireDb()
-    const upsert = db.prepare(
-      'INSERT INTO usage_meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
-    )
-    db.exec('BEGIN IMMEDIATE')
-    try {
-      upsert.run('epoch', epoch)
-      upsert.run('lastSeq', String(lastSeq))
-      db.exec('COMMIT')
-    } catch (error) {
-      try {
-        db.exec('ROLLBACK')
-      } catch {
-        // 事务可能已经被 SQLite 自动回滚。
-      }
-      throw error instanceof UsageError
-        ? error
-        : new UsageError('USAGE_STORE_FAILED', `用量游标写入失败：${describeError(error)}`)
-    }
-  }
-
-  /**
    * 有界出口：整批落库连续失败到阈值后，逐条独立事务重试。
    *
    * 能插的插（正常记录不受坏记录连累），插不进的写进 `usage_rejected`（一条 req_id 只一行），
    * 最后把游标推进到该批最大 seq —— 否则坏记录会让轮询（以及下游结算）永久停摆。
    *
-   * 游标由调用方在结算之后统一推进（`advanceCursor`），这里只管逐条落库与隔离。
    * 只在异常路径调用；正常路径仍然整批一个事务。
    */
   private isolateBatch(
     entries: readonly UsageEntry[],
+    meta: { epoch: string; lastSeq: number },
   ): { ingested: number; rejected: number; persisted: readonly UsageEntry[] } {
     const persisted: UsageEntry[] = []
     const usedAccounts = new Set<string>()
@@ -924,7 +895,7 @@ export class UsageService extends Service implements UsageServiceLike {
 
     for (const entry of entries) {
       try {
-        const outcome = this.insertEntries([entry], { emit: false })
+        const outcome = this.insertEntries([entry], undefined, { emit: false })
         ingested += outcome.inserted
         for (const accountId of outcome.usedAccounts) usedAccounts.add(accountId)
         persisted.push(entry)
@@ -934,10 +905,12 @@ export class UsageService extends Service implements UsageServiceLike {
       }
     }
 
+    // 游标必须前进，否则坏记录等于永久卡死；epoch 与游标同事务落库。
+    this.insertEntries([], meta)
     this.emitAccountUsed([...usedAccounts])
     this.logger.warn(
-      `用量落库连续失败 ${failures} 轮，已隔离 ${rejected} 条坏记录（同批 ${persisted.length} 条照常落库）；` +
-        '被隔离的记录未进明细、不会结算',
+      `用量落库连续失败 ${failures} 轮，已隔离 ${rejected} 条坏记录（同批 ${persisted.length} 条照常落库），` +
+        `游标推进到 seq=${meta.lastSeq}；被隔离的记录未进明细、不会结算`,
     )
     return { ingested, rejected, persisted }
   }

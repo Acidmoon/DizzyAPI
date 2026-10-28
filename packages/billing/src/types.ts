@@ -62,6 +62,10 @@ export interface SettleRecordView {
   readonly cacheWriteTokens: number
   /** 已扣费用（整数微元）。 */
   readonly costMicro: bigint
+  /** 扣费后余额为负（后付费透支）：稳定布尔事实，管理面据此查「余额不足」。 */
+  readonly overdrawn: boolean
+  /** 扣费之后的用户余额（整数微元）；没扣款时为 null。 */
+  readonly balanceAfter: bigint | null
   readonly status: SettleStatus
   readonly note: string | null
   readonly attempts: number
@@ -93,6 +97,8 @@ export interface SettleTotals {
   readonly failed: number
   readonly review: number
   readonly settling: number
+  /** 扣费后余额为负的笔数（透支；不是状态，是 settled 的一个事实）。 */
+  readonly overdrawn: number
   readonly chargedMicros: bigint
   /** 今天（按请求发生日，UTC）的扣费额。 */
   readonly todayChargedMicros: bigint

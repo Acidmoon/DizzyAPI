@@ -2936,6 +2936,8 @@ function settleRecordOf(record: SettleRecordLike): Record<string, unknown> {
     cacheReadTokens: record.cacheReadTokens,
     cacheWriteTokens: record.cacheWriteTokens,
     costMicro: record.costMicro.toString(),
+    overdrawn: record.overdrawn,
+    balanceAfter: record.balanceAfter === null ? null : record.balanceAfter.toString(),
     status: record.status,
     note: record.note,
     attempts: record.attempts,
@@ -2955,6 +2957,7 @@ function settleTotalsOf(totals: SettleTotalsLike): Record<string, unknown> {
     failed: totals.failed,
     review: totals.review,
     settling: totals.settling,
+    overdrawn: totals.overdrawn,
     chargedMicros: totals.chargedMicros.toString(),
     todayChargedMicros: totals.todayChargedMicros.toString(),
   }

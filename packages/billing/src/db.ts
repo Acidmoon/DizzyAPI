@@ -36,6 +36,8 @@ CREATE TABLE IF NOT EXISTS settle (
   cache_read_tokens  INTEGER NOT NULL DEFAULT 0,
   cache_write_tokens INTEGER NOT NULL DEFAULT 0,
   cost_micro         INTEGER NOT NULL DEFAULT 0,
+  overdrawn          INTEGER NOT NULL DEFAULT 0,
+  balance_after      INTEGER,
   status             TEXT    NOT NULL,
   note               TEXT,
   attempts           INTEGER NOT NULL DEFAULT 0,
@@ -61,6 +63,8 @@ const ROW_COLUMNS = [
   'cache_read_tokens',
   'cache_write_tokens',
   'cost_micro',
+  'overdrawn',
+  'balance_after',
   'status',
   'note',
   'attempts',
@@ -82,6 +86,8 @@ export interface SettleRow {
   readonly cache_read_tokens: bigint
   readonly cache_write_tokens: bigint
   readonly cost_micro: bigint
+  readonly overdrawn: bigint
+  readonly balance_after: bigint | null
   readonly status: string
   readonly note: string | null
   readonly attempts: bigint
@@ -100,6 +106,7 @@ export interface TotalsRow {
   readonly failed: bigint
   readonly review: bigint
   readonly settling: bigint
+  readonly overdrawn: bigint
   readonly charged: bigint
 }
 
@@ -233,6 +240,29 @@ export class BillingStore {
     return changes === 1
   }
 
+  /**
+   * 扣费成功的收尾：`settling → settled`，顺带记下扣费后的余额与是否透支。
+   *
+   * `overdrawn` 是稳定的布尔事实（余额 < 0，后付费允许），管理面靠它查「余额不足」；
+   * `balance_after` 是扣费之后该用户的余额（整数微元），方便对账。
+   */
+  markSettled(
+    reqId: string,
+    costMicro: bigint,
+    note: string | null,
+    now: string,
+    overdrawn: boolean,
+    balanceAfter: bigint,
+  ): boolean {
+    const statement = this.db.prepare(`
+      UPDATE settle
+         SET status = 'settled', cost_micro = ?, note = ?, settled_at = ?, updated_at = ?,
+             overdrawn = ?, balance_after = ?
+       WHERE req_id = ? AND status = 'settling'
+    `)
+    return Number(statement.run(costMicro, note, now, now, overdrawn ? 1 : 0, balanceAfter, reqId).changes) === 1
+  }
+
   list(filter: SettleFilter | undefined, limit: number, offset: number): readonly SettleRow[] {
     const where = filterSql(filter)
     const statement = this.db.prepare(`
@@ -262,6 +292,7 @@ export class BillingStore {
              COALESCE(SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END), 0) AS failed,
              COALESCE(SUM(CASE WHEN status = 'review' THEN 1 ELSE 0 END), 0) AS review,
              COALESCE(SUM(CASE WHEN status IN ('pending', 'settling') THEN 1 ELSE 0 END), 0) AS settling,
+             COALESCE(SUM(overdrawn), 0) AS overdrawn,
              COALESCE(SUM(cost_micro), 0) AS charged
         FROM settle
     `)
@@ -330,6 +361,8 @@ export function toView(row: SettleRow): SettleRecordView {
     cacheReadTokens: toSafeNumber(row.cache_read_tokens),
     cacheWriteTokens: toSafeNumber(row.cache_write_tokens),
     costMicro: row.cost_micro,
+    overdrawn: row.overdrawn === 1n,
+    balanceAfter: row.balance_after,
     status: toStatus(row.status),
     note: row.note,
     attempts: toSafeNumber(row.attempts),

@@ -71,8 +71,9 @@ export const adminBillingPage: PageModule = {
       t.escapeText(item.reqId),
       t.escapeText(`#${item.userId}`),
       t.escapeText(item.model === '' ? '—' : item.model),
-      t.escapeText(STATUS_LABEL[item.status] ?? item.status),
+      t.escapeText(`${STATUS_LABEL[item.status] ?? item.status}${item.overdrawn ? '（透支）' : ''}`),
       t.escapeText(formatYuan(item.costMicro)),
+      t.escapeText(item.balanceAfter === null ? '—' : formatYuan(item.balanceAfter)),
     ])
 
     const modelRows = summary.models.map((item) => [
@@ -91,6 +92,7 @@ export const adminBillingPage: PageModule = {
             { label: '累计扣费', value: formatYuan(totals.chargedMicros), unit: 'CNY' },
             { label: '今日扣费', value: formatYuan(totals.todayChargedMicros), unit: 'CNY' },
             { label: '待处理', value: t.formatThousands(openCases) },
+            { label: '透支', value: t.formatThousands(totals.overdrawn) },
             { label: '无价格', value: t.formatThousands(totals.noPrice) },
             { label: '无用户', value: t.formatThousands(totals.noUser) },
           ],
@@ -140,6 +142,7 @@ export const adminBillingPage: PageModule = {
             { label: '模型' },
             { label: '状态' },
             { label: '费用', align: 'right' },
+            { label: '扣后余额', align: 'right' },
           ],
           rows: recentRows,
           empty: '还没有结算记录',

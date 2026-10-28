@@ -366,7 +366,7 @@ test('没有用户 id：no-user，不扣费', async (t) => {
   assert.equal(service.list(API).items[0]?.status, 'no-user')
 })
 
-test('余额不足：照实扣成负数，不崩（后付费）', async (t) => {
+test('余额不足：照实扣成负数（后付费），并留下 overdrawn / balanceAfter 供管理面查', async (t) => {
   const { service, user, pricing } = await boot(t)
   user.add(1, 0n)
   pricing.set('model-a', 3_750_000n)
@@ -374,6 +374,24 @@ test('余额不足：照实扣成负数，不崩（后付费）', async (t) => {
   assert.equal(result.settled, 1)
   assert.equal(result.chargedMicros, 3_750_000n)
   assert.equal(user.balanceOf(1), -3_750_000n)
+
+  const row = service.list(API).items[0]
+  assert.equal(row?.status, 'settled', '状态仍是稳定的 settled')
+  assert.equal(row?.overdrawn, true, '透支是稳定的布尔事实')
+  assert.equal(row?.balanceAfter, -3_750_000n)
+  assert.match(row?.note ?? '', /余额不足/)
+  assert.equal(service.summary(API).totals.overdrawn, 1)
+})
+
+test('余额够时 overdrawn=false，仍记下扣后余额', async (t) => {
+  const { service, user, pricing } = await boot(t)
+  user.add(1, 10_000_000n)
+  pricing.set('model-a', 3_750_000n)
+  await service.settle([candidate()])
+  const row = service.list(API).items[0]
+  assert.equal(row?.overdrawn, false)
+  assert.equal(row?.balanceAfter, 6_250_000n)
+  assert.equal(service.summary(API).totals.overdrawn, 0)
 })
 
 test('用户已不存在：落 no-user，不重试', async (t) => {
@@ -511,6 +529,7 @@ test('汇总：按状态计数、按天与今日扣费', async (t) => {
   assert.equal(summary.totals.noPrice, 1)
   assert.equal(summary.totals.chargedMicros, 3_000_000n)
   assert.equal(summary.totals.todayChargedMicros, 2_000_000n)
+  assert.equal(summary.totals.overdrawn, 0)
   assert.deepEqual(
     summary.daily.map((point) => [point.date, point.records, point.chargedMicros]),
     [

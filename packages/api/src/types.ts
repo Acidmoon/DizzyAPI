@@ -589,6 +589,10 @@ export interface SettleRecordLike {
   readonly cacheReadTokens: number
   readonly cacheWriteTokens: number
   readonly costMicro: bigint
+  /** 扣费后余额为负（后付费透支）：稳定布尔事实。 */
+  readonly overdrawn: boolean
+  /** 扣费之后的余额（整数微元）；没扣款时 null。 */
+  readonly balanceAfter: bigint | null
   readonly status: string
   readonly note: string | null
   readonly attempts: number
@@ -612,6 +616,7 @@ export interface SettleTotalsLike {
   readonly failed: number
   readonly review: number
   readonly settling: number
+  readonly overdrawn: number
   readonly chargedMicros: bigint
   readonly todayChargedMicros: bigint
 }
