@@ -14,6 +14,7 @@ import { Context, Service } from 'cordis'
 import { FontSmileyService } from '@dizzyapi/plugin-font-smiley'
 import { PageTemplateService } from '@dizzyapi/plugin-page-template'
 import { WebService } from '../src/service.ts'
+import { listenFetchable } from './helpers/fetch-port.ts'
 import { WEB_ACTOR, type AccountUpdatePatch } from '../src/runtime.ts'
 
 const SESSION_COOKIE = 'dizzyapi_session=test-token'
@@ -284,27 +285,36 @@ interface App {
 }
 
 async function boot(t: TestContext): Promise<App> {
-  const ctx = new Context()
-  await ctx.plugin(PageTemplateService)
-  await ctx.plugin(FontSmileyService)
-  await ctx.plugin(FakeAuth)
-  await ctx.plugin(FakeAccountAdmin)
-  await ctx.plugin(WebService, { port: 0 })
-  const web = ctx.get('web') as WebService
-  for (let i = 0; i < 100; i += 1) {
-    if (web.address !== undefined) break
-    await new Promise((resolve) => setTimeout(resolve, 10))
-  }
-  const address = web.address
-  assert.ok(address !== undefined, 'web 服务没有启动')
+  const started = await listenFetchable(async () => {
+    const ctx = new Context()
+    await ctx.plugin(PageTemplateService)
+    await ctx.plugin(FontSmileyService)
+    await ctx.plugin(FakeAuth)
+    await ctx.plugin(FakeAccountAdmin)
+    await ctx.plugin(WebService, { port: 0 })
+    const web = ctx.get('web') as WebService
+    for (let i = 0; i < 100; i += 1) {
+      if (web.address !== undefined) break
+      await new Promise((resolve) => setTimeout(resolve, 10))
+    }
+    const address = web.address
+    assert.ok(address !== undefined, 'web 服务没有启动')
+    return {
+      app: ctx.get('accountAdmin') as unknown as FakeAccountAdmin,
+      port: address.port,
+      close: async () => {
+        await web.close()
+      },
+    }
+  })
   t.after(async () => {
-    await web.close()
+    await started.close()
   })
   return {
-    base: `http://127.0.0.1:${address.port}`,
-    admin: ctx.get('accountAdmin') as unknown as FakeAccountAdmin,
+    base: started.base,
+    admin: started.app,
     close: async () => {
-      await web.close()
+      await started.close()
     },
   }
 }
@@ -461,22 +471,31 @@ test('详情页：非管理员回 403；缺 id 与不存在的账号给人话', 
 })
 
 test('服务缺失：列表页给人话，不白屏', async (t) => {
-  const ctx = new Context()
-  await ctx.plugin(PageTemplateService)
-  await ctx.plugin(FontSmileyService)
-  await ctx.plugin(FakeAuth)
-  await ctx.plugin(WebService, { port: 0 })
-  const web = ctx.get('web') as WebService
-  for (let i = 0; i < 100; i += 1) {
-    if (web.address !== undefined) break
-    await new Promise((resolve) => setTimeout(resolve, 10))
-  }
-  const address = web.address
-  assert.ok(address !== undefined)
-  t.after(async () => {
-    await web.close()
+  const started = await listenFetchable(async () => {
+    const ctx = new Context()
+    await ctx.plugin(PageTemplateService)
+    await ctx.plugin(FontSmileyService)
+    await ctx.plugin(FakeAuth)
+    await ctx.plugin(WebService, { port: 0 })
+    const web = ctx.get('web') as WebService
+    for (let i = 0; i < 100; i += 1) {
+      if (web.address !== undefined) break
+      await new Promise((resolve) => setTimeout(resolve, 10))
+    }
+    const address = web.address
+    assert.ok(address !== undefined)
+    return {
+      app: undefined,
+      port: address.port,
+      close: async () => {
+        await web.close()
+      },
+    }
   })
-  const response = await fetch(`http://127.0.0.1:${address.port}/admin/accounts`, {
+  t.after(async () => {
+    await started.close()
+  })
+  const response = await fetch(`${started.base}/admin/accounts`, {
     headers: { cookie: SESSION_COOKIE },
   })
   assert.equal(response.status, 200)

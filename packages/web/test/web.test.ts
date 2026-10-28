@@ -9,28 +9,39 @@ import { Context } from 'cordis'
 import { PageTemplateService } from '@dizzyapi/plugin-page-template'
 import { FontSmileyService } from '@dizzyapi/plugin-font-smiley'
 import { WebService } from '../src/service.ts'
+import { listenFetchable } from './helpers/fetch-port.ts'
 import { PAGES } from '../src/pages/index.ts'
 import { WEB_DEFAULTS, validateWebConfig, type ResolvedWebConfig } from '../src/config.ts'
 import { formatYuan, microsToYuan } from '../src/forms.ts'
 import { bucketDaily, hourlyBuckets } from '../src/series.ts'
 
 async function boot(): Promise<{ ctx: Context; base: string; close(): Promise<void> }> {
-  const ctx = new Context()
-  await ctx.plugin(PageTemplateService)
-  await ctx.plugin(FontSmileyService)
-  await ctx.plugin(WebService, { port: 0 })
-  const web = ctx.get('web') as WebService
-  for (let i = 0; i < 100; i += 1) {
-    if (web.address !== undefined) break
-    await new Promise((resolve) => setTimeout(resolve, 10))
-  }
-  const address = web.address
-  assert.ok(address !== undefined, 'web 服务没有启动')
+  // port:0 仍由 OS 分配；拿到端口后若落在 fetch 屏蔽集合里，辅助会关掉重来。
+  const started = await listenFetchable(async () => {
+    const ctx = new Context()
+    await ctx.plugin(PageTemplateService)
+    await ctx.plugin(FontSmileyService)
+    await ctx.plugin(WebService, { port: 0 })
+    const web = ctx.get('web') as WebService
+    for (let i = 0; i < 100; i += 1) {
+      if (web.address !== undefined) break
+      await new Promise((resolve) => setTimeout(resolve, 10))
+    }
+    const address = web.address
+    assert.ok(address !== undefined, 'web 服务没有启动')
+    return {
+      app: ctx,
+      port: address.port,
+      close: async () => {
+        await web.close()
+      },
+    }
+  })
   return {
-    ctx,
-    base: `http://127.0.0.1:${address.port}`,
+    ctx: started.app,
+    base: started.base,
     close: async () => {
-      await web.close()
+      await started.close()
     },
   }
 }
