@@ -412,6 +412,131 @@ export interface ApiKeySummaryView {
   readonly enabled: boolean
 }
 
+// ───────────────────────────── 兑换码 ─────────────────────────────
+
+/**
+ * 兑换码服务（`redeem`）的端口。
+ *
+ * 金额一律是 bigint 微元；HTTP 层负责把它们写成十进制字符串（浏览器用 BigInt 解析）。
+ * 码明文只出现在 `createBatch` 的 `codes` 里，且只出现一次；其余视图只有掩码。
+ */
+export interface RedeemResultLike {
+  readonly amount: bigint
+  readonly balance: bigint
+  readonly batchName: string
+}
+
+export interface RedemptionLike {
+  readonly codeId: string
+  readonly codeMask: string
+  readonly amountMicro: bigint
+  readonly batchName: string | null
+  readonly redeemedAt: string | null
+}
+
+export interface RedeemBatchLike {
+  readonly id: string
+  readonly name: string
+  readonly kind: string
+  readonly amountMicro: bigint
+  readonly total: number
+  readonly notes: string | null
+  readonly createdBy: string
+  readonly createdAt: string
+  readonly expiresAt: string | null
+  readonly codeCount: number
+  readonly usedCount: number
+}
+
+export interface RedeemCodeLike {
+  readonly id: string
+  readonly batchId: string
+  readonly batchName: string | null
+  readonly codeMask: string
+  readonly kind: string
+  readonly amountMicro: bigint
+  readonly status: string
+  readonly createdAt: string
+  readonly expiresAt: string | null
+  readonly reservedAt: string | null
+  readonly reservedBy: string | null
+  readonly redeemedAt: string | null
+  readonly redeemedBy: string | null
+  readonly disabledBy: string | null
+  readonly disabledAt: string | null
+}
+
+export interface RedeemCodePageLike {
+  readonly items: readonly RedeemCodeLike[]
+  readonly total: number
+}
+
+export interface RedeemStatsLike {
+  readonly batches: number
+  readonly codes: number
+  readonly enabled: number
+  readonly disabled: number
+  readonly redeeming: number
+  readonly used: number
+  readonly expired: number
+  readonly redeemedAmountMicro: bigint
+}
+
+export interface RedeemDeletionRejectionLike {
+  readonly id: string
+  readonly reason: string
+}
+
+export interface RedeemDeletionResultLike {
+  readonly deleted: number
+  readonly rejected: readonly RedeemDeletionRejectionLike[]
+}
+
+export interface CreateRedeemBatchInputLike {
+  readonly name: string
+  readonly amountMicro: bigint
+  readonly count: number
+  readonly expiresAt?: string | null
+  readonly notes?: string | null
+}
+
+export interface CreateRedeemBatchResultLike {
+  readonly batch: RedeemBatchLike
+  readonly codes: readonly string[]
+}
+
+export interface RedeemPort {
+  redeemCode(input: { readonly userId: number; readonly code: string }): Promise<RedeemResultLike>
+  listMyRedemptions(userId: number, limit?: number): Promise<readonly RedemptionLike[]>
+  createBatch(
+    actor: string,
+    input: CreateRedeemBatchInputLike,
+  ): Promise<CreateRedeemBatchResultLike>
+  listBatches(
+    actor: string,
+    query?: { readonly limit?: number; readonly offset?: number },
+  ): Promise<readonly RedeemBatchLike[]>
+  getBatch(actor: string, batchId: string): Promise<RedeemBatchLike>
+  listCodes(
+    actor: string,
+    query?: {
+      readonly batchId?: string
+      readonly status?: string
+      readonly keyword?: string
+      readonly limit?: number
+      readonly offset?: number
+    },
+  ): Promise<RedeemCodePageLike>
+  setCodeStatus(actor: string, codeId: string, status: 'enabled' | 'disabled'): Promise<RedeemCodeLike>
+  deleteCodes(actor: string, ids: readonly string[]): Promise<RedeemDeletionResultLike>
+  resolveRedeeming(
+    actor: string,
+    codeId: string,
+    outcome: 'used' | 'enabled',
+  ): Promise<RedeemCodeLike>
+  stats(actor: string): Promise<RedeemStatsLike>
+}
+
 // ───────────────────────────── 账户优先级（可选） ─────────────────────────────
 
 export interface AccountPriorityStatusLike {
@@ -473,6 +598,8 @@ export interface ApiRuntime {
   accountPriority(): AccountPriorityPort | undefined
   usage(): UsagePort | undefined
   pricing(): PricingPort | undefined
+  /** 兑换码服务；不在运行时只有兑换相关路由 503（入口本身不受影响）。 */
+  redeem(): RedeemPort | undefined
   now(): Date
   uptimeSec(): number
   log(level: 'info' | 'warn' | 'error', message: string): void

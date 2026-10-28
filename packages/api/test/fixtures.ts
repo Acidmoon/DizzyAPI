@@ -25,6 +25,13 @@ import type {
   LoginResultLike,
   ModelPriceLike,
   PricingPort,
+  RedeemBatchLike,
+  RedeemCodeLike,
+  RedeemDeletionResultLike,
+  RedeemPort,
+  RedeemResultLike,
+  RedeemStatsLike,
+  RedemptionLike,
   SessionViewLike,
   SettingsPort,
   TicketLike,
@@ -888,6 +895,186 @@ export class FakePricing implements PricingPort {
   }
 }
 
+/**
+ * 兑换码服务（`redeem`）的假实现。
+ *
+ * 只覆盖 HTTP 层需要观察的事：金额是 bigint 微元、明文只出现在 createBatch 的返回里、
+ * 状态类拒绝走稳定 code。它不模拟事务与幂等（那是 redeem 插件自己的测试）。
+ */
+export class FakeRedeem implements RedeemPort {
+  readonly calls: { method: string; args: unknown[] }[] = []
+  readonly batches = new Map<string, RedeemBatchLike>()
+  readonly codes = new Map<string, RedeemCodeLike>()
+  /** 设置后 redeemCode 抛出带这个 code 的 DomainError，用于断言错误码 → 状态码。 */
+  failRedeem: string | undefined
+
+  async redeemCode(input: { userId: number; code: string }): Promise<RedeemResultLike> {
+    this.calls.push({ method: 'redeemCode', args: [input] })
+    if (this.failRedeem !== undefined) {
+      throw new DomainError(this.failRedeem, '测试拒绝：兑换码不可用')
+    }
+    return { amount: 5_000_000n, balance: 12_345_678n, batchName: '测试批次' }
+  }
+
+  async listMyRedemptions(userId: number, limit?: number): Promise<readonly RedemptionLike[]> {
+    this.calls.push({ method: 'listMyRedemptions', args: [userId, limit] })
+    return [
+      {
+        codeId: 'code-1',
+        codeMask: '****A3F7',
+        amountMicro: 5_000_000n,
+        batchName: '测试批次',
+        redeemedAt: '2026-10-19T12:00:00.000Z',
+      },
+    ]
+  }
+
+  async createBatch(
+    actor: string,
+    input: {
+      name: string
+      amountMicro: bigint
+      count: number
+      expiresAt?: string | null
+      notes?: string | null
+    },
+  ): Promise<{ batch: RedeemBatchLike; codes: readonly string[] }> {
+    this.calls.push({ method: 'createBatch', args: [actor, input] })
+    const id = `batch-${this.batches.size + 1}`
+    const batch: RedeemBatchLike = {
+      id,
+      name: input.name,
+      kind: 'balance',
+      amountMicro: input.amountMicro,
+      total: input.count,
+      notes: input.notes ?? null,
+      createdBy: actor,
+      createdAt: '2026-10-19T12:00:00.000Z',
+      expiresAt: input.expiresAt ?? null,
+      codeCount: input.count,
+      usedCount: 0,
+    }
+    this.batches.set(id, batch)
+    const codes: string[] = []
+    for (let index = 0; index < input.count; index += 1) {
+      const plain = `ABCD-EFGH-JKMN-PQRS-TVWX-${String(index + 1).padStart(4, '0')}`
+      codes.push(plain)
+      const codeId = `code-${this.codes.size + 1}`
+      this.codes.set(codeId, {
+        id: codeId,
+        batchId: id,
+        batchName: batch.name,
+        codeMask: `****${plain.slice(-4)}`,
+        kind: 'balance',
+        amountMicro: input.amountMicro,
+        status: 'enabled',
+        createdAt: batch.createdAt,
+        expiresAt: batch.expiresAt,
+        reservedAt: null,
+        reservedBy: null,
+        redeemedAt: null,
+        redeemedBy: null,
+        disabledBy: null,
+        disabledAt: null,
+      })
+    }
+    return { batch, codes }
+  }
+
+  async listBatches(
+    _actor: string,
+    query: { limit?: number; offset?: number } = {},
+  ): Promise<readonly RedeemBatchLike[]> {
+    this.calls.push({ method: 'listBatches', args: [query] })
+    const all = [...this.batches.values()]
+    return all.slice(query.offset ?? 0, (query.offset ?? 0) + (query.limit ?? all.length))
+  }
+
+  async getBatch(_actor: string, batchId: string): Promise<RedeemBatchLike> {
+    this.calls.push({ method: 'getBatch', args: [batchId] })
+    const batch = this.batches.get(batchId)
+    if (batch === undefined) throw new DomainError('REDEEM_NOT_FOUND', '批次不存在')
+    return batch
+  }
+
+  async listCodes(
+    _actor: string,
+    query: { batchId?: string; status?: string; keyword?: string; limit?: number; offset?: number } = {},
+  ): Promise<{ items: readonly RedeemCodeLike[]; total: number }> {
+    this.calls.push({ method: 'listCodes', args: [query] })
+    let items = [...this.codes.values()]
+    if (query.batchId !== undefined) items = items.filter((code) => code.batchId === query.batchId)
+    if (query.status === 'used' || query.status === 'enabled' || query.status === 'disabled' || query.status === 'redeeming') {
+      items = items.filter((code) => code.status === query.status)
+    }
+    if (query.keyword !== undefined) {
+      items = items.filter((code) => code.codeMask.includes(query.keyword as string))
+    }
+    return { items: items.slice(query.offset ?? 0, (query.offset ?? 0) + (query.limit ?? 100)), total: items.length }
+  }
+
+  async setCodeStatus(
+    _actor: string,
+    codeId: string,
+    status: 'enabled' | 'disabled',
+  ): Promise<RedeemCodeLike> {
+    this.calls.push({ method: 'setCodeStatus', args: [codeId, status] })
+    const code = this.codes.get(codeId)
+    if (code === undefined) throw new DomainError('REDEEM_NOT_FOUND', '兑换码不存在')
+    const updated: RedeemCodeLike = { ...code, status }
+    this.codes.set(codeId, updated)
+    return updated
+  }
+
+  async deleteCodes(_actor: string, ids: readonly string[]): Promise<RedeemDeletionResultLike> {
+    this.calls.push({ method: 'deleteCodes', args: [ids] })
+    const rejected = ids
+      .filter((id) => this.codes.get(id)?.status === 'used')
+      .map((id) => ({ id, reason: 'REDEEM_CODE_USED' }))
+    let deleted = 0
+    for (const id of ids) {
+      if (rejected.some((item) => item.id === id)) continue
+      if (this.codes.delete(id)) deleted += 1
+    }
+    return { deleted, rejected }
+  }
+
+  async resolveRedeeming(
+    _actor: string,
+    codeId: string,
+    outcome: 'used' | 'enabled',
+  ): Promise<RedeemCodeLike> {
+    this.calls.push({ method: 'resolveRedeeming', args: [codeId, outcome] })
+    const code = this.codes.get(codeId)
+    if (code === undefined) throw new DomainError('REDEEM_NOT_FOUND', '兑换码不存在')
+    const updated: RedeemCodeLike = {
+      ...code,
+      status: outcome,
+      reservedAt: null,
+      redeemedAt: outcome === 'used' ? '2026-10-19T12:00:00.000Z' : null,
+    }
+    this.codes.set(codeId, updated)
+    return updated
+  }
+
+  async stats(_actor: string): Promise<RedeemStatsLike> {
+    const all = [...this.codes.values()]
+    const countOf = (status: string): number => all.filter((code) => code.status === status).length
+    return {
+      batches: this.batches.size,
+      codes: all.length,
+      enabled: countOf('enabled'),
+      disabled: countOf('disabled'),
+      redeeming: countOf('redeeming'),
+      used: countOf('used'),
+      expired: 0,
+      redeemedAmountMicro: all
+        .filter((code) => code.status === 'used')
+        .reduce((sum, code) => sum + code.amountMicro, 0n),
+    }
+  }
+}
+
 export interface Fixture {
   readonly runtime: ApiRuntime
   readonly user: FakeUser
@@ -900,6 +1087,7 @@ export interface Fixture {
   readonly priority: FakeAccountPriority
   readonly usage: FakeUsage
   readonly pricing: FakePricing
+  readonly redeem: FakeRedeem
   readonly cleanup: () => Promise<void>
 }
 
@@ -915,6 +1103,7 @@ export interface FixtureOptions {
   readonly withoutPriority?: boolean
   readonly withoutUsage?: boolean
   readonly withoutPricing?: boolean
+  readonly withoutRedeem?: boolean
   readonly pages?: FrontendPageLike[]
 }
 
@@ -929,6 +1118,7 @@ export async function createFixture(options: FixtureOptions = {}): Promise<Fixtu
   const priority = new FakeAccountPriority()
   const usage = new FakeUsage()
   const pricing = new FakePricing()
+  const redeem = new FakeRedeem()
 
   const runtime: ApiRuntime = {
     config: resolvedConfig(options.config),
@@ -943,6 +1133,7 @@ export async function createFixture(options: FixtureOptions = {}): Promise<Fixtu
     accountPriority: () => (options.withoutPriority === true ? undefined : priority),
     usage: () => (options.withoutUsage === true ? undefined : usage),
     pricing: () => (options.withoutPricing === true ? undefined : pricing),
+    redeem: () => (options.withoutRedeem === true ? undefined : redeem),
     now: () => new Date('2026-10-19T12:00:00.000Z'),
     uptimeSec: () => 42,
     log: () => undefined,
@@ -960,6 +1151,7 @@ export async function createFixture(options: FixtureOptions = {}): Promise<Fixtu
     priority,
     usage,
     pricing,
+    redeem,
     async cleanup() {
       await rm(frontend.root, { recursive: true, force: true })
     },

@@ -37,6 +37,26 @@
       - '@dizzyapi/plugin-auth'
       - '@dizzyapi/plugin-api'
       - '@dizzyapi/plugin-web'
+    # 余额写入白名单：兑换码插件加额、管理员改余额（api / web）是仅有的合法写者。
+    # 不配 = 任何插件都能改余额；配了就把范围收窄到这三个人。读取始终不限。
+    balanceWriters:
+      - '@dizzyapi/plugin-redeem'
+      - '@dizzyapi/plugin-api'
+      - '@dizzyapi/plugin-web'
+
+# 兑换码插件：批次与兑换码的唯一写者（生成 / 启停 / 删除 / 兑换状态流转）。
+# 存储是 SQLite（Node 24 内置 node:sqlite），只落 sha256 哈希与末 4 位掩码，
+# 明文只在生成批次的那一次响应里出现。加余额只经 user.adjustBalance(...)——user 是
+# 余额唯一写者；兑换用 `enabled → redeeming` 的条件更新保证同一码只成功一次。
+# 读也不放行 adminPlugins 之外：api 与 web 是仅有的调用方（管理台动作以它们的名义执行）。
+- id: redeem
+  name: '@dizzyapi/plugin-redeem'
+  config:
+    dataPath: ./data/redeem.db
+    adminPlugins:
+      - '@dizzyapi/plugin-admin'
+      - '@dizzyapi/plugin-api'
+      - '@dizzyapi/plugin-web'
 
 # API key 插件：用户 API key 的唯一写者（签发 / 改名 / 启停 / 轮换 / 删除）。
 # 存储是 SQLite（Node 24 内置 node:sqlite），只落 sha256 哈希与掩码，永不落明文；

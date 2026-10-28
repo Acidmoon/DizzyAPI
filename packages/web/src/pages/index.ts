@@ -5,6 +5,7 @@ import { registerPage } from './register.ts'
 import { usagePage } from './usage.ts'
 import { keysPage } from './keys.ts'
 import { topUpPage } from './top_up.ts'
+import { redeemPage } from './redeem.ts'
 import { transactionsPage } from './transactions.ts'
 import { profilePage } from './profile.ts'
 import { adminUsersPage } from './admin_users.ts'
@@ -13,6 +14,7 @@ import { adminCatalogPage } from './admin_catalog.ts'
 import { adminSettingsPage } from './admin_settings.ts'
 import { adminUsagePage } from './admin_usage.ts'
 import { adminPricingPage } from './admin_pricing.ts'
+import { adminRedeemCodesPage } from './admin_redeem_codes.ts'
 
 export const PAGES: readonly PageModule[] = [
   loginPage,
@@ -20,6 +22,7 @@ export const PAGES: readonly PageModule[] = [
   usagePage,
   keysPage,
   topUpPage,
+  redeemPage,
   transactionsPage,
   profilePage,
   adminUsersPage,
@@ -28,4 +31,5 @@ export const PAGES: readonly PageModule[] = [
   adminSettingsPage,
   adminUsagePage,
   adminPricingPage,
+  adminRedeemCodesPage,
 ]

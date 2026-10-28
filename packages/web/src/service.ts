@@ -19,6 +19,7 @@ import type {
   CatalogLike,
   FontLike,
   PricingLike,
+  RedeemLike,
   SessionView,
   SettingsLike,
   UsageLike,
@@ -155,6 +156,7 @@ export class WebService extends Service {
       settings: get<SettingsLike>('settings'),
       catalog: get<CatalogLike>('catalog'),
       accountAdmin: get<AccountAdminLike>('accountAdmin'),
+      redeem: get<RedeemLike>('redeem'),
       fontSmiley: get<FontLike>('fontSmiley'),
     }
   }

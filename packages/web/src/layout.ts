@@ -47,6 +47,7 @@ const CONSOLE_NAV: readonly { label: string; path: string; icon: NavItem['icon']
   { label: '用量信息', path: '/console/usage', icon: 'bars' },
   { label: 'API keys', path: '/console/api-keys', icon: 'search' },
   { label: '充值', path: '/console/top-up', icon: 'card' },
+  { label: '兑换', path: '/console/redeem', icon: 'receipt' },
   { label: '账单', path: '/console/transactions', icon: 'receipt' },
   { label: '个人资料', path: '/console/profile', icon: 'tag' },
 ]
@@ -58,6 +59,7 @@ const ADMIN_NAV: readonly { label: string; path: string; icon: NavItem['icon'] }
   { label: '设置', path: '/admin/settings', icon: 'help' },
   { label: '全站用量', path: '/admin/usage', icon: 'bars' },
   { label: '模型价格', path: '/admin/pricing', icon: 'card' },
+  { label: '兑换码', path: '/admin/redeem-codes', icon: 'receipt' },
 ]
 
 function navFor(area: 'console' | 'admin', current: string, isAdmin: boolean): NavItem[] {

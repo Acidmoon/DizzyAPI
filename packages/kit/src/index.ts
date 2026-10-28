@@ -8,6 +8,13 @@ export {
 } from './store.ts'
 
 export {
+  constantTimeHexEqual,
+  generateSecret,
+  hashSecret,
+  maskSecret,
+} from './secret.ts'
+
+export {
   checkConfigObject,
   flattenFields,
   isIssueList,
