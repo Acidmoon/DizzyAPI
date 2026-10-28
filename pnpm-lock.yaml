@@ -304,6 +304,18 @@ importers:
         specifier: ^4.0.0-rc.11
         version: 4.0.0-rc.11(@cordisjs/plugin-include@1.1.1)(@cordisjs/plugin-loader@1.0.0-rc.8)
 
+  packages/quota:
+    dependencies:
+      '@cordisjs/plugin-timer':
+        specifier: ^1.1.4
+        version: 1.1.4(cordis@4.0.0-rc.11)
+      '@dizzyapi/plugin-kit':
+        specifier: workspace:*
+        version: link:../kit
+      cordis:
+        specifier: ^4.0.0-rc.11
+        version: 4.0.0-rc.11(@cordisjs/plugin-include@1.1.1)(@cordisjs/plugin-loader@1.0.0-rc.8)
+
   packages/redeem:
     dependencies:
       '@dizzyapi/plugin-kit':

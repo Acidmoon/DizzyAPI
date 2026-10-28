@@ -10,6 +10,7 @@ import {
   USER_NAME_MAX_LENGTH,
   type Balance,
   type BalanceEntry,
+  type BalanceSnapshot,
   type User,
   type UserChangedAction,
   type UserChangedField,
@@ -376,6 +377,22 @@ export class UserService extends Service {
       }
       return balance
     })
+  }
+
+  /**
+   * 全量余额只读快照（给额度闸门的 Go 侧用）。
+   *
+   * 只读：不改余额、不写流水、不发事件；余额按十进制最小单位字符串输出
+   * （JSON 不承载 bigint，也不经过浮点）。推送时机与撤销策略由消费方决定——
+   * user 只是余额的唯一写者，不承担「谁来同步 Go」的责任。
+   */
+  async balanceSnapshot(): Promise<BalanceSnapshot> {
+    return this.exclusive(async () => ({
+      entries: this.db.listBalances().map((row) => ({
+        userId: row.userId,
+        balanceMicros: row.balance.toString(),
+      })),
+    }))
   }
 
   /**

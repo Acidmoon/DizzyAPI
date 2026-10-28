@@ -119,6 +119,47 @@ export interface RemoteStatus {
 }
 
 /**
+ * 余额只读快照的一条（额度闸门用）。
+ *
+ * 余额用十进制最小单位字符串：JSON 承载不了 bigint，也不经过浮点；允许为负
+ * （后付费透支）。它只在桥帧里流动，不进日志、不进状态查询。
+ */
+export interface GatewayQuotaEntry {
+  readonly userId: string
+  readonly balanceMicros: string
+}
+
+/** `user` 插件推给 Go 的只读余额快照。 */
+export interface GatewayQuotaSnapshot {
+  readonly version: 1
+  /** 单调递增的推送序号：Go 用它拒绝回退，旧快照绝不能覆盖新余额。 */
+  readonly generation: number
+  /** entries 的内容哈希，用于日志与幂等重试识别。 */
+  readonly revision: string
+  readonly entries: readonly GatewayQuotaEntry[]
+}
+
+/** `quota.replace` 的响应：只有版本与计数，不含任何余额。 */
+export interface GatewayQuotaResult {
+  readonly ready: boolean
+  readonly revision: string
+  readonly generation: number
+  readonly entries: number
+  readonly updatedAt: string
+}
+
+/** `quota.status` 的响应：只给健康度，不给账号级余额明细。 */
+export interface GatewayQuotaStatus {
+  readonly ready: boolean
+  readonly revision?: string
+  readonly generation?: number
+  readonly size: number
+  readonly updatedAt?: string
+  readonly ageMs: number
+  readonly ttlMs: number
+}
+
+/**
  * identity → Go 的只读账号/令牌快照。
  *
  * 帧里含访问令牌，因此它只走控制桥；响应、日志、状态查询都不得回显 accounts。

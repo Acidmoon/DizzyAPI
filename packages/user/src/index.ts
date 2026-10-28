@@ -32,6 +32,8 @@ export {
   USER_STATUSES,
   type Balance,
   type BalanceEntry,
+  type BalanceSnapshot,
+  type BalanceSnapshotEntry,
   type User,
   type UserChangedAction,
   type UserChangedEvent,
