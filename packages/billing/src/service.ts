@@ -150,16 +150,17 @@ export class BillingService extends Service implements BillingServiceLike {
    *
    * 幂等：同一 `requestId` 重复传入只扣一次（已结算的跳过、残留的按余额流水核对）。
    * 只有**可重试**的失败（余额写入抛了未知错误、账本写不进去）才抛出——抛出会让
-   * usage 不落库、不推进游标，下一轮重放。其余业务结果（无价、无用户、配置性拒绝）
-   * 都落成终态，不阻塞整条链路。
+   * usage 不推进游标，下一轮重放。其余业务结果（无价、无用户、配置性拒绝）都落成终态；
+   * 缺 `requestId` / 时间非法的记录**跳过并计入 `invalid`，绝不抛**——`req_id` 是本表主键
+   * 也是幂等键，没有它就没有身份可记，这类记录归 usage 侧的隔离区（`usage_rejected`）
+   * 负责可见性，不能让它把整条轮询链路卡死。
    */
   async settle(records: readonly SettleCandidate[]): Promise<SettleBatchResult> {
     this.assertReady()
     if (!Array.isArray(records)) {
       throw new BillingError('BILLING_INPUT_INVALID', '结算入参必须是记录数组')
     }
-    const candidates = records.map((item) => normalizeCandidate(item))
-    return this.exclusive(async () => this.settleBatch(candidates))
+    return this.exclusive(async () => this.settleBatch(records))
   }
 
   // ───────────────────────────────── 读：管理面 ─────────────────────────────────
@@ -219,9 +220,17 @@ export class BillingService extends Service implements BillingServiceLike {
     let failed = 0
     let review = 0
     let skipped = 0
+    let invalid = 0
     let chargedMicros = 0n
 
-    for (const candidate of records) {
+    for (const raw of records) {
+      const candidate = normalizeCandidate(raw)
+      if (candidate === null) {
+        // 缺 requestId / 时间非法：没有幂等键就没有账本行可写。跳过、不扣费、不抛错，
+        // 由 usage 侧的隔离区（usage_rejected）负责让人看见。
+        invalid += 1
+        continue
+      }
       const reqId = candidate.requestId
       const existing = store.find(reqId)
 
@@ -340,7 +349,22 @@ export class BillingService extends Service implements BillingServiceLike {
       chargedMicros += costMicros
     }
 
-    return { records: records.length, settled, noPrice, noUser, failed, review, skipped, chargedMicros }
+    if (invalid > 0) {
+      this.warnFailure(
+        `本轮有 ${invalid} 条结算记录缺少 requestId 或时间非法：已跳过、未扣费（可见性归 usage 隔离区）`,
+      )
+    }
+    return {
+      records: records.length,
+      settled,
+      noPrice,
+      noUser,
+      failed,
+      review,
+      skipped,
+      invalid,
+      chargedMicros,
+    }
   }
 
   /**
@@ -458,17 +482,18 @@ function isTerminal(status: string): boolean {
   return status === 'settled' || status === 'no-price' || status === 'no-user' || status === 'review'
 }
 
-function normalizeCandidate(value: SettleCandidate): SettleCandidate {
-  if (typeof value !== 'object' || value === null) {
-    throw new BillingError('BILLING_INPUT_INVALID', '结算记录必须是对象')
-  }
+/**
+ * 把一条运行时形状未知的记录收成结算事实；不合格返回 null（**绝不抛**）。
+ *
+ * 不合格的定义只有两条：没有合法 `requestId`（没有幂等键就没有账本行）、时间非法
+ * （算不出结算日）。它们会被计入 `invalid` 并告警，交给 usage 的隔离区给人看，
+ * 而不是抛错把整轮轮询卡死。
+ */
+function normalizeCandidate(value: SettleCandidate): SettleCandidate | null {
+  if (typeof value !== 'object' || value === null) return null
   const requestId = typeof value.requestId === 'string' ? value.requestId.trim() : ''
-  if (requestId === '' || requestId.length > REQUEST_ID_MAX_LENGTH) {
-    throw new BillingError('BILLING_INPUT_INVALID', '结算记录缺少合法的 requestId')
-  }
-  if (typeof value.startedAt !== 'string' || !Number.isFinite(Date.parse(value.startedAt))) {
-    throw new BillingError('BILLING_INPUT_INVALID', `结算记录的时间不合法：${String(value.startedAt)}`)
-  }
+  if (requestId === '' || requestId.length > REQUEST_ID_MAX_LENGTH) return null
+  if (typeof value.startedAt !== 'string' || !Number.isFinite(Date.parse(value.startedAt))) return null
   // 用户 id 缺失不算入参错误：落一行 user_id=0，随后按 no-user 结算（一笔坏记录
   // 不能把整条用量链路堵死——游标会一直不动）。
   return {

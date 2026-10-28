@@ -617,12 +617,32 @@ test('卸载后不可再用（禁用即回收）', async (t) => {
   })
 })
 
-test('入参非法：明确失败而不是静默跳过', async (t) => {
-  const { service } = await boot(t)
-  await assert.rejects(service.settle([{ ...candidate(), requestId: '' }]), (error: unknown) => {
-    return error instanceof BillingError && error.code === 'BILLING_INPUT_INVALID'
-  })
-  await assert.rejects(service.settle([{ ...candidate(), startedAt: 'not-a-date' }]), BillingError)
+test('入参异常：跳过并计入 invalid，函数不抛（坏记录不许卡死轮询）', async (t) => {
+  const { service, user, pricing } = await boot(t)
+  user.add(1, 10_000_000n)
+  pricing.set('model-a', 1_000_000n)
+
+  const result = await service.settle([
+    { ...candidate(), requestId: '' },
+    { ...candidate(), startedAt: 'not-a-date' },
+  ])
+  assert.equal(result.invalid, 2)
+  assert.equal(result.settled, 0)
+  assert.equal(result.records, 2)
+  assert.equal(user.calls.length, 0, '没身份就没账本行，绝不扣钱')
+  assert.equal(service.list(API).total, 0, '坏记录不落结算账本（可见性归 usage 隔离区）')
+
+  // 正常记录混在坏记录里照常结算。
+  const mixed = await service.settle([{ ...candidate(), requestId: '' }, candidate()])
+  assert.equal(mixed.invalid, 1)
+  assert.equal(mixed.settled, 1)
+  assert.equal(user.calls.length, 1)
+
+  // 入参根本不是数组才是程序错误，仍然明确失败。
+  await assert.rejects(
+    service.settle('nope' as unknown as readonly SettleCandidate[]),
+    (error: unknown) => error instanceof BillingError && error.code === 'BILLING_INPUT_INVALID',
+  )
 })
 
 /** SQL 字符串字面量；reqId 只由测试构造，无注入面。 */

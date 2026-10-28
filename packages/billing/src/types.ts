@@ -45,6 +45,8 @@ export interface SettleBatchResult {
   readonly failed: number
   readonly review: number
   readonly skipped: number
+  /** 缺 requestId / 时间非法而跳过的条数：不落账本、不扣费（归 usage 隔离区）。 */
+  readonly invalid: number
   readonly chargedMicros: bigint
 }
 

@@ -85,7 +85,12 @@ export const adminBillingPage: PageModule = {
     return renderAdminShell(
       ctx,
       [
-        pageHeader(ctx, '结算', '真实扣费：先结算、再落用量、最后推进游标；同一 reqId 只扣一次。日期按 UTC。'),
+        pageHeader(
+          ctx,
+          '结算',
+          '真实扣费：一轮的顺序是 拉取 → 落库 → 结算 → 推进游标，同一 reqId 只扣一次；' +
+            '落库失败被隔离的用量不结算也不扣费（见「全站用量」）。日期按 UTC。',
+        ),
         t.renderStatCards(
           [
             { label: '已结算', value: t.formatThousands(totals.settled) },
