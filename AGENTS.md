@@ -129,7 +129,7 @@ export default FooService
 
 ## 4. 现状地图
 
-### 4.1 TS 插件（24 个包；`console` 是已禁用的 SPA，`kit` 是共用底座）
+### 4.1 TS 插件（25 个包；`console` 是已禁用的 SPA，`kit` 是共用底座）
 
 | 包 | 服务 | 职责 |
 |---|---|---|
@@ -144,6 +144,7 @@ export default FooService
 | `@dizzyapi/plugin-account-priority` | `accountPriority` | 策略组唯一写者；拉起 gatewayd；推送账号与 key 快照 |
 | `@dizzyapi/plugin-redeem` | `redeem` | 兑换码唯一写者：批次 / 生成 / 兑换 / 启停 / 人工核查；SQLite `data/redeem.db`；**只落 sha256 与末 4 位掩码**，明文只在生成响应出现一次；加余额只经 `user.adjustBalance` |
 | `@dizzyapi/plugin-billing` | `billing` | 真实扣费的唯一执行者：`usage` 每轮拉到用量后调 `settle`，按 `req_id` 幂等（CAS `pending → settling → settled`）、用 `pricing` 复算整数微元、只经 `user.adjustBalance` 扣款（余额允许为负 = 后付费，记 `overdrawn` + 扣后余额）；SQLite `data/billing.db`；**不预扣、无支付通道** |
+| `@dizzyapi/plugin-topup` | `topup` | 充值订单唯一写者：`manual` 人工到账（下单 / 我的订单 / 取消 / 管理面确认到账与统计），`pending → paid / canceled / expired` 条件更新，到账只经 `user.adjustBalance`；SQLite `data/topup.db`；**支付通道只留 `PaymentProvider` seam，不接真实渠道、不挂回调路由** |
 | `@dizzyapi/plugin-quota` | `quota` | 余额只读快照推送：把 `user` 的全量余额周期（默认 5s）+ 变更后 debounce（1s）推给 Go 的额度闸门（桥命令 `quota.replace`）；**不存数据、不写余额、不做判断**，也不拥有控制桥（桥在 `account-priority`） |
 | `@dizzyapi/plugin-catalog` | `catalog` | 插件能力目录（只读，反射 + 声明） |
 | `@dizzyapi/plugin-frontend` | `frontend` | SPA 静态资源版本 / 清单 / 回滚（**已禁用**，由 `web` 取代） |
@@ -184,9 +185,11 @@ export default FooService
 
 - 数据：`data/users.db`、`data/auth.db`、`data/api-keys.db`、`data/accounts.json`、
   `data/credentials.json`、`data/settings.json`、`data/account-priority.json`、
-  `data/pricing.json`、`data/usage.db`、`data/redeem.db`、`data/billing.db`、`data/frontend/`。
+  `data/pricing.json`、`data/usage.db`、`data/redeem.db`、`data/billing.db`、`data/topup.db`、
+  `data/frontend/`。
 - 用量只有 `usage` 插件写 `usage.db`（含 `usage_rejected` 隔离表）；结算账本只有 `billing`
-  插件写 `billing.db`；价格只有 `pricing` 插件写 `pricing.json`；
+  插件写 `billing.db`；充值订单只有 `topup` 插件写 `topup.db`（加余额只经 `user`）；
+  价格只有 `pricing` 插件写 `pricing.json`；
   兑换码只有 `redeem` 插件写 `redeem.db`（只存 sha256 与掩码）；
   Go 只把用量放进内存环形缓冲，不落盘。
 - 本地端口：`web` `127.0.0.1:7792`（服务端渲染前端）、`api` `127.0.0.1:7791`、
@@ -246,7 +249,7 @@ export default FooService
   + 扣后余额）；结算失败**不推进游标**，下一轮带同一 `afterSeq` 重放补结算；
   `settling` 崩溃残留靠「余额流水里有没有这笔扣款」判定收尾，判不出就转 `review` 人工核查
   （宁可少收一笔，绝不重复扣款）。`/admin/billing` 与 `/api/admin/billing` 可查记录、透支与汇总。
-  **没有预扣 / 冻结**；额度闸门见下条；**没有支付通道**：充值订单仍是 501
+  **没有预扣 / 冻结**；额度闸门见下条
 - 坏记录有界隔离（`usage_rejected`）：同一条用量连续落库失败到 `rejectAfterFailures`（默认 10）
   后不再重试，改逐条独立事务——能插的插、插不进的写隔离表，游标推进到该批最大 seq；
   被隔离的记录**不结算不扣钱**，`/admin/usage` 可看原因并「忽略 / 重放」（重放靠 `req_id` 幂等，
@@ -258,6 +261,13 @@ export default FooService
   快照未就绪 / 过期 / 查不到用户 → 默认**放行 + 节流告警**（可用性优先，后付费结算兜底），
   `-quota-require-snapshot` 打开严格模式改为 503 `QUOTA_SNAPSHOT_UNAVAILABLE`。
   快照 TTL 由 Go 的 `-quota-snapshot-ttl-ms` 定（默认 15000），**必须 ≥ 3 × TS 的 `pollIntervalMs`**
+- **充值订单与人工到账（`topup`）**：`/console/top-up` 下单（金额 1~10000 元，整数微元，
+  正则拆字符串不经浮点）→ `pending`，`manual` 通道返回「线下转账后由管理员确认」的说明
+  （说明落库，不随配置漂移）；`/admin/topup-orders` 列表 + 筛选 + 确认到账 / 取消 + 统计。
+  到账幂等靠 `pending → paid` 的条件更新（`WHERE` 里同时判未过期），只加一次钱；
+  过期三重保险：60s 清扫 + 列表/统计/确认前 `expireDue()` + `claimPaid` 的 WHERE。
+  **支付通道只留 seam**：`PaymentProvider` 接口 + 注册表，本批只实现 `manual`（`online: false`），
+  **不挂任何未验签的回调路由**；配置里出现未知 provider 直接装载失败，不回落 manual
 - 用量投递健康度：`usage.stats` 桥命令给 TS 报 `capacity/size/dropped/gap/epoch/lastSeq`，
   `gap` 只统计「真丢」的部分；轮询默认 1s，落库失败不吞错、游标只推进到实际落库的最大 seq
 - **账号并发闸门与短期冷却（Go 侧，纯进程内）**：每个 attempt 按账号 `concurrency` 原子预留槽位，
@@ -311,7 +321,7 @@ pnpm test:go
 
 - 新增插件必须有 `test/*.test.ts`；新增 Go 模块必须有单测。
 - 测试失败先修实现，不允许删断言或放宽断言来变绿。
-- 当前基线（2026-10-29 实测）：`pnpm test` 577 个用例（576 通过 / 1 跳过），`pnpm typecheck` 干净，
+- 当前基线（2026-10-29 实测）：`pnpm test` 617 个用例（616 通过 / 1 跳过），`pnpm typecheck` 干净，
   `go test ./...` 17 包全 ok，`gofmt -l .` 与 `go vet ./...` 无输出。
   这个数字会变，以实际输出为准。
 
@@ -472,6 +482,20 @@ pnpm build:go         # 产出 bin/gatewayd(.exe)
 - **`app.yml` 会覆盖插件默认值**：`usage.pollIntervalMs` 在 `app.yml` 里写着 `1000`，
   改代码里的默认值时别忘了同步改配置文件，否则线上仍走旧值。
 
+### 充值与支付
+
+- **不挂未验签的回调路由**：没有验签的「加余额」入口等于把钱包开到公网。接真实渠道时一起补：
+  验签、金额与订单核对、provider 重复回调的幂等、失败重试；渠道密钥只能放 `credentials`。
+- **到账幂等只靠条件更新**：`pending → paid` 的 `WHERE` 里必须同时判「未过期」，
+  重复 / 并发确认返回 `credited: false` 且不动余额；加余额失败要能退回 `pending`（可重试）。
+- **跨库残留面按「宁可少给不多给」处理**：`topup.db` 与 `users.db` 不能同一事务，崩溃窗口只有
+  「已标记 paid、还没调 `adjustBalance`」，结果是少给钱而不是重复给；靠订单 + 余额流水人工核对。
+- **订单号必须能验**：`T` + UTC 秒级时间戳 + 8 位十六进制，并发靠主键冲突重试收敛
+  （不用进程内锁）；入口用严格正则校验，防注入式单号。
+- **契约变更要钉住旧形状**：旧 `amountCents` + `method: alipay` 的请求现在是 400，
+  有用例专门守着「501 契约不存在了」，别让旧前端悄悄走回假成功。
+- **用户面不泄露存在性**：看别人的单 / 取消别人的单统一返回 `TOPUP_ORDER_NOT_FOUND`。
+
 ### 额度闸门
 
 - **新增插件必须同时登记两处**：`app.yml` 的 `entries` **和** 根 `package.json` 的
@@ -538,7 +562,8 @@ pnpm build:go         # 产出 bin/gatewayd(.exe)
 
 - 描述符下发、profile 编排、按 profile 切换阶段
 - `quota-check`、`content-audit`、`settle`
-- Go 侧用户 / 额度 / 计费 / 支付；充值订单目前 501
+- **真实支付通道**：只有 `manual`（线下转账 + 管理员人工确认）；没有在线支付、没有回调验签、
+  没有发票 / 退款 / 对账文件。`PaymentProvider` seam 已留好，接渠道时按 §7「充值与支付」补
 - **扣费是「后付费 + 闸门」**：结算已做（幂等 reqId、读时算价→按真实 usage 结算、余额原子调整），
   额度闸门也已做（余额快照 + pre 相位 402）。仍缺：**预扣 / 冻结**（没有「最多能花多少」的上界）、
   **并发中的花费不会计入预检**（同一用户在结算前可以连续打多笔）、严格模式默认关。
