@@ -428,11 +428,15 @@ export class UsageService extends Service implements UsageServiceLike {
   /**
    * 删除超过保留期的记录，分批删到删空。
    *
-   * 公开给单测；定时器每天调用一次。返回删除条数。
+   * 明细（`usage_records`）按 `started_at_ms` 清，隔离区（`usage_rejected`）另算：
+   * **只清 `ignored` 与过了保留期的 `replayed`，`pending` 永不自动清**——
+   * 待人工处理的坏记录不能自己消失。两段清理互不影响。
+   *
+   * 公开给单测；定时器每天调用一次。返回明细删除条数（隔离区删除数见返回值第二个字段）。
    */
-  pruneExpired(nowMs: number = Date.now()): number {
+  pruneExpired(nowMs: number = Date.now()): { records: number; rejected: number } {
     const db = this.db
-    if (db === undefined) return 0
+    if (db === undefined) return { records: 0, rejected: 0 }
     const retentionDays = this.config.retentionDays ?? USAGE_DEFAULTS.retentionDays
     const cutoff = nowMs - retentionDays * DAY_MS
     // 不用 `DELETE ... LIMIT`（需要 SQLite 编译选项）；用子查询选取一批 id，通用且可循环。
@@ -449,6 +453,36 @@ export class UsageService extends Service implements UsageServiceLike {
     }
     if (removed > 0) {
       this.logger.info(`已清理 ${removed} 条过期用量（保留 ${this.config.retentionDays} 天）`)
+    }
+    return { records: removed, rejected: this.pruneRejected(cutoff) }
+  }
+
+  /**
+   * 清理隔离区里已经处理完的过期记录（分批，学 `PRUNE_BATCH`）。
+   *
+   * 只删 `ignored` 与 `replayed` 且 `updated_at_ms` 早于保留期的那部分；
+   * **`pending` 永不自动删**：它要等人工「忽略 / 重放」，自己消失就等于静默免单。
+   */
+  private pruneRejected(cutoffMs: number): number {
+    const db = this.db
+    if (db === undefined) return 0
+    const statement = db.prepare(
+      `DELETE FROM usage_rejected WHERE req_id IN (
+         SELECT req_id FROM usage_rejected
+         WHERE status IN ('ignored', 'replayed') AND updated_at_ms < ?
+         LIMIT ${PRUNE_BATCH}
+       )`,
+    )
+    let removed = 0
+    for (;;) {
+      const changes = Number(statement.run(cutoffMs).changes)
+      removed += changes
+      if (changes < PRUNE_BATCH) break
+    }
+    if (removed > 0) {
+      this.logger.info(
+        `已清理 ${removed} 条过期隔离记录（ignored / replayed，保留 ${this.config.retentionDays} 天；pending 不自动清）`,
+      )
     }
     return removed
   }
@@ -648,9 +682,16 @@ export class UsageService extends Service implements UsageServiceLike {
     try {
       const outcome = this.insertEntries([entry], undefined, { emit: false })
       this.emitAccountUsed(outcome.usedAccounts)
-      // ── 结算钩子位置（feat/money-settle）──
-      // 重放补写的是明细：如果这条记录最终要扣钱，这里必须用同一 req_id 结算一次
-      // （billing 的 req_id 幂等会让重复重放不重复扣），否则会变成「只记统计不扣钱」。
+      // ── 结算补做（seam，由 feat/money-settle 接上）──
+      // owner 定死的规则，实现时不要改成静默降级：
+      //   1. 明细写成功后，如果 billing 在运行，必须调 billing.settle([entry]) 补结算一次；
+      //      靠 req_id 幂等，重复重放不会重复扣。
+      //   2. billing 不在运行 → 本次 replayRejected 必须整体失败（409 稳定错误码，
+      //      提示先启用结算插件），不允许「只记明细不扣钱」。
+      //   3. 位置就在这里：结算失败时要保持 pending（可重试），不能先置 replayed。
+      //   4. billing.settle 是 async：接上时把 replayRejected 改成 async，并同步 await
+      //      `/api/admin/usage/rejected/replay` 与 `/admin/usage` 的 action。
+      this.settleReplayed([entry])
       db.prepare(
         "UPDATE usage_rejected SET status = 'replayed', updated_at_ms = ? WHERE req_id = ? AND status = 'pending'",
       ).run(Date.now(), reqId)
@@ -663,6 +704,16 @@ export class UsageService extends Service implements UsageServiceLike {
       ).run(message, Date.now(), reqId)
       throw new UsageError('USAGE_REJECTED_FAILED', `重放失败：${message}`)
     }
+  }
+
+  /**
+   * 重放后的结算 seam：留给 `feat/money-settle` 接 `billing.settle`。
+   *
+   * 当前分支没有 `billing` 插件，空实现 = 只补明细；实现时必须 fail-closed：
+   * `billing` 不在运行就抛错（让重放整体失败、记录保持 `pending`），不允许静默降级。
+   */
+  private settleReplayed(records: readonly UsageEntry[]): void {
+    void records
   }
 
   // ───────────────────────────────── 内部：存储

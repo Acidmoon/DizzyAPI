@@ -393,7 +393,8 @@ test('保留期：过期记录分批删除', async (t) => {
   service.ingest(entry({ requestId: 'drop-2', startedAt: '2026-02-01T01:00:00.000Z' }))
 
   const removed = service.pruneExpired(Date.parse('2026-10-21T12:00:00.000Z'))
-  assert.equal(removed, 2)
+  assert.equal(removed.records, 2)
+  assert.equal(removed.rejected, 0)
   assert.equal(service.status().records, 1)
   assert.equal(service.list({ ...ALL_TIME }).items[0]?.reqId, 'keep')
 })
@@ -717,16 +718,16 @@ async function waitFor(check: () => boolean, timeoutMs: number): Promise<void> {
   }
 }
 
-/** 一批里同时有坏记录（时间非法）与正常记录。 */
+/** 一批里同时有坏记录（时间非法）与正常记录；序号从 1 连续开始，不该出现 gap。 */
 function mixedBatch(suffix: string) {
   return {
     epoch: 'e1',
-    firstSeq: 3,
-    lastSeq: 4,
+    firstSeq: 1,
+    lastSeq: 2,
     dropped: 0,
     records: [
-      entry({ seq: 3, requestId: `bad-${suffix}`, startedAt: 'not-a-timestamp' }),
-      entry({ seq: 4, requestId: `good-${suffix}` }),
+      entry({ seq: 1, requestId: `bad-${suffix}`, startedAt: 'not-a-timestamp' }),
+      entry({ seq: 2, requestId: `good-${suffix}` }),
     ],
   }
 }
@@ -752,7 +753,7 @@ test('隔离：阈值内整批回滚游标不动，到阈值后坏记录进隔�
     ['good-a'],
     '被隔离的记录不能进 persisted（否则结算会静默扣钱）',
   )
-  assert.equal(service.status().lastSeq, 4, '隔离后游标必须前进')
+  assert.equal(service.status().lastSeq, 2, '隔离后游标必须前进')
   assert.equal(service.status().records, 1, '同批正常记录照常落库')
   assert.equal(service.status().rejectedCount, 1)
   assert.equal(service.status().rejectedPending, 1)
@@ -944,6 +945,43 @@ test('配置：隔离阈值默认 10、边界 1..1000，非法值让插件装载
     }
     assert.equal(active, false, `rejectAfterFailures=${invalid} 必须让插件装载失败`)
     assert.equal(ctx.get('usage', false), undefined, '非法配置不能构造出 usage 服务')
+  }
+})
+
+test('保留期清理：只清 ignored 与过期的 replayed，pending 永不自动清', async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), 'dizzy-usage-prune-'))
+  const dataPath = join(dir, 'usage.db')
+  const world = await boot(t, { dataPath, retentionDays: 30 })
+  try {
+    const now = Date.parse('2026-10-28T12:00:00.000Z')
+    const old = now - 31 * 86_400_000
+    const fresh = now - 1 * 86_400_000
+    const db = new DatabaseSync(dataPath)
+    const insert = db.prepare(
+      `INSERT INTO usage_rejected
+         (req_id, epoch, seq, payload, error, failures, status, first_failed_at_ms, updated_at_ms)
+       VALUES (?, 'e1', 0, '{"requestId":"x"}', 'bad', 10, ?, ?, ?)`,
+    )
+    insert.run('keep-pending-old', 'pending', old, old)
+    insert.run('drop-ignored-old', 'ignored', old, old)
+    insert.run('drop-replayed-old', 'replayed', old, old)
+    insert.run('keep-replayed-fresh', 'replayed', fresh, fresh)
+    db.close()
+
+    const removed = world.service.pruneExpired(now)
+    assert.equal(removed.records, 0, '明细清理不受隔离区影响')
+    assert.equal(removed.rejected, 2, '只清 ignored 与过期的 replayed')
+
+    const left = world.service.listRejected().items.map((row) => row.reqId).sort()
+    assert.deepEqual(left, ['keep-pending-old', 'keep-replayed-fresh'])
+    assert.equal(world.service.status().rejectedPending, 1, 'pending 超期也不能自动清')
+  } finally {
+    try {
+      await world.fiber.dispose()
+    } catch {
+      // 卸载失败不影响断言结果。
+    }
+    rmSync(dir, { recursive: true, force: true })
   }
 })
 
