@@ -209,14 +209,19 @@
 
 # 用量明细：接收 Go 经控制桥送来的请求用量（轮询 `usage.since`），落 SQLite。
 # 只存 token 事实，不存费用；费用由读取方按 pricing 的当前价格表计算。
-# 不 inject account-priority / pricing：它们被禁用时历史查询仍然可用（D5）。
+# 一轮的顺序是「拉取 → 落库 → 结算（billing）→ 推进游标」；结算失败不推进游标。
+# 落库失败的坏记录过了阈值会进 `usage_rejected` 隔离表，由管理面人工忽略 / 重放。
+# 不 inject account-priority / pricing / billing：它们被禁用时历史查询仍然可用（D5）。
 - id: usage
   name: '@dizzyapi/plugin-usage'
   config:
     dataPath: ./data/usage.db
     retentionDays: 90
-    pollIntervalMs: 2000
+    # 1s 一轮：Go 缓冲默认 32768 条，正常流量离回绕很远；结算挂在这一轮里，别调太大。
+    pollIntervalMs: 1000
     maxBatch: 500
+    # 同一条坏记录连续失败多少轮后隔离（1..1000）。低于阈值整批回滚、游标不动。
+    rejectAfterFailures: 10
 
 # 插件能力目录：只读观察窗，汇总已装载插件提供什么、接受什么。
 # 它从活的插件树反射（服务 / 方法 / inject / 配置 schema），事件、桥命令、数据形状
