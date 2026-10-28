@@ -37,10 +37,28 @@
       - '@dizzyapi/plugin-auth'
       - '@dizzyapi/plugin-api'
       - '@dizzyapi/plugin-web'
-    # 余额写入白名单：兑换码插件加额、管理员改余额（api / web）是仅有的合法写者。
-    # 不配 = 任何插件都能改余额；配了就把范围收窄到这三个人。读取始终不限。
+    # 余额写入白名单：结算扣费、兑换码加额、管理员改余额（api / web）是仅有的合法写者。
+    # 不配 = 任何插件都能改余额；配了就把范围收窄到这几个人。读取始终不限。
     balanceWriters:
+      - '@dizzyapi/plugin-billing'
       - '@dizzyapi/plugin-redeem'
+      - '@dizzyapi/plugin-api'
+      - '@dizzyapi/plugin-web'
+
+# 结算插件：真实扣费的唯一执行者（服务名 billing）。
+# usage 每拉到一轮用量，先调 billing.settle(records) 再落统计、推进游标：本插件按 req_id
+# 幂等（CAS pending → settling → settled），用 pricing 的价格复算整数微元，再经
+# user.adjustBalance 扣款（余额允许为负 = 后付费）。价格事实归 pricing、钱归 user，
+# 本插件只提交增量；账本 data/billing.db 只有本插件写。
+# 它 inject user + pricing：缺任一个即停在 PENDING（fail-closed，不拿 0 价记账）。
+# 禁用即关闭账本连接：扣费暂停，用量照常落库（usage 不 inject 本插件）。
+# 上面 user.balanceWriters 必须含本插件名，否则扣费会被 user 明确拒绝（落 failed）。
+- id: billing
+  name: '@dizzyapi/plugin-billing'
+  config:
+    dataPath: ./data/billing.db
+    adminPlugins:
+      - '@dizzyapi/plugin-admin'
       - '@dizzyapi/plugin-api'
       - '@dizzyapi/plugin-web'
 

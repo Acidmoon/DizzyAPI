@@ -28,6 +28,7 @@ import type {
   ApiKeyPort,
   ApiKeySummaryView,
   ApiRuntime,
+  BillingPort,
   CatalogModuleView,
   CatalogPort,
   FrontendPageLike,
@@ -49,6 +50,11 @@ import type {
   SessionRole,
   SessionUserView,
   SessionViewLike,
+  SettleDailyLike,
+  SettleModelLike,
+  SettleRecordLike,
+  SettleSummaryLike,
+  SettleTotalsLike,
   SettingsPort,
   UsageDailyPointLike,
   UsageModelBreakdownLike,
@@ -448,6 +454,10 @@ export class ApiServer {
     }
     if (parts[0] === 'admin' && parts[1] === 'redeem-stats') {
       await this.routeAdminRedeemStats(req, res)
+      return
+    }
+    if (parts[0] === 'admin' && parts[1] === 'billing') {
+      await this.routeAdminBilling(req, res, parts, url)
       return
     }
     if (parts[0] === 'admin' && parts[1] === 'usage') {
@@ -977,7 +987,7 @@ export class ApiServer {
       return
     }
 
-    this.sendJson(req, res, 200, { reqId, ...usage.replayRejected(reqId) })
+    this.sendJson(req, res, 200, { reqId, ...(await usage.replayRejected(reqId)) })
   }
 
   /** 隔离区列表视图：分页与状态筛选都在这里校验，非法值明确 400。 */
@@ -1394,6 +1404,43 @@ export class ApiServer {
     if (!this.allowRead(req, res)) return
     const redeem = this.requireRedeem()
     this.sendJson(req, res, 200, redeemStatsOf(await redeem.stats(API_ACTOR)))
+  }
+
+  // ───────────────────────────────── 管理员：结算 ─────────────────────────────────
+
+  /**
+   * `GET /api/admin/billing`：结算记录 + 汇总（只读，真实扣费不在 HTTP 层发生）。
+   *
+   * 查询参数：`status`（结算状态或 `problem`）、`limit`、`offset`。
+   * 金额一律写成十进制字符串（整数微元），浏览器用 BigInt 解析。
+   */
+  private async routeAdminBilling(
+    req: IncomingMessage,
+    res: ServerResponse,
+    parts: readonly string[],
+    url: URL,
+  ): Promise<void> {
+    await this.requireAdmin(req)
+    if (parts.length !== 2) throw notFound('没有这个结算接口')
+    if (!this.allowRead(req, res)) return
+    const billing = this.requireBilling()
+
+    const status = queryStringOf(url, 'status')
+    const limit = parseIntegerParam(url.searchParams.get('limit'), 'limit', 50, 1, 200)
+    const offset = parseIntegerParam(url.searchParams.get('offset'), 'offset', 0, 0, 10_000_000)
+    const page = await billing.list(API_ACTOR, {
+      ...(status === undefined ? {} : { status }),
+      ...(limit === undefined ? {} : { limit }),
+      ...(offset === undefined ? {} : { offset }),
+    })
+    const summary = await billing.summary(API_ACTOR)
+    this.sendJson(req, res, 200, {
+      totals: settleTotalsOf(summary.totals),
+      daily: summary.daily.map(settleDailyOf),
+      models: summary.models.map(settleModelOf),
+      records: { items: page.items.map(settleRecordOf), total: page.total },
+      generatedAt: this.runtime.now().toISOString(),
+    })
   }
 
   // ───────────────────────────────── 管理员：用户 ─────────────────────────────────
@@ -2075,6 +2122,18 @@ export class ApiServer {
       throw new ApiError('REDEEM_UNAVAILABLE', 503, '兑换码服务不在运行')
     }
     return redeem
+  }
+
+  private requireBilling(): BillingPort {
+    const billing = this.runtime.billing()
+    if (billing === undefined) {
+      throw new ApiError(
+        'BILLING_UNAVAILABLE',
+        503,
+        '结算服务不在运行：扣费已暂停，用量仍照常落库',
+      )
+    }
+    return billing
   }
 
   private allowRead(req: IncomingMessage, res: ServerResponse): boolean {
@@ -2860,6 +2919,61 @@ function redeemStatsOf(stats: RedeemStatsLike): Record<string, unknown> {
     used: stats.used,
     expired: stats.expired,
     redeemedAmountMicro: stats.redeemedAmountMicro.toString(),
+  }
+}
+
+// ───────────────────────────────── 结算（只读） ─────────────────────────────────
+
+function settleRecordOf(record: SettleRecordLike): Record<string, unknown> {
+  return {
+    reqId: record.reqId,
+    userId: record.userId,
+    accountId: record.accountId,
+    model: record.model,
+    day: record.day,
+    inputTokens: record.inputTokens,
+    outputTokens: record.outputTokens,
+    cacheReadTokens: record.cacheReadTokens,
+    cacheWriteTokens: record.cacheWriteTokens,
+    costMicro: record.costMicro.toString(),
+    status: record.status,
+    note: record.note,
+    attempts: record.attempts,
+    startedAt: record.startedAt,
+    claimedAt: record.claimedAt,
+    settledAt: record.settledAt,
+    updatedAt: record.updatedAt,
+  }
+}
+
+function settleTotalsOf(totals: SettleTotalsLike): Record<string, unknown> {
+  return {
+    records: totals.records,
+    settled: totals.settled,
+    noPrice: totals.noPrice,
+    noUser: totals.noUser,
+    failed: totals.failed,
+    review: totals.review,
+    settling: totals.settling,
+    chargedMicros: totals.chargedMicros.toString(),
+    todayChargedMicros: totals.todayChargedMicros.toString(),
+  }
+}
+
+function settleDailyOf(point: SettleDailyLike): Record<string, unknown> {
+  return {
+    date: point.date,
+    records: point.records,
+    settled: point.settled,
+    chargedMicros: point.chargedMicros.toString(),
+  }
+}
+
+function settleModelOf(model: SettleModelLike): Record<string, unknown> {
+  return {
+    model: model.model,
+    records: model.records,
+    chargedMicros: model.chargedMicros.toString(),
   }
 }
 

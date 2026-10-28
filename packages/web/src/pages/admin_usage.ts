@@ -151,7 +151,7 @@ export const adminUsagePage: PageModule = {
       const usage = ctx.services.usage
       if (usage === undefined) throw new WebError('WEB_NO_USAGE', '用量服务未运行')
       const reqId = requiredString(ctx.form, 'reqId', '隔离记录')
-      const result = usage.replayRejected(reqId)
+      const result = await usage.replayRejected(reqId)
       const text = result.inserted
         ? '已重放并补写用量明细'
         : '已重放：这条记录此前已补写成功，没有重复插入'

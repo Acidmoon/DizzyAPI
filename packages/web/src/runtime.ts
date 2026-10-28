@@ -153,7 +153,7 @@ export interface UsageLike {
   /** 把 pending 的隔离记录标记为 ignored（= 明确放弃这笔未结算用量）。 */
   ignoreRejected(reqId: string): void
   /** 按 req_id 重放隔离记录；重复重放不会重复插入。 */
-  replayRejected(reqId: string): { readonly status: string; readonly inserted: boolean }
+  replayRejected(reqId: string): Promise<{ readonly status: string; readonly inserted: boolean }>
 }
 
 export interface UsageRejectedRow {
@@ -300,8 +300,63 @@ export interface RedeemLike {
   stats(actor: string): Promise<RedeemStatsView>
 }
 
-export interface SettingsField {
-  readonly path: string
+// ───────────────────────────── 结算（只读） ─────────────────────────────
+
+export interface SettleRecordView {
+  readonly reqId: string
+  readonly userId: number
+  readonly accountId: string
+  readonly model: string
+  readonly day: string
+  readonly inputTokens: number
+  readonly outputTokens: number
+  readonly cacheReadTokens: number
+  readonly cacheWriteTokens: number
+  readonly costMicro: bigint
+  readonly status: string
+  readonly note: string | null
+  readonly attempts: number
+  readonly startedAt: string
+  readonly settledAt: string | null
+}
+
+export interface SettleTotalsView {
+  readonly records: number
+  readonly settled: number
+  readonly noPrice: number
+  readonly noUser: number
+  readonly failed: number
+  readonly review: number
+  readonly settling: number
+  readonly chargedMicros: bigint
+  readonly todayChargedMicros: bigint
+}
+
+export interface SettleSummaryView {
+  readonly totals: SettleTotalsView
+  readonly daily: readonly {
+    readonly date: string
+    readonly records: number
+    readonly settled: number
+    readonly chargedMicros: bigint
+  }[]
+  readonly models: readonly {
+    readonly model: string
+    readonly records: number
+    readonly chargedMicros: bigint
+  }[]
+}
+
+/** 结算服务的只读面；真实扣费由 usage 的结算钩子驱动，页面只读。 */
+export interface BillingLike {
+  list(
+    actor: string,
+    query?: { readonly status?: string; readonly userId?: number; readonly limit?: number; readonly offset?: number },
+  ): { readonly items: readonly SettleRecordView[]; readonly total: number }
+  summary(actor: string, nowMs?: number): SettleSummaryView
+}
+
+export interface SettingsField {  readonly path: string
   readonly label: string
   readonly kind: string
   readonly writable: boolean
@@ -499,6 +554,7 @@ export interface WebRuntime {
   readonly catalog: CatalogLike | undefined
   readonly accountAdmin: AccountAdminLike | undefined
   readonly redeem: RedeemLike | undefined
+  readonly billing: BillingLike | undefined
   readonly fontSmiley: FontLike | undefined
 }
 

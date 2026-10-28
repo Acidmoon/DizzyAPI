@@ -9,6 +9,8 @@ import { isIssueList } from '@dizzyapi/plugin-kit'
 import UsageService, {
   USAGE_DEFAULTS,
   validateUsageConfig,
+  type SettleBatchOutcomeLike,
+  type SettleCandidateLike,
   type UsageEntry,
   type UsagePollOutcome,
 } from '../src/index.ts'
@@ -59,6 +61,7 @@ interface PriorityFake {
 interface BootOptions {
   readonly priority?: PriorityFake
   readonly pricing?: PricingFake
+  readonly billing?: BillingFake
   readonly retentionDays?: number
   readonly rejectAfterFailures?: number
   readonly dataPath?: string
@@ -75,6 +78,7 @@ async function boot(t: TestContext, options: BootOptions = {}): Promise<World> {
   const ctx = new Context()
   if (options.priority !== undefined) ctx.provide('accountPriority', options.priority)
   if (options.pricing !== undefined) ctx.provide('pricing', options.pricing)
+  if (options.billing !== undefined) ctx.provide('billing', options.billing)
   const fiber = await ctx.plugin(UsageService, {
     dataPath: options.dataPath ?? ':memory:',
     pollIntervalMs: 60_000,
@@ -105,6 +109,33 @@ function shapeOf(outcome: UsagePollOutcome): Record<string, unknown> {
 }
 
 let sequence = 0
+
+/** 结算服务假实现：记下每轮拿到的记录，可让某一轮抛错。 */
+interface BillingFake {
+  readonly calls: (readonly SettleCandidateLike[])[]
+  fail: Error | undefined
+  settle(records: readonly SettleCandidateLike[]): Promise<SettleBatchOutcomeLike>
+}
+
+function fakeBilling(): BillingFake {
+  const fake: BillingFake = {
+    calls: [],
+    fail: undefined,
+    async settle(records) {
+      fake.calls.push(records)
+      if (fake.fail !== undefined) throw fake.fail
+      return {
+        settled: records.length,
+        noPrice: 0,
+        noUser: 0,
+        failed: 0,
+        review: 0,
+        skipped: 0,
+      }
+    },
+  }
+  return fake
+}
 
 function entry(overrides: Partial<UsageEntry> = {}): UsageEntry {
   sequence += 1
@@ -789,7 +820,8 @@ test('隔离：同一条坏记录不会产生第二行，正常记录也只落�
 
 test('隔离区：忽略与重放的状态机、幂等与错误码', async (t) => {
   const priority = fakePriority()
-  const { service } = await boot(t, { priority, rejectAfterFailures: 1 })
+  const billing = fakeBilling()
+  const { service } = await boot(t, { priority, billing, rejectAfterFailures: 1 })
   priority.result = mixedBatch('ignore')
   const isolated = await service.pollOnce()
   assert.equal(isolated.rejected, 1)
@@ -799,16 +831,16 @@ test('隔离区：忽略与重放的状态机、幂等与错误码', async (t) =
   service.ignoreRejected('bad-ignore')
   assert.equal(service.status().rejectedPending, 0)
   assert.equal(service.listRejected().items[0]?.status, 'ignored')
-  assert.throws(() => service.replayRejected('bad-ignore'), /已忽略的隔离记录不再重放/)
+  await assert.rejects(service.replayRejected('bad-ignore'), /已忽略的隔离记录不再重放/)
 
   // 不存在：稳定错误码。
   assert.throws(() => service.ignoreRejected('nope'), /没有这条隔离记录/)
-  assert.throws(() => service.replayRejected('nope'), /没有这条隔离记录/)
+  await assert.rejects(service.replayRejected('nope'), /没有这条隔离记录/)
 
   const codeOf = (error: unknown): string | undefined =>
     typeof error === 'object' && error !== null && 'code' in error ? String(error.code) : undefined
   try {
-    service.replayRejected('bad-ignore')
+    await service.replayRejected('bad-ignore')
     assert.fail('应当抛错')
   } catch (error) {
     assert.equal(codeOf(error), 'USAGE_REJECTED_STATE')
@@ -851,7 +883,8 @@ test('隔离区列表：分页、状态筛选与计数', async (t) => {
 test('重放：按 req_id 幂等，重复重放不重复插入（模拟瞬时故障残留行）', async (t) => {
   const dir = mkdtempSync(join(tmpdir(), 'dizzy-usage-rejected-'))
   const dataPath = join(dir, 'usage.db')
-  const world = await boot(t, { dataPath })
+  const billing = fakeBilling()
+  const world = await boot(t, { dataPath, billing })
   try {
     // 瞬时故障（比如 database is locked）留下的 pending 行：载荷本身是合法的。
     const valid = entry({ seq: 9, requestId: 'replay-9' })
@@ -864,15 +897,19 @@ test('重放：按 req_id 幂等，重复重放不重复插入（模拟瞬时故
     ).run('replay-9', 'e1', 9, JSON.stringify(valid), 'database is locked', 10, now, now)
     db.close()
 
-    const first = world.service.replayRejected('replay-9')
+    const first = await world.service.replayRejected('replay-9')
     assert.deepEqual(first, { status: 'replayed', inserted: true })
     assert.equal(world.service.status().records, 1)
     assert.equal(world.service.status().rejectedPending, 0)
     assert.equal(world.service.listRejected().items[0]?.status, 'replayed')
+    // 重放成功后必须补结算一次（fail-closed 的另一半：不能只记明细不扣钱）。
+    assert.equal(billing.calls.length, 1)
+    assert.equal(billing.calls[0]?.[0]?.requestId, 'replay-9')
 
-    const again = world.service.replayRejected('replay-9')
+    const again = await world.service.replayRejected('replay-9')
     assert.deepEqual(again, { status: 'replayed', inserted: false })
     assert.equal(world.service.status().records, 1, '重复重放不能重复插入')
+    assert.equal(billing.calls.length, 1, '已 replayed 的记录不再结算（req_id 幂等）')
 
     // 载荷损坏时保持 pending 并明确报错（不能静默丢）。
     const broken = new DatabaseSync(dataPath)
@@ -884,8 +921,49 @@ test('重放：按 req_id 幂等，重复重放不重复插入（模拟瞬时故
       )
       .run('broken-1', 'e1', 10, '{"requestId":"broken-1","startedAt":"nope"}', 'bad', 3, now, now)
     broken.close()
-    assert.throws(() => world.service.replayRejected('broken-1'), /重放失败/)
+    await assert.rejects(world.service.replayRejected('broken-1'), /重放失败/)
     assert.equal(world.service.listRejected({ status: 'pending' }).total, 1)
+  } finally {
+    try {
+      await world.fiber.dispose()
+    } catch {
+      // 卸载失败不影响断言结果。
+    }
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('重放：结算插件不在运行 → 整体失败（fail-closed），记录保持 pending', async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), 'dizzy-usage-rejected-'))
+  const dataPath = join(dir, 'usage.db')
+  // 不提供 billing 服务：模拟结算插件被禁用。
+  const world = await boot(t, { dataPath })
+  try {
+    const valid = entry({ seq: 9, requestId: 'replay-no-billing' })
+    const db = new DatabaseSync(dataPath)
+    const now = Date.now()
+    db.prepare(
+      `INSERT INTO usage_rejected
+         (req_id, epoch, seq, payload, error, failures, status, first_failed_at_ms, updated_at_ms)
+       VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?)`,
+    ).run('replay-no-billing', 'e1', 9, JSON.stringify(valid), 'database is locked', 10, now, now)
+    db.close()
+
+    const codeOf = (error: unknown): string | undefined =>
+      typeof error === 'object' && error !== null && 'code' in error ? String(error.code) : undefined
+    await assert.rejects(world.service.replayRejected('replay-no-billing'), (error: unknown) => {
+      assert.equal(codeOf(error), 'USAGE_SETTLE_UNAVAILABLE')
+      return true
+    })
+    // 关键：不能「只记明细不扣钱」就算成功——记录保持 pending（可重试），
+    // 错误原因写回，管理面一眼能看到「结算插件没在运行」。
+    assert.equal(world.service.status().rejectedPending, 1)
+    const row = world.service.listRejected().items[0]
+    assert.equal(row?.status, 'pending', '没结算成功就不能置 replayed')
+    assert.match(row?.error ?? '', /结算插件未运行/)
+    // 明细行可能已经写下（写明细在结算之前），但结算没发生、状态没推进：
+    // 管理员启用结算插件后再次重放即可补结算（req_id 幂等，不会重复扣）。
+    assert.equal(world.service.listRejected({ status: 'replayed' }).total, 0)
   } finally {
     try {
       await world.fiber.dispose()
@@ -983,6 +1061,141 @@ test('保留期清理：只清 ignored 与过期的 replayed，pending 永不自
     }
     rmSync(dir, { recursive: true, force: true })
   }
+})
+
+// ───────────────────────────── 结算（billing） ─────────────────────────────
+
+test('结算：落库后只把真正落库的记录交给 billing，不带金额', async (t) => {
+  const priority = fakePriority()
+  const billing = fakeBilling()
+  const world = await boot(t, { priority, billing })
+
+  priority.result = {
+    epoch: 'e1',
+    firstSeq: 1,
+    lastSeq: 2,
+    dropped: 0,
+    records: [
+      entry({ seq: 1, requestId: 'settle-1', userId: '7', model: 'model-a', inputTokens: 10, outputTokens: 5 }),
+      entry({ seq: 2, requestId: 'settle-2', userId: '8', model: 'model-b' }),
+    ],
+  }
+  const outcome = await world.service.pollOnce()
+  assert.equal(outcome.status, 'ok')
+  assert.equal(outcome.ingested, 2)
+
+  assert.equal(billing.calls.length, 1)
+  const sent = billing.calls[0] ?? []
+  assert.equal(sent.length, 2)
+  assert.deepEqual(sent[0], {
+    requestId: 'settle-1',
+    userId: '7',
+    accountId: 'account-1',
+    model: 'model-a',
+    inputTokens: 10,
+    outputTokens: 5,
+    cacheReadTokens: 2,
+    cacheWriteTokens: 1,
+    startedAt: BASE_TIME,
+  })
+  assert.ok(!Object.hasOwn(sent[0] ?? {}, 'costMicro'), '价格事实不能从 usage 传来')
+})
+
+test('结算：被隔离的坏记录不结算（不能扣一笔查不到的钱）', async (t) => {
+  const priority = fakePriority()
+  const billing = fakeBilling()
+  const world = await boot(t, { priority, billing, rejectAfterFailures: 1 })
+
+  priority.result = mixedBatch('settle-isolated')
+  const outcome = await world.service.pollOnce()
+  assert.equal(outcome.rejected, 1)
+  assert.equal(outcome.ingested, 1)
+
+  assert.equal(billing.calls.length, 1)
+  const sent = billing.calls[0] ?? []
+  assert.equal(sent.length, 1, '只有真正落库的那条进结算批次')
+  assert.equal(sent[0]?.requestId, 'good-settle-isolated')
+  assert.ok(
+    !sent.some((item) => item.requestId === 'bad-settle-isolated'),
+    '被隔离的记录绝不能进结算批次',
+  )
+})
+
+test('结算抛错：明细已落库但不推进游标，下一轮重放只补结算', async (t) => {
+  const priority = fakePriority()
+  const billing = fakeBilling()
+  const world = await boot(t, { priority, billing })
+  billing.fail = new Error('账本写不进去')
+
+  priority.result = {
+    epoch: 'e1',
+    firstSeq: 1,
+    lastSeq: 2,
+    dropped: 0,
+    records: [entry({ seq: 1, requestId: 'retry-1' }), entry({ seq: 2, requestId: 'retry-2' })],
+  }
+  const failed = await world.service.pollOnce()
+  assert.equal(failed.status, 'error')
+  assert.equal(failed.ingested, 2, '事实先留下')
+  assert.equal(world.service.status().lastSeq, 0, '游标不能推进')
+  assert.equal(world.service.status().epoch, null)
+
+  // 下一轮：billing 恢复，同一批记录被重放——INSERT OR IGNORE 不新增，只补结算。
+  billing.fail = undefined
+  const retried = await world.service.pollOnce()
+  assert.equal(retried.status, 'ok')
+  assert.equal(retried.ingested, 0, '重复记录不重复落库')
+  assert.equal(world.service.status().records, 2)
+  assert.equal(world.service.status().lastSeq, 2)
+  assert.equal(billing.calls.length, 2, '第二轮重放了同一批记录')
+  assert.deepEqual(
+    billing.calls[1]?.map((item) => item.requestId),
+    ['retry-1', 'retry-2'],
+  )
+})
+
+test('结算：缺 requestId / 时间非法的记录不进结算批次，也不让整轮抛错', async (t) => {
+  const priority = fakePriority()
+  const billing = fakeBilling()
+  // 阈值 1：第一轮就走到有界隔离路径（坏记录被隔离，好记录照常落库）。
+  const world = await boot(t, { priority, billing, rejectAfterFailures: 1 })
+
+  priority.result = {
+    epoch: 'e1',
+    firstSeq: 1,
+    lastSeq: 3,
+    dropped: 0,
+    records: [
+      { ...entry({ seq: 1, requestId: '' }) },
+      { ...entry({ seq: 2, startedAt: 'not-a-timestamp' }) },
+      entry({ seq: 3, requestId: 'good-one' }),
+    ],
+  }
+  const outcome = await world.service.pollOnce()
+  assert.equal(outcome.status, 'ok', '一条坏记录不许把整轮卡死')
+  assert.equal(outcome.rejected, 2, '两条坏记录进隔离区')
+  assert.equal(world.service.status().lastSeq, 3, '游标照常推进')
+
+  const sent = billing.calls[0] ?? []
+  assert.equal(sent.length, 1)
+  assert.equal(sent[0]?.requestId, 'good-one')
+})
+
+test('结算：billing 不在运行（被禁用）——照常落库，只是不结算', async (t) => {
+  const priority = fakePriority()
+  const world = await boot(t, { priority })
+
+  priority.result = {
+    epoch: 'e1',
+    firstSeq: 1,
+    lastSeq: 1,
+    dropped: 0,
+    records: [entry({ seq: 1, requestId: 'no-billing' })],
+  }
+  const outcome = await world.service.pollOnce()
+  assert.equal(outcome.status, 'ok')
+  assert.equal(world.service.status().records, 1)
+  assert.equal(world.service.status().lastSeq, 1)
 })
 
 test('卸载：轮询定时器停止、数据库连接回收（无残留）', async (t) => {

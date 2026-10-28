@@ -35,6 +35,7 @@
     "@dizzyapi/plugin-api": "workspace:*",
     "@dizzyapi/plugin-api-key": "workspace:*",
     "@dizzyapi/plugin-auth": "workspace:*",
+    "@dizzyapi/plugin-billing": "workspace:*",
     "@dizzyapi/plugin-catalog": "workspace:*",
     "@dizzyapi/plugin-credentials": "workspace:*",
     "@dizzyapi/plugin-deepseek-usage": "workspace:*",

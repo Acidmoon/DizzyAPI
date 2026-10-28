@@ -16,6 +16,7 @@ import type {
   AccountAdminLike,
   ApiKeyLike,
   AuthLike,
+  BillingLike,
   CatalogLike,
   FontLike,
   PricingLike,
@@ -157,6 +158,7 @@ export class WebService extends Service {
       catalog: get<CatalogLike>('catalog'),
       accountAdmin: get<AccountAdminLike>('accountAdmin'),
       redeem: get<RedeemLike>('redeem'),
+      billing: get<BillingLike>('billing'),
       fontSmiley: get<FontLike>('fontSmiley'),
     }
   }
