@@ -90,7 +90,8 @@ test('可选服务缺失：API 仍 ACTIVE，静态 / 目录 / 账号路由各自
   assert.equal(usage.status, 503, '用量路由只依赖 usage 服务，缺失时自己 503')
   assert.equal(usage.json.error.code, 'API_USAGE_UNAVAILABLE')
   const topup = await getJson(`${service.url}/api/topup/options`, { cookie })
-  assert.equal(topup.status, 200)
+  assert.equal(topup.status, 503, '充值选项来自 topup 服务，缺失时自己 503')
+  assert.equal(topup.json.error.code, 'TOPUP_UNAVAILABLE')
 
   const manifest = await getJson(`${service.url}/api/console/manifest`)
   assert.equal(manifest.status, 503)

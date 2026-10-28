@@ -37,10 +37,12 @@
       - '@dizzyapi/plugin-auth'
       - '@dizzyapi/plugin-api'
       - '@dizzyapi/plugin-web'
-    # 余额写入白名单：结算扣费、兑换码加额、管理员改余额（api / web）是仅有的合法写者。
-    # 不配 = 任何插件都能改余额；配了就把范围收窄到这几个人。读取始终不限。
+    # 余额写入白名单：结算扣费（billing）、充值到账（topup）、兑换码加额（redeem）、
+    # 管理员改余额（api / web）是仅有的合法写者。不配 = 任何插件都能改余额；
+    # 配了就把范围收窄到这几个人。读取始终不限。
     balanceWriters:
       - '@dizzyapi/plugin-billing'
+      - '@dizzyapi/plugin-topup'
       - '@dizzyapi/plugin-redeem'
       - '@dizzyapi/plugin-api'
       - '@dizzyapi/plugin-web'
@@ -70,6 +72,26 @@
   name: '@dizzyapi/plugin-billing'
   config:
     dataPath: ./data/billing.db
+    adminPlugins:
+      - '@dizzyapi/plugin-admin'
+      - '@dizzyapi/plugin-api'
+      - '@dizzyapi/plugin-web'
+
+# 充值订单插件：订单的唯一写者（服务名 topup），存储 data/topup.db。
+# 状态机 pending → paid / canceled / expired；到账只经 user.adjustBalance（幂等靠
+# pending → paid 的 CAS：重复确认 / 并发确认只加一次钱，失败会退回 pending 可重试）。
+# **本批没有在线支付**：只留 PaymentProvider 接口，唯一实现是 manual（线下转账 + 管理员
+# 人工确认到账）；不挂任何支付回调路由（没有验签的回调 = 把加余额暴露到公网）。
+# 它 inject user；user.balanceWriters 必须含 '@dizzyapi/plugin-topup'。
+# 禁用即关库 + 停过期清扫定时器：用户 / 管理面路由由 api / web 运行期解析，缺席即 503。
+- id: topup
+  name: '@dizzyapi/plugin-topup'
+  config:
+    dataPath: ./data/topup.db
+    provider: manual
+    expiresMinutes: 30
+    minAmountYuan: 1
+    maxAmountYuan: 10000
     adminPlugins:
       - '@dizzyapi/plugin-admin'
       - '@dizzyapi/plugin-api'

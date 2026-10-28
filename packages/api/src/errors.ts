@@ -32,6 +32,7 @@ export type ApiErrorCode =
   | 'API_SETTINGS_UNAVAILABLE'
   | 'REDEEM_UNAVAILABLE'
   | 'BILLING_UNAVAILABLE'
+  | 'TOPUP_UNAVAILABLE'
   | 'TOPUP_NOT_IMPLEMENTED'
 
 export class ApiError extends Error {
@@ -143,6 +144,18 @@ const EXPLICIT_STATUS: Readonly<Record<string, number>> = {
   // 重放要补结算但结算插件没在运行：依赖缺席 → 503（fail-closed，不静默只记明细）。
   USAGE_SETTLE_UNAVAILABLE: 503,
   USAGE_QUERY_INVALID: 400,
+  // 充值订单：金额越界 / 未知通道是用户输入问题 → 400；状态类拒绝 → 409；
+  // 加余额失败是本地依赖失败（订单已退回 pending，可重试）→ 503；通道失败 → 502。
+  TOPUP_AMOUNT_OUT_OF_RANGE: 400,
+  TOPUP_PROVIDER_UNKNOWN: 400,
+  TOPUP_ORDER_STATE: 409,
+  TOPUP_BALANCE_FAILED: 503,
+  TOPUP_PROVIDER_FAILED: 502,
+  TOPUP_ACTOR_FORBIDDEN: 403,
+  TOPUP_ORDER_NOT_FOUND: 404,
+  TOPUP_NOT_READY: 503,
+  TOPUP_STORE_CORRUPT: 500,
+  TOPUP_STORE_FAILED: 500,
 }
 
 export function statusOfCode(code: string): number {
