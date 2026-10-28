@@ -170,6 +170,106 @@ export interface PricingLike {
   remove(actor: string, model: string): Promise<boolean>
 }
 
+// ───────────────────────────── 兑换码 ─────────────────────────────
+
+export interface RedeemResultView {
+  readonly amount: bigint
+  readonly balance: bigint
+  readonly batchName: string
+}
+
+export interface RedemptionView {
+  readonly codeId: string
+  readonly codeMask: string
+  readonly amountMicro: bigint
+  readonly batchName: string | null
+  readonly redeemedAt: string | null
+}
+
+export interface RedeemBatchView {
+  readonly id: string
+  readonly name: string
+  readonly kind: string
+  readonly amountMicro: bigint
+  readonly total: number
+  readonly notes: string | null
+  readonly createdBy: string
+  readonly createdAt: string
+  readonly expiresAt: string | null
+  readonly codeCount: number
+  readonly usedCount: number
+}
+
+export interface RedeemCodeView {
+  readonly id: string
+  readonly batchId: string
+  readonly batchName: string | null
+  readonly codeMask: string
+  readonly kind: string
+  readonly amountMicro: bigint
+  readonly status: string
+  readonly createdAt: string
+  readonly expiresAt: string | null
+  readonly reservedAt: string | null
+  readonly reservedBy: string | null
+  readonly redeemedAt: string | null
+  readonly redeemedBy: string | null
+  readonly disabledBy: string | null
+  readonly disabledAt: string | null
+}
+
+export interface RedeemStatsView {
+  readonly batches: number
+  readonly codes: number
+  readonly enabled: number
+  readonly disabled: number
+  readonly redeeming: number
+  readonly used: number
+  readonly expired: number
+  readonly redeemedAmountMicro: bigint
+}
+
+export interface RedeemLike {
+  redeemCode(input: { readonly userId: UserId; readonly code: string }): Promise<RedeemResultView>
+  listMyRedemptions(userId: UserId, limit?: number): Promise<readonly RedemptionView[]>
+  createBatch(actor: string, input: {
+    readonly name: string
+    readonly amountMicro: bigint
+    readonly count: number
+    readonly expiresAt?: string | null
+    readonly notes?: string | null
+  }): Promise<{ readonly batch: RedeemBatchView; readonly codes: readonly string[] }>
+  listBatches(
+    actor: string,
+    query?: { readonly limit?: number; readonly offset?: number },
+  ): Promise<readonly RedeemBatchView[]>
+  listCodes(
+    actor: string,
+    query?: {
+      readonly batchId?: string
+      readonly status?: string
+      readonly keyword?: string
+      readonly limit?: number
+      readonly offset?: number
+    },
+  ): Promise<{ readonly items: readonly RedeemCodeView[]; readonly total: number }>
+  setCodeStatus(
+    actor: string,
+    codeId: string,
+    status: 'enabled' | 'disabled',
+  ): Promise<RedeemCodeView>
+  deleteCodes(
+    actor: string,
+    ids: readonly string[],
+  ): Promise<{ readonly deleted: number; readonly rejected: readonly { readonly id: string; readonly reason: string }[] }>
+  resolveRedeeming(
+    actor: string,
+    codeId: string,
+    outcome: 'used' | 'enabled',
+  ): Promise<RedeemCodeView>
+  stats(actor: string): Promise<RedeemStatsView>
+}
+
 export interface SettingsField {
   readonly path: string
   readonly label: string
@@ -255,6 +355,7 @@ export interface WebRuntime {
   readonly settings: SettingsLike | undefined
   readonly catalog: CatalogLike | undefined
   readonly accountAdmin: AccountAdminLike | undefined
+  readonly redeem: RedeemLike | undefined
   readonly fontSmiley: FontLike | undefined
 }
 

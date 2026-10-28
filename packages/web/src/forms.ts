@@ -79,6 +79,23 @@ export function formatYuan(micros: bigint | string | number): string {
   return `${negative ? '-' : ''}¥${yuan.toLocaleString('en-US')}.${String(cents).padStart(2, '0')}`
 }
 
+/**
+ * 元（十进制字符串，最多 6 位小数）→ 整数微元。**只做字符串拆分，不经过浮点**。
+ *
+ * 表单里的金额是给人看的「元」，服务层的额度是整数微元（1 元 = 1_000_000 微元）；
+ * 换算必须在字符串上做，`Number` / `parseFloat` 会把 0.1 变成 0.100000000000000005…
+ */
+export function parseYuanToMicros(text: string): bigint {
+  const value = text.trim()
+  const match = /^(\d{1,15})(?:\.(\d{1,6}))?$/.exec(value)
+  if (match === null) {
+    throw new WebError('WEB_AMOUNT_INVALID', '金额必须是正数，最多 6 位小数')
+  }
+  const whole = BigInt(match[1] as string)
+  const fraction = BigInt((match[2] ?? '').padEnd(6, '0'))
+  return whole * 1_000_000n + fraction
+}
+
 /** 微元 → 带两位小数的元（图轴用）。 */
 export function microsToYuan(micros: string): number {
   return Number(micros) / 1_000_000

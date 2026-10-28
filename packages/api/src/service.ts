@@ -34,6 +34,7 @@ import type {
   CatalogPort,
   FrontendPort,
   PricingPort,
+  RedeemPort,
   SettingsPort,
   UsagePort,
   UserPort,
@@ -135,6 +136,19 @@ export class ApiService extends Service {
       accountPriority: () => this.optionalService<AccountPriorityPort>('accountPriority', ['status']),
       usage: () => this.optionalService<UsagePort>('usage', ['list', 'summary', 'stats', 'exportRows']),
       pricing: () => this.optionalService<PricingPort>('pricing', ['list', 'get', 'set', 'remove']),
+      redeem: () =>
+        this.optionalService<RedeemPort>('redeem', [
+          'redeemCode',
+          'listMyRedemptions',
+          'createBatch',
+          'listBatches',
+          'getBatch',
+          'listCodes',
+          'setCodeStatus',
+          'deleteCodes',
+          'resolveRedeeming',
+          'stats',
+        ]),
       now: () => new Date(),
       uptimeSec: () => Math.round(process.uptime()),
       log: (level, message) => {

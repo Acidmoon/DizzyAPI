@@ -39,6 +39,12 @@ import type {
   ModelPriceInputLike,
   ModelPriceLike,
   PricingPort,
+  RedeemBatchLike,
+  RedeemCodeLike,
+  RedeemPort,
+  RedeemResultLike,
+  RedeemStatsLike,
+  RedemptionLike,
   SessionInfoView,
   SessionRole,
   SessionUserView,
@@ -424,8 +430,24 @@ export class ApiServer {
       await this.routeTopup(req, res, parts)
       return
     }
+    if (parts[0] === 'redeem') {
+      await this.routeRedeem(req, res, parts, url)
+      return
+    }
 
     // 管理员面
+    if (parts[0] === 'admin' && parts[1] === 'redeem-codes') {
+      await this.routeAdminRedeemCodes(req, res, parts, url)
+      return
+    }
+    if (parts[0] === 'admin' && parts[1] === 'redeem-batches') {
+      await this.routeAdminRedeemBatches(req, res, parts, url)
+      return
+    }
+    if (parts[0] === 'admin' && parts[1] === 'redeem-stats') {
+      await this.routeAdminRedeemStats(req, res)
+      return
+    }
     if (parts[0] === 'admin' && parts[1] === 'usage') {
       await this.routeAdminUsage(req, res, parts, url)
       return
@@ -1094,6 +1116,194 @@ export class ApiServer {
       throw new ApiError('TOPUP_NOT_IMPLEMENTED', 501, '支付模块尚未实现，暂时不能创建充值订单')
     }
     throw notFound('没有这个充值接口')
+  }
+
+  // ───────────────────────────────── 兑换码 ─────────────────────────────────
+
+  /**
+   * 用户面：`POST /api/redeem` 兑换，`GET /api/redeem` 我的兑换记录。
+   *
+   * 兑换失败一律走稳定 code（未知 / 已用 / 停用 / 过期 / 兑换中），消息里不含码本身；
+   * 成功只回金额、余额与批次名。
+   */
+  private async routeRedeem(
+    req: IncomingMessage,
+    res: ServerResponse,
+    parts: readonly string[],
+    url: URL,
+  ): Promise<void> {
+    const view = await this.requireSession(req)
+    if (parts.length !== 1) throw notFound('没有这个兑换接口')
+    const redeem = this.requireRedeem()
+
+    if (req.method === 'GET' || req.method === 'HEAD') {
+      const limit = parseIntegerParam(url.searchParams.get('limit'), 'limit', 20, 1, 100)
+      const items = await redeem.listMyRedemptions(view.userId, limit)
+      this.sendJson(req, res, 200, { items: items.map(redemptionOf) })
+      return
+    }
+    if (req.method === 'POST') {
+      const body = await this.jsonBody(req)
+      assertOnlyKeys(body, ['code'])
+      const code = requiredString(body, 'code')
+      const result = await redeem.redeemCode({ userId: view.userId, code })
+      this.sendJson(req, res, 200, redeemResultOf(result))
+      return
+    }
+    this.sendMethodNotAllowed(req, res, ['GET', 'HEAD', 'POST'])
+  }
+
+  /**
+   * 管理面：兑换码列表 / 生成批次 / 单码启停 / 人工核查 / 批量删除。
+   *
+   * 生成是唯一会返回明文的接口，而且**只在这一次响应里**；列表永远只有掩码。
+   */
+  private async routeAdminRedeemCodes(
+    req: IncomingMessage,
+    res: ServerResponse,
+    parts: readonly string[],
+    url: URL,
+  ): Promise<void> {
+    await this.requireAdmin(req)
+    const redeem = this.requireRedeem()
+
+    if (parts.length === 2) {
+      if (req.method === 'GET' || req.method === 'HEAD') {
+        const limit = parseIntegerParam(url.searchParams.get('limit'), 'limit', 50, 1, 200)
+        const offset = parseIntegerParam(url.searchParams.get('offset'), 'offset', 0, 0, 10_000_000)
+        const query: {
+          batchId?: string
+          status?: string
+          keyword?: string
+          limit?: number
+          offset?: number
+        } = {}
+        const batchId = queryStringOf(url, 'batch')
+        if (batchId !== undefined) query.batchId = batchId
+        const status = queryStringOf(url, 'status')
+        if (status !== undefined) query.status = status
+        const keyword = queryStringOf(url, 'keyword')
+        if (keyword !== undefined) query.keyword = keyword
+        if (limit !== undefined) query.limit = limit
+        if (offset !== undefined) query.offset = offset
+
+        const page = await redeem.listCodes(API_ACTOR, query)
+        this.sendJson(req, res, 200, {
+          items: page.items.map(redeemCodeOf),
+          total: page.total,
+        })
+        return
+      }
+      if (req.method === 'POST') {
+        const body = await this.jsonBody(req)
+        assertOnlyKeys(body, ['name', 'amountMicro', 'count', 'expiresAt', 'notes'])
+        const name = requiredString(body, 'name')
+        const amountMicro = requiredMicros(body, 'amountMicro')
+        const count = optionalInteger(body, 'count', 1, 100)
+        if (count === undefined) throw badRequest('count 必须是 1..100 的整数')
+        const expiresAt =
+          Object.hasOwn(body, 'expiresAt') ? nullableString(body, 'expiresAt') : undefined
+        const notes = Object.hasOwn(body, 'notes') ? optionalString(body, 'notes') : undefined
+        const created = await redeem.createBatch(API_ACTOR, {
+          name,
+          amountMicro,
+          count,
+          ...(expiresAt === undefined ? {} : { expiresAt }),
+          ...(notes === undefined ? {} : { notes }),
+        })
+        this.sendJson(req, res, 200, {
+          batch: redeemBatchOf(created.batch),
+          codes: created.codes,
+        })
+        return
+      }
+      if (req.method === 'DELETE') {
+        const body = await this.jsonBody(req)
+        assertOnlyKeys(body, ['ids'])
+        const ids = readStringArray(body.ids, 'ids')
+        const result = await redeem.deleteCodes(API_ACTOR, ids)
+        this.sendJson(req, res, 200, {
+          deleted: result.deleted,
+          rejected: result.rejected.map((item) => ({ id: item.id, reason: item.reason })),
+        })
+        return
+      }
+      this.sendMethodNotAllowed(req, res, ['GET', 'HEAD', 'POST', 'DELETE'])
+      return
+    }
+
+    if (parts.length === 3 && parts[2] === 'status') {
+      if (!this.allowMethod(req, res, ['POST'])) return
+      const body = await this.jsonBody(req)
+      assertOnlyKeys(body, ['id', 'status'])
+      const id = requiredString(body, 'id')
+      const status = requiredString(body, 'status')
+      if (status !== 'enabled' && status !== 'disabled') {
+        throw badRequest('status 只能是 enabled / disabled')
+      }
+      this.sendJson(req, res, 200, redeemCodeOf(await redeem.setCodeStatus(API_ACTOR, id, status)))
+      return
+    }
+
+    if (parts.length === 3 && parts[2] === 'resolve') {
+      if (!this.allowMethod(req, res, ['POST'])) return
+      const body = await this.jsonBody(req)
+      assertOnlyKeys(body, ['id', 'outcome'])
+      const id = requiredString(body, 'id')
+      const outcome = requiredString(body, 'outcome')
+      if (outcome !== 'used' && outcome !== 'enabled') {
+        throw badRequest('outcome 只能是 used / enabled')
+      }
+      this.sendJson(
+        req,
+        res,
+        200,
+        redeemCodeOf(await redeem.resolveRedeeming(API_ACTOR, id, outcome)),
+      )
+      return
+    }
+
+    throw notFound('没有这个兑换码接口')
+  }
+
+  /** 管理面：批次列表与单个批次。 */
+  private async routeAdminRedeemBatches(
+    req: IncomingMessage,
+    res: ServerResponse,
+    parts: readonly string[],
+    url: URL,
+  ): Promise<void> {
+    await this.requireAdmin(req)
+    if (!this.allowRead(req, res)) return
+    const redeem = this.requireRedeem()
+
+    if (parts.length === 2) {
+      const limit = parseIntegerParam(url.searchParams.get('limit'), 'limit', 50, 1, 200)
+      const offset = parseIntegerParam(url.searchParams.get('offset'), 'offset', 0, 0, 10_000_000)
+      const batches = await redeem.listBatches(API_ACTOR, {
+        ...(limit === undefined ? {} : { limit }),
+        ...(offset === undefined ? {} : { offset }),
+      })
+      this.sendJson(req, res, 200, { items: batches.map(redeemBatchOf) })
+      return
+    }
+    if (parts.length === 3) {
+      const id = parts[2] as string
+      this.sendJson(req, res, 200, redeemBatchOf(await redeem.getBatch(API_ACTOR, id)))
+      return
+    }
+    throw notFound('没有这个批次接口')
+  }
+
+  /** 管理面：兑换码统计。 */
+  private async routeAdminRedeemStats(
+    req: IncomingMessage,
+    res: ServerResponse,
+  ): Promise<void> {
+    await this.requireAdmin(req)
+    if (!this.allowRead(req, res)) return
+    const redeem = this.requireRedeem()
+    this.sendJson(req, res, 200, redeemStatsOf(await redeem.stats(API_ACTOR)))
   }
 
   // ───────────────────────────────── 管理员：用户 ─────────────────────────────────
@@ -1769,6 +1979,14 @@ export class ApiServer {
     return settings
   }
 
+  private requireRedeem(): RedeemPort {
+    const redeem = this.runtime.redeem()
+    if (redeem === undefined) {
+      throw new ApiError('REDEEM_UNAVAILABLE', 503, '兑换码服务不在运行')
+    }
+    return redeem
+  }
+
   private allowRead(req: IncomingMessage, res: ServerResponse): boolean {
     if (req.method === 'GET' || req.method === 'HEAD') return true
     this.sendMethodNotAllowed(req, res, ['GET', 'HEAD'])
@@ -2057,6 +2275,23 @@ function optionalInteger(
     throw badRequest(`${key} 必须是 ${min}..${max} 的整数`)
   }
   return value
+}
+
+/**
+ * 金额入参：只接受十进制整数微元（字符串或安全整数），**绝不经过浮点解析**。
+ * 1 元 = 1_000_000 微元；传 `"5"` 表示 5 微元，不是 5 元。
+ */
+function requiredMicros(body: Record<string, unknown>, key: string): bigint {
+  const value = body[key]
+  let text: string
+  if (typeof value === 'string' && /^\d+$/.test(value.trim())) {
+    text = value.trim()
+  } else if (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0) {
+    text = String(value)
+  } else {
+    throw badRequest(`${key} 必须是正整数微元的十进制字符串（1 元 = 1000000 微元）`)
+  }
+  return BigInt(text)
 }
 
 const AVATAR_MAX_BYTES = 256 * 1024
@@ -2441,6 +2676,86 @@ function priorityState(state: string): GatewayHealthState {
   if (state === 'ready') return 'ok'
   if (state === 'dropped' || state === 'failed' || state === 'stopped') return 'down'
   return 'degraded'
+}
+
+// ───────────────────────────────── 兑换码响应归一化 ─────────────────────────────────
+
+/** 金额一律写成十进制字符串（浏览器用 BigInt 解析），JSON 里不出现 bigint。 */
+function redeemResultOf(result: RedeemResultLike): {
+  readonly amountMinor: string
+  readonly balanceMinor: string
+  readonly batchName: string
+} {
+  return {
+    amountMinor: result.amount.toString(),
+    balanceMinor: result.balance.toString(),
+    batchName: result.batchName,
+  }
+}
+
+function redemptionOf(item: RedemptionLike): {
+  readonly codeId: string
+  readonly codeMask: string
+  readonly amountMinor: string
+  readonly batchName: string | null
+  readonly redeemedAt: string | null
+} {
+  return {
+    codeId: item.codeId,
+    codeMask: item.codeMask,
+    amountMinor: item.amountMicro.toString(),
+    batchName: item.batchName,
+    redeemedAt: item.redeemedAt,
+  }
+}
+
+function redeemBatchOf(batch: RedeemBatchLike): Record<string, unknown> {
+  return {
+    id: batch.id,
+    name: batch.name,
+    kind: batch.kind,
+    amountMinor: batch.amountMicro.toString(),
+    total: batch.total,
+    notes: batch.notes,
+    createdBy: batch.createdBy,
+    createdAt: batch.createdAt,
+    expiresAt: batch.expiresAt,
+    codeCount: batch.codeCount,
+    usedCount: batch.usedCount,
+  }
+}
+
+function redeemCodeOf(code: RedeemCodeLike): Record<string, unknown> {
+  return {
+    id: code.id,
+    batchId: code.batchId,
+    batchName: code.batchName,
+    codeMask: code.codeMask,
+    kind: code.kind,
+    amountMinor: code.amountMicro.toString(),
+    status: code.status,
+    createdAt: code.createdAt,
+    expiresAt: code.expiresAt,
+    reservedAt: code.reservedAt,
+    reservedBy: code.reservedBy,
+    redeemedAt: code.redeemedAt,
+    redeemedBy: code.redeemedBy,
+    disabledBy: code.disabledBy,
+    disabledAt: code.disabledAt,
+  }
+}
+
+function redeemStatsOf(stats: RedeemStatsLike): Record<string, unknown> {
+  return {
+    batches: stats.batches,
+    codes: stats.codes,
+    enabled: stats.enabled,
+    disabled: stats.disabled,
+    redeeming: stats.redeeming,
+    used: stats.used,
+    expired: stats.expired,
+    redeemedAmountMicro: stats.redeemedAmountMicro.toString(),
+  }
 }
 
 // ───────────────────────────────── 响应归一化 ─────────────────────────────────
