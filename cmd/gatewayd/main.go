@@ -48,9 +48,29 @@ type handler struct {
 	accounts *accounts.Cache
 	keys     *apikeys.Cache
 	usage    *usagelog.Ring
+	runtime  *accountruntime.Tracker
 	logger   *slog.Logger
 	shutdown chan struct{}
 	stopOnce sync.Once
+}
+
+// accountsStatus 是桥命令 accounts.status 的响应：accounts.State 原样保留，
+// 只增一个**全站聚合**的 runtime 字段（active / cooling）。
+//
+// omitempty + 只增不改：旧 TS 读到未知字段不受影响；没有运行时（测试或未注入）
+// 时字段直接不出现，响应与改动前逐字节一致。
+type accountsStatus struct {
+	accounts.State
+	Runtime *accountruntime.Stats `json:"runtime,omitempty"`
+}
+
+func (h *handler) accountsStatus() accountsStatus {
+	state := h.accounts.State()
+	if h.runtime == nil {
+		return accountsStatus{State: state}
+	}
+	stats := h.runtime.Summary()
+	return accountsStatus{State: state, Runtime: &stats}
 }
 
 func (h *handler) Handle(_ context.Context, method string, params json.RawMessage) (any, error) {
@@ -118,7 +138,7 @@ func (h *handler) Handle(_ context.Context, method string, params json.RawMessag
 		return result, nil
 
 	case bridge.MethodAccountsStatus:
-		return h.accounts.State(), nil
+		return h.accountsStatus(), nil
 
 	case bridge.MethodReplaceKeys:
 		var snapshot apikeys.Snapshot
@@ -393,6 +413,8 @@ func run() error {
 		accounts: accountCache,
 		keys:     keyCache,
 		usage:    usageRing,
+		// 运行时状态只给桥命令看汇总（active / cooling），不进公网 /healthz。
+		runtime:  accountRuntime,
 		logger:   logger,
 		shutdown: stop,
 	}

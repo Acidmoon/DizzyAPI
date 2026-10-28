@@ -148,6 +148,34 @@ func TestRecordLimitDisabledWhenCooldownZero(t *testing.T) {
 	}
 }
 
+func TestSummaryAggregatesActiveAndCooling(t *testing.T) {
+	now := time.Date(2026, 10, 29, 0, 0, 0, 0, time.UTC)
+	tracker := New(30*time.Second, WithClock(func() time.Time { return now }))
+	if stats := tracker.Summary(); stats.Active != 0 || stats.Cooling != 0 {
+		t.Fatalf("空白运行时应全为 0：%+v", stats)
+	}
+
+	release1, _ := tracker.Acquire("acc-1", 0)
+	release2, _ := tracker.Acquire("acc-1", 0)
+	tracker.RecordLimit("acc-1")
+	tracker.RecordLimit("acc-2")
+	stats := tracker.Summary()
+	if stats.Active != 2 || stats.Cooling != 2 {
+		t.Fatalf("aggregate = %+v，期望 active=2 cooling=2", stats)
+	}
+
+	// 冷却到期后冷却计数归零，活跃数不受影响。
+	now = now.Add(31 * time.Second)
+	if stats := tracker.Summary(); stats.Active != 2 || stats.Cooling != 0 {
+		t.Fatalf("冷却到期后 aggregate = %+v，期望 active=2 cooling=0", stats)
+	}
+	release1()
+	release2()
+	if stats := tracker.Summary(); stats.Active != 0 {
+		t.Fatalf("释放后活跃数应归零：%+v", stats)
+	}
+}
+
 func TestNilTrackerIsSafe(t *testing.T) {
 	var tracker *Tracker
 	release, ok := tracker.Acquire("acc", 1)

@@ -128,6 +128,31 @@ func (t *Tracker) RecordLimit(accountID string) {
 	t.cooling[accountID] = until
 }
 
+// Stats 是全站聚合的运行时计数：只有两个整数，不含账号级明细、不含任何秘密。
+type Stats struct {
+	Active  int `json:"active"`
+	Cooling int `json:"cooling"`
+}
+
+// Summary 返回全站聚合计数，供桥命令 accounts.status 的只增字段使用。
+//
+// 聚合而不是明细：账号运行数不该暴露到公网可读的路径上，桥命令只给运维看汇总。
+func (t *Tracker) Summary() Stats {
+	if t == nil {
+		return Stats{}
+	}
+	now := t.now()
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	cooling := 0
+	for _, until := range t.cooling {
+		if now.Before(until) {
+			cooling += 1
+		}
+	}
+	return Stats{Active: t.active(), Cooling: cooling}
+}
+
 // InFlight 返回某账号此刻的活跃请求数（观察用）。
 func (t *Tracker) InFlight(accountID string) int {
 	if t == nil {
