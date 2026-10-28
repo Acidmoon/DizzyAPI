@@ -12,6 +12,7 @@ import { Context, Service } from 'cordis'
 import { FontSmileyService } from '@dizzyapi/plugin-font-smiley'
 import { PageTemplateService } from '@dizzyapi/plugin-page-template'
 import { WebService } from '../src/service.ts'
+import { listenFetchable } from './helpers/fetch-port.ts'
 
 const SESSION_COOKIE = 'dizzyapi_session=test-token'
 
@@ -142,27 +143,36 @@ interface App {
 }
 
 async function boot(t: TestContext, options: { withUsage?: boolean } = {}): Promise<App> {
-  const ctx = new Context()
-  await ctx.plugin(PageTemplateService)
-  await ctx.plugin(FontSmileyService)
-  await ctx.plugin(FakeAuth)
-  if (options.withUsage !== false) await ctx.plugin(FakeUsage)
-  await ctx.plugin(WebService, { port: 0 })
-  const web = ctx.get('web') as WebService
-  for (let index = 0; index < 100; index += 1) {
-    if (web.address !== undefined) break
-    await new Promise((resolve) => setTimeout(resolve, 10))
-  }
-  const address = web.address
-  assert.ok(address !== undefined, 'web 服务没有启动')
+  const started = await listenFetchable(async () => {
+    const ctx = new Context()
+    await ctx.plugin(PageTemplateService)
+    await ctx.plugin(FontSmileyService)
+    await ctx.plugin(FakeAuth)
+    if (options.withUsage !== false) await ctx.plugin(FakeUsage)
+    await ctx.plugin(WebService, { port: 0 })
+    const web = ctx.get('web') as WebService
+    for (let index = 0; index < 100; index += 1) {
+      if (web.address !== undefined) break
+      await new Promise((resolve) => setTimeout(resolve, 10))
+    }
+    const address = web.address
+    assert.ok(address !== undefined, 'web 服务没有启动')
+    return {
+      app: options.withUsage === false ? undefined : (ctx.get('usage') as unknown as FakeUsage),
+      port: address.port,
+      close: async () => {
+        await web.close()
+      },
+    }
+  })
   t.after(async () => {
-    await web.close()
+    await started.close()
   })
   return {
-    base: `http://127.0.0.1:${address.port}`,
-    usage: options.withUsage === false ? undefined : (ctx.get('usage') as unknown as FakeUsage),
+    base: started.base,
+    usage: started.app,
     close: async () => {
-      await web.close()
+      await started.close()
     },
   }
 }
