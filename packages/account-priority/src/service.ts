@@ -42,6 +42,9 @@ import type {
   GatewayAccountsResult,
   GatewayKeySnapshot,
   GatewayKeysResult,
+  GatewayQuotaResult,
+  GatewayQuotaSnapshot,
+  GatewayQuotaStatus,
   RemoteStatus,
   ReplaceStrategiesResult,
   ScoreRequest,
@@ -155,6 +158,8 @@ export class AccountPriorityService extends Service {
       { method: 'keys.replace', direction: 'outbound', requestShape: 'GatewayKeySnapshot', responseShape: 'GatewayKeysResult' },
       { method: 'usage.since', direction: 'outbound', responseShape: 'UsageSinceResult' },
       { method: 'usage.stats', direction: 'outbound', responseShape: 'UsageStatsResult' },
+      { method: 'quota.replace', direction: 'outbound', requestShape: 'GatewayQuotaSnapshot', responseShape: 'GatewayQuotaResult' },
+      { method: 'quota.status', direction: 'outbound', responseShape: 'GatewayQuotaStatus' },
     ],
     storage: [
       { key: 'dataPath', kind: 'file', description: '策略组 JSON（TS 是唯一写者）' },
@@ -301,6 +306,28 @@ export class AccountPriorityService extends Service {
   async usageStats(): Promise<UsageStatsResult> {
     const bridge = this.requireBridge()
     return bridge.request<UsageStatsResult>('usage.stats', {}, this.config.requestTimeoutMs)
+  }
+
+  /**
+   * 推送余额只读快照（额度闸门用）。TS 是快照的唯一生产者，Go 只读。
+   *
+   * 余额明细只在桥帧里：本方法不回显、不记日志；失败由调用方决定重试策略。
+   */
+  async replaceQuota(snapshot: GatewayQuotaSnapshot): Promise<GatewayQuotaResult> {
+    return this.requireBridge().request<GatewayQuotaResult>(
+      'quota.replace',
+      snapshot,
+      this.config.requestTimeoutMs,
+    )
+  }
+
+  /** Go 侧余额快照的健康度（只读、无参数）。 */
+  async quotaStatus(): Promise<GatewayQuotaStatus> {
+    return this.requireBridge().request<GatewayQuotaStatus>(
+      'quota.status',
+      {},
+      this.config.requestTimeoutMs,
+    )
   }
 
   /** 策略组的权威副本（TS 是唯一写者）。 */

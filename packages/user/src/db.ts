@@ -281,6 +281,20 @@ export class UserDatabase {
   }
 
   /**
+   * 列出所有用户的余额（只读，给额度闸门的只读快照用）。
+   *
+   * userId 用十进制字符串：Go 侧同样按字符串标识用户，避免「数字 vs 字符串」
+   * 再造一层 JSON 兼容。余额是 bigint 最小单位，绝不经过浮点。
+   */
+  listBalances(): { userId: string; balance: Balance }[] {
+    const rows = this.all('SELECT id, balance FROM users ORDER BY id')
+    return rows.map((row) => ({
+      userId: readBigInt(row.id, 'users.id').toString(),
+      balance: readBigInt(row.balance, 'users.balance'),
+    }))
+  }
+
+  /**
    * 改余额 + 记流水，在同一个事务里完成：两者要么都成功，要么都不发生。
    * 返回改动后的余额。允许扣成负数（D11）。
    */

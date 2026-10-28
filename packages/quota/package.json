@@ -1,0 +1,22 @@
+{
+  "name": "@dizzyapi/plugin-quota",
+  "version": "0.1.0",
+  "private": true,
+  "description": "DizzyAPI · 余额只读快照推送：把 user 的余额推给 Go 的额度闸门；自己不存数据、不做判断",
+  "type": "module",
+  "license": "MIT",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./package.json": "./package.json"
+  },
+  "scripts": {
+    "test": "node --import tsx --test \"test/*.test.ts\""
+  },
+  "dependencies": {
+    "@cordisjs/plugin-timer": "^1.1.4",
+    "@dizzyapi/plugin-kit": "workspace:*",
+    "cordis": "^4.0.0-rc.11"
+  }
+}

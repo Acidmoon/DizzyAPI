@@ -26,6 +26,22 @@ export const USER_ROLES: readonly UserRole[] = ['admin', 'user']
  */
 export type Balance = bigint
 
+/**
+ * 余额只读快照的一条：余额用十进制最小单位字符串。
+ *
+ * 桥帧是 JSON，承载不了 bigint；用十进制字符串既保精度，也天然不经过浮点
+ * （AGENTS.md §2.4.3：金额一律整数最小单位）。
+ */
+export interface BalanceSnapshotEntry {
+  readonly userId: string
+  readonly balanceMicros: string
+}
+
+/** 全量余额只读快照。推送 / 撤销策略由消费方（额度闸门）决定。 */
+export interface BalanceSnapshot {
+  readonly entries: readonly BalanceSnapshotEntry[]
+}
+
 export const BALANCE_MINOR_UNITS_PER_YUAN = 1_000_000n
 
 export const USER_STATUSES: readonly UserStatus[] = ['enabled', 'banned']

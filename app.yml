@@ -45,6 +45,19 @@
       - '@dizzyapi/plugin-api'
       - '@dizzyapi/plugin-web'
 
+# 余额只读快照推送（服务名 quota）：把 user 的全量余额周期推给 Go 的额度闸门
+# （桥命令 quota.replace），余额变更后 debounce 补推。它自己不存数据、不做判断，
+# 也不拥有控制桥（桥在 account-priority 里）；Go 侧按自己的 TTL 让快照自然过期，
+# 所以禁用本插件不会让闸门永远停在旧余额上。
+# inject user + accountPriority + timer：缺任何一个即停在 PENDING。
+# pollIntervalMs 决定推得快慢；Go 侧 -quota-snapshot-ttl-ms 建议 ≥ 3 × 本值。
+- id: quota
+  name: '@dizzyapi/plugin-quota'
+  config:
+    enabled: true
+    pollIntervalMs: 5000       # 5 秒一轮全量推送
+    debounceMs: 1000           # 余额变更后最多等 1 秒再推
+
 # 结算插件：真实扣费的唯一执行者（服务名 billing）。
 # usage 每拉到一轮用量，先调 billing.settle(records) 再落统计、推进游标：本插件按 req_id
 # 幂等（CAS pending → settling → settled），用 pricing 的价格复算整数微元，再经

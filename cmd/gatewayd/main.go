@@ -34,12 +34,14 @@ import (
 	"github.com/Acidmoon/DizzyAPI/internal/bridge"
 	"github.com/Acidmoon/DizzyAPI/internal/engine"
 	"github.com/Acidmoon/DizzyAPI/internal/httpapi"
+	"github.com/Acidmoon/DizzyAPI/internal/quota"
 	"github.com/Acidmoon/DizzyAPI/internal/usagelog"
 	"github.com/Acidmoon/DizzyAPI/internal/usageprobe"
 	"github.com/Acidmoon/DizzyAPI/modules/accountpriority"
 	"github.com/Acidmoon/DizzyAPI/modules/keyauth"
 	"github.com/Acidmoon/DizzyAPI/modules/modelroute"
 	"github.com/Acidmoon/DizzyAPI/modules/protoconv"
+	"github.com/Acidmoon/DizzyAPI/modules/quotagate"
 	"github.com/Acidmoon/DizzyAPI/modules/transport"
 )
 
@@ -49,6 +51,7 @@ type handler struct {
 	keys     *apikeys.Cache
 	usage    *usagelog.Ring
 	runtime  *accountruntime.Tracker
+	quota    *quota.Cache
 	logger   *slog.Logger
 	shutdown chan struct{}
 	stopOnce sync.Once
@@ -139,6 +142,33 @@ func (h *handler) Handle(_ context.Context, method string, params json.RawMessag
 
 	case bridge.MethodAccountsStatus:
 		return h.accountsStatus(), nil
+
+	case contracts.BridgeMethodQuotaReplace:
+		if h.quota == nil {
+			return nil, bridge.Errorf("QUOTA_UNAVAILABLE", "余额快照缓存未装配")
+		}
+		var snapshot quota.Snapshot
+		if err := decodeParams(params, &snapshot); err != nil {
+			return nil, bridge.Errorf("BRIDGE_BAD_REQUEST", "余额快照参数不合法：%v", err)
+		}
+		result, err := h.quota.Replace(snapshot)
+		if err != nil {
+			var typed *quota.Error
+			if errors.As(err, &typed) {
+				return nil, bridge.Errorf(typed.Code, "%s", typed.Message)
+			}
+			return nil, bridge.Errorf("QUOTA_INVALID_SNAPSHOT", "余额快照更新失败")
+		}
+		// 只记版本与计数：余额明细不进日志。
+		h.logger.Info("余额快照已更新",
+			"revision", result.Revision, "entries", result.Entries, "generation", result.Generation)
+		return result, nil
+
+	case contracts.BridgeMethodQuotaStatus:
+		if h.quota == nil {
+			return quota.State{}, nil
+		}
+		return h.quota.State(), nil
 
 	case bridge.MethodReplaceKeys:
 		var snapshot apikeys.Snapshot
@@ -280,6 +310,13 @@ func run() error {
 	accountCooldownMs := flag.Int("account-cooldown-ms", 30_000,
 		fmt.Sprintf("上游 429 / 额度耗尽后该账号的冷却时间（毫秒）；0 = 关闭冷却，超出 0..%d 直接启动失败",
 			maxAccountCooldownMs))
+	quotaMinBalance := flag.Int64("quota-min-balance-micros", 0,
+		"额度闸门放行所需的最低余额（微元，含）；默认 0 = 余额 0 及以下都拒绝")
+	quotaRequireSnapshot := flag.Bool("quota-require-snapshot", false,
+		"严格模式：余额快照未就绪 / 过期 / 查不到用户时返回 503；默认放行并告警（后付费结算兜底）")
+	quotaSnapshotTTLMs := flag.Int("quota-snapshot-ttl-ms", int(quota.DefaultTTL/time.Millisecond),
+		fmt.Sprintf("余额快照有效期（毫秒），应 ≥ 3 × quota 插件的 pollIntervalMs；超出 %d..%d 直接启动失败",
+			minQuotaSnapshotTTLMs, maxQuotaSnapshotTTLMs))
 	flag.Parse()
 
 	logger := newLogger(*logFormat)
@@ -312,6 +349,13 @@ func run() error {
 	// 纯内存、不落盘、不回写 TS；engine 与 transport 各依赖自己声明的那一小块接口。
 	accountRuntime := accountruntime.New(accountCooldown)
 
+	// 额度闸门的余额快照：纯内存只读缓存，权威数据仍在 TS 的 user 插件里。
+	quotaTTL, err := parseQuotaSnapshotTTL(*quotaSnapshotTTLMs)
+	if err != nil {
+		return err
+	}
+	quotaCache := quota.New(quota.WithTTL(quotaTTL))
+
 	// 组合根是唯一组装点：注册顺序就是阶段顺序 pre → dispatch → post。
 	//
 	// 装配顺序（也是阶段顺序）：
@@ -329,6 +373,15 @@ func run() error {
 		Profile:  *profile,
 		Verifier: keyCache,
 	})
+	// 额度闸门（pre）：按请求的 userId 查余额只读快照，余额 ≤ 阈值直接 402，
+	// 不花钱转发上游。位置必须早于打分与 dispatch，但晚于 key-auth（要 userId）。
+	if _, err := quotagate.Register(registry, quotagate.Config{
+		MinBalanceMicros: *quotaMinBalance,
+		RequireSnapshot:  *quotaRequireSnapshot,
+		SnapshotTTL:      quotaTTL,
+	}, quotaCache, logger); err != nil {
+		return fmt.Errorf("初始化额度闸门阶段失败：%w", err)
+	}
 	// 模型路由过滤（pre）：必须在 accountpriority 之前收窄候选。
 	if _, err := modelroute.RegisterRouter(registry, modelroute.Config{}, logger); err != nil {
 		return fmt.Errorf("初始化模型路由阶段失败：%w", err)
@@ -415,6 +468,7 @@ func run() error {
 		usage:    usageRing,
 		// 运行时状态只给桥命令看汇总（active / cooling），不进公网 /healthz。
 		runtime:  accountRuntime,
+		quota:    quotaCache,
 		logger:   logger,
 		shutdown: stop,
 	}
@@ -454,6 +508,10 @@ func run() error {
 	)
 	logger.Info(keyStage.Describe())
 	logger.Info(accountRuntime.Describe())
+	logger.Info("额度闸门策略",
+		"minBalanceMicros", *quotaMinBalance,
+		"requireSnapshot", *quotaRequireSnapshot,
+		"snapshotTtlMs", quotaTTL.Milliseconds())
 
 	// cordis 用这一行拿到实际地址（TCP :0 时端口是系统分配的）。
 	ready, err := json.Marshal(map[string]any{
