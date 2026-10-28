@@ -135,6 +135,11 @@ const EXPLICIT_STATUS: Readonly<Record<string, number>> = {
   CATALOG_PLUGIN_NOT_FOUND: 404,
   CATALOG_QUERY_INVALID: 400,
   CATALOG_INVALID_CONFIG: 500,
+  // 用量隔离区：状态类拒绝是「当前状态不允许」→ 409；重放失败同样是状态冲突
+  // （记录仍保持 pending，可修好数据后再试），不能伪装成 400。
+  USAGE_REJECTED_STATE: 409,
+  USAGE_REJECTED_FAILED: 409,
+  USAGE_QUERY_INVALID: 400,
 }
 
 export function statusOfCode(code: string): number {

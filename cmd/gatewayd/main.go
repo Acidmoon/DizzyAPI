@@ -158,6 +158,13 @@ func (h *handler) Handle(_ context.Context, method string, params json.RawMessag
 		}
 		return h.usage.Since(query.Epoch, query.AfterSeq, query.Limit), nil
 
+	case contracts.BridgeMethodUsageStats:
+		// 只读快照，没有参数（不 decode，避免无意义的 DisallowUnknownFields 失败）。
+		if h.usage == nil {
+			return usagelog.StatsResult{}, nil
+		}
+		return h.usage.Stats(), nil
+
 	case bridge.MethodShutdown:
 		// 先让响应写完，再关闭进程。TS 不依赖这个 ack，但排障时能看到它。
 		h.stopOnce.Do(func() {
@@ -179,6 +186,16 @@ func mapModuleError(err error) error {
 		return bridge.Errorf(string(typed.Code), "%s", typed.Message)
 	}
 	return bridge.Errorf("ACCOUNT_PRIORITY_INTERNAL", "%v", err)
+}
+
+// newUsageRing 是容量配置的唯一装配点：非法值直接返回错误，让进程起不来，
+// 而不是静默回落到默认容量（那样「配置写错」会看起来像「配置生效」）。
+func newUsageRing(capacity int) (*usagelog.Ring, error) {
+	ring, err := usagelog.NewRing(capacity)
+	if err != nil {
+		return nil, fmt.Errorf("用量环形缓冲容量配置（-usage-ring-capacity）非法：%w", err)
+	}
+	return ring, nil
 }
 
 func decodeParams(raw json.RawMessage, target any) error {
@@ -220,6 +237,9 @@ func run() error {
 		"为 openai-chat 流式请求注入 stream_options.include_usage，以采集 token 用量")
 	trustedProxyHops := flag.Int("trusted-proxy-hops", 1,
 		"X-Forwarded-For 从右往左第几跳是可信代理（默认 1）")
+	usageRingCapacity := flag.Int("usage-ring-capacity", usagelog.DefaultCapacity,
+		fmt.Sprintf("Go 侧用量环形缓冲容量（条）；超出 %d..%d 直接启动失败",
+			usagelog.MinCapacity, usagelog.MaxCapacity))
 	flag.Parse()
 
 	logger := newLogger(*logFormat)
@@ -301,8 +321,12 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("初始化 LLM 请求 engine 失败：%w", err)
 	}
-	// 用量环形缓冲：HTTP 入口写，控制桥的 usage.since 读。
-	usageRing := usagelog.NewRing(usagelog.DefaultCapacity)
+	// 用量环形缓冲：HTTP 入口写，控制桥的 usage.since / usage.stats 读。
+	// 容量不合法时这里直接失败，不静默回落默认值（AGENTS.md §2.4.5）。
+	usageRing, err := newUsageRing(*usageRingCapacity)
+	if err != nil {
+		return err
+	}
 	httpAPI, err := httpapi.New(requestEngine, accountCache, logger, httpapi.Config{
 		MaxBodyBytes: *maxBody,
 		Strategy:     *strategy,
@@ -372,6 +396,7 @@ func run() error {
 		"address", server.Address().String(),
 		"httpAddress", httpListener.Addr().String(),
 		"revision", status.Revision,
+		"usageRingCapacity", usageRing.Stats().Capacity,
 	)
 	logger.Info(keyStage.Describe())
 

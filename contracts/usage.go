@@ -16,6 +16,13 @@ import "time"
 // 生命周期（重启后 seq 从 1 重新开始），避免 TS 的 afterSeq 卡在旧值上。
 const BridgeMethodUsageSince = "usage.since"
 
+// BridgeMethodUsageStats 是桥上的用量缓冲健康度查询方法名（只读、无参数）。
+//
+// 它返回容量 / 占用 / 累计丢弃 / 累计缺口 / epoch / lastSeq，给 TS 在检测到
+// 序号缺口或连续落库失败时补充上下文：「是缓冲太小还是轮询断了」。
+// TS 不该在正常路径上每轮都调用它。
+const BridgeMethodUsageStats = "usage.stats"
+
 // UsageRecord 是一条已完成的 LLM 请求记录。
 //
 // 令牌口径：InputTokens **不含**缓存命中/创建的部分；OpenAI 的 prompt_tokens 包含缓存，

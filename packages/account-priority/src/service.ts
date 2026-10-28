@@ -50,6 +50,7 @@ import type {
   StrategyGroup,
   StrategyListSnapshot,
   UsageSinceResult,
+  UsageStatsResult,
 } from './types.ts'
 import {
   MAX_STRATEGIES,
@@ -152,6 +153,8 @@ export class AccountPriorityService extends Service {
       { method: 'accounts.replace', direction: 'outbound', requestShape: 'GatewayAccountSnapshot', responseShape: 'GatewayAccountsResult' },
       { method: 'accounts.status', direction: 'outbound', responseShape: 'accounts.State' },
       { method: 'keys.replace', direction: 'outbound', requestShape: 'GatewayKeySnapshot', responseShape: 'GatewayKeysResult' },
+      { method: 'usage.since', direction: 'outbound', responseShape: 'UsageSinceResult' },
+      { method: 'usage.stats', direction: 'outbound', responseShape: 'UsageStatsResult' },
     ],
     storage: [
       { key: 'dataPath', kind: 'file', description: '策略组 JSON（TS 是唯一写者）' },
@@ -286,6 +289,18 @@ export class AccountPriorityService extends Service {
   } = {}): Promise<UsageSinceResult> {
     const bridge = this.requireBridge()
     return bridge.request<UsageSinceResult>('usage.since', params, this.config.requestTimeoutMs)
+  }
+
+  /**
+   * 读 Go 环形缓冲的健康度（`usage.stats`，只读、无参数）。
+   *
+   * 给 usage 插件在异常路径上用（序号缺口 / 连续落库失败），说明「是缓冲太小还是
+   * 轮询断了」。正常轮询**不该**每轮都调它。桥没连上时抛
+   * `ACCOUNT_PRIORITY_NOT_READY`，与 `usageSince` 同口径。
+   */
+  async usageStats(): Promise<UsageStatsResult> {
+    const bridge = this.requireBridge()
+    return bridge.request<UsageStatsResult>('usage.stats', {}, this.config.requestTimeoutMs)
   }
 
   /** 策略组的权威副本（TS 是唯一写者）。 */

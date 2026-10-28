@@ -28,7 +28,7 @@ declare module 'cordis' {
   }
 }
 
-export { UsageService }
+export { UsageService, type UsagePollOutcome } from './service.ts'
 export { UsageError, isUsageError, type UsageErrorCode } from './errors.ts'
 export {
   USAGE_CONFIG_SCHEMA,
@@ -48,6 +48,11 @@ export type {
   UsageListPage,
   UsageModelBreakdown,
   UsageQuery,
+  UsageRejectedPage,
+  UsageRejectedQuery,
+  UsageRejectedRow,
+  UsageRejectedStatus,
+  UsageReplayResult,
   UsageRow,
   UsageServiceLike,
   UsageStats,

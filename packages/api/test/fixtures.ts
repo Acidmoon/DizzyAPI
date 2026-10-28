@@ -37,6 +37,10 @@ import type {
   TicketLike,
   UsagePort,
   UsageQueryLike,
+  UsageRejectedPageLike,
+  UsageRejectedQueryLike,
+  UsageRejectedRowLike,
+  UsageReplayResultLike,
   UsageRowLike,
   UsageStatsLike,
   UsageStatusLike,
@@ -45,6 +49,9 @@ import type {
   UserPort,
   UserStatusLike,
 } from '../src/types.ts'
+
+/** 隔离区行：fixture 需要改 status，所以用可变版本。 */
+type MutableRejected = { -readonly [Key in keyof UsageRejectedRowLike]: UsageRejectedRowLike[Key] }
 
 export class DomainError extends Error {
   readonly code: string
@@ -785,6 +792,8 @@ export class FakeAccountPriority implements AccountPriorityPort {
 /** 假用量服务：默认空表；测试可以 `usage.rows.push(...)` 后验证查询口径。 */
 export class FakeUsage implements UsagePort {
   rows: UsageRowLike[] = []
+  rejected: MutableRejected[] = []
+  readonly rejectedActions: { method: 'ignore' | 'replay'; reqId: string }[] = []
 
   list(query: UsageQueryLike) {
     const filtered = this.filter(query)
@@ -816,6 +825,43 @@ export class FakeUsage implements UsagePort {
 
   status(): UsageStatusLike {
     return { records: this.rows.length, epoch: 'test-epoch', lastSeq: this.rows.length, polling: false, pricingAvailable: true }
+  }
+
+  listRejected(query: UsageRejectedQueryLike = {}): UsageRejectedPageLike {
+    const filtered = this.rejected
+      .filter((row) => query.status === undefined || row.status === query.status)
+      .slice()
+      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt) || a.reqId.localeCompare(b.reqId))
+    const limit = Math.min(Math.max(query.limit ?? 20, 1), 200)
+    const offset = Math.max(query.offset ?? 0, 0)
+    return {
+      items: filtered.slice(offset, offset + limit),
+      total: filtered.length,
+      pending: this.rejected.filter((row) => row.status === 'pending').length,
+    }
+  }
+
+  ignoreRejected(reqId: string): void {
+    this.rejectedActions.push({ method: 'ignore', reqId })
+    const row = this.rejected.find((item) => item.reqId === reqId)
+    if (row === undefined) throw new DomainError('USAGE_REJECTED_NOT_FOUND', `没有这条隔离记录：${reqId}`)
+    if (row.status === 'ignored') return
+    if (row.status !== 'pending') {
+      throw new DomainError('USAGE_REJECTED_STATE', `隔离记录已是 ${row.status}，不能再忽略`)
+    }
+    row.status = 'ignored'
+  }
+
+  replayRejected(reqId: string): UsageReplayResultLike {
+    this.rejectedActions.push({ method: 'replay', reqId })
+    const row = this.rejected.find((item) => item.reqId === reqId)
+    if (row === undefined) throw new DomainError('USAGE_REJECTED_NOT_FOUND', `没有这条隔离记录：${reqId}`)
+    if (row.status === 'ignored') {
+      throw new DomainError('USAGE_REJECTED_STATE', '已忽略的隔离记录不再重放')
+    }
+    if (row.status === 'replayed') return { status: 'replayed', inserted: false }
+    row.status = 'replayed'
+    return { status: 'replayed', inserted: true }
   }
 
   private filter(query: UsageQueryLike): UsageRowLike[] {

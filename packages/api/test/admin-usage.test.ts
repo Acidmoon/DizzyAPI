@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { request as httpRequest, type IncomingHttpHeaders } from 'node:http'
 import { test, type TestContext } from 'node:test'
 import { ApiServer } from '../src/http.ts'
-import type { UsageRowLike } from '../src/types.ts'
+import type { UsageRejectedRowLike, UsageRowLike } from '../src/types.ts'
 import { createFixture, type Fixture, type FixtureOptions } from './fixtures.ts'
 
 interface Reply {
@@ -12,33 +12,50 @@ interface Reply {
   readonly json: any
 }
 
-function call(server: ApiServer, path: string, options: { cookie?: string } = {}): Promise<Reply> {
+function dispatch(
+  server: ApiServer,
+  path: string,
+  options: { cookie?: string; method?: string; body?: unknown } = {},
+): Promise<Reply> {
   const port = server.address?.port
   assert.ok(port !== undefined, '服务器必须已启动')
+  const payload = options.body === undefined ? undefined : Buffer.from(JSON.stringify(options.body), 'utf8')
   const headers: Record<string, string> = {
     host: `127.0.0.1:${port}`,
     'x-requested-with': 'dizzyapi',
   }
+  if (payload !== undefined) {
+    headers['content-type'] = 'application/json'
+    headers['content-length'] = String(payload.length)
+  }
   if (options.cookie !== undefined) headers.cookie = options.cookie
 
   return new Promise<Reply>((resolve, reject) => {
-    const req = httpRequest({ host: '127.0.0.1', port, path, method: 'GET', headers }, (res) => {
-      const chunks: Buffer[] = []
-      res.on('data', (chunk: Buffer) => chunks.push(Buffer.from(chunk)))
-      res.on('end', () => {
-        const text = Buffer.concat(chunks).toString('utf8')
-        let json: any
-        try {
-          json = text === '' ? undefined : JSON.parse(text)
-        } catch {
-          json = undefined
-        }
-        resolve({ status: res.statusCode ?? 0, headers: res.headers, text, json })
-      })
-    })
+    const req = httpRequest(
+      { host: '127.0.0.1', port, path, method: options.method ?? 'GET', headers },
+      (res) => {
+        const chunks: Buffer[] = []
+        res.on('data', (chunk: Buffer) => chunks.push(Buffer.from(chunk)))
+        res.on('end', () => {
+          const text = Buffer.concat(chunks).toString('utf8')
+          let json: any
+          try {
+            json = text === '' ? undefined : JSON.parse(text)
+          } catch {
+            json = undefined
+          }
+          resolve({ status: res.statusCode ?? 0, headers: res.headers, text, json })
+        })
+      },
+    )
     req.on('error', reject)
+    if (payload !== undefined) req.write(payload)
     req.end()
   })
+}
+
+function call(server: ApiServer, path: string, options: { cookie?: string } = {}): Promise<Reply> {
+  return dispatch(server, path, options)
 }
 
 async function login(
@@ -126,6 +143,21 @@ function usageRow(overrides: Partial<UsageRowLike> = {}): UsageRowLike {
     attempts: 1,
     startedAt: '2026-10-19T10:00:00.000Z',
     costMicros: '25000',
+    ...overrides,
+  }
+}
+
+function rejectedRow(overrides: Partial<UsageRejectedRowLike> = {}): UsageRejectedRowLike {
+  return {
+    reqId: 'bad-1',
+    epoch: 'e1',
+    seq: 3,
+    payload: '{"requestId":"bad-1","startedAt":"nope"}',
+    error: '用量记录的时间不合法',
+    failures: 10,
+    status: 'pending',
+    firstFailedAt: '2026-10-19T08:00:00.000Z',
+    updatedAt: '2026-10-19T09:00:00.000Z',
     ...overrides,
   }
 }
@@ -248,4 +280,112 @@ test('全站统计：accountAdmin / apiKey 缺席时对应块全 0', async (t) =
   assert.equal(reply.status, 200, reply.text)
   assert.deepEqual(reply.json.accounts, { total: 0, enabled: 0, disabled: 0, needsReauth: 0 })
   assert.deepEqual(reply.json.keys, { total: 0, enabled: 0, disabled: 0 })
+})
+
+// ───────────────────────────────── 坏记录隔离区 ─────────────────────────────────
+
+test('管理员用量：rejected 计数，隔离区列表分页与状态筛选', async (t) => {
+  const fixture = await setup(t)
+  fixture.usage.rejected.push(
+    rejectedRow({ reqId: 'bad-2', status: 'ignored', updatedAt: '2026-10-19T11:00:00.000Z' }),
+    rejectedRow({ reqId: 'bad-1', updatedAt: '2026-10-19T10:00:00.000Z' }),
+  )
+  const cookie = await login(fixture.server, 'owner@example.com', 'password1')
+
+  const main = await call(fixture.server, '/api/admin/usage', { cookie })
+  assert.equal(main.status, 200, main.text)
+  assert.equal(main.json.rejected.total, 2, '主接口给计数')
+  assert.equal(main.json.rejected.pending, 1)
+  assert.equal(main.json.rejected.items.length, 2, '主接口给第一页')
+  assert.equal(main.json.rejected.items[0].reqId, 'bad-2')
+
+  const list = await call(fixture.server, '/api/admin/usage/rejected?limit=1&offset=0', { cookie })
+  assert.equal(list.status, 200, list.text)
+  assert.equal(list.json.total, 2)
+  assert.equal(list.json.pending, 1)
+  assert.equal(list.json.limit, 1)
+  assert.equal(list.json.offset, 0)
+  assert.equal(list.json.items.length, 1)
+  assert.equal(list.json.items[0].reqId, 'bad-2', '按 updated_at 倒序')
+  assert.equal(list.json.items[0].status, 'ignored')
+  assert.match(list.json.items[0].error, /时间不合法/)
+
+  const pending = await call(fixture.server, '/api/admin/usage/rejected?status=pending', { cookie })
+  assert.equal(pending.status, 200, pending.text)
+  assert.equal(pending.json.items.length, 1)
+  assert.equal(pending.json.items[0].reqId, 'bad-1')
+
+  const bogus = await call(fixture.server, '/api/admin/usage/rejected?status=bogus', { cookie })
+  assert.equal(bogus.status, 400)
+  assert.equal(bogus.json.error.code, 'API_BAD_REQUEST')
+
+  const userCookie = await login(fixture.server, 'alice@example.com', 'password2')
+  assert.equal((await call(fixture.server, '/api/admin/usage/rejected', { cookie: userCookie })).status, 403)
+})
+
+test('管理员用量：隔离记录的忽略 / 重放动作与稳定错误码', async (t) => {
+  const fixture = await setup(t)
+  fixture.usage.rejected.push(rejectedRow({ reqId: 'bad-ignore' }), rejectedRow({ reqId: 'bad-replay' }))
+  const cookie = await login(fixture.server, 'owner@example.com', 'password1')
+
+  const ignored = await dispatch(fixture.server, '/api/admin/usage/rejected/ignore', {
+    cookie,
+    method: 'POST',
+    body: { reqId: 'bad-ignore' },
+  })
+  assert.equal(ignored.status, 200, ignored.text)
+  assert.deepEqual(ignored.json, { reqId: 'bad-ignore', status: 'ignored' })
+  assert.deepEqual(fixture.usage.rejectedActions.at(-1), { method: 'ignore', reqId: 'bad-ignore' })
+
+  const replayed = await dispatch(fixture.server, '/api/admin/usage/rejected/replay', {
+    cookie,
+    method: 'POST',
+    body: { reqId: 'bad-replay' },
+  })
+  assert.equal(replayed.status, 200, replayed.text)
+  assert.deepEqual(replayed.json, { reqId: 'bad-replay', status: 'replayed', inserted: true })
+
+  // 已忽略的不能重放：插件稳定 code + 409。
+  const conflict = await dispatch(fixture.server, '/api/admin/usage/rejected/replay', {
+    cookie,
+    method: 'POST',
+    body: { reqId: 'bad-ignore' },
+  })
+  assert.equal(conflict.status, 409)
+  assert.equal(conflict.json.error.code, 'USAGE_REJECTED_STATE')
+
+  // 不存在：404。
+  const missing = await dispatch(fixture.server, '/api/admin/usage/rejected/ignore', {
+    cookie,
+    method: 'POST',
+    body: { reqId: 'nope' },
+  })
+  assert.equal(missing.status, 404)
+  assert.equal(missing.json.error.code, 'USAGE_REJECTED_NOT_FOUND')
+
+  // 未知字段与 GET 动作都明确失败。
+  const unknown = await dispatch(fixture.server, '/api/admin/usage/rejected/ignore', {
+    cookie,
+    method: 'POST',
+    body: { reqId: 'bad-ignore', nope: 1 },
+  })
+  assert.equal(unknown.status, 400)
+  const getAction = await call(fixture.server, '/api/admin/usage/rejected/ignore', { cookie })
+  assert.equal(getAction.status, 405)
+
+  const userCookie = await login(fixture.server, 'alice@example.com', 'password2')
+  const forbiddenAction = await dispatch(fixture.server, '/api/admin/usage/rejected/ignore', {
+    cookie: userCookie,
+    method: 'POST',
+    body: { reqId: 'bad-replay' },
+  })
+  assert.equal(forbiddenAction.status, 403)
+})
+
+test('管理员用量：usage 缺席时隔离区接口也是 503', async (t) => {
+  const fixture = await setup(t, { withoutUsage: true })
+  const cookie = await login(fixture.server, 'owner@example.com', 'password1')
+  const reply = await call(fixture.server, '/api/admin/usage/rejected', { cookie })
+  assert.equal(reply.status, 503)
+  assert.equal(reply.json.error.code, 'API_ADMIN_USAGE_UNAVAILABLE')
 })

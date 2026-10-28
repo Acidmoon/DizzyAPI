@@ -313,3 +313,20 @@ export interface UsageSinceResult {
   readonly dropped: number
   readonly records: readonly UsageSinceRecord[]
 }
+
+/**
+ * `usage.stats` 的返回：Go 环形缓冲的容量与投递健康度（都是整数）。
+ *
+ * `dropped` 是回绕覆盖的累计条数（含已被取走的 churn）；
+ * `gap` 只统计「覆盖时还没有任何 reader 取走」的记录——那才是真正读不回来的数据。
+ * 调用方用 `gap` 的增长做告警，用 `size/capacity` 判断缓冲是否太小。
+ */
+export interface UsageStatsResult {
+  readonly epoch: string
+  readonly capacity: number
+  readonly size: number
+  readonly firstSeq: number
+  readonly lastSeq: number
+  readonly dropped: number
+  readonly gap: number
+}

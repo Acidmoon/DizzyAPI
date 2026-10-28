@@ -8,9 +8,11 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Acidmoon/DizzyAPI/contracts"
 	"github.com/Acidmoon/DizzyAPI/internal/accounts"
 	"github.com/Acidmoon/DizzyAPI/internal/apikeys"
 	"github.com/Acidmoon/DizzyAPI/internal/bridge"
+	"github.com/Acidmoon/DizzyAPI/internal/usagelog"
 	"github.com/Acidmoon/DizzyAPI/modules/accountpriority"
 )
 
@@ -165,5 +167,81 @@ func TestKeysReplaceRejectsInvalidSnapshotWithoutHashes(t *testing.T) {
 	public, ok := err.(*bridge.Error)
 	if !ok || public.Code != apikeys.CodeInvalidKey {
 		t.Fatalf("错误码不对：%v", err)
+	}
+}
+
+func TestUsageRingCapacityRejectsInvalidConfig(t *testing.T) {
+	// 非法容量必须让组合根返回错误（main 会据此 os.Exit(1)），不能静默回落默认值。
+	for _, capacity := range []int{-1, 0, usagelog.MaxCapacity + 1} {
+		ring, err := newUsageRing(capacity)
+		if err == nil {
+			t.Fatalf("capacity=%d 应让启动失败，得到 %+v", capacity, ring)
+		}
+		if !strings.Contains(err.Error(), "-usage-ring-capacity") {
+			t.Fatalf("启动错误应点出配置项：%v", err)
+		}
+	}
+
+	ring, err := newUsageRing(usagelog.DefaultCapacity)
+	if err != nil {
+		t.Fatalf("默认容量应当合法：%v", err)
+	}
+	if got := ring.Stats().Capacity; got != usagelog.DefaultCapacity {
+		t.Fatalf("容量 = %d，期望 %d", got, usagelog.DefaultCapacity)
+	}
+}
+
+func TestUsageStatsReportsRingHealth(t *testing.T) {
+	h := testHandler(t)
+	ring, err := newUsageRing(4)
+	if err != nil {
+		t.Fatalf("newUsageRing: %v", err)
+	}
+	h.usage = ring
+	for index := 0; index < 6; index++ {
+		ring.Append(contracts.UsageRecord{RequestID: "req"})
+	}
+
+	result, err := h.Handle(context.Background(), contracts.BridgeMethodUsageStats, nil)
+	if err != nil {
+		t.Fatalf("usage.stats: %v", err)
+	}
+	stats, ok := result.(usagelog.StatsResult)
+	if !ok {
+		t.Fatalf("usage.stats 返回类型不对：%T", result)
+	}
+	if stats.Capacity != 4 || stats.Size != 4 {
+		t.Fatalf("capacity/size = %d/%d，期望 4/4", stats.Capacity, stats.Size)
+	}
+	if stats.LastSeq != 6 || stats.FirstSeq != 3 {
+		t.Fatalf("first/last = %d/%d，期望 3/6", stats.FirstSeq, stats.LastSeq)
+	}
+	if stats.Dropped != 2 || stats.Gap != 2 {
+		t.Fatalf("dropped/gap = %d/%d，期望 2/2", stats.Dropped, stats.Gap)
+	}
+	if stats.Epoch == "" {
+		t.Fatal("usage.stats 必须带 epoch")
+	}
+
+	// 必须能原样序列化成 JSON 的整数（TS 侧按整数解析，不能出现浮点）。
+	payload, err := json.Marshal(result)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	for _, field := range []string{`"capacity":4`, `"size":4`, `"dropped":2`, `"gap":2`, `"lastSeq":6`} {
+		if !strings.Contains(string(payload), field) {
+			t.Fatalf("usage.stats JSON 缺少 %s：%s", field, payload)
+		}
+	}
+}
+
+func TestUsageStatsWithoutRing(t *testing.T) {
+	h := testHandler(t)
+	result, err := h.Handle(context.Background(), contracts.BridgeMethodUsageStats, nil)
+	if err != nil {
+		t.Fatalf("没有环形缓冲时不应报错：%v", err)
+	}
+	if stats, ok := result.(usagelog.StatsResult); !ok || stats != (usagelog.StatsResult{}) {
+		t.Fatalf("没有环形缓冲时应返回零值，得到 %+v", result)
 	}
 }
