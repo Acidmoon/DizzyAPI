@@ -682,6 +682,15 @@ pnpm build:go         # 产出 bin/gatewayd(.exe)
   `packages/web/test/helpers/fetch-port.ts` 的 `listenFetchable()`（命中就关掉重绑，最多 12 次），
   新写「起临时 server + fetch 打自己」的用例必须用它，不要直接 `port: 0` + `fetch`。
 - 验证「是不是我改坏的」用 `git stash push -- <改动文件>` 做对照，跑完记得 `git stash pop`。
+- **C 盘空间是这台机器的隐形地雷**（2026-10-29 实测）：C 盘只剩 0.62 GB 时 `go test` 链接器报
+  `not enough space on the disk`，7 个包 build failed——**看起来像代码坏了，其实是磁盘满了**。
+  Go 的构建缓存与临时目录已用 `go env -w` 永久挪到 `D:\gocache` / `D:\gotmp`（跨终端有效）。
+  再遇到 `not enough space on the disk` 先看磁盘，别去改代码。Go 模块缓存
+  （`~/go/pkg/mod` 2.7 GB）与 pnpm store（`E:\.pnpm-store`）别乱删。
+- **`skip` 不算绿**：真进程用例（`packages/content-audit/test/gateway-smoke.test.ts`）没有
+  `bin/gatewayd` 时会 skip。改了 Go 侧链路就**先 `pnpm build:go`**，再看用例数里的 skip 数
+  ——基线是 1 个 skip（那是真 skip），多出来的都是「因为没编二进制而没跑」。
+
 
 ---
 
