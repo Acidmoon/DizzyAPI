@@ -396,6 +396,31 @@ pnpm test:go
 - 用量页时间维度只有 **今天 / 昨天 / 近 7 天**：单日（今天、昨天）的柱状图看最近 7 个小时
   （小时桶，标签 `HH:00`），近 7 天按天绘制；图表固定 7 根柱、7 个标签。
 
+### 5.6 文件粒度与耦合（owner 2026-10-29 追加）
+
+**要求原话：不要一个文件写那么大，尽量低耦合。** 这条是硬要求，不是风格偏好。
+
+- **新文件软上限 400 行**（含注释，不含测试数据）。400～500 行要在 PR 说明里写清为什么
+  不能再拆；**超过 500 行不接受提交**，先拆再交。
+- **测试文件软上限 500 行**。测试按主题拆成多个 `test/*.test.ts`，不要一个文件塞完所有场景。
+- **一个文件一个职责**：`service.ts` 放编排、`db.ts` 放 SQL、`types.ts` 放类型、
+  `errors.ts` 放稳定错误码、`config.ts` 放 schema。不要把「编排 + SQL + 类型 + 常量」
+  都塞进 `service.ts`。
+- **一个文件里不出现两个服务 / 两个模块**。同目录的文件之间保持单向依赖：
+  `service → db / types / errors`，反向 import 一律不允许。
+- **已有超限文件只许缩短，不许加长**（大文件债，按需拆，不搞一次性大重构）：
+  `packages/api/src/http.ts` 3856、`packages/usage/src/service.ts` 1326、
+  `packages/account-admin/src/service.ts` 1319、`packages/account-priority/src/service.ts` 1094、
+  `packages/identity/src/service.ts` 1036、`modules/protoconv/codec_*.go` 约 900、
+  `packages/web/src/runtime.ts` 892、`internal/httpapi/server.go` 790。
+  往这些文件里加东西时，**顺手把同一职责搬进新的小文件**，让净增行数尽量小。
+- **`packages/api/src/http.ts` 是最大的债**：它现在是「一个文件装下所有 `/api/*` 路由」。
+  新增路由一律写进按前缀拆的新文件（`routes/keys.ts`、`routes/admin.ts` …），
+  老路由按需迁移，不再往 `http.ts` 里堆。
+- **低耦合的执行标准**：插件之间只经服务接口 / 进程内事件（§2.2 已有）；插件内部
+  不跨层直连别人的存储；Go 侧 `modules/*` 只 import `contracts/`（§2.3 已有）；
+  传输层 / 渲染层 / 存储层不互相 import 实现文件。
+
 ---
 
 ## 6. 构建、测试、部署
