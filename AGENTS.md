@@ -373,8 +373,8 @@ pnpm test:go
 
 - 新增插件必须有 `test/*.test.ts`；新增 Go 模块必须有单测。
 - 测试失败先修实现，不允许删断言或放宽断言来变绿。
-- 当前基线（2026-10-30 实测）：`pnpm test` 760 个用例（759 通过 / 1 跳过），`pnpm typecheck` 干净，
-  `go test ./...` **21 包**全 ok（含 `cmd/dizzy`），`gofmt -l .` 与 `go vet ./...` 无输出。
+- 当前基线（2026-10-30 实测）：`pnpm test` 782 个用例（781 通过 / 1 跳过），`pnpm typecheck` 干净，
+  `go test ./...` **26 包**全 ok，`gofmt -l .` 与 `go vet ./...` 无输出。
   这个数字会变，以实际输出为准。
 - **多 worktree 并行跑测试会互相抢端口**：`pnpm test` 里有多条**真进程用例**（`content-audit`
   的 `gateway-smoke`、`account-priority` 的子进程），它们用 `freePort()` 拿临时端口再 spawn
@@ -568,6 +568,15 @@ pnpm build:all        # 两个二进制一起编
   / `response.failed`；解码端兼容上游发来的 `[DONE]`，编码端不发。
 - **部署顺序**：`accounts.replace` 用 `DisallowUnknownFields`。TS 若先发带新字段的账号快照而 Go
   二进制还是旧的，**整份快照被拒 → 账号缓存清空 → 全部 503**。先重建 Go，再发 TS。
+- **`keys.replace` 同样走 `decodeParams` + `DisallowUnknownFields`，同样踩这条**：key 快照现在带
+  `expiresAt` / `spendingLimitMicros` / `concurrencyLimit`，而 `SnapshotVersion` 仍是 **1**（没 bump），
+  所以旧 Go 会先过版本检查、再因未知字段被整份拒绝 → **key 快照缓存清空 → 所有 API key 校验失败
+  → 全站 401**。上线这个版本必须**先换 `bin/gatewayd` 再重启 `dizzyapi`**，顺序反了就是全站 401。
+  将来再给这两个快照加字段时，考虑把 `SnapshotVersion` 一起 bump，让旧 Go 报「版本不支持」
+  而不是「参数不合法」——错误更好定位，失败同样是 fail-closed。
+- **闸门默认值**：`-pricing-gate` 默认 **false**（未定价模型放行，与上线前一致）；
+  key 级闸门**没有开关、总是注册**（上限全为零值时行为与引入前完全一致）。
+  严格模式一律等新 TS 跑过一轮再开。
 
 ### 模型路由
 
