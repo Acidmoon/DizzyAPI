@@ -13,19 +13,22 @@ import {
   MINI_THEME,
   renderAreaLineChart,
   renderStackedBarChart,
+  type ChartOptions,
   type ChartTheme,
 } from './charts.ts'
 import { escapeAttr, escapeText } from './escape.ts'
 import {
+  AXIS_LABEL_GAP,
+  DARK_TOKENS,
+  FONT_ROLES,
+  FONT_STACK,
+  METRICS,
+  axisPaddingLeft,
   estimateAxisLabelWidth,
   formatAxisDate,
   formatCents,
   formatCompact,
   formatThousands,
-  AXIS_LABEL_GAP,
-  DARK_TOKENS,
-  FONT_STACK,
-  METRICS,
 } from './tokens.ts'
 import {
   renderAuthPage,
@@ -182,8 +185,9 @@ export class PageTemplateService extends Service {
     theme: ChartTheme = COST_THEME,
     unit: 'currency' | 'count' = 'count',
     key?: string,
+    options: ChartOptions = {},
   ): string {
-    return renderStackedBarChart(data, groups, theme, unit, key)
+    return renderStackedBarChart(data, groups, theme, unit, key, options)
   }
 
   renderAreaLineChart(
@@ -191,8 +195,9 @@ export class PageTemplateService extends Service {
     theme: ChartTheme = MINI_THEME,
     unit: 'currency' | 'count' = 'count',
     key?: string,
+    options: ChartOptions = {},
   ): string {
-    return renderAreaLineChart(data, theme, unit, key)
+    return renderAreaLineChart(data, theme, unit, key, options)
   }
 
   escapeText(value: string): string {
@@ -219,8 +224,14 @@ export class PageTemplateService extends Service {
     return formatAxisDate(iso)
   }
 
-  estimateAxisLabelWidth(text: string): number {
-    return estimateAxisLabelWidth(text)
+  /** 轴标签宽度估算：按实际字号派生（默认轴文字口径 = caption 档）。 */
+  estimateAxisLabelWidth(text: string, fontSize: number = FONT_ROLES.caption.size): number {
+    return estimateAxisLabelWidth(text, fontSize)
+  }
+
+  /** 绘图区左内边距：由最宽刻度与字号算出（`charts.ts` 两处共用这一份）。 */
+  axisPaddingLeft(widestTick: string, fontSize: number = FONT_ROLES.caption.size): number {
+    return axisPaddingLeft(widestTick, fontSize)
   }
 
   readonly axisLabelGap = AXIS_LABEL_GAP

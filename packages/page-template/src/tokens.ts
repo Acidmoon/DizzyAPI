@@ -73,18 +73,7 @@ export const METRICS = {
   menuItemGap: 2,
   menuIconSize: 18,
   menuIconMarginRight: 10,
-  titleSize: 24,
-  titleLineHeight: 32,
   titleMarginBottom: 8,
-  /** 指标大数字：29px / 36px，500 字重，tabular-nums。 */
-  metricValueSize: 29,
-  metricValueLineHeight: 36,
-  metricUnitSize: 16,
-  metricUnitLineHeight: 24,
-  labelSize: 14,
-  labelLineHeight: 22,
-  captionSize: 12,
-  captionLineHeight: 18,
   /** 图表卡内边距：20px 20px 12px。 */
   chartCardPaddingX: 20,
   chartCardPaddingTop: 20,
@@ -92,16 +81,68 @@ export const METRICS = {
   chartCardMinHeight: 335,
   chartHeaderGap: 10,
   chartHeaderMarginBottom: 13,
-  /** 分段控件：26px 高、20px 圆角、11px 字。 */
+  /** 分段控件：26px 高、20px 圆角（字见 FONT_ROLES.chip）。 */
   segmentedHeight: 26,
   segmentedRadius: 20,
-  segmentedFontSize: 11,
   segmentedPaddingX: 8,
-  /** 模型分块：标题 16px，与上方间距 24px。 */
-  modelTitleSize: 16,
+  /** 模型分块：与上方间距 24px（标题字见 FONT_ROLES.emphasis）。 */
   modelBlockMarginTop: 24,
   /** 侧栏底部用户行的头像 32px。 */
   avatarSize: 32,
+} as const
+
+/**
+ * 字号与行高的**唯一源**。
+ *
+ * 为什么要这张表：字号原先在 `assets.ts` 的 `PAGE_CSS` 里硬编码 39 处、在 `METRICS` 里
+ * 另抄一份，两边**从来没有引用关系**，靠手工同步——必然会漂移。现在规定：
+ *
+ * - 这份表是唯一源，`PAGE_CSS` 的 `:root` 里 `--fs-<role>` / `--lh-<role>` 由它派生；
+ * - 用例断言「表里的 size」与「CSS 里 `--fs-<role>` 的值」逐条相等（防漂移护栏）。
+ *
+ * `lineHeight` 是**无单位倍数**：`1.5 × font-size`，所以用户把字号调大时行高自动跟随。
+ * 若写成 px，用户选「特大」时正文 16→24px 会压在 22px 行高上 → 文字重叠。
+ *
+ * 档位是 2026-10-29 全站整体上调一档的结果（owner 要求「加大两号」）：
+ * 原值 10/11/12/13/14/16/22/24/29 → 12/13/14/15/16/18/26/28/34。
+ * `metric` 必须比 `title` 大——原先 29 对 24，若只涨标题到 28 而数值不动，层级就塌了。
+ */
+export const FONT_ROLES = {
+  /** 徽标 / 极小字。 */
+  micro: { size: 12, lineHeight: 1.4 },
+  /** 分段控件、小标签。 */
+  chip: { size: 13, lineHeight: 1.27 },
+  /** 提示、表内小字、图表轴文字。 */
+  caption: { size: 14, lineHeight: 1.5 },
+  /** 字段标签、表格正文。 */
+  label: { size: 15, lineHeight: 1.54 },
+  /** 正文、按钮。 */
+  body: { size: 16, lineHeight: 1.57 },
+  /** 小标题、姓名、模型名。 */
+  emphasis: { size: 18, lineHeight: 1.5 },
+  /** 侧栏品牌字 / 登录页大标题。 */
+  brand: { size: 26, lineHeight: 1.09 },
+  /** 页面标题。 */
+  title: { size: 28, lineHeight: 1.33 },
+  /** 指标大数字。 */
+  metric: { size: 34, lineHeight: 1.24 },
+} as const
+
+export type FontRole = keyof typeof FONT_ROLES
+
+/**
+ * 字距：**按角色分开**，不是全局一个值。
+ *
+ * 原因：`.side-word` 原本是 `letter-spacing: -.4px`（品牌字收紧是设计意图）。
+ * 若全局加正字距，要么被它自己覆盖、要么把品牌字撑开。
+ *
+ * 以 em 表达，这样跟着字号一起缩放。
+ */
+export const LETTER_SPACING = {
+  /** 正文 / 辅助 / 标题：略放宽，提升可读性（owner 要求「字间距放宽」）。 */
+  normal: '0.01em',
+  /** 品牌字与其他紧凑锁定：保持收紧，显得是「一个整体」。 */
+  tight: '-0.02em',
 } as const
 
 /** 字体栈：原站用 `Inter` + 系统回退；不 vendor 字体文件。 */
@@ -150,20 +191,49 @@ export function formatAxisDate(iso: string): string {
 }
 
 /**
- * 估算 12px 轴标签文字的像素宽度。
+ * 图表轴布局的三个魔数，集中在这里（原先散落在 `charts.ts` 两处重复的表达式里）。
  *
- * 原站的绘图区左边界是跟着刻度文字宽度走的：刻度 `40` 时左边界 22、
- * 刻度 `2M` 时 22、刻度 `600M` 时 37、刻度 `2,000` 时 44.5。
- * 反推得到「字符数 × 7.5 + 7」，与原站四个数据点逐点吻合。
+ * 历史：原站实测「字符数 × 7.5 + 7」是在**轴文字 12px** 下标定的，
+ * 7.5 / 12 = **0.625 em/字符**。字号上调后若仍按 7.5 硬算，字宽被低估约 17%
+ * → y 轴刻度会被 SVG 左边界裁掉。所以改成按字号派生。
+ */
+const AXIS_BASE_FONT_SIZE = 12
+/** 每字符宽度（em）。`7.5 / 12`。 */
+export const AXIS_CHAR_WIDTH_EM = 0.625
+/** 轴刻度文字与绘图区左边界之间的间隙，按 12px 基准的像素值（会随字号缩放）。 */
+export const AXIS_LABEL_GAP = 7
+/** 左内边距下限（与字号无关，太窄会贴边）。 */
+export const AXIS_PADDING_MIN = 22
+/** 左内边距上限，按 12px 基准的像素值（会随字号缩放）。 */
+export const AXIS_PADDING_MAX = 60
+
+/**
+ * 估算轴标签文字的像素宽度。
  *
  * @param text 刻度文本，例如 `600M`、`2,000`
+ * @param fontSize 轴文字实际字号（已含用户字号档位缩放）
  */
-export function estimateAxisLabelWidth(text: string): number {
-  return text.length * 7.5
+export function estimateAxisLabelWidth(text: string, fontSize: number): number {
+  return text.length * fontSize * AXIS_CHAR_WIDTH_EM
 }
 
-/** 轴刻度文字与绘图区左边界之间的固定间隙（原站实测 7px）。 */
-export const AXIS_LABEL_GAP = 7
+/**
+ * 由最宽刻度文字算出绘图区左内边距。
+ *
+ * `charts.ts` 原先在两处各写了一遍 `min(60, max(22, ceil(width + 7)))`，
+ * 现在收成这一份，两处共用。
+ *
+ * 上下限按字号同比缩放：否则用户把字号调到「特大」时，
+ * 7 字符刻度（如 `800,000`）会顶到 60 的上限被裁掉——这 60 就是 12px 下的临界值。
+ *
+ * @param widestTick 最宽的刻度文本
+ * @param fontSize 轴文字实际字号
+ */
+export function axisPaddingLeft(widestTick: string, fontSize: number): number {
+  const scale = fontSize / AXIS_BASE_FONT_SIZE
+  const needed = Math.ceil(estimateAxisLabelWidth(widestTick, fontSize) + AXIS_LABEL_GAP * scale)
+  return Math.min(AXIS_PADDING_MAX * scale, Math.max(AXIS_PADDING_MIN, needed))
+}
 
 function trimZero(value: number): string {
   const rounded = Math.round(value * 10) / 10

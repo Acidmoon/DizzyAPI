@@ -19,13 +19,20 @@ export default PageTemplateService
 export {
   DARK_TOKENS,
   FONT_STACK,
+  FONT_ROLES,
+  LETTER_SPACING,
   METRICS,
+  AXIS_CHAR_WIDTH_EM,
   AXIS_LABEL_GAP,
+  AXIS_PADDING_MAX,
+  AXIS_PADDING_MIN,
+  axisPaddingLeft,
   estimateAxisLabelWidth,
   formatAxisDate,
   formatCents,
   formatCompact,
   formatThousands,
+  type FontRole,
 } from './tokens.ts'
 
 export { PAGE_CSS, THEME_VARS, CLIENT_JS } from './assets.ts'
@@ -39,6 +46,7 @@ export {
   MINI_THEME,
   renderAreaLineChart,
   renderStackedBarChart,
+  type ChartOptions,
   type ChartTheme,
 } from './charts.ts'
 

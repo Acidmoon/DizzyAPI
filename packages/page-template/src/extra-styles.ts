@@ -7,7 +7,7 @@
 export const COMPONENT_CSS = `
 /* ── 数据表格 ──────────────────────────────────────────────────── */
 .panel { background: var(--bg-layer-1); border-radius: 16px; overflow: hidden; margin-bottom: 24px; }
-.table { width: 100%; border-collapse: collapse; font-size: 13px; line-height: 20px; }
+.table { width: 100%; border-collapse: collapse; font-size: var(--fs-label); line-height: var(--lh-label); }
 .table th {
   text-align: left; font-weight: 500; color: var(--label-tertiary);
   padding: 12px 16px; border-bottom: 1px solid var(--border-l1); white-space: nowrap;
@@ -16,32 +16,38 @@ export const COMPONENT_CSS = `
 .table tr:last-child td { border-bottom: none; }
 .table tr:hover td { background: var(--bg-layer-2); }
 .table .num { text-align: right; font-variant-numeric: tabular-nums; }
-.table .mono { font-family: Menlo, Monaco, Consolas, monospace; font-size: 12px; }
+.table .mono { font-family: Menlo, Monaco, Consolas, monospace; font-size: var(--fs-caption); }
 .table .empty-row td { color: var(--label-caption); text-align: center; padding: 32px 16px; }
 
 /* ── 表单 ──────────────────────────────────────────────────────── */
-.form { display: flex; flex-direction: column; gap: 16px; max-width: 520px; }
+/* 第 7 条：表单块之间 24px（原先 16px 太挤）；行内控件之间 12px 见 .row；按钮组 8px 见 .actions。 */
+.form { display: flex; flex-direction: column; gap: 24px; max-width: 520px; }
+/* 宽表单：替代页面里那些被 CSP 丢掉的 style="max-width:none"（见 27 处内联样式）。 */
+.form--wide { max-width: none; }
 .field { display: flex; flex-direction: column; gap: 6px; }
-.field > label { font-size: 13px; line-height: 20px; color: var(--label-secondary); }
-.field .hint { font-size: 12px; line-height: 18px; color: var(--label-caption); }
+.field > label { font-size: var(--fs-label); line-height: var(--lh-label); color: var(--label-secondary); }
+.field .hint { font-size: var(--fs-caption); line-height: var(--lh-caption); color: var(--label-caption); }
 .input, .select, .textarea {
   background: var(--bg-layer-2); border: 1px solid var(--border-l2); border-radius: 10px;
-  color: var(--label-primary); font: inherit; font-size: 14px; line-height: 22px;
+  color: var(--label-primary); font: inherit; font-size: var(--fs-body); line-height: var(--lh-body);
   padding: 8px 12px; height: 38px; outline: none; width: 100%;
 }
 .textarea { height: auto; min-height: 96px; resize: vertical; }
 .input:focus, .select:focus, .textarea:focus { border-color: var(--border-l3); }
 .row { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-end; }
 .row > .field { flex: 1 1 200px; }
+/* 第 7 条：.row 里的按钮组独占一行——原先「名称输入框 + 创建按钮」挤在 520px 的同一行，
+ * 而被 CSP 丢掉的 style="max-width:none" 没能把表单放宽，于是看着「粘在一起」。 */
+.row > .actions { flex: 1 1 100%; }
 .actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 .btn.danger { background: transparent; color: var(--error, #F25A5A); border: 1px solid var(--border-l2); }
-.btn.small { height: 28px; min-width: 0; padding: 0 10px; font-size: 12px; border-radius: 14px; }
+.btn.small { height: 28px; min-width: 0; padding: 0 10px; font-size: var(--fs-caption); border-radius: 14px; }
 .inline-form { display: inline; }
 
 /* ── 提示条 ────────────────────────────────────────────────────── */
 .notice {
   display: flex; align-items: center; gap: 8px; border-radius: 10px;
-  padding: 10px 14px; font-size: 13px; line-height: 20px; margin-bottom: 20px;
+  padding: 10px 14px; font-size: var(--fs-label); line-height: var(--lh-label); margin-bottom: 20px;
   background: var(--bg-layer-2); color: var(--label-secondary);
 }
 .notice.ok { background: rgba(34,197,94,.12); color: var(--success); }
@@ -56,28 +62,28 @@ export const COMPONENT_CSS = `
   width: 100%; max-width: 380px; background: var(--bg-layer-3); border-radius: 16px;
   padding: 28px 24px; display: flex; flex-direction: column; gap: 18px;
 }
-.auth-title { font-size: 22px; line-height: 30px; font-weight: 600; margin: 0; }
-.auth-sub { font-size: 13px; line-height: 20px; color: var(--label-tertiary); margin: 0; }
-.auth-foot { font-size: 13px; color: var(--label-tertiary); display: flex; gap: 6px; }
+.auth-title { font-size: var(--fs-brand); line-height: var(--lh-brand); font-weight: 600; margin: 0; }
+.auth-sub { font-size: var(--fs-label); line-height: var(--lh-label); color: var(--label-tertiary); margin: 0; }
+.auth-foot { font-size: var(--fs-label); color: var(--label-tertiary); display: flex; gap: 6px; }
 
 /* ── 标签与状态 ────────────────────────────────────────────────── */
 .badge {
   display: inline-flex; align-items: center; height: 22px; padding: 0 8px;
-  border-radius: 6px; font-size: 12px; line-height: 18px;
+  border-radius: 6px; font-size: var(--fs-caption); line-height: var(--lh-caption);
   background: var(--bg-layer-2); color: var(--label-secondary);
 }
 .badge.ok { background: rgba(34,197,94,.12); color: var(--success); }
 .badge.warn { background: rgba(245,158,11,.12); color: #F59E0B; }
 .badge.err { background: rgba(242,90,90,.12); color: #F25A5A; }
 .muted { color: var(--label-caption); }
-.mono { font-family: Menlo, Monaco, Consolas, monospace; font-size: 12px; }
-.section-title { font-size: 16px; line-height: 24px; font-weight: 600; margin: 0 0 12px; }
+.mono { font-family: Menlo, Monaco, Consolas, monospace; font-size: var(--fs-caption); }
+.section-title { font-size: var(--fs-emphasis); line-height: var(--lh-emphasis); font-weight: 600; margin: 0 0 12px; }
 .grid-2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
 .stack { display: flex; flex-direction: column; gap: 12px; }
-.pager { display: flex; gap: 8px; align-items: center; margin: 12px 0 24px; font-size: 13px; color: var(--label-tertiary); }
+.pager { display: flex; gap: 8px; align-items: center; margin: 12px 0 24px; font-size: var(--fs-label); color: var(--label-tertiary); }
 @media (max-width: 767px) {
   .grid-2 { grid-template-columns: minmax(0, 1fr); }
-  .table { font-size: 12px; }
+  .table { font-size: var(--fs-caption); }
   .table th, .table td { padding: 10px 12px; }
 }
 `

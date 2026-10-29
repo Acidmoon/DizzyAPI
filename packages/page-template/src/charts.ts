@@ -5,12 +5,29 @@
  */
 import { escapeText } from './escape.ts'
 import {
-  AXIS_LABEL_GAP,
-  estimateAxisLabelWidth,
+  FONT_ROLES,
+  axisPaddingLeft,
   formatAxisDate,
   formatCompact,
   formatThousands,
 } from './tokens.ts'
+
+/**
+ * 图表渲染选项。
+ *
+ * `fontScale` 是用户的字号档位。为什么图表要知道字号：`paddingLeft: 'auto'` 的
+ * 左边距是**服务端**按轴文字宽度算出来的，而字号是**用户可选**的。
+ * 用户选「特大」时轴文字真的变大了，若仍按默认档算左边距，y 轴刻度就会被裁。
+ */
+export interface ChartOptions {
+  /** 用户字号档位（1 = 默认）。默认 1。 */
+  readonly fontScale?: number
+}
+
+/** 轴文字的实际字号：caption 档 × 用户档位。 */
+function axisFontSizeOf(options: ChartOptions): number {
+  return FONT_ROLES.caption.size * (options.fontScale ?? 1)
+}
 
 /** 图表主题。主图橙黄（原站口径），模型小图蓝系（原站口径）。 */
 export interface ChartTheme {
@@ -98,6 +115,7 @@ export function renderStackedBarChart(
   unit: 'currency' | 'count' = 'count',
   /** 渐变 id 前缀：同一页有多张图，id 必须互不冲突。 */
   key: string = 'chart',
+  options: ChartOptions = {},
 ): string {
   const { width, height, paddingRight, barRatio, radius, colors } = theme
   const paddingTop = 8
@@ -124,7 +142,7 @@ export function renderStackedBarChart(
   // 绘图区左边界：主图固定 40；小图按刻度文字宽度推算（原站也是这样自动排的）
   const widestTick = tickTexts.reduce((widest, text) => (text.length > widest.length ? text : widest), '')
   const paddingLeft = theme.paddingLeft === 'auto'
-    ? Math.min(60, Math.max(22, Math.ceil(estimateAxisLabelWidth(widestTick) + AXIS_LABEL_GAP)))
+    ? axisPaddingLeft(widestTick, axisFontSizeOf(options))
     : theme.paddingLeft
   const plotWidth = plotRight - paddingLeft
 
@@ -236,6 +254,7 @@ export function renderAreaLineChart(
   theme: ChartTheme = MINI_THEME,
   unit: 'currency' | 'count' = 'count',
   key: string = 'line',
+  options: ChartOptions = {},
 ): string {
   const { width, height, paddingRight, colors } = theme
   const paddingTop = 8
@@ -257,7 +276,7 @@ export function renderAreaLineChart(
   const tickTexts = tickRatios.map((ratio) => formatAxisNumber(max * ratio, unit))
   const widestTick = tickTexts.reduce((widest, text) => (text.length > widest.length ? text : widest), '')
   const paddingLeft = theme.paddingLeft === 'auto'
-    ? Math.min(60, Math.max(22, Math.ceil(estimateAxisLabelWidth(widestTick) + AXIS_LABEL_GAP)))
+    ? axisPaddingLeft(widestTick, axisFontSizeOf(options))
     : theme.paddingLeft
   const plotWidth = plotRight - paddingLeft
   const slot = plotWidth / data.length

@@ -8,14 +8,21 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { Context } from 'cordis'
 import {
+  AXIS_LABEL_GAP,
+  AXIS_PADDING_MAX,
+  AXIS_PADDING_MIN,
   CLIENT_JS,
   COST_KEY_COLORS,
   COST_THEME,
   DARK_TOKENS,
+  FONT_ROLES,
   FONT_STACK,
+  LETTER_SPACING,
   METRICS,
   PAGE_CSS,
   PageTemplateService,
+  axisPaddingLeft,
+  estimateAxisLabelWidth,
   formatAxisDate,
   formatCents,
   formatCompact,
@@ -39,8 +46,77 @@ test('token：沿用原站实测值，不做“近似”', () => {
   assert.equal(DARK_TOKENS.chartPrimary, '#FD8D3C')
   assert.equal(METRICS.sidebarWidth, 260)
   assert.equal(METRICS.cardRadius, 16)
-  assert.equal(METRICS.metricValueSize, 29)
+  // 2026-10-29：全站字号整体上调一档（owner 要求「加大两号」），
+  // 指标大数字随 `FONT_ROLES.metric` 由 29 → 34。
+  // 这是**改规格**（不是放宽断言）：原值 29 已不在任何地方使用，
+  // 层级关系（metric 必须大于 title）由下面那条断言守着。
+  assert.equal(FONT_ROLES.metric.size, 34)
+  assert.ok(FONT_ROLES.metric.size > FONT_ROLES.title.size, 'metric 必须比 title 大，否则指标数字与页面标题层级塌掉')
+  assert.ok(FONT_ROLES.title.size > FONT_ROLES.emphasis.size)
+  assert.ok(FONT_ROLES.emphasis.size > FONT_ROLES.body.size)
+  assert.ok(FONT_ROLES.body.size > FONT_ROLES.caption.size)
   assert.ok(FONT_STACK.startsWith('Inter,'))
+})
+
+test('字号单一源：FONT_ROLES 与 CSS 里的 --fs-<role> / --lh-<role> 逐条相等', () => {
+  // 这条用例是**防漂移护栏**：字号有两个可能被改的地方（TS 表 / CSS 变量），
+  // 只改一边会让人以为「改了没生效」。表是唯一源，CSS 的值必须与它相等。
+  for (const [role, spec] of Object.entries(FONT_ROLES)) {
+    const fs = new RegExp(`--fs-${role}:\\s*calc\\(([0-9.]+)px \\* var\\(--font-scale\\)\\)`).exec(PAGE_CSS)
+    assert.ok(fs !== null, `PAGE_CSS 里缺少 --fs-${role}，或没写成 calc(<n>px * var(--font-scale))`)
+    assert.equal(Number(fs[1]), spec.size, `--fs-${role} 与 FONT_ROLES.${role}.size 不一致`)
+
+    const lh = new RegExp(`--lh-${role}:\\s*([0-9.]+);`).exec(PAGE_CSS)
+    assert.ok(lh !== null, `PAGE_CSS 里缺少 --lh-${role}`)
+    assert.equal(Number(lh[1]), spec.lineHeight, `--lh-${role} 与 FONT_ROLES.${role}.lineHeight 不一致`)
+  }
+
+  // 行高必须是**无单位倍数**：写成 px 的话用户调大字号时文字会重叠。
+  // 做法上靠「CSS 里不许再有裸 line-height: Npx」这条断言守着。
+  assert.equal((PAGE_CSS.match(/line-height:\s*[0-9.]+px/g) ?? []).length, 0, 'PAGE_CSS 里还有硬编码 px 行高')
+  assert.equal((PAGE_CSS.match(/font-size:\s*[0-9.]+px/g) ?? []).length, 0, 'PAGE_CSS 里还有硬编码 px 字号')
+
+  // 字号档位用乘数表达，用户改字号只覆盖 --font-scale 一个变量。
+  assert.ok(PAGE_CSS.includes('--font-scale: 1;'))
+
+  // 字距按角色分：品牌字保留负值，正文放宽。
+  assert.equal(LETTER_SPACING.tight.startsWith('-'), true)
+  assert.equal(LETTER_SPACING.normal, '0.01em')
+  assert.ok(PAGE_CSS.includes(`--ls-tight: ${LETTER_SPACING.tight};`))
+  assert.ok(PAGE_CSS.includes(`--ls-normal: ${LETTER_SPACING.normal};`))
+})
+
+test('图表轴宽：按字号派生，不再用「12px 下的 7.5」硬算', () => {
+  // 原实现 `text.length * 7.5` 是按 12px 轴文字反推的；字号涨到 14px 后
+  // 字宽被低估约 17%，y 轴刻度会被 SVG 左边界裁掉。
+  const text = '2,000' // 5 字符，最宽刻度
+  assert.equal(estimateAxisLabelWidth(text, 12), 37.5)
+  assert.equal(estimateAxisLabelWidth(text, 14), 43.75)
+  assert.ok(
+    estimateAxisLabelWidth(text, 14) > estimateAxisLabelWidth(text, 12),
+    '字号变大时估算宽度必须跟着变大',
+  )
+
+  // 左内边距：默认字号下落在上下限区间内，且随字号单调不减。
+  const at12 = axisPaddingLeft(text, 12)
+  const at14 = axisPaddingLeft(text, 14)
+  assert.ok(at12 >= AXIS_PADDING_MIN && at12 <= AXIS_PADDING_MAX)
+  assert.ok(at14 > at12, '字号变大时左内边距必须变大，否则刻度被裁')
+
+  // 上限也要跟着字号放大：7 字符刻度（如 `800,000`）在 14px 下会顶到 60。
+  const wide = '800,000'
+  assert.ok(
+    axisPaddingLeft(wide, 14) > AXIS_PADDING_MAX,
+    '大字号下 60px 的上限不够用，上限必须同比缩放',
+  )
+  // 下限：极窄刻度（`0`）在默认字号下取下限，不再更窄。
+  // 注意下限本身不随字号缩放，但「所需宽度 + gap」会随字号涨，
+  // 所以大字号下允许超过下限。
+  assert.equal(axisPaddingLeft('0', 12), AXIS_PADDING_MIN)
+  assert.ok(axisPaddingLeft('0', 24) >= AXIS_PADDING_MIN)
+
+  // gap 常量仍然存在且被 chart 用到（防止有人把它删了但公式还引用）
+  assert.equal(AXIS_LABEL_GAP, 7)
 })
 
 test('CSS 与客户端脚本完整带过来', () => {

@@ -41,6 +41,32 @@ export const THEME_VARS = `
   --chart-2: #FED976;
   --chart-grid: rgba(255,255,255,.12);
   --chart-axis: rgb(150,150,150);
+
+  /* ── 字号与行高 ─────────────────────────────────────────────────
+   * 唯一源是 tokens.ts 的 FONT_ROLES；这里的数字必须与它逐条相等，
+   * 有守护用例（page-template.test.ts「字号单一源」）盯着，改一边不改另一边会红。
+   *
+   * --font-scale 是用户的字号档位（0.875 / 1 / 1.25 / 1.5），由 web 的
+   * /assets/theme.css 覆盖到 :root。九个档位全部乘同一个系数，
+   * 所以「调字号」只需要覆盖这一个变量，不用重写九条。
+   *
+   * 行高是**无单位**倍数，跟着 font-size 自动缩放——这是用户选「特大」时
+   * 文字不重叠的前提。 */
+  --font-scale: 1;
+  --fs-micro: calc(12px * var(--font-scale));     --lh-micro: 1.4;
+  --fs-chip: calc(13px * var(--font-scale));      --lh-chip: 1.27;
+  --fs-caption: calc(14px * var(--font-scale));   --lh-caption: 1.5;
+  --fs-label: calc(15px * var(--font-scale));     --lh-label: 1.54;
+  --fs-body: calc(16px * var(--font-scale));      --lh-body: 1.57;
+  --fs-emphasis: calc(18px * var(--font-scale));  --lh-emphasis: 1.5;
+  --fs-brand: calc(26px * var(--font-scale));     --lh-brand: 1.09;
+  --fs-title: calc(28px * var(--font-scale));     --lh-title: 1.33;
+  --fs-metric: calc(34px * var(--font-scale));    --lh-metric: 1.24;
+
+  /* ── 字距：按角色分，不搞全局一个值 ───────────────────────────────
+   * .side-word 原本是负字距（品牌字收紧是设计意图），全局加正值会把它撑开。 */
+  --ls-normal: 0.01em;
+  --ls-tight: -0.02em;
 }
 `
 
@@ -62,6 +88,8 @@ body {
   font-variant-ligatures: no-contextual;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  /* 全站字距放宽；品牌字等紧凑处用 --ls-tight 覆盖回去。 */
+  letter-spacing: var(--ls-normal);
 }
 a { color: inherit; text-decoration: none; }
 button { font: inherit; color: inherit; }
@@ -75,16 +103,17 @@ button { font: inherit; color: inherit; }
   display: flex; flex-direction: column;
 }
 .side-top { display: flex; align-items: center; gap: 8px; margin: 12px 0 32px; padding-left: 14px; }
-.side-logo { display: flex; align-items: center; gap: 6px; height: 24px; }
-.side-word { font-size: 22px; font-weight: 600; letter-spacing: -.4px; line-height: 24px; }
+/* 高度跟着品牌字走：字号上调后固定 24px 会把 26px 的字裁掉。 */
+.side-logo { display: flex; align-items: center; gap: 6px; height: auto; }
+.side-word { font-size: var(--fs-brand); font-weight: 600; letter-spacing: var(--ls-tight); line-height: var(--lh-brand); }
 .side-badge {
-  font-size: 10px; line-height: 14px; padding: 1px 4px; border-radius: 3px;
+  font-size: var(--fs-micro); line-height: var(--lh-micro); padding: 1px 4px; border-radius: 3px;
   background: var(--label-primary); color: #111214; font-weight: 500;
 }
 .side-nav { display: flex; flex-direction: column; gap: 2px; }
 .side-link {
   display: flex; align-items: center; gap: 10px; height: 42px; padding: 0 16px;
-  border-radius: 14px; color: var(--label-primary); font-size: 14px; line-height: 25px;
+  border-radius: 14px; color: var(--label-primary); font-size: var(--fs-body); line-height: var(--lh-body);
   transition: background-color .2s ease;
 }
 .side-link:hover { background: var(--sidebar-nav-hover); }
@@ -102,19 +131,19 @@ button { font: inherit; color: inherit; }
   width: 32px; height: 32px; border-radius: 50%; flex: 0 0 32px;
   background: rgba(255,255,255,.08) center/cover no-repeat;
   display: flex; align-items: center; justify-content: center;
-  color: var(--label-tertiary); font-size: 16px; font-weight: 600; overflow: hidden;
+  color: var(--label-tertiary); font-size: var(--fs-emphasis); font-weight: 600; overflow: hidden;
 }
 .side-avatar img { width: 100%; height: 100%; object-fit: cover; }
-.side-name { font-size: 16px; font-weight: 600; }
+.side-name { font-size: var(--fs-emphasis); font-weight: 600; }
 
 .main { flex: 1 1 auto; min-width: 0; overflow: auto; padding: 32px 40px; }
 .col { max-width: 936px; margin: 0 auto; width: 100%; }
 
 /* ── 标题 ──────────────────────────────────────────────────────── */
-.page-title { font-size: 24px; line-height: 32px; font-weight: 600; margin: 0 0 8px; }
+.page-title { font-size: var(--fs-title); line-height: var(--lh-title); font-weight: 600; margin: 0 0 8px; }
 .page-note {
   display: flex; align-items: center; gap: 4px; margin: 0 0 16px;
-  color: var(--label-tertiary); font-size: 14px; line-height: 22px;
+  color: var(--label-tertiary); font-size: var(--fs-body); line-height: var(--lh-body);
 }
 .page-note .info { color: var(--label-caption); display: inline-flex; }
 
@@ -126,22 +155,22 @@ button { font: inherit; color: inherit; }
 }
 .card-col { display: flex; flex-direction: column; justify-content: space-between; gap: 12px; width: 100%; }
 .card-head { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; min-width: 0; }
-.card-label { font-size: 14px; line-height: 22px; color: var(--label-primary); white-space: nowrap; }
+.card-label { font-size: var(--fs-body); line-height: var(--lh-body); color: var(--label-primary); white-space: nowrap; }
 .card-info { color: var(--label-caption); display: inline-flex; margin-right: 4px; }
 .card-value-row { display: flex; align-items: flex-end; gap: 12px 16px; flex-wrap: wrap; width: 100%; }
 .card-value { display: flex; align-items: baseline; gap: 6px; }
-.value-main { font-size: 29px; line-height: 36px; font-weight: 500; font-variant-numeric: tabular-nums; }
-.value-unit { font-size: 16px; line-height: 24px; color: var(--label-caption); }
+.value-main { font-size: var(--fs-metric); line-height: var(--lh-metric); font-weight: 500; font-variant-numeric: tabular-nums; }
+.value-unit { font-size: var(--fs-emphasis); line-height: var(--lh-emphasis); color: var(--label-caption); }
 .tag {
   display: inline-flex; align-items: center; gap: 4px; height: 24px; padding: 0 6px;
-  border-radius: 4px; font-size: 12px; line-height: 18px; white-space: nowrap;
+  border-radius: 4px; font-size: var(--fs-caption); line-height: var(--lh-caption); white-space: nowrap;
   background: var(--success-tertiary); color: var(--success);
 }
 .tag a { text-decoration: underline; }
 .btn {
   display: inline-flex; align-items: center; justify-content: center; height: 36px;
   padding: 0 14px; min-width: 72px; border-radius: 18px; border: none; cursor: pointer;
-  background: var(--brand-primary); color: #111214; font-size: 14px; font-weight: 500;
+  background: var(--brand-primary); color: #111214; font-size: var(--fs-body); font-weight: 500;
   white-space: nowrap; transition: opacity .2s ease;
 }
 .btn:hover { opacity: .88; }
@@ -163,7 +192,7 @@ button { font: inherit; color: inherit; }
 .pill {
   display: inline-flex; align-items: center; gap: 12px; height: 36px; min-width: 90px;
   max-width: 280px; padding: 0 14px; border-radius: 18px; cursor: pointer; user-select: none;
-  background: var(--bg-module-platform); color: var(--label-primary); font-size: 14px;
+  background: var(--bg-module-platform); color: var(--label-primary); font-size: var(--fs-body);
   border: none; position: relative;
 }
 .pill-label { color: var(--label-tertiary); white-space: nowrap; flex-shrink: 0; }
@@ -179,7 +208,7 @@ button { font: inherit; color: inherit; }
 .pill[aria-expanded="true"] .menu { display: block; }
 .menu-item {
   display: block; width: 100%; text-align: left; background: transparent; border: none;
-  padding: 8px 10px; border-radius: 8px; font-size: 14px; line-height: 22px; cursor: pointer;
+  padding: 8px 10px; border-radius: 8px; font-size: var(--fs-body); line-height: var(--lh-body); cursor: pointer;
   color: var(--label-primary); white-space: nowrap;
 }
 .menu-item:hover { background: var(--bg-layer-2); }
@@ -197,17 +226,17 @@ button { font: inherit; color: inherit; }
 }
 .chart-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; margin-bottom: 13px; }
 .chart-titles { display: flex; align-items: baseline; gap: 6px 4px; flex-wrap: wrap; min-width: 0; margin-top: 1px; }
-.chart-title { font-size: 14px; line-height: 22px; font-weight: 600; }
-.chart-total { font-size: 14px; line-height: 22px; color: var(--label-secondary); font-variant-numeric: tabular-nums; }
+.chart-title { font-size: var(--fs-body); line-height: var(--lh-body); font-weight: 600; }
+.chart-total { font-size: var(--fs-body); line-height: var(--lh-body); color: var(--label-secondary); font-variant-numeric: tabular-nums; }
 .segmented { display: inline-flex; gap: 3px; padding: 2px; border-radius: 20px; background: var(--bg-layer-2); flex: none; }
 .seg-item {
-  border-radius: 20px; height: 24px; padding: 0 8px; font-size: 11px; line-height: 14px;
+  border-radius: 20px; height: 24px; padding: 0 8px; font-size: var(--fs-chip); line-height: var(--lh-chip);
   color: var(--label-primary); white-space: nowrap; display: inline-flex; align-items: center;
 }
 .seg-item[aria-selected="true"] { background: var(--label-primary); color: #111214; font-weight: 600; }
 .segmented button {
   border: none; background: transparent; border-radius: 20px; height: 24px; padding: 0 8px;
-  font-size: 11px; line-height: 14px; color: var(--label-primary); cursor: pointer;
+  font-size: var(--fs-chip); line-height: var(--lh-chip); color: var(--label-primary); cursor: pointer;
   font-weight: 400; white-space: nowrap;
 }
 .segmented button[aria-selected="true"] { background: var(--label-primary); color: #111214; font-weight: 600; }
@@ -215,27 +244,28 @@ button { font: inherit; color: inherit; }
 .plot svg { display: block; width: 100%; height: auto; overflow: visible; }
 /* 网格线与坐标轴文字：原站实测值（见 THEME_VARS 的 --chart-grid / --chart-axis）。 */
 .grid-line { stroke: var(--chart-grid); stroke-width: 1; }
-.axis-text { fill: var(--chart-axis); font-size: 12px; font-variant-numeric: tabular-nums; }
+.axis-text { fill: var(--chart-axis); font-size: var(--fs-caption); font-variant-numeric: tabular-nums; }
 .bar { transition: opacity .15s ease; }
 .bar:hover { opacity: .82; }
 /* 模型小图里的面积折线：填充与描边都写在 path 属性上，这里只做过渡。 */
 .line { transition: opacity .15s ease; }
 .line:hover { opacity: .82; }
 .legend { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; margin-top: 8px; }
-.legend-item { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; line-height: 18px; color: var(--label-tertiary); }
+.legend-item { display: inline-flex; align-items: center; gap: 6px; font-size: var(--fs-caption); line-height: var(--lh-caption); color: var(--label-tertiary); }
 .legend-dot { width: 8px; height: 8px; border-radius: 2px; }
 
 /* ── 模型分块 ──────────────────────────────────────────────────── */
 .models { display: flex; flex-direction: column; gap: 24px 12px; margin-top: 24px; }
-.model-name { font-size: 16px; line-height: 28px; font-weight: 600; margin-bottom: 16px; }
+/* 行高 1.75 比 emphasis 的 1.5 松：它是分块标题，下方紧跟 16px 间距。 */
+.model-name { font-size: var(--fs-emphasis); line-height: 1.75; font-weight: 600; margin-bottom: 16px; }
 .model-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
 .mini {
   background: var(--bg-module-platform); border-radius: 16px; padding: 23px 20px 12px;
   display: flex; flex-direction: column; gap: 12px; min-width: 0;
 }
 .mini-head { display: flex; align-items: center; gap: 4px; min-width: 0; }
-.mini-label { font-size: 14px; line-height: 22px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.mini-value { font-size: 14px; line-height: 22px; color: var(--label-secondary); font-variant-numeric: tabular-nums; flex-shrink: 0; }
+.mini-label { font-size: var(--fs-body); line-height: var(--lh-body); font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mini-value { font-size: var(--fs-body); line-height: var(--lh-body); color: var(--label-secondary); font-variant-numeric: tabular-nums; flex-shrink: 0; }
 .mini-plot { position: relative; }
 /* 小图画布 422×272，与原站一致：宽度撑满卡片，高度按比例。 */
 .mini-plot svg { display: block; width: 100%; height: auto; overflow: visible; }
@@ -243,7 +273,7 @@ button { font: inherit; color: inherit; }
 /* ── 提示 ──────────────────────────────────────────────────────── */
 .empty {
   display: flex; flex-direction: column; align-items: center; justify-content: center;
-  gap: 8px; padding: 64px 0; color: var(--label-tertiary); font-size: 14px;
+  gap: 8px; padding: 64px 0; color: var(--label-tertiary); font-size: var(--fs-body);
 }
 @media (max-width: 767px) {
   .main { padding: 20px; }
