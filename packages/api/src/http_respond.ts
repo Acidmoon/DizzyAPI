@@ -2,7 +2,7 @@
  * http_respond.ts：从 http.ts 的 ApiServer 搬出来的 http_respond 相关成员（行为逐字未改）。
  *
  * 纯搬移：方法体逐字未改，只把 this. 换成 host.、签名前面加 host: ApiServer；
- * http.ts 里留同名薄委派，所以类内部与 routes/* 的调用点一个都没动。
+ * 导出的是 `(host, …)` 形式的自由函数，http.ts 与 routes/* 直接调用（没有委派层）。
  */
 import type { ApiServer } from './http.ts'
 import { isPlainObject, safeJson } from './params.ts'
