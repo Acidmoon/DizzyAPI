@@ -368,9 +368,14 @@ pnpm test:go
 
 - 新增插件必须有 `test/*.test.ts`；新增 Go 模块必须有单测。
 - 测试失败先修实现，不允许删断言或放宽断言来变绿。
-- 当前基线（2026-10-29 实测）：`pnpm test` 739 个用例（738 通过 / 1 跳过），`pnpm typecheck` 干净，
+- 当前基线（2026-10-29 实测）：`pnpm test` 744 个用例（743 通过 / 1 跳过），`pnpm typecheck` 干净，
   `go test ./...` **20 包**全 ok，`gofmt -l .` 与 `go vet ./...` 无输出。
   这个数字会变，以实际输出为准。
+- **多 worktree 并行跑测试会互相抢端口**：`pnpm test` 里有多条**真进程用例**（`content-audit`
+  的 `gateway-smoke`、`account-priority` 的子进程），它们用 `freePort()` 拿临时端口再 spawn
+  `bin/gatewayd`。几个 worktree 同时跑全量时，A 释放的端口可能被 B 抢到，表现是
+  `ECONNREFUSED 127.0.0.1:29xx` 或 `200 !== 403`——**这不是回归**。判据：单独复跑该文件
+  连跑 3 次全绿即可确认。**合并验收必须串行**（一次只验一个 worktree）。
 - `packages/content-audit/test/gateway-smoke.test.ts` 是**真进程用例**（真 `bin/gatewayd` +
   真桥 + 真 HTTP 入口，小 TTL）：有二进制才跑，没有就 skip。它抓的是「Go 侧到底有没有照做」，
   内存假 Go 的用例抓不到（额度闸门踩过这个坑）。改动 Go 侧审核逻辑时**先 `pnpm build:go`**。
