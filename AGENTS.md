@@ -682,6 +682,62 @@ pnpm build:go         # 产出 bin/gatewayd(.exe)
 - 预览用 `pnpm preview:console`；它没有 `/api/*`，真实进程用 `pnpm dev`。
 - 静态资源的 `<base>` 已带尾斜杠，不要重复补 `/`。
 - CSP `img-src` 放行 `data:` 与 `https:`；`http://` 头像能存但会被拦。
+- **`el.setAttribute('style', …)` 会被 CSP 拦掉，而且症状极难认**（2026-10-29 实测）：
+  `getAttribute('style')` 能读回 `"left: 123px"`，但 `getComputedStyle(el).left` 是 **`auto`**、
+  `position` 是 **`static`** —— 属性写进去了、样式一个字没生效。**CSSOM 赋值
+  （`el.style.left = …`、`Object.assign(el.style, …)`）不受限制**。所以：
+  浮层/弹层定位一律走 CSSOM；页面里不许写 `style="…"`（原先 27 处全被拦，等于从没生效过）。
+  这条没有「加 nonce」的解法：`style-src-attr` 不支持 nonce（nonce 只对 `<style>` / `<script>`
+  元素有效），唯一能救它的是 `'unsafe-inline'`，那是把全站 CSP 拆掉。
+- **内联 `<style>` 元素同样被拦**（`style-src-elem`）：`renderDocument` 的「不给 assets 就内联」
+  那条路径**只能给测试用**，生产必须走 `/assets/app.css` 外链。
+- **htmx 的 indicator 样式要自己出**：htmx 默认 `insertAdjacentHTML` 注入一段内联
+  `<style>` 给 `.htmx-indicator` / `.htmx-request` 上样式，被 `style-src 'self'` 拦掉
+  （实测 1 条 `style-src-elem` 违规）。做法：`app.js` 里设
+  `htmx.config.includeIndicatorStyles = false`，等价规则**写进服务端 CSS**
+  （`COMPONENT_CSS`）——不能靠 JS 补，否则首屏第一次请求 indicator 会裸奔。
+  `<meta name="htmx-config">` 那条路实测**不可靠**（config 仍读到 `true`），别用。
+- **htmx 配置没有「窗口期」，但顺序必须对**（2026-10-29 实测三变体）：htmx 的 `init` 挂在
+  `DOMContentLoaded` 上，所以只要 `app.js` 是**经典脚本、放在 htmx 之后**（body 末尾或 `defer`
+  都行），设 `htmx.config.…` 一定赶在 htmx 初始化之前。反过来把 `app.js` 挪到 htmx **之前**
+  （比如放 `<head>`），那时 `window.htmx` 还是 `undefined`，配置设不进去，htmx 就按默认值注入
+  ——**实测只有这种写法出违规**。
+- **`jsHrefs` 的顺序是契约**：`[htmx, tom-select, flatpickr, floating-ui.core,
+  floating-ui.dom, /assets/app.js]`。`floating-ui.dom` 的 UMD 读全局 `FloatingUICore`，
+  必须排在 core 之后；`app.js` 必须最后。`page-template/test/page-template.test.ts`
+  有用例钉住这个顺序。
+- **vendor 的库照白名单发字节**（`page-template/src/vendor.ts`）：查表而非拼路径，
+  名字不在表里就 404。加库只改那张表，`VENDOR_SCRIPT_ORDER` / `vendorCss()` 都从它派生。
+- **不在 GitHub 上找 CDN**：CSP 是 `'self'`，第三方库一律 vendor 到
+  `packages/page-template/assets/vendor/`，每个库带自己的 LICENSE（Apache-2.0 还要保留
+  版权声明）。现有四个：htmx 2.0.11（Zero-Clause BSD）、Tom Select 2.4.3（Apache-2.0）、
+  flatpickr 4.6.13（MIT）、floating-ui dom/core 1.8.0（MIT ×2）。
+- **`@floating-ui/dom` 的 `.browser.mjs` 不是自包含的**：它仍有裸 import
+  （`import{…}from"@floating-ui/core"`），浏览器直接报 `Failed to resolve module specifier`；
+  而 import map 只能是内联 `<script>`，CSP 一样拦。**用 `core.umd.min.js` + `dom.umd.min.js`
+  两个经典脚本**（core 自包含，dom 读全局 `FloatingUICore`），顺序不能反。
+
+### 字号与图表几何
+
+- **字号只有一个源**：`packages/page-template/src/tokens.ts` 的 `FONT_ROLES`（9 档 × `size` +
+  无单位 `lineHeight`）。`PAGE_CSS` 里 `--fs-<role>: calc(<n>px * var(--font-scale))` /
+  `--lh-<role>` 由它派生，`page-template.test.ts` 有用例逐条比对两边（防漂移护栏）。
+  **不要再往 `METRICS` 加字号字段**——它现在只放盒模型尺寸，字号字段已全部移除。
+- **行高必须写无单位倍数**：`line-height: 1.5` 才会跟着 `font-size` 缩放。写成 px 的话，
+  用户把字号调到「特大」（`--font-scale: 1.5`）时正文 16→24px 仍压在 22px 行高上，文字重叠。
+  用例里断言「CSS 里不许出现裸 `line-height: Npx`」。
+- **字号档位用一个乘数**：`--font-scale`（0.875 / 1 / 1.25 / 1.5），web 的
+  `/assets/theme.css` 覆盖这一个变量就够了，不用重写九条。
+- **图表轴宽是按字号派生的，不是固定 7.5px/字符**：原先
+  `estimateAxisLabelWidth = text.length * 7.5` 是在**轴文字 12px** 下标定的（7.5/12 = 0.625em）。
+  字号上调后仍按 7.5 硬算会让字宽被低估约 17%，y 轴刻度被 SVG 左边界裁掉。
+  现在用 `axisPaddingLeft(widestTick, fontSize)`（`charts.ts` 两处重复已合成一份），
+  上下限 `AXIS_PADDING_MIN/MAX` 也随字号同比缩放——`60` 就是 12px 下 7 字符刻度的临界值。
+- **图表几何是服务端算的，字号是用户可选的**：所以渲染函数有 `options.fontScale`，
+  调用方必须把当前用户的档位传进去，否则用户选「特大」时图表仍按默认档排。
+- **`packages/deepseek-usage` 是 `page-template` 的整份重复副本**（自带 `tokens.ts` /
+  `render.ts` / `client.ts`，同样有 7.5 魔数、同样 `.axis-text 12px`）。它是**已禁用**的像素
+  参考，改 `page-template` 时**不要**顺手改它，也别以为它会跟着变。
 
 ### 测试
 
