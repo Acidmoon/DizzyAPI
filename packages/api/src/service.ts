@@ -34,6 +34,7 @@ import type {
   BillingPort,
   CatalogPort,
   FrontendPort,
+  ModelHubPort,
   PricingPort,
   RedeemPort,
   SettingsPort,
@@ -138,6 +139,7 @@ export class ApiService extends Service {
       accountPriority: () => this.optionalService<AccountPriorityPort>('accountPriority', ['status']),
       usage: () => this.optionalService<UsagePort>('usage', ['list', 'summary', 'stats', 'exportRows']),
       pricing: () => this.optionalService<PricingPort>('pricing', ['list', 'get', 'set', 'remove']),
+      modelhub: () => this.optionalService<ModelHubPort>('modelhub', ['catalog']),
       redeem: () =>
         this.optionalService<RedeemPort>('redeem', [
           'redeemCode',

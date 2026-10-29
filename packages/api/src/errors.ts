@@ -34,6 +34,7 @@ export type ApiErrorCode =
   | 'BILLING_UNAVAILABLE'
   | 'TOPUP_UNAVAILABLE'
   | 'TOPUP_NOT_IMPLEMENTED'
+  | 'MODELHUB_UNAVAILABLE'
 
 export class ApiError extends Error {
   readonly code: string
@@ -156,6 +157,9 @@ const EXPLICIT_STATUS: Readonly<Record<string, number>> = {
   TOPUP_NOT_READY: 503,
   TOPUP_STORE_CORRUPT: 500,
   TOPUP_STORE_FAILED: 500,
+  // 模型广场：查询条件不合法是用户输入问题 → 400；服务缺席 → 503（入口本身不受影响）。
+  MODELHUB_QUERY_INVALID: 400,
+  MODELHUB_CONFIG_INVALID: 500,
 }
 
 export function statusOfCode(code: string): number {

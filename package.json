@@ -44,6 +44,7 @@
     "@dizzyapi/plugin-identity": "workspace:*",
     "@dizzyapi/plugin-kit": "workspace:*",
     "@dizzyapi/plugin-mailer": "workspace:*",
+    "@dizzyapi/plugin-modelhub": "workspace:*",
     "@dizzyapi/plugin-page-template": "workspace:*",
     "@dizzyapi/plugin-pricing": "workspace:*",
     "@dizzyapi/plugin-quota": "workspace:*",
