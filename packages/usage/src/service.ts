@@ -130,7 +130,7 @@ const ROW_COLUMNS = `
   id, req_id, started_at_ms, user_id, api_key_id, api_key_name, profile, account_id,
   model, upstream_model, protocol, upstream_protocol, stream, status, error_code,
   input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, reasoning_tokens,
-  total_tokens, usage_present, usage_complete, duration_ms, client_ip, attempts
+  total_tokens, usage_present, usage_complete, duration_ms, ttft_ms, client_ip, attempts
 `
 
 export class UsageService extends Service implements UsageServiceLike {
@@ -176,6 +176,7 @@ export class UsageService extends Service implements UsageServiceLike {
           totalTokens: { type: 'integer' },
           costMicros: { type: 'string' },
           durationMs: { type: 'integer' },
+          ttftMs: { type: 'integer', optional: true },
           clientIp: { type: 'string', optional: true },
           startedAt: { type: 'string' },
         },
@@ -544,6 +545,22 @@ export class UsageService extends Service implements UsageServiceLike {
     return { items: page, nextCursor }
   }
 
+  /**
+   * 按 `reqId` 取单条明细（详情弹窗用）。
+   *
+   * 权限在 HTTP 层判（普通用户只能查自己的、管理员可查全部）；这里只做查询，
+   * 查不到返回 null。不受时间窗口限制：`req_id` 上有唯一索引，本身就是精确定位。
+   */
+  get(reqId: string): UsageRow | null {
+    this.assertReady()
+    const db = this.requireDb()
+    const row = db.prepare(
+      `SELECT ${ROW_COLUMNS} FROM usage_records WHERE req_id = ?`,
+    ).get(reqId) as Record<string, SQLOutputValue> | undefined
+    if (row === undefined) return null
+    return withCost(rowOf(row), this.pricingSeam())
+  }
+
   summary(query: UsageQuery): UsageSummary {
     this.assertReady()
     const pricing = this.pricingSeam()
@@ -796,10 +813,10 @@ export class UsageService extends Service implements UsageServiceLike {
         req_id, epoch, seq, started_at_ms, day, user_id, api_key_id, api_key_name, profile,
         account_id, model, upstream_model, protocol, upstream_protocol, stream, status,
         error_code, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
-        reasoning_tokens, total_tokens, usage_present, usage_complete, duration_ms, client_ip,
-        attempts, ingested_at_ms
+        reasoning_tokens, total_tokens, usage_present, usage_complete, duration_ms, ttft_ms,
+        client_ip, attempts, ingested_at_ms
       ) VALUES (
-        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
       )
     `)
     const now = Date.now()
@@ -837,6 +854,9 @@ export class UsageService extends Service implements UsageServiceLike {
           entry.usagePresent === true ? 1 : 0,
           entry.usageComplete === false ? 0 : 1,
           integerOf(entry.durationMs),
+          // 首字延迟只有流式请求才有：Go 那边是 omitempty，非流式连键都没有。
+          // **缺失必须落 NULL**，不能落 0——0 会被页面当成「首字 0 毫秒」。
+          nullableInteger(entry.ttftMs),
           optionalText(entry.clientIp),
           integerOf(entry.attempts),
           now,
@@ -1252,6 +1272,7 @@ function rowOf(row: Record<string, SQLOutputValue>): UsageRow {
     usagePresent: integerOf(row.usage_present) === 1,
     usageComplete: integerOf(row.usage_complete) === 1,
     durationMs: integerOf(row.duration_ms),
+    ttftMs: integerOrNull(row.ttft_ms),
     clientIp: nullableText(row.client_ip),
     attempts: integerOf(row.attempts),
     startedAt: new Date(startedAtMs).toISOString(),
@@ -1347,6 +1368,25 @@ function optionalText(value: unknown): string | null {
 function nullableText(value: unknown): string | null {
   const text = value === null || value === undefined ? '' : String(value)
   return text === '' ? null : text
+}
+
+/**
+ * 上行载荷里的「可空整数」：缺失 / 非数 / ≤0 一律 null。
+ *
+ * 专门给 `ttftMs` 用：Go 侧 `omitempty` 让非流式请求连键都没有，0 与「没采集」不可区分，
+ * 所以只有正数才算采集到。**不能**退回 `integerOf`（它把缺失变成 0）。
+ */
+function nullableInteger(value: unknown): number | null {
+  if (value === null || value === undefined) return null
+  if (typeof value !== 'number' && typeof value !== 'bigint' && typeof value !== 'string') return null
+  const parsed = integerOf(value)
+  return parsed > 0 ? parsed : null
+}
+
+/** 读库时的可空整数：NULL 保持 null（历史记录 / 非流式请求），其余转 number。 */
+function integerOrNull(value: unknown): number | null {
+  if (value === null || value === undefined) return null
+  return integerOf(value)
 }
 
 function parseStartedAt(entry: UsageEntry): number {

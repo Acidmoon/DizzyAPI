@@ -4,6 +4,8 @@ dist
 /cache
 /data
 /temp
+# CLI 端到端实测的临时目录（cmd/dizzy/testdata/e2e-full 用）
+/.e2e-tmp
 
 .env.local
 .env

@@ -66,10 +66,16 @@ type UsageRecord struct {
 	UsagePresent  bool `json:"usagePresent"`
 	UsageComplete bool `json:"usageComplete"`
 
-	DurationMs int64     `json:"durationMs"`
-	ClientIP   string    `json:"clientIp,omitempty"`
-	Attempts   int       `json:"attempts,omitempty"`
-	StartedAt  time.Time `json:"startedAt"`
+	DurationMs int64 `json:"durationMs"`
+	// TtftMs 是「首字延迟」：从请求开始到上游响应出现第一个字节的毫秒数。
+	//
+	// 只有**流式**请求才有这个值：非流式请求的 DurationMs 本身就是完整响应时间，
+	// 再报一个 TTFT 只会让人误读。0 = 没采到（非流式 / 一个字节都没读到 / 历史记录），
+	// 页面必须显示「—」而不是 0。
+	TtftMs    int64     `json:"ttftMs,omitempty"`
+	ClientIP  string    `json:"clientIp,omitempty"`
+	Attempts  int       `json:"attempts,omitempty"`
+	StartedAt time.Time `json:"startedAt"`
 }
 
 // UsageSink 接收已完成的请求记录。实现必须是非阻塞的：它在 LLM 请求的返回路径上。

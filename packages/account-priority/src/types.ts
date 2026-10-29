@@ -358,6 +358,8 @@ export interface UsageSinceRecord {
   readonly usagePresent: boolean
   readonly usageComplete: boolean
   readonly durationMs: number
+  /** 首字延迟（毫秒）。只有流式请求才有值；Go 侧是 `omitempty`，非流式不带这个键。 */
+  readonly ttftMs?: number
   readonly clientIp?: string
   readonly attempts?: number
   readonly startedAt: string

@@ -432,6 +432,13 @@ export class ApiServer {
       await this.usageExport(req, res, url)
       return
     }
+    // GET /api/usage/:reqId —— 单条用量详情（详情弹窗用）。
+    // 必须排在 `usage/export` 之后：那个是固定子路径，不能被当成 reqId。
+    if (parts.length === 2 && parts[0] === 'usage') {
+      if (!this.allowRead(req, res)) return
+      await this.usageDetail(req, res, parts[1] as string)
+      return
+    }
     if (parts[0] === 'pricing') {
       await this.routePricing(req, res, parts)
       return
@@ -829,6 +836,31 @@ export class ApiServer {
       filename: `usage-${from}-${to}.csv`,
       content: usageCsv(rows),
     })
+  }
+
+  /**
+   * `GET /api/usage/:reqId`：单条用量详情。
+   *
+   * 权限与列表同口径：普通用户只能看自己的记录，管理员可以查全部。
+   * **查不到与「不是自己的」返回同一个 404**——不向外泄露某个 reqId 是否存在
+   * （与充值订单的「用户面不泄露存在性」同一条纪律）。
+   *
+   * 比列表多给四个字段：`reasoningTokens` / `usagePresent` / `usageComplete`
+   * （库里一直有、列表接口没出）与 `ttftMs`（首字延迟，旧记录是 null）。
+   */
+  private async usageDetail(req: IncomingMessage, res: ServerResponse, reqId: string): Promise<void> {
+    const view = await this.requireSession(req)
+    const usage = this.runtime.usage()
+    if (usage === undefined) {
+      throw new ApiError('API_USAGE_UNAVAILABLE', 503, '用量插件不在运行，暂时无法查询用量')
+    }
+    if (reqId === '') throw notFound('没有这条用量记录')
+
+    const row = usage.get(reqId)
+    if (row === null || (roleOf(view.user) !== 'admin' && row.userId !== view.userId)) {
+      throw new ApiError('USAGE_RECORD_NOT_FOUND', 404, '没有这条用量记录')
+    }
+    this.sendJson(req, res, 200, { record: usageDetailOf(row) })
   }
 
   /**
@@ -3542,6 +3574,67 @@ function usageRowOf(row: UsageRowLike): {
     cacheWriteTokens: row.cacheWriteTokens,
     totalTokens: row.totalTokens,
     durationMs: row.durationMs,
+    clientIp: row.clientIp,
+    startedAt: row.startedAt,
+    costMicros: row.costMicros,
+  }
+}
+
+/**
+ * 单条详情：**比列表多** `reasoningTokens` / `usagePresent` / `usageComplete` / `ttftMs`
+ * 与费用（列表里本来就有费用）。仍然不给管理面字段（profile / accountId / attempts）：
+ * 用户面拿不到上游账号拓扑，管理员要看这些走 `/api/admin/usage`。
+ */
+function usageDetailOf(row: UsageRowLike): {
+  id: number
+  reqId: string
+  userId: number
+  apiKeyId: string
+  apiKeyName: string
+  model: string
+  upstreamModel: string | null
+  protocol: string
+  upstreamProtocol: string | null
+  stream: boolean
+  status: number
+  errorCode: string | null
+  inputTokens: number
+  outputTokens: number
+  cacheReadTokens: number
+  cacheWriteTokens: number
+  reasoningTokens: number
+  totalTokens: number
+  usagePresent: boolean
+  usageComplete: boolean
+  durationMs: number
+  ttftMs: number | null
+  clientIp: string | null
+  startedAt: string
+  costMicros: string
+} {
+  return {
+    id: row.id,
+    reqId: row.reqId,
+    userId: row.userId,
+    apiKeyId: row.apiKeyId,
+    apiKeyName: row.apiKeyName,
+    model: row.model,
+    upstreamModel: row.upstreamModel,
+    protocol: row.protocol,
+    upstreamProtocol: row.upstreamProtocol,
+    stream: row.stream,
+    status: row.status,
+    errorCode: row.errorCode,
+    inputTokens: row.inputTokens,
+    outputTokens: row.outputTokens,
+    cacheReadTokens: row.cacheReadTokens,
+    cacheWriteTokens: row.cacheWriteTokens,
+    reasoningTokens: row.reasoningTokens,
+    totalTokens: row.totalTokens,
+    usagePresent: row.usagePresent,
+    usageComplete: row.usageComplete,
+    durationMs: row.durationMs,
+    ttftMs: row.ttftMs,
     clientIp: row.clientIp,
     startedAt: row.startedAt,
     costMicros: row.costMicros,

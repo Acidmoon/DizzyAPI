@@ -834,6 +834,10 @@ export class FakeUsage implements UsagePort {
     }
   }
 
+  get(reqId: string): UsageRowLike | null {
+    return this.rows.find((row) => row.reqId === reqId) ?? null
+  }
+
   summary(query: UsageQueryLike): UsageSummaryLike {
     return { totals: totalsOf(this.filter(query)), daily: [], models: [] }
   }

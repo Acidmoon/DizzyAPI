@@ -34,6 +34,11 @@ export interface UsageEntry {
   readonly usagePresent: boolean
   readonly usageComplete: boolean
   readonly durationMs: number
+  /**
+   * 首字延迟（毫秒）。Go 侧是 `omitempty`：**非流式请求不带这个键**。
+   * 缺失 = 没采集到（不是 0 毫秒），落库写 NULL。
+   */
+  readonly ttftMs?: number
   readonly clientIp: string
   readonly attempts: number
   readonly startedAt: string
@@ -64,6 +69,8 @@ export interface UsageRow {
   readonly usagePresent: boolean
   readonly usageComplete: boolean
   readonly durationMs: number
+  /** 首字延迟（毫秒）；null = 没采集到（非流式请求 / 历史记录），页面显示「—」。 */
+  readonly ttftMs: number | null
   readonly clientIp: string | null
   readonly attempts: number
   readonly startedAt: string
@@ -236,6 +243,8 @@ export interface UsageServiceLike {
   /** 接收一条来自 Go 的记录；幂等（同一 reqId 只落一次）。 */
   ingest(entry: UsageEntry): void
   list(query: UsageQuery): UsageListPage
+  /** 按 reqId 取单条明细；查不到返回 null（权限由 HTTP 层判）。 */
+  get(reqId: string): UsageRow | null
   summary(query: UsageQuery): UsageSummary
   stats(nowMs?: number): UsageStats
   exportRows(query: UsageQuery, limit?: number): readonly UsageRow[]

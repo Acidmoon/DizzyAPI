@@ -129,6 +129,9 @@ export interface UsageRow {
   readonly apiKeyName: string
   readonly totalTokens: number
   readonly costMicros: string
+  readonly durationMs: number
+  /** 首字延迟（毫秒）；null = 没采集到（非流式请求 / 历史记录），页面显示「—」。 */
+  readonly ttftMs: number | null
   readonly status: number
 }
 

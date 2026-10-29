@@ -36,6 +36,13 @@ const (
 	DefaultStrategy = ""
 )
 
+// requestIDHeaderName 是回写给客户端的请求 id 响应头。
+//
+// 用途只有一个：让客户端（`cmd/dizzy`）把一次 LLM 请求与 `/api/usage` 里
+// **那一条**记录精确对上，而不是靠「模型 + 时间窗 + 最大 id」猜。
+// 它只加响应头，**不改任何响应体字节**（错误体形状的既有断言守着）。
+const requestIDHeaderName = "X-Request-Id"
+
 // Authorizer 校验 LLM 入口的 Bearer key。它由 keyauth 实现，复用与 LLM 请求
 // 完全一致的判定（动态快照 / 静态 key / 占位 / 空快照 fail-closed）。
 //
@@ -335,6 +342,8 @@ func (s *Server) llmRouteHandler(route llmRoute) http.HandlerFunc {
 		}
 
 		requestID := s.nextRequestID()
+		// 这个 id 会进用量记录与日志，所以它是**可查的**；只有到这里之后的请求才回这个头。
+		setRequestIDHeader(w, requestID)
 		ctx := &contracts.Ctx{
 			Context: r.Context(),
 			ReqID:   requestID,
@@ -386,9 +395,9 @@ func (s *Server) llmRouteHandler(route llmRoute) http.HandlerFunc {
 			decision.Stream = tracked
 		}
 
-		s.writeDecision(w, decision)
-
-		sample := usageSample{}
+		// TTFT 只能在透传循环里打点：首字节到达客户端那一刻才是「首字延迟」，
+		// 引擎的 Run 返回时流还没开始读。
+		sample := usageSample{ttftMs: s.writeDecision(w, decision, started)}
 		switch {
 		case settle != nil:
 			sample.usage, sample.present, sample.errorCode = settle()
@@ -424,6 +433,9 @@ type usageSample struct {
 	present   bool
 	complete  bool
 	errorCode string
+	// ttftMs 是首字延迟（毫秒）；0 = 没测到——非流式请求不采集，流式请求在
+	// 一个字节都没读到（上游直接报错 / 客户端提前断开）时也不采集。
+	ttftMs int64
 }
 
 // trackedReadCloser 记录流是否读到 EOF。copyStream 因客户端断开提前返回时
@@ -498,6 +510,7 @@ func (s *Server) recordUsage(ctx *contracts.Ctx, decision contracts.Decision, st
 		UsagePresent:     sample.present,
 		UsageComplete:    sample.complete,
 		DurationMs:       time.Since(started).Milliseconds(),
+		TtftMs:           sample.ttftMs,
 		ClientIP:         ctx.ClientIP,
 		Attempts:         attemptedAccounts(ctx.Attempts),
 		StartedAt:        started.UTC(),
@@ -690,7 +703,11 @@ func (s *Server) readBody(w http.ResponseWriter, r *http.Request, protocol contr
 	return body, nil
 }
 
-func (s *Server) writeDecision(w http.ResponseWriter, decision contracts.Decision) {
+// writeDecision 写出 engine 的决策，返回流式响应的首字延迟（毫秒）；非流式恒为 0。
+//
+// `started` 是请求开始时间，TTFT 相对它计算：只有流式才有意义（非流式的
+// DurationMs 就是完整响应时间）。
+func (s *Server) writeDecision(w http.ResponseWriter, decision contracts.Decision, started time.Time) int64 {
 	if decision.Stream != nil {
 		defer decision.Stream.Close()
 	}
@@ -704,24 +721,34 @@ func (s *Server) writeDecision(w http.ResponseWriter, decision contracts.Decisio
 	w.WriteHeader(status)
 
 	if decision.Stream != nil {
-		s.copyStream(w, decision.Stream)
-		return
+		return s.copyStream(w, decision.Stream, started)
 	}
 	if len(decision.Body) > 0 {
 		_, _ = w.Write(decision.Body)
 	}
+	return 0
 }
 
 // copyStream 原样透传 SSE / 上游字节，并尽量每块 flush，
 // 让首字延迟不被网关缓冲放大。
-func (s *Server) copyStream(w http.ResponseWriter, stream io.Reader) {
+//
+// 返回首字延迟（毫秒，相对 `started` 向上取整）：在**第一次成功读到字节**的那一刻打点。
+// 一个字节都没读到（上游直接报错、客户端提前断开）时返回 0，表示「没测到」——
+// 非流式请求与历史记录也走这个 0，页面据此显示「—」而不是 0 ms。
+// 向上取整是为了让「测到了但不足 1ms」的流式请求不被误判成「没测到」。
+func (s *Server) copyStream(w http.ResponseWriter, stream io.Reader, started time.Time) int64 {
 	flusher, _ := w.(http.Flusher)
 	buffer := make([]byte, 32<<10)
+	var ttftMs int64
 	for {
 		read, err := stream.Read(buffer)
 		if read > 0 {
+			if ttftMs == 0 {
+				elapsed := time.Since(started)
+				ttftMs = int64((elapsed + time.Millisecond - 1) / time.Millisecond)
+			}
 			if _, writeErr := w.Write(buffer[:read]); writeErr != nil {
-				return
+				return ttftMs
 			}
 			if flusher != nil {
 				flusher.Flush()
@@ -731,7 +758,7 @@ func (s *Server) copyStream(w http.ResponseWriter, stream io.Reader) {
 			if !errors.Is(err, io.EOF) {
 				s.logger.Debug("上游流读取结束", "error", err)
 			}
-			return
+			return ttftMs
 		}
 	}
 }
@@ -744,6 +771,21 @@ func (s *Server) closeStream(decision contracts.Decision) {
 
 func (s *Server) nextRequestID() string {
 	return fmt.Sprintf("req-%d-%d", time.Now().UnixNano(), s.requests.Add(1))
+}
+
+// setRequestIDHeader 把请求 id 写进响应头。
+//
+// 必须在 WriteHeader 之前调用（头已经发出去就改不动了）；空 id 不写。
+//
+// **只有拿到真实 requestID 的请求才写这个头**：早期拒绝（方法不对 / 请求体读失败 /
+// JSON 非法 / 缺 model）与 `/v1/models`、`/healthz` 都不产生用量记录，它们的 id
+// 不进日志也不进库 —— 发出去就是一个「看着能用、查必然 404」的死值，比不给更差。
+// 将来若要全覆盖，先把 id 打进日志，再回头加头，两步一起做。
+func setRequestIDHeader(w http.ResponseWriter, id string) {
+	if id == "" {
+		return
+	}
+	w.Header().Set(requestIDHeaderName, id)
 }
 
 func (s *Server) recover(next http.Handler) http.Handler {

@@ -1,12 +1,30 @@
-/** 管理台 · 全站用量：今日 / 累计与按模型汇总 + 坏记录隔离区。 */
+/**
+ * 管理台 · 全站用量：今日 / 累计与按模型汇总 + 最近请求（含首字延迟）+ 坏记录隔离区。
+ *
+ * 首字延迟（TTFT）只有流式请求才有；`null` 一律显示「—」，不显示 0。
+ */
 import { pageHeader, renderAdminShell, type PageContext, type PageModule } from '../layout.ts'
 import { formatYuan, requiredString, WebError } from '../forms.ts'
 import { auditedAction } from '../audit.ts'
 
 const REJECTED_LIMIT = 20
+/** 「最近请求」表的条数：管理面只做抽查，不做全量分页（全量走 /api/admin/usage + CSV）。 */
+const RECENT_LIMIT = 20
 
 function formatTime(value: string): string {
   return value.slice(0, 19).replace('T', ' ')
+}
+
+/**
+ * 毫秒 → 人话。
+ *
+ * `null` 表示**没采集到**（非流式请求、或升级前的历史记录），必须显示「—」：
+ * 显示 0 会让人以为「首字 0 毫秒」，这是两件完全不同的事。
+ */
+function formatMs(value: number | null): string {
+  if (value === null) return '—'
+  if (value < 1_000) return `${value} ms`
+  return `${(value / 1_000).toFixed(1)} s`
 }
 
 function rejectedBadge(t: PageContext['t'], status: string): string {
@@ -64,6 +82,52 @@ export const adminUsagePage: PageModule = {
       t.escapeText(t.formatThousands(model.totalTokens)),
       t.escapeText(formatYuan(model.costMicros)),
     ])
+
+    // 最近请求（全站）：管理面抽查单条明细用。**首字延迟（TTFT）只有流式请求才有**，
+    // 非流式与升级前的历史记录是 null，必须显示「—」而不是 0。
+    let recent
+    try {
+      recent = usage.list({ fromMs: 0, toMs: Number.MAX_SAFE_INTEGER, limit: RECENT_LIMIT })
+    } catch {
+      recent = undefined
+    }
+    const recentRows =
+      recent === undefined
+        ? []
+        : recent.items.map((row) => [
+            t.escapeText(formatTime(row.startedAt)),
+            t.escapeText(row.model),
+            t.escapeText(row.apiKeyName),
+            t.escapeText(t.formatThousands(row.totalTokens)),
+            t.escapeText(formatYuan(row.costMicros)),
+            t.escapeText(formatMs(row.durationMs)),
+            t.escapeText(formatMs(row.ttftMs)),
+            row.status === 200 ? t.escapeText('200') : t.renderBadge(String(row.status), 'err'),
+          ])
+    const recentSection =
+      recent === undefined
+        ? t.renderNotice({ kind: 'err', text: '最近请求暂时不可读，请稍后再试' })
+        : [
+            t.renderSectionTitle('最近请求'),
+            t.renderNotice({
+              kind: 'info',
+              text: '首字延迟（TTFT）只有流式请求才有：非流式请求与升级前的历史记录显示「—」。',
+            }),
+            t.renderTable({
+              columns: [
+                { label: '时间' },
+                { label: '模型' },
+                { label: 'API key' },
+                { label: 'Tokens', align: 'right' },
+                { label: '费用', align: 'right' },
+                { label: '耗时', align: 'right' },
+                { label: '首字延迟', align: 'right' },
+                { label: '状态', align: 'right' },
+              ],
+              rows: recentRows,
+              empty: '还没有用量记录',
+            }),
+          ].join('\n')
 
     const offsetText = ctx.query.get('offset') ?? '0'
     const offset = /^\d+$/.test(offsetText) ? Number(offsetText) : 0
@@ -135,6 +199,7 @@ export const adminUsagePage: PageModule = {
         rows,
         empty: '还没有用量记录',
       }),
+      recentSection,
       rejectedSection,
     ].join('\n'))
   },
