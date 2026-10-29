@@ -393,7 +393,7 @@ export class ApiServer {
       return
     }
     if (parts[0] === 'admin' && parts[1] === 'usage') {
-      await this.routeAdminUsage(req, res, parts, url)
+      await routeAdminUsage(this, req, res, parts, url)
       return
     }
     if (parts.length === 2 && parts[0] === 'admin' && parts[1] === 'stats') {
@@ -402,11 +402,11 @@ export class ApiServer {
       return
     }
     if (parts[0] === 'users') {
-      await this.routeUsers(req, res, parts)
+      await routeUsers(this, req, res, parts)
       return
     }
     if (parts[0] === 'accounts') {
-      await this.routeAccounts(req, res, parts)
+      await routeAccounts(this, req, res, parts)
       return
     }
     if (parts.length === 2 && parts[0] === 'catalog' && parts[1] === 'modules') {
@@ -522,66 +522,6 @@ export class ApiServer {
     }
     return contentAudit
   }
-  /** @internal 实现在 routes/admin_usage.ts（薄委派；注释与实现在那边，这里只转发）。 */
-async routeAdminUsage(
-  req: IncomingMessage,
-  res: ServerResponse,
-  parts: readonly string[],
-  url: URL,
-): Promise<void> {
-    return await routeAdminUsage(this, req, res, parts, url)
-  }
-
-  /** @internal 实现在 routes/admin_usage.ts（薄委派；注释与实现在那边，这里只转发）。 */
-adminUsageQuery(url: URL): {
-  readonly range: UsageRange
-  readonly from: string
-  readonly to: string
-  readonly query: UsageQueryLike
-} {
-    return adminUsageQuery(this, url)
-  }
-
-  /** @internal 实现在 routes/admin_usage.ts（薄委派；注释与实现在那边，这里只转发）。 */
-userNameResolver(): (userId: number) => Promise<string | null> {
-    return userNameResolver(this)
-  }
-
-  /** @internal 实现在 routes/admin_usage_rejected.ts（薄委派；注释与实现在那边，这里只转发）。 */
-async routeAdminUsageRejected(
-  req: IncomingMessage,
-  res: ServerResponse,
-  parts: readonly string[],
-  url: URL,
-  actor: string,
-): Promise<void> {
-    return await routeAdminUsageRejected(this, req, res, parts, url, actor)
-  }
-
-  /** @internal 实现在 routes/admin_usage_rejected.ts（薄委派；注释与实现在那边，这里只转发）。 */
-adminRejectedView(
-  usage: UsagePort,
-  url: URL,
-): {
-  items: ReturnType<typeof rejectedRowOf>[]
-  total: number
-  pending: number
-  limit: number
-  offset: number
-} {
-    return adminRejectedView(this, usage, url)
-  }
-
-  /** @internal 实现在 routes/admin_users.ts（薄委派；注释与实现在那边，这里只转发）。 */
-async routeUsers(req: IncomingMessage, res: ServerResponse, parts: readonly string[]): Promise<void> {
-    return await routeUsers(this, req, res, parts)
-  }
-
-  /** @internal 实现在 routes/admin_accounts.ts（薄委派；注释与实现在那边，这里只转发）。 */
-async routeAccounts(req: IncomingMessage, res: ServerResponse, parts: readonly string[]): Promise<void> {
-    return await routeAccounts(this, req, res, parts)
-  }
-
   /** @internal 实现在 http_static.ts（薄委派；注释与实现在那边，这里只转发）。 */
 assetPrefix(): string {
     return assetPrefix(this)

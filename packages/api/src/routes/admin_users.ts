@@ -12,15 +12,17 @@ import { API_ACTOR } from '../constants.ts'
 import { ApiError, badRequest, notFound } from '../errors.ts'
 import { type IncomingMessage, type ServerResponse } from 'node:http'
 import type { UserStatusLike } from '../types.ts'
+import { requireAdmin } from '../http_session.ts'
+import { allowMethod, allowRead, jsonBody, sendJson, sendMethodNotAllowed } from '../http_respond.ts'
 
 // ───────────────────────────────── 管理员：用户 ─────────────────────────────────
 
 export async function routeUsers(host: ApiServer, req: IncomingMessage, res: ServerResponse, parts: readonly string[]): Promise<void> {
-  const { view: adminView } = await host.requireAdmin(req)
+  const { view: adminView } = await requireAdmin(host, req)
   const actor = auditActorOf(adminView)
 
   if (parts.length === 1) {
-    if (!host.allowRead(req, res)) return
+    if (!allowRead(host, req, res)) return
     const query: { status?: UserStatusLike; offset?: number; limit?: number } = {}
     const url = new URL(req.url ?? '/', 'http://127.0.0.1')
     const status = url.searchParams.get('status')
@@ -33,7 +35,7 @@ export async function routeUsers(host: ApiServer, req: IncomingMessage, res: Ser
     if (offset !== undefined) query.offset = offset
     if (limit !== undefined) query.limit = limit
     const users = await host.runtime.user.list(query)
-    host.sendJson(req, res, 200, { items: users.map(adminUserOf) })
+    sendJson(host, req, res, 200, { items: users.map(adminUserOf) })
     return
   }
 
@@ -42,11 +44,11 @@ export async function routeUsers(host: ApiServer, req: IncomingMessage, res: Ser
     if (req.method === 'GET' || req.method === 'HEAD') {
       const user = await host.runtime.user.get(id)
       if (user === undefined) throw notFound('没有这个用户')
-      host.sendJson(req, res, 200, adminUserOf(user))
+      sendJson(host, req, res, 200, adminUserOf(user))
       return
     }
     if (req.method === 'PATCH') {
-      const body = await host.jsonBody(req)
+      const body = await jsonBody(host, req)
       assertOnlyKeys(body, ['name', 'role', 'status', 'balanceEnabled', 'concurrencyLimit'])
       const hasName = Object.hasOwn(body, 'name')
       const hasRole = Object.hasOwn(body, 'role')
@@ -172,7 +174,7 @@ export async function routeUsers(host: ApiServer, req: IncomingMessage, res: Ser
 
       const user = await host.runtime.user.get(id)
       if (user === undefined) throw notFound('没有这个用户')
-      host.sendJson(req, res, 200, adminUserOf(user))
+      sendJson(host, req, res, 200, adminUserOf(user))
       return
     }
     if (req.method === 'DELETE') {
@@ -187,16 +189,16 @@ export async function routeUsers(host: ApiServer, req: IncomingMessage, res: Ser
         },
         () => host.runtime.user.remove(API_ACTOR, id),
       )
-      host.sendJson(req, res, 200, { removed: true })
+      sendJson(host, req, res, 200, { removed: true })
       return
     }
-    host.sendMethodNotAllowed(req, res, ['GET', 'HEAD', 'PATCH', 'DELETE'])
+    sendMethodNotAllowed(host, req, res, ['GET', 'HEAD', 'PATCH', 'DELETE'])
     return
   }
 
   if (parts.length === 3 && parts[2] === 'balance') {
-    if (!host.allowMethod(req, res, ['POST'])) return
-    const body = await host.jsonBody(req)
+    if (!allowMethod(host, req, res, ['POST'])) return
+    const body = await jsonBody(host, req)
     assertOnlyKeys(body, ['delta', 'reason'])
     const deltaText = requiredString(body, 'delta')
     if (!/^-?\d+$/.test(deltaText)) throw badRequest('delta 必须是十进制整数字符串（最小单位）')
@@ -215,7 +217,7 @@ export async function routeUsers(host: ApiServer, req: IncomingMessage, res: Ser
       },
       () => host.runtime.user.adjustBalance(API_ACTOR, id, BigInt(deltaText), reason),
     )
-    host.sendJson(req, res, 200, { balanceMinor: balance.toString() })
+    sendJson(host, req, res, 200, { balanceMinor: balance.toString() })
     return
   }
 

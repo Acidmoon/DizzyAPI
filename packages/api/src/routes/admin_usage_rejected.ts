@@ -12,6 +12,7 @@ import { API_ACTOR } from '../constants.ts'
 import { badRequest, notFound } from '../errors.ts'
 import { type IncomingMessage, type ServerResponse } from 'node:http'
 import type { UsagePort, UsageRejectedQueryLike } from '../types.ts'
+import { allowMethod, allowRead, jsonBody, sendJson } from '../http_respond.ts'
 
 /**
  * `/api/admin/usage/rejected`：坏记录隔离区（只读列表 + 两个管理动作）。
@@ -32,8 +33,8 @@ actor: string,
 ): Promise<void> {
   const usage = host.requireUsage()
   if (parts.length === 3) {
-    if (!host.allowRead(req, res)) return
-    host.sendJson(req, res, 200, host.adminRejectedView(usage, url))
+    if (!allowRead(host, req, res)) return
+    sendJson(host, req, res, 200, adminRejectedView(host, usage, url))
     return
   }
   if (parts.length !== 4) throw notFound('没有这个管理员用量接口')
@@ -41,8 +42,8 @@ actor: string,
   if (action !== 'ignore' && action !== 'replay') {
     throw notFound('没有这个隔离记录操作')
   }
-  if (!host.allowMethod(req, res, ['POST'])) return
-  const body = await host.jsonBody(req)
+  if (!allowMethod(host, req, res, ['POST'])) return
+  const body = await jsonBody(host, req)
   assertOnlyKeys(body, ['reqId'])
   const reqId = requiredString(body, 'reqId')
   const identity = { actor, actorPlugin: API_ACTOR }
@@ -60,7 +61,7 @@ actor: string,
       },
       async () => usage.ignoreRejected(reqId),
     )
-    host.sendJson(req, res, 200, { reqId, status: 'ignored' })
+    sendJson(host, req, res, 200, { reqId, status: 'ignored' })
     return
   }
 
@@ -77,7 +78,7 @@ actor: string,
     },
     () => usage.replayRejected(reqId),
   )
-  host.sendJson(req, res, 200, { reqId, ...replayed })
+  sendJson(host, req, res, 200, { reqId, ...replayed })
 }
 
 /** 隔离区列表视图：分页与状态筛选都在这里校验，非法值明确 400。 */

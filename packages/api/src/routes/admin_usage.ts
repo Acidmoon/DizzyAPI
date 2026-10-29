@@ -13,6 +13,9 @@ import { ADMIN_USAGE_EXPORT_LIMIT, USAGE_RANGE_DAYS, UsageRange } from '../const
 import { badRequest, notFound } from '../errors.ts'
 import { type IncomingMessage, type ServerResponse } from 'node:http'
 import type { UsageQueryLike } from '../types.ts'
+import { requireAdmin } from '../http_session.ts'
+import { routeAdminUsageRejected } from './admin_usage_rejected.ts'
+import { allowRead, sendJson } from '../http_respond.ts'
 
 /**
  * `/api/admin/usage`：管理员口径的用量明细与导出。
@@ -28,26 +31,26 @@ res: ServerResponse,
 parts: readonly string[],
 url: URL,
 ): Promise<void> {
-  const { view: adminView } = await host.requireAdmin(req)
+  const { view: adminView } = await requireAdmin(host, req)
   if (parts[2] === 'rejected') {
-    await host.routeAdminUsageRejected(req, res, parts, url, auditActorOf(adminView))
+    await routeAdminUsageRejected(host, req, res, parts, url, auditActorOf(adminView))
     return
   }
   if (parts.length > 3 || (parts.length === 3 && parts[2] !== 'export')) {
     throw notFound('没有这个管理员用量接口')
   }
-  if (!host.allowRead(req, res)) return
+  if (!allowRead(host, req, res)) return
 
   const usage = host.requireUsage()
-  const spec = host.adminUsageQuery(url)
-  const nameOf = host.userNameResolver()
+  const spec = adminUsageQuery(host, url)
+  const nameOf = userNameResolver(host)
 
   if (parts.length === 3) {
     const rows = usage.exportRows(spec.query, ADMIN_USAGE_EXPORT_LIMIT)
     const decorated = await Promise.all(
       rows.map(async (row) => ({ ...row, userName: await nameOf(row.userId) })),
     )
-    host.sendJson(req, res, 200, {
+    sendJson(host, req, res, 200, {
       filename: `admin-usage-${spec.from.replaceAll('-', '')}-${spec.to.replaceAll('-', '')}.csv`,
       content: adminUsageCsv(decorated),
     })
@@ -62,7 +65,7 @@ url: URL,
   // 隔离区：主接口给「第一页 + 计数」，完整分页在 `/api/admin/usage/rejected`。
   // 这些记录没有进明细、不会被结算；管理面必须能看见，否则就是静默免单。
   const rejected = usage.listRejected({ limit: 20 })
-  host.sendJson(req, res, 200, {
+  sendJson(host, req, res, 200, {
     range: spec.range,
     from: spec.from,
     to: spec.to,
