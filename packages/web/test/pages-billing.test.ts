@@ -45,6 +45,7 @@ const EMPTY_SERVICES: WebRuntime = {
   fontSmiley: undefined,
   audit: undefined,
   observability: undefined,
+  contentAudit: undefined,
 }
 
 function pageContext(services: WebRuntime): PageContext {

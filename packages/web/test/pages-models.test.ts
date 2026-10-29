@@ -48,6 +48,7 @@ const EMPTY_SERVICES: WebRuntime = {
   fontSmiley: undefined,
   audit: undefined,
   observability: undefined,
+  contentAudit: undefined,
 }
 
 function pageContext(services: WebRuntime, query = '', template: PageTemplateService): PageContext {

@@ -37,6 +37,7 @@ export type ApiErrorCode =
   | 'MODELHUB_UNAVAILABLE'
   | 'AUDIT_UNAVAILABLE'
   | 'OBSERVABILITY_UNAVAILABLE'
+  | 'CONTENT_AUDIT_UNAVAILABLE'
 
 export class ApiError extends Error {
   readonly code: string
@@ -173,6 +174,13 @@ const EXPLICIT_STATUS: Readonly<Record<string, number>> = {
   // 运维总览：只有聚合插件缺席时 503；单块数据源缺失由报告标 degraded，不是错误。
   OBSERVABILITY_CONFIG_INVALID: 500,
   OBSERVABILITY_NOT_READY: 503,
+  // 内容审核：配置非法是本机配置问题 → 500（不能伪装成用户输入错）；
+  // 重复 pattern 是「与现有数据冲突」→ 409；白名单 / 输入 / 未找到走通用后缀规则。
+  CONTENT_AUDIT_CONFIG_INVALID: 500,
+  CONTENT_AUDIT_RULE_DUPLICATE: 409,
+  CONTENT_AUDIT_STORE_CORRUPT: 500,
+  CONTENT_AUDIT_STORE_FAILED: 500,
+  CONTENT_AUDIT_GO_UNAVAILABLE: 503,
 }
 
 export function statusOfCode(code: string): number {

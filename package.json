@@ -38,6 +38,7 @@
     "@dizzyapi/plugin-auth": "workspace:*",
     "@dizzyapi/plugin-billing": "workspace:*",
     "@dizzyapi/plugin-catalog": "workspace:*",
+    "@dizzyapi/plugin-content-audit": "workspace:*",
     "@dizzyapi/plugin-credentials": "workspace:*",
     "@dizzyapi/plugin-deepseek-usage": "workspace:*",
     "@dizzyapi/plugin-font-smiley": "workspace:*",

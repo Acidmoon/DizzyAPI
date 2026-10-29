@@ -28,6 +28,12 @@ import type {
   BillingPort,
   CatalogPluginLike,
   CatalogPort,
+  ContentAuditHitsLike,
+  ContentAuditPort,
+  ContentAuditRuleInputLike,
+  ContentAuditRuleLike,
+  ContentAuditRulePatchLike,
+  ContentAuditStatusLike,
   FrontendPageLike,
   FrontendPort,
   LoginResultLike,
@@ -1439,6 +1445,125 @@ export class FakeAudit implements AuditPort {
   }
 }
 
+/** 内容审核规则服务（`contentAudit`）的假实现：只覆盖 HTTP 层要观察的行为。 */
+export class FakeContentAudit implements ContentAuditPort {
+  readonly calls: { readonly method: string; readonly args: readonly unknown[] }[] = []
+  /** 设置后所有写方法抛出带这个 code 的 DomainError。 */
+  failCode: string | undefined
+  /** 置 true 后 `status()` 的 Go 侧字段全是 null（模拟桥断）。 */
+  goOffline = false
+  /** 命中统计；`goOffline` 为 true 时不会被读到。 */
+  hits: ContentAuditHitsLike = {
+    blocked: 7,
+    logged: 3,
+    allowedStale: 1,
+    strictFailed: 0,
+    parseFailed: 2,
+    noText: 41,
+    truncated: 1,
+    ruleHitTotal: 10,
+    byRule: { car_seed: 10 },
+    staleStreak: 0,
+  }
+
+  private rules: ContentAuditRuleLike[] = [
+    {
+      id: 'car_seed',
+      pattern: 'seed-word',
+      action: 'block',
+      category: 'abuse',
+      enabled: true,
+      note: '夹具里的种子规则',
+      createdAt: '2026-10-20T08:00:00.000Z',
+      updatedAt: '2026-10-20T08:00:00.000Z',
+    },
+  ]
+
+  list(actor: string): readonly ContentAuditRuleLike[] {
+    this.calls.push({ method: 'list', args: [actor] })
+    return this.rules.map((rule) => ({ ...rule }))
+  }
+
+  get(actor: string, id: string): ContentAuditRuleLike | null {
+    this.calls.push({ method: 'get', args: [actor, id] })
+    const rule = this.rules.find((item) => item.id === id)
+    return rule === undefined ? null : { ...rule }
+  }
+
+  async create(actor: string, input: ContentAuditRuleInputLike): Promise<ContentAuditRuleLike> {
+    this.calls.push({ method: 'create', args: [actor, input] })
+    if (this.failCode !== undefined) throw new DomainError(this.failCode, '测试拒绝：新增规则失败')
+    const rule: ContentAuditRuleLike = {
+      id: `car_${String(this.rules.length + 1)}`,
+      pattern: input.pattern,
+      action: input.action ?? 'block',
+      ...(input.category === undefined ? {} : { category: input.category }),
+      enabled: input.enabled ?? true,
+      ...(input.note === undefined ? {} : { note: input.note }),
+      createdAt: '2026-10-29T12:00:00.000Z',
+      updatedAt: '2026-10-29T12:00:00.000Z',
+    }
+    this.rules = [...this.rules, rule]
+    return { ...rule }
+  }
+
+  async update(actor: string, id: string, patch: ContentAuditRulePatchLike): Promise<ContentAuditRuleLike> {
+    this.calls.push({ method: 'update', args: [actor, id, patch] })
+    if (this.failCode !== undefined) throw new DomainError(this.failCode, '测试拒绝：修改规则失败')
+    const current = this.rules.find((item) => item.id === id)
+    if (current === undefined) throw new DomainError('CONTENT_AUDIT_RULE_NOT_FOUND', '规则不存在')
+    const next: ContentAuditRuleLike = {
+      id,
+      pattern: patch.pattern ?? current.pattern,
+      action: patch.action ?? current.action,
+      ...(patch.category === null
+        ? {}
+        : { category: patch.category ?? current.category }),
+      enabled: patch.enabled ?? current.enabled,
+      ...(patch.note === null ? {} : { note: patch.note ?? current.note }),
+      createdAt: current.createdAt,
+      updatedAt: '2026-10-29T12:05:00.000Z',
+    }
+    this.rules = this.rules.map((item) => (item.id === id ? next : item))
+    return { ...next }
+  }
+
+  async remove(actor: string, id: string): Promise<boolean> {
+    this.calls.push({ method: 'remove', args: [actor, id] })
+    if (this.failCode !== undefined) throw new DomainError(this.failCode, '测试拒绝：删除规则失败')
+    const before = this.rules.length
+    this.rules = this.rules.filter((item) => item.id !== id)
+    return this.rules.length !== before
+  }
+
+  async status(): Promise<ContentAuditStatusLike> {
+    return {
+      enabled: true,
+      pushIntervalMs: 5_000,
+      ruleCount: this.rules.length,
+      revision: 'rev-seed',
+      generation: 42,
+      ageMs: this.goOffline ? null : 1_200,
+      ttlMs: this.goOffline ? null : 15_000,
+      stale: this.goOffline ? null : false,
+      goReady: this.goOffline ? null : true,
+      lastPushAt: '2026-10-29T12:00:00.000Z',
+      lastError: null,
+      pushes: 11,
+      heartbeats: 10,
+      failureStreak: 0,
+      goTtlMs: this.goOffline ? null : 15_000,
+      heartbeatTooSlow: false,
+      hits: this.goOffline ? null : { ...this.hits, byRule: { ...this.hits.byRule } },
+    }
+  }
+
+  async pushNow(): Promise<string | null> {
+    if (this.failCode !== undefined) throw new DomainError(this.failCode, '测试拒绝：推送失败')
+    return 'rev-seed'
+  }
+}
+
 /** 运维总览的假实现：返回一份现成的报告，可让 observe 抛错。 */
 export class FakeObservability implements ObservabilityPort {
   calls = 0
@@ -1566,6 +1691,7 @@ export interface Fixture {
   readonly modelhub: FakeModelHub
   readonly audit: FakeAudit
   readonly observability: FakeObservability
+  readonly contentAudit: FakeContentAudit
   readonly cleanup: () => Promise<void>
 }
 
@@ -1587,6 +1713,7 @@ export interface FixtureOptions {
   readonly withoutModelHub?: boolean
   readonly withoutAudit?: boolean
   readonly withoutObservability?: boolean
+  readonly withoutContentAudit?: boolean
   readonly pages?: FrontendPageLike[]
 }
 
@@ -1607,6 +1734,7 @@ export async function createFixture(options: FixtureOptions = {}): Promise<Fixtu
   const modelhub = new FakeModelHub()
   const audit = new FakeAudit()
   const observability = new FakeObservability()
+  const contentAudit = new FakeContentAudit()
 
   const runtime: ApiRuntime = {
     config: resolvedConfig(options.config),
@@ -1627,6 +1755,7 @@ export async function createFixture(options: FixtureOptions = {}): Promise<Fixtu
     modelhub: () => (options.withoutModelHub === true ? undefined : modelhub),
     audit: () => (options.withoutAudit === true ? undefined : audit),
     observability: () => (options.withoutObservability === true ? undefined : observability),
+    contentAudit: () => (options.withoutContentAudit === true ? undefined : contentAudit),
     now: () => new Date('2026-10-19T12:00:00.000Z'),
     uptimeSec: () => 42,
     log: () => undefined,
@@ -1650,6 +1779,7 @@ export async function createFixture(options: FixtureOptions = {}): Promise<Fixtu
     modelhub,
     audit,
     observability,
+    contentAudit,
     async cleanup() {
       await rm(frontend.root, { recursive: true, force: true })
     },

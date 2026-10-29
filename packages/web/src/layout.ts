@@ -65,6 +65,7 @@ const ADMIN_NAV: readonly { label: string; path: string; icon: NavItem['icon'] }
   { label: '充值订单', path: '/admin/topup-orders', icon: 'card' },
   { label: '兑换码', path: '/admin/redeem-codes', icon: 'receipt' },
   { label: '操作审计', path: '/admin/audit', icon: 'doc' },
+  { label: '内容审核', path: '/admin/content-audit', icon: 'help' },
   { label: '运维总览', path: '/admin/observability', icon: 'bars' },
 ]
 

@@ -19,6 +19,7 @@ import type {
   AuthLike,
   BillingLike,
   CatalogLike,
+  ContentAuditLike,
   FontLike,
   ModelHubLike,
   ObservabilityLike,
@@ -167,6 +168,7 @@ export class WebService extends Service {
       topup: get<TopupLike>('topup'),
       audit: get<AuditLike>('audit'),
       observability: get<ObservabilityLike>('observability'),
+      contentAudit: get<ContentAuditLike>('contentAudit'),
       fontSmiley: get<FontLike>('fontSmiley'),
     }
   }

@@ -537,6 +537,98 @@ export interface ObservabilityPort {
   observe(nowMs?: number): Promise<unknown>
 }
 
+// ───────────────────────────── 内容审核 ─────────────────────────────
+
+/** 一条内容审核规则（管理面视图）。规则本身是关键词，不含任何秘密。 */
+export interface ContentAuditRuleLike {
+  readonly id: string
+  readonly pattern: string
+  readonly action: 'block' | 'log'
+  readonly category?: string
+  readonly enabled: boolean
+  readonly note?: string
+  readonly createdAt: string
+  readonly updatedAt: string
+}
+
+/** 新建规则的入参；HTTP 层只做形状校验，语义（长度 / 去重 / 上限）由插件判。 */
+export interface ContentAuditRuleInputLike {
+  readonly pattern: string
+  readonly action?: 'block' | 'log'
+  readonly category?: string
+  readonly enabled?: boolean
+  readonly note?: string
+}
+
+/**
+ * 修改规则的入参：没给的字段保持不变（`enabled` 用来启停单条规则）。
+ *
+ * `category` / `note` 给 `null` 表示清空（与账号标签同一套「PATCH 里 null = 清空」约定）。
+ */
+export interface ContentAuditRulePatchLike {
+  readonly pattern?: string
+  readonly action?: 'block' | 'log'
+  readonly category?: string | null
+  readonly enabled?: boolean
+  readonly note?: string | null
+}
+
+/** Go 侧命中统计；读不到 Go 时整块是 `null`，**不编造 0**。 */
+export interface ContentAuditHitsLike {
+  readonly blocked: number
+  readonly logged: number
+  readonly allowedStale: number
+  readonly strictFailed: number
+  readonly parseFailed: number
+  readonly noText: number
+  readonly truncated: number
+  readonly ruleHitTotal: number
+  readonly byRule: Readonly<Record<string, number>>
+  readonly staleStreak: number
+}
+
+/**
+ * 插件状态：本地推送健康度 + Go 侧快照新鲜度 + 命中统计。
+ *
+ * `ageMs` / `ttlMs` / `stale` / `goReady` / `hits` 读不到 Go 时是 `null`：
+ * 桥断或旧二进制不能伪装成「新鲜、零命中」。
+ */
+export interface ContentAuditStatusLike {
+  readonly enabled: boolean
+  readonly pushIntervalMs: number
+  readonly ruleCount: number
+  readonly revision: string | null
+  readonly generation: number
+  readonly ageMs: number | null
+  readonly ttlMs: number | null
+  readonly stale: boolean | null
+  readonly goReady: boolean | null
+  readonly lastPushAt: string | null
+  readonly lastError: string | null
+  readonly pushes: number
+  readonly heartbeats: number
+  readonly failureStreak: number
+  readonly goTtlMs: number | null
+  readonly heartbeatTooSlow: boolean
+  readonly hits: ContentAuditHitsLike | null
+}
+
+/**
+ * 内容审核服务端口。
+ *
+ * 读与写都要求 actor 在插件的 `adminPlugins` 白名单里（`api` 以自己的插件名调用）。
+ * 审计不在服务层记：`api` / `web` 在调用点用 `audited(...)` 留痕。
+ */
+export interface ContentAuditPort {
+  list(actor: string): readonly ContentAuditRuleLike[]
+  get(actor: string, id: string): ContentAuditRuleLike | null
+  create(actor: string, input: ContentAuditRuleInputLike): Promise<ContentAuditRuleLike>
+  update(actor: string, id: string, patch: ContentAuditRulePatchLike): Promise<ContentAuditRuleLike>
+  remove(actor: string, id: string): Promise<boolean>
+  status(): Promise<ContentAuditStatusLike>
+  pushNow(): Promise<string | null>
+}
+
 // ───────────────────────────── 设置与 API key ─────────────────────────────
 
 /** 设置插件的读/写面。只有运行中的 settings 服务才提供。 */
@@ -938,6 +1030,8 @@ export interface ApiRuntime {
   audit(): AuditPort | undefined
   /** 运维总览（只读聚合）；不在运行时只有 /api/admin/observability 503。 */
   observability(): ObservabilityPort | undefined
+  /** 内容审核规则；不在运行时只有内容审核相关路由 503，LLM 链路照常放行。 */
+  contentAudit(): ContentAuditPort | undefined
   now(): Date
   uptimeSec(): number
   log(level: 'info' | 'warn' | 'error', message: string): void

@@ -34,6 +34,11 @@ import type {
   BillingPort,
   CatalogModuleView,
   CatalogPort,
+  ContentAuditPort,
+  ContentAuditRuleInputLike,
+  ContentAuditRuleLike,
+  ContentAuditRulePatchLike,
+  ContentAuditStatusLike,
   FrontendPageLike,
   FrontendPort,
   GatewayComponentHealth,
@@ -467,6 +472,10 @@ export class ApiServer {
     }
     if (parts[0] === 'admin' && parts[1] === 'audit') {
       await this.routeAdminAudit(req, res, url)
+      return
+    }
+    if (parts[0] === 'admin' && parts[1] === 'content-audit') {
+      await this.routeAdminContentAudit(req, res, parts)
       return
     }
     if (parts.length === 2 && parts[0] === 'admin' && parts[1] === 'observability') {
@@ -1832,6 +1841,122 @@ export class ApiServer {
     })
   }
 
+  // ───────────────────────────────── 管理员：内容审核 ─────────────────────────────────
+
+  /**
+   * 管理面内容审核规则：`/api/admin/content-audit`。
+   *
+   * - `GET` → `{ items, status }`：规则列表 + 推送健康度 + Go 侧命中统计；
+   * - `POST` → 新增规则（`pattern` 必填，`action` 默认 `block`）；
+   * - `GET|PATCH|DELETE .../<id>` → 读一条 / 改一条 / 删一条（`enabled` 用来启停单条规则）；
+   * - `POST .../push` → 立刻推一次（排障用），回 `{ revision }`。
+   *
+   * 三条纪律：
+   * - **规则**的语义校验（长度 / 去重 / 上限 / 控制字符）全在插件里，这里只做形状校验，
+   *   插件抛的稳定码由 `toApiError` 映射状态码；
+   * - **审计在调用点记**：插件对 `audit` 零依赖，actor 只有这里知道。审计元数据里
+   *   **不放 pattern**（关键词是管理面数据，没必要扩散到审计表），只放 id / action / 启停；
+   * - 列表与状态是**只读**的，`allowRead` 照旧挡非 GET；`status` 里 Go 侧读不到就是 `null`。
+   */
+  private async routeAdminContentAudit(
+    req: IncomingMessage,
+    res: ServerResponse,
+    parts: readonly string[],
+  ): Promise<void> {
+    const { view: adminView } = await this.requireAdmin(req)
+    const identity = { actor: auditActorOf(adminView), actorPlugin: API_ACTOR }
+    const contentAudit = this.requireContentAudit()
+
+    if (parts.length === 2) {
+      if (req.method === 'GET' || req.method === 'HEAD') {
+        if (!this.allowRead(req, res)) return
+        const rules = contentAudit.list(API_ACTOR)
+        this.sendJson(req, res, 200, {
+          items: rules.map(contentAuditRuleOf),
+          status: contentAuditStatusOf(await contentAudit.status()),
+        })
+        return
+      }
+      if (req.method === 'POST') {
+        const body = await this.jsonBody(req)
+        assertOnlyKeys(body, ['pattern', 'action', 'category', 'enabled', 'note'])
+        const input = contentAuditInputOf(body)
+        const rule = await audited<ContentAuditRuleLike>(
+          this.runtime,
+          identity,
+          {
+            action: 'content_audit.rule.create',
+            targetType: 'content-audit-rule',
+            summary: `新增内容审核规则（${input.action === 'log' ? 'log' : 'block'}）`,
+            metadataOf: (created) => contentAuditRuleMetadata(created),
+          },
+          () => contentAudit.create(API_ACTOR, input),
+        )
+        this.sendJson(req, res, 200, { rule: contentAuditRuleOf(rule) })
+        return
+      }
+      this.sendMethodNotAllowed(req, res, ['GET', 'HEAD', 'POST'])
+      return
+    }
+
+    // `push` 是固定子路径；规则 id 一律是 `car_` 前缀，不会撞车。
+    if (parts.length === 3 && parts[2] === 'push') {
+      if (!this.allowMethod(req, res, ['POST'])) return
+      this.sendJson(req, res, 200, { revision: await contentAudit.pushNow() })
+      return
+    }
+
+    if (parts.length === 3) {
+      const id = parts[2] as string
+      if (req.method === 'GET' || req.method === 'HEAD') {
+        if (!this.allowRead(req, res)) return
+        const rule = contentAudit.get(API_ACTOR, id)
+        if (rule === null) throw notFound('没有这条内容审核规则')
+        this.sendJson(req, res, 200, { rule: contentAuditRuleOf(rule) })
+        return
+      }
+      if (req.method === 'PATCH') {
+        const body = await this.jsonBody(req)
+        assertOnlyKeys(body, ['pattern', 'action', 'category', 'enabled', 'note'])
+        const patch = contentAuditPatchOf(body)
+        const rule = await audited<ContentAuditRuleLike>(
+          this.runtime,
+          identity,
+          {
+            action: 'content_audit.rule.update',
+            targetType: 'content-audit-rule',
+            targetId: id,
+            summary: '修改内容审核规则',
+            metadata: { fields: Object.keys(patch) },
+            metadataOf: (updated) => contentAuditRuleMetadata(updated),
+          },
+          () => contentAudit.update(API_ACTOR, id, patch),
+        )
+        this.sendJson(req, res, 200, { rule: contentAuditRuleOf(rule) })
+        return
+      }
+      if (req.method === 'DELETE') {
+        const removed = await audited<boolean>(
+          this.runtime,
+          identity,
+          {
+            action: 'content_audit.rule.delete',
+            targetType: 'content-audit-rule',
+            targetId: id,
+            summary: '删除内容审核规则',
+          },
+          () => contentAudit.remove(API_ACTOR, id),
+        )
+        this.sendJson(req, res, 200, { removed })
+        return
+      }
+      this.sendMethodNotAllowed(req, res, ['GET', 'HEAD', 'PATCH', 'DELETE'])
+      return
+    }
+
+    throw notFound('没有这个内容审核接口')
+  }
+
   // ───────────────────────────────── 管理员：运维总览 ─────────────────────────────────
 
   /**
@@ -2754,6 +2879,18 @@ export class ApiServer {
     return topup
   }
 
+  private requireContentAudit(): ContentAuditPort {
+    const contentAudit = this.runtime.contentAudit()
+    if (contentAudit === undefined) {
+      throw new ApiError(
+        'CONTENT_AUDIT_UNAVAILABLE',
+        503,
+        '内容审核插件不在运行：暂时不能维护审核规则（LLM 请求照常放行）',
+      )
+    }
+    return contentAudit
+  }
+
   private allowRead(req: IncomingMessage, res: ServerResponse): boolean {
     if (req.method === 'GET' || req.method === 'HEAD') return true
     this.sendMethodNotAllowed(req, res, ['GET', 'HEAD'])
@@ -3629,6 +3766,118 @@ function topupStatsOf(stats: TopupStatsLike): Record<string, unknown> {
     pendingCount: stats.pendingCount,
     expiredCount: stats.expiredCount,
   }
+}
+
+// ───────────────────────────────── 内容审核 ─────────────────────────────────
+
+function contentAuditRuleOf(rule: ContentAuditRuleLike): Record<string, unknown> {
+  return {
+    id: rule.id,
+    pattern: rule.pattern,
+    action: rule.action,
+    category: rule.category ?? null,
+    enabled: rule.enabled,
+    note: rule.note ?? null,
+    createdAt: rule.createdAt,
+    updatedAt: rule.updatedAt,
+  }
+}
+
+/**
+ * 审计元数据：只放「哪条规则、什么动作、是否启用」。
+ *
+ * **不放 `pattern`**：关键词是管理面的审核数据，审计表没必要复制一份（也少一处扩散面）。
+ */
+function contentAuditRuleMetadata(rule: ContentAuditRuleLike): Record<string, unknown> {
+  return {
+    ruleId: rule.id,
+    action: rule.action,
+    category: rule.category ?? null,
+    enabled: rule.enabled,
+  }
+}
+
+/** 状态：显式列白名单键，避免插件以后加字段时悄悄漏到 HTTP 面上。 */
+function contentAuditStatusOf(status: ContentAuditStatusLike): Record<string, unknown> {
+  return {
+    enabled: status.enabled,
+    pushIntervalMs: status.pushIntervalMs,
+    ruleCount: status.ruleCount,
+    revision: status.revision,
+    generation: status.generation,
+    ageMs: status.ageMs,
+    ttlMs: status.ttlMs,
+    stale: status.stale,
+    goReady: status.goReady,
+    lastPushAt: status.lastPushAt,
+    lastError: status.lastError,
+    pushes: status.pushes,
+    heartbeats: status.heartbeats,
+    failureStreak: status.failureStreak,
+    goTtlMs: status.goTtlMs,
+    heartbeatTooSlow: status.heartbeatTooSlow,
+    hits: status.hits === null ? null : { ...status.hits, byRule: { ...status.hits.byRule } },
+  }
+}
+
+function contentAuditActionOf(value: unknown): 'block' | 'log' {
+  if (value === 'block' || value === 'log') return value
+  throw badRequest('action 只能是 block / log')
+}
+
+function contentAuditEnabledOf(value: unknown): boolean {
+  if (typeof value === 'boolean') return value
+  throw badRequest('enabled 必须是布尔值')
+}
+
+/** 新建时的可选文本：`undefined` / `null` / 空串都当作「没给」。 */
+function contentAuditOptionalText(value: unknown, key: string): string | undefined {
+  if (value === undefined || value === null) return undefined
+  if (typeof value !== 'string') throw badRequest(`${key} 必须是字符串`)
+  const text = value.trim()
+  return text === '' ? undefined : text
+}
+
+/** 修改时的可清空文本：`null` 或空串表示清空。 */
+function contentAuditClearableText(value: unknown, key: string): string | null {
+  if (value === null) return null
+  if (typeof value !== 'string') throw badRequest(`${key} 必须是字符串或 null`)
+  const text = value.trim()
+  return text === '' ? null : text
+}
+
+/** 新建规则：只做形状校验，长度 / 去重 / 上限交给插件（它的码才是稳定的）。 */
+function contentAuditInputOf(body: Record<string, unknown>): ContentAuditRuleInputLike {
+  const pattern = requiredString(body, 'pattern')
+  const action = body.action === undefined ? undefined : contentAuditActionOf(body.action)
+  const category = contentAuditOptionalText(body.category, 'category')
+  const note = contentAuditOptionalText(body.note, 'note')
+  const enabled = body.enabled === undefined ? undefined : contentAuditEnabledOf(body.enabled)
+  return {
+    pattern,
+    ...(action === undefined ? {} : { action }),
+    ...(category === undefined ? {} : { category }),
+    ...(note === undefined ? {} : { note }),
+    ...(enabled === undefined ? {} : { enabled }),
+  }
+}
+
+/** 修改规则：`Object.hasOwn` 区分「没给」与「给了 null」。 */
+function contentAuditPatchOf(body: Record<string, unknown>): ContentAuditRulePatchLike {
+  const patch: {
+    pattern?: string
+    action?: 'block' | 'log'
+    category?: string | null
+    enabled?: boolean
+    note?: string | null
+  } = {}
+  if (Object.hasOwn(body, 'pattern')) patch.pattern = requiredString(body, 'pattern')
+  if (Object.hasOwn(body, 'action')) patch.action = contentAuditActionOf(body.action)
+  if (Object.hasOwn(body, 'category')) patch.category = contentAuditClearableText(body.category, 'category')
+  if (Object.hasOwn(body, 'note')) patch.note = contentAuditClearableText(body.note, 'note')
+  if (Object.hasOwn(body, 'enabled')) patch.enabled = contentAuditEnabledOf(body.enabled)
+  if (Object.keys(patch).length === 0) throw badRequest('没有可修改的字段')
+  return patch
 }
 
 // ───────────────────────────────── 结算（只读） ─────────────────────────────────

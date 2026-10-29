@@ -32,6 +32,7 @@ import (
 	"github.com/Acidmoon/DizzyAPI/internal/accounts"
 	"github.com/Acidmoon/DizzyAPI/internal/apikeys"
 	"github.com/Acidmoon/DizzyAPI/internal/bridge"
+	contentauditcache "github.com/Acidmoon/DizzyAPI/internal/contentaudit"
 	"github.com/Acidmoon/DizzyAPI/internal/engine"
 	"github.com/Acidmoon/DizzyAPI/internal/httpapi"
 	"github.com/Acidmoon/DizzyAPI/internal/metrics"
@@ -39,6 +40,7 @@ import (
 	"github.com/Acidmoon/DizzyAPI/internal/usagelog"
 	"github.com/Acidmoon/DizzyAPI/internal/usageprobe"
 	"github.com/Acidmoon/DizzyAPI/modules/accountpriority"
+	"github.com/Acidmoon/DizzyAPI/modules/contentaudit"
 	"github.com/Acidmoon/DizzyAPI/modules/keyauth"
 	"github.com/Acidmoon/DizzyAPI/modules/modelroute"
 	"github.com/Acidmoon/DizzyAPI/modules/protoconv"
@@ -54,10 +56,13 @@ type handler struct {
 	runtime  *accountruntime.Tracker
 	quota    *quota.Cache
 	// gate 是额度闸门阶段：只用来读它的计数与「连续不可用」观察（quota.status 的 gate 字段）。
-	gate     *quotagate.Stage
-	logger   *slog.Logger
-	shutdown chan struct{}
-	stopOnce sync.Once
+	gate *quotagate.Stage
+	// contentAudit / contentAuditGate 是内容审核的规则缓存与闸门（只读观察，桥命令用）。
+	contentAudit     *contentauditcache.Cache
+	contentAuditGate *contentaudit.Stage
+	logger           *slog.Logger
+	shutdown         chan struct{}
+	stopOnce         sync.Once
 }
 
 // accountsStatus 是桥命令 accounts.status 的响应：accounts.State 原样保留，
@@ -77,6 +82,36 @@ func (h *handler) accountsStatus() accountsStatus {
 	}
 	stats := h.runtime.Summary()
 	return accountsStatus{State: state, Runtime: &stats}
+}
+
+// contentAuditStatus 是桥命令 contentaudit.status 的响应：规则缓存健康度 + 闸门计数与命中统计。
+//
+// gate 是**只增不改**的字段（omitempty）：没有注入闸门阶段（测试 / 旧装配）时不出现，
+// 响应与改动前逐字节一致。它不含任何被审文本。
+func (h *handler) contentAuditStatus() contentauditcache.State {
+	var state contentauditcache.State
+	if h.contentAudit != nil {
+		state = h.contentAudit.State()
+	}
+	if h.contentAuditGate == nil {
+		return state
+	}
+	stats := h.contentAuditGate.Stats()
+	state.Gate = &contentauditcache.GateState{
+		Blocked:      stats.Blocked,
+		Logged:       stats.Logged,
+		AllowedStale: stats.AllowedStale,
+		StrictFailed: stats.StrictFailed,
+		ParseFailed:  stats.ParseFailed,
+		NoText:       stats.NoText,
+		Truncated:    stats.Truncated,
+		StaleStreak:  stats.StaleStreak,
+		StaleReason:  stats.StaleReason,
+		StaleForMs:   stats.StaleForMs,
+		RuleHitTotal: stats.RuleHitTotal,
+		RuleHits:     stats.RuleHits,
+	}
+	return state
 }
 
 // quotaStatus 是桥命令 quota.status 的响应：余额缓存健康度 + 额度闸门的计数。
@@ -193,6 +228,31 @@ func (h *handler) Handle(_ context.Context, method string, params json.RawMessag
 
 	case contracts.BridgeMethodQuotaStatus:
 		return h.quotaStatus(), nil
+
+	case contracts.BridgeMethodContentAuditReplace:
+		if h.contentAudit == nil {
+			return nil, bridge.Errorf("CONTENT_AUDIT_UNAVAILABLE", "内容审核规则缓存未装配")
+		}
+		var snapshot contentauditcache.Snapshot
+		if err := decodeParams(params, &snapshot); err != nil {
+			return nil, bridge.Errorf("BRIDGE_BAD_REQUEST", "内容审核规则快照参数不合法：%v", err)
+		}
+		result, err := h.contentAudit.Replace(snapshot)
+		if err != nil {
+			var typed *contentauditcache.Error
+			if errors.As(err, &typed) {
+				return nil, bridge.Errorf(typed.Code, "%s", typed.Message)
+			}
+			return nil, bridge.Errorf("CONTENT_AUDIT_INVALID_SNAPSHOT", "内容审核规则快照更新失败")
+		}
+		// 只记版本与计数：规则内容不进日志（pattern 是运营数据，不是秘密，但没必要落日志）。
+		h.logger.Info("内容审核规则快照已更新",
+			"revision", result.Revision, "rules", result.Rules,
+			"enabled", result.Enabled, "generation", result.Generation)
+		return result, nil
+
+	case contracts.BridgeMethodContentAuditStatus:
+		return h.contentAuditStatus(), nil
 
 	case bridge.MethodReplaceKeys:
 		var snapshot apikeys.Snapshot
@@ -343,6 +403,11 @@ func run() error {
 			minQuotaSnapshotTTLMs, maxQuotaSnapshotTTLMs))
 	metricsEnabled := flag.Bool("metrics", true,
 		"在 LLM 入口的回环监听上暴露 GET /metrics（Prometheus 文本格式）；关闭时该路径 404")
+	contentAuditRequireSnapshot := flag.Bool("content-audit-require-snapshot", false,
+		"严格模式：内容审核规则快照未就绪 / 过期时返回 503；默认放行并告警（可用性优先）")
+	contentAuditSnapshotTTLMs := flag.Int("content-audit-snapshot-ttl-ms", 15000,
+		fmt.Sprintf("内容审核规则快照有效期（毫秒），应 ≥ 3 × TS 的 pushIntervalMs；超出 %d..%d 直接启动失败",
+			minContentAuditSnapshotTTLMs, maxContentAuditSnapshotTTLMs))
 	flag.Parse()
 
 	logger := newLogger(*logFormat)
@@ -382,6 +447,13 @@ func run() error {
 	}
 	quotaCache := quota.New(quota.WithTTL(quotaTTL))
 
+	// 内容审核的规则快照：同样是纯内存只读缓存，规则权威数据在 TS 的 content-audit 插件里。
+	contentAuditTTL, err := parseContentAuditSnapshotTTL(*contentAuditSnapshotTTLMs)
+	if err != nil {
+		return err
+	}
+	contentAuditCache := contentauditcache.New(contentauditcache.WithTTL(contentAuditTTL))
+
 	// 组合根是唯一组装点：注册顺序就是阶段顺序 pre → dispatch → post。
 	//
 	// 装配顺序（也是阶段顺序）：
@@ -399,6 +471,15 @@ func run() error {
 		Profile:  *profile,
 		Verifier: keyCache,
 	})
+	// 内容审核（pre）：按用户输入文本查规则快照，命中 block 规则直接 403。
+	// 位置在 key-auth 之后、额度闸门之前：内容不合规就不该占用余额判断与选号。
+	contentAuditGate, err := contentaudit.Register(registry, contentaudit.Config{
+		RequireSnapshot: *contentAuditRequireSnapshot,
+		SnapshotTTL:     contentAuditTTL,
+	}, contentAuditCache, logger)
+	if err != nil {
+		return fmt.Errorf("初始化内容审核阶段失败：%w", err)
+	}
 	// 额度闸门（pre）：按请求的 userId 查余额只读快照，余额 ≤ 阈值直接 402，
 	// 不花钱转发上游。位置必须早于打分与 dispatch，但晚于 key-auth（要 userId）。
 	quotaGate, err := quotagate.Register(registry, quotagate.Config{
@@ -507,11 +588,14 @@ func run() error {
 		keys:     keyCache,
 		usage:    usageRing,
 		// 运行时状态只给桥命令看汇总（active / cooling），不进公网 /healthz。
-		runtime:  accountRuntime,
-		quota:    quotaCache,
-		gate:     quotaGate,
-		logger:   logger,
-		shutdown: stop,
+		runtime: accountRuntime,
+		quota:   quotaCache,
+		gate:    quotaGate,
+
+		contentAudit:     contentAuditCache,
+		contentAuditGate: contentAuditGate,
+		logger:           logger,
+		shutdown:         stop,
 	}
 
 	status := service.Status()

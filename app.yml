@@ -383,6 +383,23 @@
     # 审计窗口一次最多扫多少条（1..1000）；超出时报告标 windowTruncated。
     auditWindowLimit: 200
 
+# 内容审核插件：管理员维护关键词规则的**唯一写者**（服务名 contentAudit，存储 data/content-audit.json）。
+# 规则心跳式推给 Go 的 pre 相位审核闸门（桥命令 contentaudit.replace，内容没变也推，
+# 否则 Go 侧按 TTL 判定过期——额度闸门踩过这个坑）；命中统计从 Go 读回（contentaudit.status）。
+# 只做**大小写不敏感子串匹配**，本批不做正则（ReDoS）。
+# enabled 默认 false：新装的插件不该突然拦人；关掉后仍推 enabled:false + 空规则让 Go 立刻全放行。
+# adminPlugins 是读写白名单（默认拒绝），api / web 以自己的 actor 身份调。
+- id: content-audit
+  name: '@dizzyapi/plugin-content-audit'
+  config:
+    dataPath: ./data/content-audit.json
+    enabled: false
+    pushIntervalMs: 5000
+    adminPlugins:
+      - '@dizzyapi/plugin-admin'
+      - '@dizzyapi/plugin-api'
+      - '@dizzyapi/plugin-web'
+
 # 开发者控制面板：看插件与服务的依赖图、看运行期概览、改设置、重启单个插件、退出整个进程。
 # 只绑 127.0.0.1；启动日志里会打印一条带一次性 token 的地址，打开后换成 HttpOnly cookie。
 # 必须排在 settings 之后——它要在运行期解析 settings 服务（但不 inject 它，

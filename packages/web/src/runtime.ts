@@ -478,6 +478,84 @@ export interface TopupLike {
   stats(actor: string, nowMs?: number): TopupStatsView
 }
 
+// ───────────────────────────────── 内容审核 ─────────────────────────────────
+
+/** 一条内容审核规则（页面只展示，不改形状）。 */
+export interface ContentAuditRuleView {
+  readonly id: string
+  readonly pattern: string
+  readonly action: 'block' | 'log'
+  readonly category?: string
+  readonly enabled: boolean
+  readonly note?: string
+  readonly createdAt: string
+  readonly updatedAt: string
+}
+
+/** Go 侧命中统计；读不到 Go 时整块是 `null`。 */
+export interface ContentAuditHitsView {
+  readonly blocked: number
+  readonly logged: number
+  readonly allowedStale: number
+  readonly strictFailed: number
+  readonly parseFailed: number
+  readonly noText: number
+  readonly truncated: number
+  readonly ruleHitTotal: number
+  readonly byRule: Readonly<Record<string, number>>
+  readonly staleStreak: number
+}
+
+/** 推送健康度 + Go 侧快照新鲜度；Go 读不到的字段是 `null`（不编造 0）。 */
+export interface ContentAuditStatusView {
+  readonly enabled: boolean
+  readonly pushIntervalMs: number
+  readonly ruleCount: number
+  readonly revision: string | null
+  readonly generation: number
+  readonly ageMs: number | null
+  readonly ttlMs: number | null
+  readonly stale: boolean | null
+  readonly goReady: boolean | null
+  readonly lastPushAt: string | null
+  readonly lastError: string | null
+  readonly pushes: number
+  readonly heartbeats: number
+  readonly failureStreak: number
+  readonly goTtlMs: number | null
+  readonly heartbeatTooSlow: boolean
+  readonly hits: ContentAuditHitsView | null
+}
+
+/** 内容审核服务：规则读写 + 状态；页面不 import 插件实现。 */
+export interface ContentAuditLike {
+  list(actor: string): readonly ContentAuditRuleView[]
+  create(
+    actor: string,
+    input: {
+      readonly pattern: string
+      readonly action?: 'block' | 'log'
+      readonly category?: string
+      readonly enabled?: boolean
+      readonly note?: string
+    },
+  ): Promise<ContentAuditRuleView>
+  update(
+    actor: string,
+    id: string,
+    patch: {
+      readonly pattern?: string
+      readonly action?: 'block' | 'log'
+      readonly category?: string | null
+      readonly enabled?: boolean
+      readonly note?: string | null
+    },
+  ): Promise<ContentAuditRuleView>
+  remove(actor: string, id: string): Promise<boolean>
+  status(): Promise<ContentAuditStatusView>
+  pushNow(): Promise<string | null>
+}
+
 // ───────────────────────────────── 管理员审计 ─────────────────────────────────
 
 /** 写一条审计记录的输入（web 侧只塞这些字段）。 */
@@ -888,6 +966,7 @@ export interface WebRuntime {
   readonly topup: TopupLike | undefined
   readonly audit: AuditLike | undefined
   readonly observability: ObservabilityLike | undefined
+  readonly contentAudit: ContentAuditLike | undefined
   readonly fontSmiley: FontLike | undefined
 }
 
