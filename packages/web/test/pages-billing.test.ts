@@ -57,6 +57,7 @@ function pageContext(services: WebRuntime): PageContext {
     t: TEMPLATE,
     services,
     notice: null,
+  themeCss: '',
     takeSecret: () => undefined,
   }
 }
