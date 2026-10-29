@@ -1,18 +1,46 @@
 /**
- * API 文档的**内容**（静态事实）。
+ * API 文档的**内容源与渲染器**。
  *
- * 为什么单独一个文件：页面只是渲染器，文档内容要能被测试逐条断言
- * （入口路径、错误码、流式终止符），所以内容是数据结构，不是拼在模板里的字符串。
+ * 内容不再是硬编码的 TS 常量，而是仓库里的真 markdown 文件：`docs/api/*.md`
+ * （按 `DOC_FILES` 的固定顺序拼成一整页）。本文件只做三件事：
  *
- * **这里每个错误码都在代码里有出处**（行号见注释）；改代码时同步改这里，
- * `packages/web/test/pages-docs.test.ts` 会守住「文档里的码必须在源码里存在」。
+ * 1. **加载**：把 `docs/api/*.md` 读成一段 markdown（`apiDocsMarkdown()`）；
+ * 2. **渲染**：用 markdown-it（`html: false`，内嵌 HTML 当纯文本，天然防 XSS）
+ *    渲染成 HTML，并把表格 / 标题 / 代码映射到页面模板已有的 class
+ *    （**不写内联样式**：CSP 是 `style-src 'self'`，内联样式会被浏览器静默丢弃）；
+ * 3. **解析**：从同一份 markdown 里把结构化事实（入口表、错误码表、错误体形状、
+ *    流式终止符、示例、有损面）解析出来，供 `pages-docs.test.ts` 与代码事实对照。
+ *
+ * **自证机制**：文档不再从 TS 常量里读事实，而是由 `parseApiDocsFacts()` 直接从
+ * `.md` 里解析；测试拿解析结果去核对「错误码真的存在」「入口覆盖全部注册」
+ * 「协议名在 contracts 里」——断言对象换了，断言强度不变。
+ *
+ * 渲染器是 markdown-it 14.1.0（MIT），以单文件形式 vendor 在
+ * `src/vendor/markdown-it/`（带 LICENSE）。**故意不用 npm 依赖**：服务器部署走
+ * `pnpm install --offline` 复用已有 store，新增依赖会让部署断掉。
  */
+import { readFileSync } from 'node:fs'
+import { createRequire } from 'node:module'
+
+/** 内容文件（顺序 = 页面顺序 = 拼出来的整页 markdown 顺序）。 */
+export const DOC_FILES: readonly string[] = [
+  '01-overview.md',
+  '02-endpoints.md',
+  '03-errors.md',
+  '04-examples.md',
+]
+
+/** 文档目录（仓库根 `docs/api/`）。从本文件 `packages/web/src/content/` 往上四级。 */
+export const DOCS_DIR = new URL('../../../../docs/api/', import.meta.url)
+
+/** 默认站点地址（示例里出现，页面可用 `?base=` 覆盖）。 */
+export const DEFAULT_BASE = 'https://<站点域名>'
 
 /** 一个 LLM 入口。 */
 export interface ApiEntry {
   readonly method: string
   readonly path: string
-  /** 客户端协议（决定请求 / 响应形状与错误体形状）。 */
+  /** 客户端协议（决定请求 / 响应形状与错误体形状）；空串 = 不分协议。 */
   readonly protocol: string
   readonly protocolLabel: string
   readonly summary: string
@@ -22,163 +50,16 @@ export interface ApiEntry {
   readonly response: readonly string[]
 }
 
-/**
- * LLM 入口清单。出处：`internal/httpapi/server.go` 的 `Handler()` 路由注册。
- *
- * 注意：新增协议（例如 Gemini）时这里必须同步加一条，否则文档就落后于代码。
- */
-export const API_ENTRIES: readonly ApiEntry[] = [
-  {
-    method: 'POST',
-    path: '/v1/chat/completions',
-    protocol: 'openai-chat',
-    protocolLabel: 'OpenAI Chat Completions',
-    summary: '最通用的入口：绝大多数 OpenAI SDK / 客户端默认打这里。',
-    request: [
-      '`model` 必填，用**对外模型名**（见 /console/models）',
-      '`messages` 是 `{role, content}` 数组',
-      '`stream: true` 走 SSE 流式',
-      '其余采样参数原样转发（跨协议时有损字段见下）',
-    ],
-    response: [
-      'OpenAI 形状：`{id, object: "chat.completion", choices[], usage}`',
-      '流式：`data: {...}` 帧，最后一帧是 `data: [DONE]`',
-    ],
-  },
-  {
-    method: 'POST',
-    path: '/v1/responses',
-    protocol: 'openai-responses',
-    protocolLabel: 'OpenAI Responses API',
-    summary: 'OpenAI 新的 Responses 形状入口（Codex 等客户端使用）。',
-    request: [
-      '`model` 必填；`input` 是字符串或消息数组',
-      '`stream: true` 走 SSE 流式',
-      'Responses 专有字段按 Responses 语义处理，转 Chat 时有损',
-    ],
-    response: [
-      'OpenAI Responses 形状：`{id, object: "response", output[], usage}`',
-      '流式终止符是 `response.completed`（或 `response.incomplete` / `response.failed`），**不发 `[DONE]`**',
-    ],
-  },
-  {
-    method: 'POST',
-    path: '/v1/messages',
-    protocol: 'anthropic',
-    protocolLabel: 'Anthropic Messages',
-    summary: 'Anthropic 官方形状入口：Claude SDK / Claude Code 直接可用。',
-    request: [
-      '`model` 必填；`messages` 是 `{role, content}` 数组；`system` 单独传',
-      '`max_tokens` 官方必填：客户端没给时网关补默认值（会记有损日志）',
-      '`tools` / `tool_choice` 按 Anthropic 形状解析，跨协议时工具 id 会被可逆改写',
-    ],
-    response: [
-      'Anthropic 形状：`{id, type: "message", role, content[], usage}`',
-      '流式：`event: <类型>` + `data: {...}` 成对出现，终止符是 `message_stop`',
-    ],
-  },
-  {
-    method: 'GET',
-    path: '/v1/models',
-    protocol: '',
-    protocolLabel: '模型列表',
-    summary: 'OpenAI 形状的模型列表：当前**可用**对外模型名的并集（由 Go 侧账号快照算）。',
-    request: ['无请求体', '鉴权与 LLM 入口一致：`Authorization: Bearer <API key>`'],
-    response: [
-      '`{object: "list", data: [{id, object: "model", created, owned_by}]}`',
-      '只给名字：**不含**价格与覆盖度（那是产品面的 `/api/models`）',
-    ],
-  },
-  {
-    method: 'POST',
-    path: '/v1beta/models/{model}:generateContent',
-    protocol: 'gemini',
-    protocolLabel: 'Gemini generateContent',
-    summary:
-      'Google 官方的 Gemini 入口：**模型名在路径里**（`{model}` 段），请求体里没有 `model` 字段。',
-    request: [
-      '模型名在**路径**里：`/v1beta/models/<对外模型名>:generateContent`。模型名可带或不带 `models/` 前缀，两种都接受（`/v1beta/models/models/gemini-2.0-flash:generateContent` 与 `/v1beta/models/gemini-2.0-flash:generateContent` 等价）；带**多层**前缀或其它斜杠的路径一律 404',
-      '`contents` 是 `{role, parts}` 数组；`systemInstruction` 单独传系统提示',
-      '`generationConfig` 放采样参数（`temperature` / `maxOutputTokens` / `topP` 等）',
-      '`tools` / `toolConfig` 按 Gemini 形状解析，跨协议时工具 id 会被可逆改写',
-    ],
-    response: [
-      'Gemini 形状：`{candidates: [{content, finishReason}], usageMetadata, modelVersion}`',
-      '`usageMetadata` 里 `promptTokenCount` **含**缓存命中，网关按上游协议归一成四桶记账',
-    ],
-  },
-  {
-    method: 'POST',
-    path: '/v1beta/models/{model}:streamGenerateContent',
-    protocol: 'gemini',
-    protocolLabel: 'Gemini streamGenerateContent',
-    summary: 'Gemini 的流式方法：同一个模型名在路径里，**必须带 `?alt=sse`**。',
-    request: [
-      '路径同上，方法名换成 `:streamGenerateContent`，并带 `?alt=sse`（不带的话上游返回 JSON 数组而不是 SSE）',
-      '请求体与 `:generateContent` 完全一致',
-    ],
-    response: [
-      '每帧是 `data: {...}`，负载是**完整的** `GenerateContentResponse`（累计形态，不是增量文本）',
-      '**不发 `data: [DONE]`**：以最后一帧里 candidate 的 `finishReason` 为准',
-    ],
-  },
-  {
-    method: 'POST',
-    path: '/v1/embeddings',
-    protocol: 'openai-chat',
-    protocolLabel: 'OpenAI Embeddings',
-    summary:
-      'OpenAI 兼容的向量化入口：与 chat 同协议、同鉴权，但**只有 OpenAI 兼容账号**能处理（anthropic / gemini 账号没有 embeddings 端点）。',
-    request: [
-      '`model` 必填；`input` 是字符串或字符串数组（最多 2048 条、总计 1048576 字符）',
-      '`encoding_format` / `dimensions` / `user` 原样转发给上游',
-      '**不支持流式**：`stream: true` 直接 400',
-    ],
-    response: [
-      'OpenAI 形状：`{object: "list", data: [{object: "embedding", index, embedding[]}], model, usage}`',
-      '`usage` 只有 `prompt_tokens` / `total_tokens`（输出与缓存桶恒 0）',
-    ],
-  },
-  {
-    method: 'GET',
-    path: '/healthz',
-    protocol: '',
-    protocolLabel: '运行期探针',
-    summary: '网关存活探针，不分协议、不鉴权、不泄漏任何账号信息。',
-    request: ['无请求体', '不需要鉴权'],
-    response: ['`{status: "ok"}` 形状的轻量响应'],
-  },
-  {
-    method: 'GET',
-    path: '/metrics',
-    protocol: '',
-    protocolLabel: '运行期指标',
-    summary:
-      'Prometheus 文本格式指标：只在 gatewayd 的回环监听上暴露（nginx 不反代），可用 `-metrics=false` 关闭（关闭后该路径 404）。',
-    request: ['无请求体', '不需要鉴权（只监听回环，运维面）'],
-    response: [
-      '`# HELP` / `# TYPE` + 指标行；`dizzy_request_total{protocol,status}`、`dizzy_tokens_total{bucket}`、`dizzy_upstream_attempt_total` 等',
-      '标签只用固定枚举（协议名 / 状态码 / 失败码 / token 桶），**不含**账号 id、用户 id、IP 与模型名',
-    ],
-  },
-]
-
 /** 一条错误码事实。 */
 export interface ApiErrorDoc {
   readonly code: string
   readonly status: number
   readonly meaning: string
-  /** 出处（源码位置），给人看，也用来提醒「文档不是凭记忆写的」。 */
+  /** 出处（源码位置），给人看，也用来核对「文档不是凭记忆写的」。 */
   readonly source: string
 }
 
-/**
- * 错误体形状：**按客户端协议不同**。
- *
- * 出处：`contracts/protocol.go` 的 `RenderError`。三种形状都是「先不坏官方形状，
- * 网关稳定码只做纯增量」：Anthropic 的 `code`、Gemini 的 `reason` 都是超集字段，
- * 空码时整键不输出。
- */
+/** 错误体形状：**按客户端协议不同**。 */
 export interface ApiErrorShape {
   /** 适用协议（`''` = 默认 / OpenAI 形状）。 */
   readonly protocols: readonly string[]
@@ -188,278 +69,425 @@ export interface ApiErrorShape {
   readonly note: string
 }
 
-export const ERROR_SHAPES: readonly ApiErrorShape[] = [
-  {
-    protocols: ['', 'openai-chat', 'openai-responses'],
-    shape: '`{"error": {"message", "type", "code"}}`',
-    keys: ['error', 'message', 'type', 'code'],
-    note: '`code` 是网关稳定码（如 `ALL_ACCOUNTS_SATURATED`）；`type` 按 HTTP 状态映射（`invalid_request_error` / `authentication_error` / `rate_limit_error` / `server_error`）。',
-  },
-  {
-    protocols: ['anthropic'],
-    shape: '`{"type": "error", "error": {"type", "message", "code"}}`',
-    keys: ['type', 'error', 'message', 'code'],
-    note: '官方 schema 只有 `type` / `message`；`code` 是**纯增量**（空码不输出该键），老客户端看到的形状不变。',
-  },
-  {
-    protocols: ['gemini'],
-    shape: '`{"error": {"code": 503, "message": "...", "status": "UNAVAILABLE", "reason": "..."}}`',
-    keys: ['error', 'code', 'message', 'status', 'reason'],
-    note:
-      '官方 schema：`code` 是**整数 HTTP 状态**（不是字符串码）、`status` 是 Google 枚举名' +
-      '（`INVALID_ARGUMENT` / `UNAUTHENTICATED` / `RESOURCE_EXHAUSTED` / `UNAVAILABLE` / `INTERNAL` 等）；' +
-      '网关稳定码放在**纯增量**的 `reason` 里（空码不输出该键）。',
-  },
-]
+/** 流式差异（三条入口各不同，最容易踩坑的地方）。 */
+export interface StreamNote {
+  readonly protocol: string
+  readonly note: string
+}
+
+// ───────────────────────────── markdown-it 装载 ─────────────────────────────
+
+interface MdToken {
+  readonly type: string
+  readonly tag: string
+  readonly content: string
+  readonly info: string
+  readonly level: number
+}
+
+interface MdInstance {
+  render(source: string): string
+  parse(source: string): MdToken[]
+  readonly utils: { escapeHtml(value: string): string }
+  readonly renderer: {
+    readonly rules: Record<string, (tokens: MdToken[], index: number) => string>
+  }
+}
+
+type MdConstructor = new (options?: {
+  readonly html?: boolean
+  readonly linkify?: boolean
+  readonly typographer?: boolean
+  readonly breaks?: boolean
+}) => MdInstance
+
+const require = createRequire(import.meta.url)
+/** vendor 的 UMD 单文件：`require()` 拿到构造函数本身。 */
+const MarkdownIt = require('../vendor/markdown-it/markdown-it.js') as MdConstructor
+
+/** 新建渲染器：`html: false`（防 XSS）+ 把结构映射到模板已有 class。 */
+function createRenderer(): MdInstance {
+  const md = new MarkdownIt({ html: false, linkify: false, typographer: false, breaks: false })
+  const escape = (value: string): string => md.utils.escapeHtml(value)
+
+  // 表格 → `.panel` + `.table`（模板里已有的样式）。
+  md.renderer.rules.table_open = () => '<div class="panel"><table class="table">'
+  md.renderer.rules.table_close = () => '</table></div>'
+  // 标题 → `.page-title` / `.section-title`（模板里已有的样式）。
+  md.renderer.rules.heading_open = (tokens, index) => {
+    const token = tokens[index]
+    const level = Number(token.tag.slice(1))
+    const cls = level <= 1 ? 'page-title' : 'section-title'
+    return `<${token.tag} class="${cls}">`
+  }
+  md.renderer.rules.heading_close = (tokens, index) => `</${tokens[index].tag}>`
+  // 行内代码 / 代码块 → `.mono` / `.code`（模板里已有 `.mono`；`.code` 待设计线补样式，
+  // 现状与本页改动前一致：改动前同样只有 class 没有 CSS，内联样式被 CSP 丢弃）。
+  md.renderer.rules.code_inline = (tokens, index) =>
+    `<code class="mono">${escape(tokens[index].content)}</code>`
+  md.renderer.rules.fence = (tokens, index) => {
+    const token = tokens[index]
+    const lang = token.info.trim().split(/\s+/)[0] ?? ''
+    const cls = lang === '' ? 'code mono' : `code mono lang-${escape(lang)}`
+    return `<pre class="${cls}"><code>${escape(token.content)}</code></pre>\n`
+  }
+  return md
+}
+
+const RENDERER = createRenderer()
+/** 事实解析用另一个实例：不覆盖渲染规则，只走 `parse()`。 */
+const PARSER = createRenderer()
+
+// ───────────────────────────── 加载 markdown ─────────────────────────────
 
 /**
- * LLM 入口（Go gatewayd）的稳定错误码。
+ * 读入全部内容文件（按 `DOC_FILES` 顺序）。
  *
- * 出处：`contracts/` 与 `modules/` 下各包的 errors.go、`internal/engine/engine.go`、
- * `internal/httpapi/server.go`、`modules/keyauth/module.go`。
+ * **故意不缓存**：四个文件一共十几 KB，一次整页渲染读一遍可以忽略；缓存会让「改了 `.md`
+ * 页面没变」这种问题变得难查（`pnpm dev` 下 HMR 只换模块、不换进程）。
+ *
+ * **故意不在模块顶层读**：读不到时只让这一页报错，**不要**在 import 阶段抛——
+ * `pages/index.ts` 会把所有页面 import 进来，模块顶层抛错会连带整个 web 插件装载失败、
+ * 整站不可用。文档缺失是内容问题，不该变成全站故障。
  */
-export const GATEWAY_ERRORS: readonly ApiErrorDoc[] = [
-  {
-    code: 'MISSING_API_KEY',
-    status: 401,
-    meaning: '没有带 `Authorization: Bearer <key>`',
-    source: 'modules/keyauth/module.go',
-  },
-  {
-    code: 'INVALID_API_KEY',
-    status: 401,
-    meaning: 'API key 无效（不存在 / 已停用 / 哈希不匹配）',
-    source: 'modules/keyauth/module.go',
-  },
-  {
-    code: 'INSUFFICIENT_BALANCE',
-    status: 402,
-    meaning: '余额不足：被额度闸门在 pre 相位拦下，请求没有转发上游',
-    source: 'contracts/quota.go',
-  },
-  {
-    code: 'QUOTA_SNAPSHOT_UNAVAILABLE',
-    status: 503,
-    meaning: '严格模式下余额快照未就绪或已过期（默认策略是放行，只有开严格模式才会出现）',
-    source: 'contracts/quota.go',
-  },
-  {
-    code: 'ALL_ACCOUNTS_SATURATED',
-    status: 503,
-    meaning: '所有候选账号都达到并发上限（不排队、不放行）',
-    source: 'contracts/contracts.go',
-  },
-  {
-    code: 'ALL_ACCOUNTS_COOLING',
-    status: 503,
-    meaning: '所有候选账号都在 429 / 额度耗尽的短期冷却中',
-    source: 'contracts/contracts.go',
-  },
-  {
-    code: 'ACCOUNT_PRIORITY_NO_ELIGIBLE_ACCOUNT',
-    status: 503,
-    meaning: '没有任何账号通过策略过滤（禁用 / 标签 / 健康 / 模型等原因）',
-    source: 'modules/accountpriority/errors.go',
-  },
-  {
-    code: 'NO_ELIGIBLE_ACCOUNT',
-    status: 503,
-    meaning: '找不到可用账号（策略未给出任何候选时的兜底码）',
-    source: 'internal/engine/engine.go',
-  },
-  {
-    code: 'MODEL_NOT_SERVED',
-    status: 503,
-    meaning: '按 `models` 过滤后没有任何账号服务这个模型名',
-    source: 'modules/modelroute/errors.go',
-  },
-  {
-    code: 'MODEL_MAP_FAILED',
-    status: 400,
-    meaning: '请求体无法按模型映射重写（换账号也没用）',
-    source: 'modules/modelroute/errors.go',
-  },
-  {
-    code: 'PROTOCOL_CONVERT_FAILED',
-    status: 400,
-    meaning: '请求体无法按客户端协议解析或渲染',
-    source: 'modules/protoconv/errors.go',
-  },
-  {
-    code: 'PROTOCOL_UNKNOWN',
-    status: 502,
-    meaning: '选中账号没有声明上游协议，无法做协议转换（换账号可能成功）',
-    source: 'modules/protoconv/errors.go',
-  },
-  {
-    code: 'PROTOCOL_TRANSCODE_FAILED',
-    status: 502,
-    meaning: '上游响应无法解析 / 无法转回客户端协议（换账号可能成功）',
-    source: 'modules/protoconv/errors.go',
-  },
-  {
-    code: 'PROTOCOL_CODEC_UNAVAILABLE',
-    status: 502,
-    meaning: '需要的协议编解码器未注册（部署缺少能力，fail-closed 不降级）',
-    source: 'modules/protoconv/errors.go',
-  },
-  {
-    code: 'NO_GATEWAY_RESPONSE',
-    status: 502,
-    meaning: '上游没有返回响应',
-    source: 'internal/engine/engine.go',
-  },
-  {
-    code: 'MODELS_UNAVAILABLE',
-    status: 503,
-    meaning: '`GET /v1/models` 没有装配鉴权器时的 fail-closed 响应',
-    source: 'internal/httpapi/server.go',
-  },
-  {
-    code: 'METHOD_NOT_ALLOWED',
-    status: 405,
-    meaning: '入口存在但不支持该 HTTP 方法（例如 `POST /v1/models`）',
-    source: 'internal/httpapi/server.go',
-  },
-  {
-    code: 'GATEWAY_INTERNAL',
-    status: 500,
-    meaning: '网关内部错误（详情只进日志，不回显给客户端）',
-    source: 'internal/engine/engine.go',
-  },
-]
+function loadParts(): readonly string[] {
+  return DOC_FILES.map((name) => {
+    try {
+      return readFileSync(new URL(name, DOCS_DIR), 'utf8')
+    } catch (error) {
+      throw new Error(
+        `API 文档源缺失或不可读：docs/api/${name}（${error instanceof Error ? error.message : String(error)}）`,
+      )
+    }
+  })
+}
+
+/** `base` 只允许协议 + 主机 + 路径的安全字符，避免拼进 markdown 时破坏围栏 / 注入。 */
+function sanitizeBase(raw: string | null | undefined): string {
+  const value = (raw ?? '').trim()
+  if (value === '') return DEFAULT_BASE
+  return /^https?:\/\/[A-Za-z0-9.\-~_:/]+$/.test(value) ? value : DEFAULT_BASE
+}
+
+/** 整页 markdown（`?base=` 只替换示例里的域名）。 */
+export function apiDocsMarkdown(rawBase?: string | null): string {
+  const base = sanitizeBase(rawBase)
+  const markdown = loadParts().join('\n')
+  if (base === DEFAULT_BASE) return markdown
+  return markdown.replaceAll(DEFAULT_BASE, base)
+}
+
+// ───────────────────────────── 渲染 ─────────────────────────────
 
 /**
- * 产品 HTTP 入口（`/api/*`，由 TS 的 `api` 插件提供）的稳定错误码。
+ * 渲染任意 markdown 成 HTML（页面与 `/console/api-docs.md` 共用同一个渲染器）。
  *
- * 这些是**控制面**接口的错误码：同一套 `{error: {code, message, requestId}}` 信封。
- * 出处：`packages/api/src/errors.ts` 与各插件的 `errors.ts`。
+ * 认 `html: false`：内嵌 HTML 一律当纯文本输出，所以 `<script>` 不会变成真标签。
  */
-export const PRODUCT_ERRORS: readonly ApiErrorDoc[] = [
-  { code: 'API_UNAUTHORIZED', status: 401, meaning: '需要登录（会话 Cookie 缺失或失效）', source: 'packages/api/src/errors.ts' },
-  { code: 'API_FORBIDDEN', status: 403, meaning: '当前账号没有管理员权限', source: 'packages/api/src/errors.ts' },
-  { code: 'API_BAD_REQUEST', status: 400, meaning: '请求参数不合法', source: 'packages/api/src/errors.ts' },
-  { code: 'API_NOT_FOUND', status: 404, meaning: '没有这个接口', source: 'packages/api/src/errors.ts' },
-  { code: 'API_METHOD_NOT_ALLOWED', status: 405, meaning: '接口存在但不支持该 HTTP 方法', source: 'packages/api/src/errors.ts' },
-  { code: 'API_BODY_TOO_LARGE', status: 413, meaning: '请求体超过上限', source: 'packages/api/src/errors.ts' },
-  { code: 'API_INVALID_JSON', status: 400, meaning: '请求体不是合法 JSON', source: 'packages/api/src/errors.ts' },
-  { code: 'API_INTERNAL', status: 500, meaning: '内部错误（详情只进日志）', source: 'packages/api/src/errors.ts' },
-  { code: 'MODELHUB_UNAVAILABLE', status: 503, meaning: '模型广场服务不在运行', source: 'packages/api/src/errors.ts' },
-  { code: 'API_USAGE_UNAVAILABLE', status: 503, meaning: '用量插件不在运行', source: 'packages/api/src/http.ts' },
-  { code: 'USAGE_QUERY_INVALID', status: 400, meaning: '用量查询参数不合法', source: 'packages/api/src/errors.ts' },
-  { code: 'USAGE_REJECTED_STATE', status: 409, meaning: '隔离记录的当前状态不允许该操作', source: 'packages/api/src/errors.ts' },
-  { code: 'USAGE_REJECTED_FAILED', status: 409, meaning: '隔离记录重放失败（记录保持 pending，可修好后再试）', source: 'packages/api/src/errors.ts' },
-  { code: 'USAGE_SETTLE_UNAVAILABLE', status: 503, meaning: '重放要补结算但结算插件不在运行（fail-closed）', source: 'packages/api/src/errors.ts' },
-  { code: 'TOPUP_UNAVAILABLE', status: 503, meaning: '充值订单服务不在运行', source: 'packages/api/src/errors.ts' },
-  { code: 'TOPUP_AMOUNT_INVALID', status: 400, meaning: '充值金额格式不合法', source: 'packages/api/src/errors.ts' },
-  { code: 'TOPUP_AMOUNT_OUT_OF_RANGE', status: 400, meaning: '充值金额超出允许范围', source: 'packages/api/src/errors.ts' },
-  { code: 'TOPUP_PROVIDER_UNKNOWN', status: 400, meaning: '指定了未启用的支付通道', source: 'packages/api/src/errors.ts' },
-  { code: 'TOPUP_PROVIDER_FAILED', status: 502, meaning: '支付通道创建支付失败', source: 'packages/api/src/errors.ts' },
-  { code: 'TOPUP_ORDER_NOT_FOUND', status: 404, meaning: '没有这笔充值订单（或不是自己的）', source: 'packages/api/src/errors.ts' },
-  { code: 'TOPUP_ORDER_STATE', status: 409, meaning: '订单当前状态不允许该操作', source: 'packages/api/src/errors.ts' },
-  { code: 'TOPUP_BALANCE_FAILED', status: 503, meaning: '加余额失败：订单已退回待确认，可重试', source: 'packages/api/src/errors.ts' },
-  { code: 'TOPUP_NOT_READY', status: 503, meaning: '充值订单插件尚未装载完成', source: 'packages/api/src/errors.ts' },
-  { code: 'TOPUP_ACTOR_FORBIDDEN', status: 403, meaning: '调用方不在充值订单管理白名单里', source: 'packages/api/src/errors.ts' },
-  { code: 'REDEEM_CODE_INVALID', status: 400, meaning: '兑换码格式不合法', source: 'packages/api/src/errors.ts' },
-  { code: 'REDEEM_CODE_NOT_FOUND', status: 404, meaning: '没有这个兑换码', source: 'packages/api/src/errors.ts' },
-  { code: 'REDEEM_CODE_DISABLED', status: 409, meaning: '兑换码已停用', source: 'packages/api/src/errors.ts' },
-  { code: 'REDEEM_CODE_EXPIRED', status: 409, meaning: '兑换码已过期', source: 'packages/api/src/errors.ts' },
-  { code: 'REDEEM_CODE_USED', status: 409, meaning: '兑换码已被使用', source: 'packages/api/src/errors.ts' },
-  { code: 'REDEEM_CODE_REDEEMING', status: 409, meaning: '兑换码正在被兑换（并发抢占失败）', source: 'packages/api/src/errors.ts' },
-  { code: 'REDEEM_CODE_BALANCE_FAILED', status: 503, meaning: '加余额失败：码已回退为可用，可重试', source: 'packages/api/src/errors.ts' },
-  { code: 'PRICING_PRICE_INVALID', status: 400, meaning: '价格不是合法的非负十进制数', source: 'packages/api/src/errors.ts' },
-  { code: 'PRICING_MODEL_INVALID', status: 400, meaning: '模型名不合法', source: 'packages/api/src/errors.ts' },
-  { code: 'PRICING_NOT_FOUND', status: 404, meaning: '没有这个模型的价格', source: 'packages/api/src/http.ts' },
-  { code: 'PRICING_FORBIDDEN', status: 403, meaning: '调用方不在价格表管理白名单里', source: 'packages/api/src/errors.ts' },
-]
+export function renderMarkdown(source: string): string {
+  return RENDERER.render(source)
+}
 
-/** 流式响应的差异（三条入口各不同，最容易踩坑的地方）。 */
-export const STREAM_NOTES: readonly { readonly protocol: string; readonly note: string }[] = [
-  {
-    protocol: 'openai-chat',
-    note: '帧形如 `data: {...}`，**最后发 `data: [DONE]`**；遇到 `[DONE]` 就结束读取。',
-  },
-  {
-    protocol: 'openai-responses',
-    note:
-      '事件流以 `response.completed`（或 `response.incomplete` / `response.failed`）结束，' +
-      '**网关不发 `data: [DONE]`**（上游真发了也只会被当普通帧吞掉，不会转发给客户端）。',
-  },
-  {
-    protocol: 'anthropic',
-    note: '每帧是 `event: <类型>` + `data: {...}` 两行；终止符是 `message_stop`，同样**不发 `[DONE]`**。',
-  },
-  {
-    protocol: 'gemini',
-    note:
-      '流式端点必须带 `?alt=sse`；每帧只有 `data: {...}`（完整的 `GenerateContentResponse`，累计形态），' +
-      '**不发 `data: [DONE]`**，以最后一帧 candidate 的 `finishReason` 作为结束信号。',
-  },
-]
+/**
+ * 渲染整页文档成 HTML。
+ *
+ * `options.stripTitle`：页面已经有 `pageHeader` 标题，丢掉 markdown 的首个一级标题，
+ * 避免同一个标题出现两次（`.md` 副本里仍然保留）。
+ */
+export function renderApiDocsHtml(options: { readonly base?: string | null; readonly stripTitle?: boolean } = {}): string {
+  let markdown = apiDocsMarkdown(options.base)
+  if (options.stripTitle === true) markdown = markdown.replace(/^# .*\r?\n/, '')
+  return renderMarkdown(markdown)
+}
 
-/** 最小可用示例（curl）。 */
-export const CURL_EXAMPLES: readonly { readonly title: string; readonly command: string }[] = [
-  {
-    title: 'OpenAI Chat（非流式）',
-    command: `curl https://<站点域名>/v1/chat/completions \\
-  -H "Authorization: Bearer $DIZZY_API_KEY" \\
-  -H "Content-Type: application/json" \\
-  -d '{
-    "model": "deepseek-chat",
-    "messages": [{"role": "user", "content": "你好"}]
-  }'`,
-  },
-  {
-    title: 'OpenAI Chat（流式）',
-    command: `curl -N https://<站点域名>/v1/chat/completions \\
-  -H "Authorization: Bearer $DIZZY_API_KEY" \\
-  -H "Content-Type: application/json" \\
-  -d '{"model": "deepseek-chat", "stream": true,
-       "messages": [{"role": "user", "content": "你好"}]}'`,
-  },
-  {
-    title: 'Anthropic Messages',
-    command: `curl https://<站点域名>/v1/messages \\
-  -H "Authorization: Bearer $DIZZY_API_KEY" \\
-  -H "Content-Type: application/json" \\
-  -H "anthropic-version: 2023-06-01" \\
-  -d '{
-    "model": "claude-sonnet-4-5",
-    "max_tokens": 256,
-    "messages": [{"role": "user", "content": "你好"}]
-  }'`,
-  },
-  {
-    title: 'Gemini generateContent',
-    command: `curl https://<站点域名>/v1beta/models/gemini-2.0-flash:generateContent \\
-  -H "Authorization: Bearer $DIZZY_API_KEY" \\
-  -H "Content-Type: application/json" \\
-  -d '{
-    "contents": [{"role": "user", "parts": [{"text": "你好"}]}],
-    "generationConfig": {"temperature": 0.7, "maxOutputTokens": 256}
-  }'`,
-  },
-  {
-    title: 'Gemini 流式（必须带 alt=sse）',
-    command: `curl -N "https://<站点域名>/v1beta/models/gemini-2.0-flash:streamGenerateContent?alt=sse" \\
-  -H "Authorization: Bearer $DIZZY_API_KEY" \\
-  -H "Content-Type: application/json" \\
-  -d '{"contents": [{"role": "user", "parts": [{"text": "你好"}]}]}'`,
-  },
-  {
-    title: '列出模型',
-    command: `curl https://<站点域名>/v1/models \\
-  -H "Authorization: Bearer $DIZZY_API_KEY"`,
-  },
-]
+/** `/console/api-docs.md` 的纯 markdown 副本（给 agent 直接抓）。 */
+export function apiDocsMarkdownCopy(rawBase?: string | null): string {
+  return `${apiDocsMarkdown(rawBase)}\n`
+}
 
-/** 有损转换提示（跨协议时哪些字段表达不了）。 */
-export const LOSSY_NOTES: readonly string[] = [
-  '`thinking.signature` 不回传（跨协议时无法表达）。',
-  '`cache_control` 在跨协议时会被丢弃。',
-  'OpenAI 专有采样参数（如 `logit_bias`）转 Anthropic 时丢弃。',
-  'Anthropic 的 `max_tokens` 必填：客户端没给时网关补默认值。',
-  'Gemini 的 `generationConfig.candidateCount > 1` 明确拒绝（网关只承载单候选）。',
-  'Gemini 的 `thoughtsTokenCount` 记入思考 token，**不重复**计入输出 token。',
-  '模型映射只改**请求**里的模型名：响应里的 `model` 保持上游原名。',
-]
+/** `/llms.txt`：站点索引（llms.txt v2），告诉 agent 有哪些文档、去哪拿干净的 markdown。 */
+export function renderLlmsTxt(rawBase?: string | null): string {
+  const base = sanitizeBase(rawBase)
+  return `# DizzyAPI
+
+> 自托管的模型网关：OpenAI Chat / OpenAI Responses / Anthropic Messages / Gemini 四协议入口，
+> Go 负责转发、计费与用量，cordis 负责插件启用。LLM 入口统一用 \`Authorization: Bearer <API key>\`。
+
+- [API 文档（纯 Markdown）](${base}/console/api-docs.md)：入口一览、认证、错误体形状、错误码、流式终止符、最小示例
+- [API 文档（网页）](${base}/console/api-docs)：同一份内容的服务端渲染版本
+- [模型广场](${base}/console/models)：对外模型名、四档单价与可用性
+
+## Optional
+
+- [健康检查](${base}/healthz)：网关存活探针（不分协议、不鉴权）
+`
+}
+
+// ───────────────────────────── 资源路由 ─────────────────────────────
+
+export interface DocResource {
+  readonly status: number
+  readonly contentType: string
+  readonly body: string
+}
+
+/**
+ * 两个**机器友好副本**的路由。
+ *
+ * 只做「路径 → 字节」的纯判定，真正的 HTTP 接线在 web 插件（`/llms.txt` 与
+ * `/console/api-docs.md` 不是 `/api/*`，nginx 会把它们反代到 web 的 7792）。
+ */
+export function apiDocsResource(pathname: string, rawBase?: string | null): DocResource | null {
+  if (pathname === '/llms.txt') {
+    return { status: 200, contentType: 'text/plain; charset=utf-8', body: renderLlmsTxt(rawBase) }
+  }
+  if (pathname === '/console/api-docs.md') {
+    return { status: 200, contentType: 'text/markdown; charset=utf-8', body: apiDocsMarkdownCopy(rawBase) }
+  }
+  return null
+}
+
+// ───────────────────────────── 事实解析（自证） ─────────────────────────────
+
+type DocBlock =
+  | { readonly kind: 'heading'; readonly level: number; readonly text: string }
+  | { readonly kind: 'paragraph'; readonly text: string }
+  | { readonly kind: 'bullets'; readonly items: readonly string[] }
+  | { readonly kind: 'table'; readonly rows: readonly (readonly string[])[] }
+  | { readonly kind: 'fence'; readonly info: string; readonly content: string }
+
+/** 去掉 markdown 的行内标记（反引号），拿到用于核对的纯文本。 */
+function plain(value: string): string {
+  return value.replaceAll('`', '').trim()
+}
+
+/** 把 markdown-it 的 token 流压成少量块（标题 / 段落 / 列表 / 表格 / 代码块）。 */
+function toBlocks(markdown: string): DocBlock[] {
+  const tokens = PARSER.parse(markdown)
+  const blocks: DocBlock[] = []
+  let index = 0
+  while (index < tokens.length) {
+    const token = tokens[index]
+    if (token.type === 'heading_open') {
+      blocks.push({ kind: 'heading', level: Number(token.tag.slice(1)), text: plain(tokens[index + 1]?.content ?? '') })
+      index += 3
+      continue
+    }
+    if (token.type === 'paragraph_open') {
+      blocks.push({ kind: 'paragraph', text: plain(tokens[index + 1]?.content ?? '') })
+      index += 3
+      continue
+    }
+    if (token.type === 'bullet_list_open' || token.type === 'ordered_list_open') {
+      const isBullet = token.type === 'bullet_list_open'
+      const items: string[] = []
+      let depth = 0
+      index += 1
+      while (index < tokens.length) {
+        const current = tokens[index]
+        if (current.type === 'bullet_list_open' || current.type === 'ordered_list_open') depth += 1
+        else if (current.type === 'bullet_list_close' || current.type === 'ordered_list_close') {
+          if (depth === 0) {
+            index += 1
+            break
+          }
+          depth -= 1
+        } else if (current.type === 'inline' && depth === 0) items.push(plain(current.content))
+        index += 1
+      }
+      blocks.push({ kind: 'bullets', items })
+      if (!isBullet) {
+        // 有序列表与无序列表在事实层面没有差别，这里只是显式吞掉分支。
+      }
+      continue
+    }
+    if (token.type === 'table_open') {
+      const rows: string[][] = []
+      let row: string[] | undefined
+      let cell = ''
+      index += 1
+      while (index < tokens.length && tokens[index].type !== 'table_close') {
+        const current = tokens[index]
+        if (current.type === 'tr_open') {
+          row = []
+          cell = ''
+        } else if (current.type === 'inline') {
+          cell = plain(current.content)
+        } else if (current.type === 'th_close' || current.type === 'td_close') {
+          row?.push(cell)
+          cell = ''
+        } else if (current.type === 'tr_close') {
+          if (row !== undefined) rows.push(row)
+          row = undefined
+        }
+        index += 1
+      }
+      index += 1
+      blocks.push({ kind: 'table', rows })
+      continue
+    }
+    if (token.type === 'fence') {
+      blocks.push({ kind: 'fence', info: token.info.trim(), content: token.content })
+      index += 1
+      continue
+    }
+    index += 1
+  }
+  return blocks
+}
+
+/** 按二级标题分组（每个二级标题下的块，直到下一个二级标题）。 */
+function groupByH2(blocks: readonly DocBlock[]): Map<string, DocBlock[]> {
+  const groups = new Map<string, DocBlock[]>()
+  let current = ''
+  for (const block of blocks) {
+    if (block.kind === 'heading' && block.level <= 2) {
+      current = block.text
+      if (!groups.has(current)) groups.set(current, [])
+      continue
+    }
+    const bucket = groups.get(current)
+    if (bucket === undefined) groups.set(current, [block])
+    else bucket.push(block)
+  }
+  return groups
+}
+
+/** 取某个标题下的第一张表（没找到就明确失败，不静默给空）。 */
+function firstTable(blocks: readonly DocBlock[] | undefined, heading: string): readonly (readonly string[])[] {
+  const table = blocks?.find((block) => block.kind === 'table')
+  if (table === undefined || table.kind !== 'table') throw new Error(`文档结构变了：\`${heading}\` 下找不到表格`)
+  return table.rows
+}
+
+/** 取某个标题下的列表项。 */
+function bulletsUnder(blocks: readonly DocBlock[] | undefined, heading: string): readonly string[] {
+  const list = blocks?.find((block) => block.kind === 'bullets')
+  if (list === undefined || list.kind !== 'bullets') throw new Error(`文档结构变了：\`${heading}\` 下找不到列表`)
+  return list.items
+}
+
+export interface ApiDocsFacts {
+  readonly entries: readonly ApiEntry[]
+  readonly gatewayErrors: readonly ApiErrorDoc[]
+  readonly productErrors: readonly ApiErrorDoc[]
+  readonly errorShapes: readonly ApiErrorShape[]
+  readonly streamNotes: readonly StreamNote[]
+  readonly curlExamples: readonly { readonly title: string; readonly command: string }[]
+  readonly lossyNotes: readonly string[]
+}
+
+/** 从 `docs/api/*.md` 解析出全部结构化事实（**自证机制的入口**）。 */
+export function parseApiDocsFacts(rawBase?: string | null): ApiDocsFacts {
+  const blocks = toBlocks(apiDocsMarkdown(rawBase))
+  const groups = groupByH2(blocks)
+
+  const overviewKey = [...groups.keys()].find((key) => key.startsWith('入口一览'))
+  if (overviewKey === undefined) throw new Error('文档结构变了：找不到「入口一览」')
+  const entryRows = firstTable(groups.get(overviewKey), overviewKey).slice(1)
+
+  const detailKey = [...groups.keys()].find((key) => key.startsWith('入口详情'))
+  const details = new Map<string, { request: string[]; response: string[] }>()
+  if (detailKey !== undefined) {
+    let current = ''
+    let mode: 'none' | 'request' | 'response' = 'none'
+    for (const block of groups.get(detailKey) ?? []) {
+      if (block.kind === 'heading' && block.level === 3) {
+        current = block.text.replace(/\s+/g, ' ').trim()
+        details.set(current, { request: [], response: [] })
+        mode = 'none'
+        continue
+      }
+      if (block.kind === 'paragraph') {
+        if (block.text.includes('请求')) mode = 'request'
+        else if (block.text.includes('响应')) mode = 'response'
+        continue
+      }
+      if (block.kind === 'bullets' && current !== '' && mode !== 'none') {
+        const bucket = details.get(current)
+        if (bucket !== undefined) bucket[mode].push(...block.items)
+      }
+    }
+  }
+
+  const entries = entryRows.map((row) => {
+    const method = row[0] ?? ''
+    const entryPath = row[1] ?? ''
+    const protocol = row[2] ?? ''
+    const label = row[3] ?? ''
+    const summary = row[4] ?? ''
+    const detail = details.get(`${method} ${entryPath}`)
+    if (detail === undefined) throw new Error(`文档结构变了：入口 ${method} ${entryPath} 缺少「入口详情」小节`)
+    if (detail.request.length === 0 || detail.response.length === 0) {
+      throw new Error(`文档结构变了：入口 ${method} ${entryPath} 的请求 / 响应要点为空`)
+    }
+    return {
+      method,
+      path: entryPath,
+      protocol,
+      protocolLabel: label,
+      summary,
+      request: detail.request,
+      response: detail.response,
+    }
+  })
+
+  const errorKey = [...groups.keys()].find((key) => key.startsWith('错误码（LLM 入口'))
+  if (errorKey === undefined) throw new Error('文档结构变了：找不到「错误码（LLM 入口）」')
+  const productKey = [...groups.keys()].find((key) => key.startsWith('错误码（产品接口'))
+  if (productKey === undefined) throw new Error('文档结构变了：找不到「错误码（产品接口」')
+
+  const errorsOf = (rows: readonly (readonly string[])[]): ApiErrorDoc[] =>
+    rows.slice(1).map((row) => ({
+      code: row[0] ?? '',
+      status: Number(row[1] ?? ''),
+      meaning: row[2] ?? '',
+      source: row[3] ?? '',
+    }))
+
+  const shapeKey = [...groups.keys()].find((key) => key.startsWith('错误体形状'))
+  if (shapeKey === undefined) throw new Error('文档结构变了：找不到「错误体形状」')
+  const errorShapes = firstTable(groups.get(shapeKey), shapeKey)
+    .slice(1)
+    .map((row) => ({
+      protocols: (row[0] ?? '')
+        .split('/')
+        .map((item) => (item.trim() === '默认' ? '' : item.trim())),
+      shape: row[1] ?? '',
+      keys: (row[2] ?? '')
+        .split(',')
+        .map((item) => item.trim())
+        .filter((item) => item !== ''),
+      note: row[3] ?? '',
+    }))
+
+  const streamKey = [...groups.keys()].find((key) => key.startsWith('流式终止符'))
+  if (streamKey === undefined) throw new Error('文档结构变了：找不到「流式终止符」')
+  const streamNotes = firstTable(groups.get(streamKey), streamKey)
+    .slice(1)
+    .map((row) => ({ protocol: row[0] ?? '', note: row[1] ?? '' }))
+
+  const lossyKey = [...groups.keys()].find((key) => key.startsWith('有损转换'))
+  if (lossyKey === undefined) throw new Error('文档结构变了：找不到「有损转换」')
+  const lossyNotes = bulletsUnder(groups.get(lossyKey), lossyKey)
+
+  const exampleKey = [...groups.keys()].find((key) => key.startsWith('最小示例'))
+  const curlExamples: { title: string; command: string }[] = []
+  if (exampleKey !== undefined) {
+    let title = ''
+    for (const block of groups.get(exampleKey) ?? []) {
+      if (block.kind === 'heading' && block.level === 3) title = block.text
+      else if (block.kind === 'fence' && title !== '') curlExamples.push({ title, command: block.content })
+    }
+  }
+
+  return {
+    entries,
+    gatewayErrors: errorsOf(firstTable(groups.get(errorKey), errorKey)),
+    productErrors: errorsOf(firstTable(groups.get(productKey), productKey)),
+    errorShapes,
+    streamNotes,
+    curlExamples,
+    lossyNotes,
+  }
+}

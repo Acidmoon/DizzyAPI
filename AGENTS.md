@@ -291,8 +291,14 @@ export default FooService
   网关稳定码放纯增量的 `reason`。账号可声明 `protocol: gemini`，三个既有客户端入口都能路由过去
 - **模型广场与 API 文档**：`/api/models` 给 `available` / `unavailable`（带原因与人话细节）+
   汇总；`/console/models` 展示四档价格、可用性、覆盖账号数与上游模型名，支持搜索与筛选；
-  `/console/api-docs` 是自证文档——用例会读源码断言「文档里的错误码真实存在」「入口路径覆盖
+  `/console/api-docs` 是自证文档——**内容源是真 markdown 文件 `docs/api/*.md`**（不是硬编码
+  TS 常量），服务端用 markdown-it（MIT，`html: false`）渲染成 HTML；另有两条机器友好副本
+  `GET /console/api-docs.md`（纯 markdown）与 `GET /llms.txt`（站点索引），HTML 里用
+  `<link rel="alternate" type="text/markdown">` 与 `rel="describedby"` 指向它们，页面上的
+  「复制整页 Markdown」按钮复制的就是那份 markdown（方便直接投喂 agent）。
+  用例会**从 `.md` 源解析事实**再读源码断言「文档里的错误码真实存在」「入口路径覆盖
   全部 `mux.HandleFunc` 注册」「错误体键与 `RenderError` 一致」「协议名在 `contracts/ir.go` 里」
+  「错误码的出处文件真的存在且真的有这个码」
 - **管理员操作审计（`audit`）**：高危写操作（用户/余额/角色、账号增删改启停与批量、价格、设置、
   兑换码批次与核查、充值确认/取消、隔离区忽略/重放）在**成功后**记一条审计；actor 形如
   `user:<id>:<role>`，面板写设置记 `operator:panel`。落库前两道脱敏（键名命中 + 值形状命中），
@@ -682,6 +688,29 @@ pnpm build:go         # 产出 bin/gatewayd(.exe)
 - 预览用 `pnpm preview:console`；它没有 `/api/*`，真实进程用 `pnpm dev`。
 - 静态资源的 `<base>` 已带尾斜杠，不要重复补 `/`。
 - CSP `img-src` 放行 `data:` 与 `https:`；`http://` 头像能存但会被拦。
+- **API 文档的内容源是 `docs/api/*.md`**（`01-overview` / `02-endpoints` / `03-errors` /
+  `04-examples`，顺序由 `packages/web/src/content/api_docs.ts` 的 `DOC_FILES` 定）。
+  改文档 = 改 `.md`，不要回去改 TS 常量；`packages/web/test/pages-docs.test.ts` 会从 `.md`
+  解析事实并核对代码（错误码 / 入口路径 / 协议名 / 错误体键 / 流式终止符 / 出处文件）。
+  新增一个 `.md` 文件必须同时加进 `DOC_FILES`，否则用例报「清单与磁盘不一致」。
+- **markdown 渲染器是 vendor 的 `markdown-it` 14.1.0（MIT）**，在
+  `packages/web/src/vendor/markdown-it/`（`markdown-it.js` + `LICENSE`），用
+  `createRequire` 加载 UMD 单文件。**故意不用 npm 依赖**：服务器部署走
+  `pnpm install --offline` 复用已有 store，新增依赖会让线上部署断掉。
+  升级时替换这两个文件并在这里记版本。
+- **markdown 渲染不得写内联样式**：CSP 是 `style-src 'self'`，`style="…"` 会被浏览器
+  静默丢弃（浮层直接跑位）。渲染器把结构映射到模板已有 class（`.panel` / `.table` /
+  `.mono` / `.code` / `.section-title` / `.page-title`），有用例守着「渲染结果里没有 `style=`」。
+- **`/llms.txt` 与 `/console/api-docs.md` 不是 `/api/*`**：生产 nginx 只把 `/api/*` 反代到
+  api 的 7791，其余（含这两条）都打到 web 的 7792，所以它们必须由 **web** 插件发，
+  放 `packages/api/src/http.ts` 在线上 404。判定逻辑是
+  `content/api_docs.ts` 的 `apiDocsResource(path)`（纯函数，返回 `{status, contentType, body}`）。
+- **部署必须带上仓库根的 `docs/api/`**：文档内容在运行时从
+  `packages/web/src/content/` 往上四级（`../../../../docs/api/`）读；只拷 `packages/`
+  会让这一页报「文档源缺失」（只影响这一页，不会拖垮整站，见下条）。
+- **读文档不能放在模块顶层**：`pages/index.ts` 会把所有页面 import 进来，模块顶层
+  `readFileSync` 抛错会连带整个 web 插件装载失败、全站不可用。文档缺失是内容问题，
+  只能让这一页报错。
 
 ### 测试
 
