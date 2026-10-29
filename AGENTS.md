@@ -145,7 +145,7 @@ export default FooService
 | `@dizzyapi/plugin-redeem` | `redeem` | 兑换码唯一写者：批次 / 生成 / 兑换 / 启停 / 人工核查；SQLite `data/redeem.db`；**只落 sha256 与末 4 位掩码**，明文只在生成响应出现一次；加余额只经 `user.adjustBalance` |
 | `@dizzyapi/plugin-billing` | `billing` | 真实扣费的唯一执行者：`usage` 每轮拉到用量后调 `settle`，按 `req_id` 幂等（CAS `pending → settling → settled`）、用 `pricing` 复算整数微元、只经 `user.adjustBalance` 扣款（余额允许为负 = 后付费，记 `overdrawn` + 扣后余额）；SQLite `data/billing.db`；**不预扣、无支付通道** |
 | `@dizzyapi/plugin-topup` | `topup` | 充值订单唯一写者：`manual` 人工到账（下单 / 我的订单 / 取消 / 管理面确认到账与统计），`pending → paid / canceled / expired` 条件更新，到账只经 `user.adjustBalance`；SQLite `data/topup.db`；**支付通道只留 `PaymentProvider` seam，不接真实渠道、不挂回调路由** |
-| `@dizzyapi/plugin-quota` | `quota` | 余额只读快照推送：把 `user` 的全量余额周期（默认 5s）+ 变更后 debounce（1s）推给 Go 的额度闸门（桥命令 `quota.replace`）；**不存数据、不写余额、不做判断**，也不拥有控制桥（桥在 `account-priority`） |
+| `@dizzyapi/plugin-quota` | `quota` | 余额只读快照推送：把 `user` 的全量余额**心跳式**周期（默认 5s，内容不变也推、`generation` 递增）+ 变更后 debounce（1s）推给 Go 的额度闸门（桥命令 `quota.replace`）；`status()` 报 `heartbeats` / `failureStreak` / `goTtlMs` / `heartbeatTooSlow`；**不存数据、不写余额、不做判断**，也不拥有控制桥（桥在 `account-priority`） |
 | `@dizzyapi/plugin-modelhub` | `modelhub` | 模型广场聚合（**只读、不落盘**）：把 `pricing` 的价格 + 账号声明的 `models`/`modelMap` + `protocol`/`health`/凭据状态合成模型目录，区分 `available` / `unavailable`（带原因）；`/api/models` 与 `/console/models` 的数据源；账号 id / label / baseUrl 一律不出 |
 | `@dizzyapi/plugin-audit` | `audit` | 审计日志唯一写者：`data/audit.db`；`record`（不限）/`list`/`stats`（要 actor 在 `adminPlugins`）；高危管理员写操作在**成功后**接线留痕（actor / action / target / 结果 / 脱敏 metadata），每日按 `retentionDays`（默认 180）分批清理；**不 inject**，审计失败不影响业务 |
 | `@dizzyapi/plugin-observability` | `observability` | 运维总览聚合（**只读、不落盘**）：把用量链路（`usage.status` + `usage.stats`）、结算各状态与透支、额度快照新鲜度（`quota.status`）、账号运行时（`accounts.status.runtime`）、审计最近动作（`audit.list/stats`）、账号池健康合成一个 DTO；任一源缺席只降级该块，页面 `degraded` 但仍 200；`/admin/observability` + `/api/admin/observability` |
@@ -264,7 +264,12 @@ export default FooService
   **402 `INSUFFICIENT_BALANCE`、不可重试、不转发上游**；没有 userId（静态 key / 无 key）不预检。
   快照未就绪 / 过期 / 查不到用户 → 默认**放行 + 节流告警**（可用性优先，后付费结算兜底），
   `-quota-require-snapshot` 打开严格模式改为 503 `QUOTA_SNAPSHOT_UNAVAILABLE`。
-  快照 TTL 由 Go 的 `-quota-snapshot-ttl-ms` 定（默认 15000），**必须 ≥ 3 × TS 的 `pollIntervalMs`**
+  快照 TTL 由 Go 的 `-quota-snapshot-ttl-ms` 定（默认 15000），**必须 ≥ 3 × TS 的 `pollIntervalMs`**。
+  **推送是心跳式的**：余额内容没变也按周期再推一次（`revision` 不变、`generation` 递增），
+  Go 侧借此刷新 `updatedAt`；「没变就跳过」会让闸门在 TTL 一到自动失效（2026-10-29 生产事故：
+  余额已 −97 仍 200）。告警区分偶发 / 持续：第 1 次立即报，之后每分钟一条，连续第 10 / 20 / 30… 次
+  补一条并标「持续失效」；`quota.status` 只增不改地追加 `gate: {allowedUnknown, blockedLow,
+  strictBlocked, staleStreak, staleReason, staleForMs}`（无闸门注入时该键不出现）
 - **充值订单与人工到账（`topup`）**：`/console/top-up` 下单（金额 1~10000 元，整数微元，
   正则拆字符串不经浮点）→ `pending`，`manual` 通道返回「线下转账后由管理员确认」的说明
   （说明落库，不随配置漂移）；`/admin/topup-orders` 列表 + 筛选 + 确认到账 / 取消 + 统计。
@@ -351,7 +356,7 @@ pnpm test:go
 
 - 新增插件必须有 `test/*.test.ts`；新增 Go 模块必须有单测。
 - 测试失败先修实现，不允许删断言或放宽断言来变绿。
-- 当前基线（2026-10-29 实测）：`pnpm test` 702 个用例（701 通过 / 1 跳过），`pnpm typecheck` 干净，
+- 当前基线（2026-10-29 实测）：`pnpm test` 707 个用例（706 通过 / 1 跳过），`pnpm typecheck` 干净，
   `go test ./...` **18 包**全 ok，`gofmt -l .` 与 `go vet ./...` 无输出。
   这个数字会变，以实际输出为准。
 
@@ -542,7 +547,17 @@ pnpm build:go         # 产出 bin/gatewayd(.exe)
   「相等 + revision 相同 → 幂等」，「相等但内容不同 → 拒绝」。
 - **金额跨层一律十进制字符串**：JSON number 会丢 `> 2^53` 精度，Go 解析失败即整份拒绝快照。
 - **TTL 与推送间隔耦合**：调大 TS 的 `pollIntervalMs` 必须同步把 `-quota-snapshot-ttl-ms`
-  提到 ≥ 3 倍，否则严格模式下会周期性 503。
+  提到 ≥ 3 倍，否则严格模式下会周期性 503。`quota.status()` 的 `goTtlMs` / `heartbeatTooSlow`
+  就是这个耦合的护栏（TTL < 2 × 间隔就告警）。
+- **绝不能「内容没变就跳过推送」**：Go 按 TTL 判新鲜度，跳过等于让闸门在 TTL 一到自动失效。
+  2026-10-29 生产事故就是这样：余额已 −97、20 秒前才推过快照，请求仍然 200 放行。
+  推送必须是心跳式（`revision` 相同、`generation` 递增），并且**必须有真进程用例**
+  （真 gatewayd + 真桥 + 小 TTL）守着——内存假 Go 的用例抓不到这类问题。
+- **告警节流必须能区分「偶发」与「持续」**：只按「同一原因每分钟一行」会让持续失效在日志里
+  只留第一行，排障时误判成偶发。现状是第 1 次立即报 + 每分钟一条 + 连续第 10 / 20 / 30… 次
+  补一条并标「持续失效」，`quota.status.gate.staleStreak/staleForMs` 可查。
+- **`quota.status` 加字段只用 `omitempty` 纯增量**：没有注入闸门阶段（测试 / 旧装配）时
+  `gate` 键不出现，响应与改动前逐字节一致；`gate` 里不许出现任何余额明细。
 
 ### 多模态与指标
 
