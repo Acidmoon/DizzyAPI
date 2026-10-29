@@ -25,10 +25,10 @@ import (
 	"strings"
 )
 
-// 默认入口。生产环境 nginx 把 /v1/* 与 /api/* 都反代到同一个域名。
+// 文件与目录的权限。**没有默认入口地址**：`base` 必须显式配置或每次 `--base`，
+// 否则需要发请求的命令直接退 2 并给出可抄的两行命令 —— 默认指向某个地址（尤其
+// 生产）意味着「忘了配」会静默打到线上，而写操作是不可撤销的。
 const (
-	defaultBaseURL = "https://<站点域名>"
-
 	// credentialsFileMode 是凭据文件的权限：只有本人可读写。
 	credentialsFileMode os.FileMode = 0o600
 	// configFileMode 是配置文件的权限：本人可读写，组与其他用户可读。
@@ -68,8 +68,10 @@ type Config struct {
 }
 
 // DefaultConfig 返回默认配置（未落盘的那一份）。
+//
+// **base 为空**：没有默认入口地址，必须显式配置或 `--base`。
 func DefaultConfig() Config {
-	return Config{Base: defaultBaseURL, TimeoutSeconds: defaultTimeoutSeconds}
+	return Config{TimeoutSeconds: defaultTimeoutSeconds}
 }
 
 // defaultTimeoutSeconds 是单次请求的默认超时。
@@ -79,13 +81,16 @@ const defaultTimeoutSeconds = 60
 // （AGENTS.md §2.4.5）。
 var ErrConfigInvalid = errors.New("配置非法")
 
-// Validate 校验配置。非法时返回带说明的 ErrConfigInvalid。
+// Validate 校验配置的**形状**。非法时返回带说明的 ErrConfigInvalid。
+//
+// 注意 `base` 允许为空：空 = 「还没配入口」，由需要发请求的命令在构造客户端时
+// 明确失败（退 2 并给出可抄命令）。这里不判它，否则 `dizzy config show` 与
+// `config set llmBase ...` 这类**不需要 base 的操作**也会被拦住。
 func (c Config) Validate() error {
-	if strings.TrimSpace(c.Base) == "" {
-		return fmt.Errorf("%w：base 不能为空", ErrConfigInvalid)
-	}
-	if _, err := parseBaseURL(c.Base); err != nil {
-		return fmt.Errorf("%w：base %q 不合法：%v", ErrConfigInvalid, c.Base, err)
+	if strings.TrimSpace(c.Base) != "" {
+		if _, err := parseBaseURL(c.Base); err != nil {
+			return fmt.Errorf("%w：base %q 不合法：%v", ErrConfigInvalid, c.Base, err)
+		}
 	}
 	for name, value := range map[string]string{"llmBase": c.LLMBase, "apiBase": c.APIBase} {
 		if value == "" {
@@ -193,9 +198,6 @@ func LoadConfig() (Config, error) {
 	var config Config
 	if err := json.Unmarshal(raw, &config); err != nil {
 		return Config{}, fmt.Errorf("%w：配置 %s 不是合法 JSON：%v", ErrConfigInvalid, path, err)
-	}
-	if config.Base == "" {
-		config.Base = defaultBaseURL
 	}
 	if config.TimeoutSeconds == 0 {
 		config.TimeoutSeconds = defaultTimeoutSeconds

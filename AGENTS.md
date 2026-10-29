@@ -425,6 +425,11 @@ pnpm build:all        # 两个二进制一起编
 - **配置**：`~/.dizzy/config.json`（0644，`base` / `llmBase` / `apiBase`）、
   `~/.dizzy/credentials.json`（0600，**只存会话 token**）。本地开发时 gatewayd 与
   api 是两个端口，要用 `llmBase` / `apiBase` 分开指；生产一个域名指 `base` 就够。
+- **没有默认 `base`**：既没配 `base` 也没给 `--base` 时，**需要发请求**的命令退 2 并打印
+  两条可抄命令（`dizzy config set base <url>` / `dizzy --base <url> models`）；`dizzy config`
+  与 `--help` 不碰入口地址，照样能跑。这是刻意的：默认指向某个地址（尤其生产）意味着
+  「忘了配」会静默打到线上，而写操作不可撤销。`Config.Validate()` 因此允许 `base` 为空，
+  只在**构造客户端**时拦（`newLLMClient` / `newAPIClient` / `newAPIAnonClient`）。
 - **费用只有一个权威来源 = `/api/usage` 的 `costMicros`**：客户端看到的
   `prompt_tokens` **含**缓存命中，而网关记账的四桶里 `input` **不含**缓存
   （`internal/usageprobe.Normalize`），跨协议时这个关系还不成立。所以 `dizzy chat`
@@ -442,7 +447,7 @@ pnpm build:all        # 两个二进制一起编
   （`--json` 里同名字段），并**按它**精确回查 `GET /api/usage/<reqId>` 拿费用；
   没有这个头就明说「未取到 reqId」，**不**退化成「模型 + 时间窗 + 最大 id」的猜测。
 - **写操作先报目标**：`keys` 的写与 `admin` 下的写会在 stderr 先打一行「动作 → 目标地址」。
-  默认 `base` 指生产，本地栈测试要显式 `--base`。
+  没有默认 `base`，但配过一次就一直在，本地栈测试时用 `--base` 临时覆盖更安全。
 - **`usage show <reqId>`** 打单条详情（`GET /api/usage/:reqId`）；`ttftMs` 为 `null`
   显示「—（未采集）」，不是 0 ms。`usage --by key` 是**本地聚合**，输出会标明覆盖范围。
 - **实测夹具**（不进 `pnpm test`，要真进程）：

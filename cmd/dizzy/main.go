@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 )
 
@@ -115,11 +116,34 @@ func resolveAPIKey(globals globalFlags) string {
 	return os.Getenv(envAPIKey)
 }
 
+// noBaseError 是「还没配入口地址」的**用法错误**（退出码 2）。
+//
+// 刻意不给默认 base：默认指向某个地址（尤其生产）意味着「忘了配」会静默打到线上，
+// 而写操作不可撤销。错误里直接给两条可抄的命令，agent 与人都能一步修好。
+func noBaseError(what string) error {
+	return fmt.Errorf("%w：没有配置入口地址（%s 的 base）。任选一种：\n"+
+		"  dizzy config set base <url>\n"+
+		"  dizzy --base <url> models", errUsage, what)
+}
+
+// requireBase 在发请求前确认这条链路有入口地址。
+//
+// `what` 只用于把错误说得更准（`/v1/*` 还是 `/api/*`）。
+func requireBase(resolved string, what string) error {
+	if strings.TrimSpace(resolved) == "" {
+		return noBaseError(what)
+	}
+	return nil
+}
+
 // newAPIClient 造一个走会话路径（/api/*）的客户端。
 //
 // 注意 `APIRequestHeader` **无条件为真**：/api/* 的每个请求（含登录、健康检查）
 // 都必须带 X-Requested-With，只有会话 cookie 才是「登录后才有」。
 func newAPIClient(config Config, globals globalFlags) (*Client, error) {
+	if err := requireBase(config.APIURL(), "/api/*"); err != nil {
+		return nil, err
+	}
 	token, err := SessionToken()
 	if err != nil {
 		if errors.Is(err, ErrCredentialsMissing) {
@@ -141,6 +165,9 @@ func newAPIClient(config Config, globals globalFlags) (*Client, error) {
 //
 // 登录与公开健康端点用它：还没有会话，但请求头必须带。
 func newAPIAnonClient(config Config, globals globalFlags) (*Client, error) {
+	if err := requireBase(config.APIURL(), "/api/*"); err != nil {
+		return nil, err
+	}
 	return NewClient(ClientOptions{
 		BaseURL:          config.APIURL(),
 		Timeout:          time.Duration(config.TimeoutSeconds) * time.Second,
@@ -151,7 +178,13 @@ func newAPIAnonClient(config Config, globals globalFlags) (*Client, error) {
 }
 
 // newLLMClient 造一个走 Bearer 路径（/v1/*）的客户端。
+//
+// 顺序有意义：先报「没配入口」，再报「没配 key」——前者是配置问题，后者是凭据问题，
+// 混着报会让人先去找 key。
 func newLLMClient(config Config, globals globalFlags) (*Client, error) {
+	if err := requireBase(config.LLMURL(), "/v1/*"); err != nil {
+		return nil, err
+	}
 	key := resolveAPIKey(globals)
 	if key == "" {
 		return nil, fmt.Errorf("缺少 API key：用 --key 或环境变量 %s 提供", envAPIKey)

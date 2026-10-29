@@ -36,8 +36,8 @@ func decodeJSON(raw []byte, out any) error {
 
 // announceWriteTarget 在执行**写操作**前打一行目标地址（stderr，一行）。
 //
-// 默认 base 指**生产**（defaultBaseURL），所以写操作必须让人一眼看到自己打的是哪台：
-// 本地栈测试时忘了加 `--base` 就会写到线上。这不是理论风险，是踩过的。
+// 没有默认 base（必须显式配置或 `--base`），但「配过一次就一直在」仍然意味着
+// 本地栈测试时可能顺手打到线上，所以写操作必须先让人看见自己打的是哪台。
 func announceWriteTarget(config Config, action string) {
 	fmt.Fprintf(os.Stderr, "%s → %s\n", action, config.APIURL())
 }

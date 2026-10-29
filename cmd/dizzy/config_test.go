@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -16,17 +17,122 @@ func withHome(t *testing.T) string {
 	return dir
 }
 
-func TestLoadConfigMissingReturnsDefault(t *testing.T) {
+// TestLoadConfigMissingHasNoBase 断言「没有配置文件时 base 是空的」。
+//
+// 刻意**不给默认 base**：默认指向某个地址（尤其生产）意味着「忘了配」会静默打到
+// 线上，而写操作不可撤销。缺 base 时由需要发请求的命令退 2 并给出可抄命令。
+func TestLoadConfigMissingHasNoBase(t *testing.T) {
 	withHome(t)
 	config, err := LoadConfig()
 	if err != nil {
 		t.Fatalf("文件不存在不该报错：%v", err)
 	}
-	if config.Base != defaultBaseURL {
-		t.Fatalf("默认 base 应为 %q，得到 %q", defaultBaseURL, config.Base)
+	if config.Base != "" {
+		t.Fatalf("没有配置文件时 base 应为空（不设默认），得到 %q", config.Base)
+	}
+	if config.LLMBase != "" || config.APIBase != "" {
+		t.Fatalf("没有配置文件时不该有覆盖入口：llmBase=%q apiBase=%q", config.LLMBase, config.APIBase)
 	}
 	if config.TimeoutSeconds != defaultTimeoutSeconds {
 		t.Fatalf("默认超时应为 %d，得到 %d", defaultTimeoutSeconds, config.TimeoutSeconds)
+	}
+}
+
+// TestNoBaseIsUsageError 断言「没有 base 且没有 --base」是**用法错误（退出码 2）**，
+// 并且错误里带着两条可直接抄的命令。
+func TestNoBaseIsUsageError(t *testing.T) {
+	withHome(t)
+	config, err := resolveConfig(globalFlags{})
+	if err != nil {
+		t.Fatalf("读取配置本身不该失败：%v", err)
+	}
+	_, err = newLLMClient(config, globalFlags{Key: "sk-test"})
+	if err == nil {
+		t.Fatal("没有 base 时应失败")
+	}
+	if code := exitCodeOf(err); code != exitUsage {
+		t.Fatalf("退出码应为 %d（用法错误），得到 %d：%v", exitUsage, code, err)
+	}
+	message := err.Error()
+	for _, want := range []string{"dizzy config set base <url>", "dizzy --base <url> models"} {
+		if !strings.Contains(message, want) {
+			t.Fatalf("错误里应给可抄命令 %q：%s", want, message)
+		}
+	}
+	// /api/* 那条链路同样拦，且顺序上先报 base、不报「没登录」。
+	if _, apiErr := newAPIAnonClient(config, globalFlags{}); exitCodeOf(apiErr) != exitUsage {
+		t.Fatalf("/api/* 缺 base 也应是用法错误，得到 %v", apiErr)
+	}
+}
+
+// TestBaseFromFlag 断言 `--base` 能单独满足要求。
+func TestBaseFromFlag(t *testing.T) {
+	withHome(t)
+	config, err := resolveConfig(globalFlags{Base: "http://127.0.0.1:7791"})
+	if err != nil {
+		t.Fatalf("解析配置失败：%v", err)
+	}
+	client, err := newLLMClient(config, globalFlags{Key: "sk-test"})
+	if err != nil {
+		t.Fatalf("给了 --base 应能构造客户端：%v", err)
+	}
+	if !strings.HasPrefix(client.URL("/v1/models", nil), "http://127.0.0.1:7791/v1/models") {
+		t.Fatalf("入口地址不对：%s", client.URL("/v1/models", nil))
+	}
+}
+
+// TestBaseFromConfigFile 断言 `config set base` 之后能读回并用上。
+func TestBaseFromConfigFile(t *testing.T) {
+	withHome(t)
+	_, err := captureStdout(t, func() error {
+		return runConfigSet([]string{"base", "http://127.0.0.1:7791"}, globalFlags{})
+	})
+	if err != nil {
+		t.Fatalf("config set base 失败：%v", err)
+	}
+	loaded, err := LoadConfig()
+	if err != nil {
+		t.Fatalf("读回配置失败：%v", err)
+	}
+	if loaded.Base != "http://127.0.0.1:7791" {
+		t.Fatalf("base 没读回：%q", loaded.Base)
+	}
+	config, err := resolveConfig(globalFlags{})
+	if err != nil {
+		t.Fatalf("解析配置失败：%v", err)
+	}
+	if _, err := newLLMClient(config, globalFlags{Key: "sk-test"}); err != nil {
+		t.Fatalf("配置过 base 后应能构造客户端：%v", err)
+	}
+}
+
+// TestConfigCommandWorksWithoutBase 断言不需要 base 的命令不被拦。
+//
+// `dizzy config` 与 `--help` 是「还没配入口」时唯一的自救路径，必须能跑。
+func TestConfigCommandWorksWithoutBase(t *testing.T) {
+	withHome(t)
+	stdout, err := captureStdout(t, func() error {
+		return runConfig([]string{"show"}, globalFlags{})
+	})
+	if err != nil {
+		t.Fatalf("没有 base 时 config show 不该失败：%v", err)
+	}
+	if !strings.Contains(stdout, "（未设置）") {
+		t.Fatalf("config show 应显示 base 未设置：\n%s", stdout)
+	}
+	// 只设 llmBase（还没有 base）也不能被拦：Validate 不该强制 base。
+	_, err = captureStdout(t, func() error {
+		return runConfigSet([]string{"llmBase", "http://127.0.0.1:8080"}, globalFlags{})
+	})
+	if err != nil {
+		t.Fatalf("没有 base 时 config set llmBase 不该失败：%v", err)
+	}
+	// 帮助不碰配置，永远能跑。
+	_, err = captureStdout(t, func() error {
+		return run([]string{"help"})
+	})
+	if err != nil {
+		t.Fatalf("help 不该失败：%v", err)
 	}
 }
 
@@ -114,7 +220,9 @@ func TestConfigValidate(t *testing.T) {
 		{"正常 https", Config{Base: "https://example.com"}, false},
 		{"正常 http", Config{Base: "http://127.0.0.1:7791"}, false},
 		{"带路径前缀", Config{Base: "https://example.com/gw"}, false},
-		{"空 base", Config{Base: ""}, true},
+		// base 允许为空：空 = 「还没配入口」，由需要发请求的命令明确失败（退 2）。
+		{"空 base 合法（还没配入口）", Config{Base: ""}, false},
+		{"只有 llmBase 也合法", Config{LLMBase: "http://127.0.0.1:8080"}, false},
 		{"没有 scheme", Config{Base: "example.com"}, true},
 		{"不是 http", Config{Base: "ftp://example.com"}, true},
 		{"缺主机名", Config{Base: "https:///path"}, true},

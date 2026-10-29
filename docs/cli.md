@@ -5,6 +5,18 @@
 
 **agent 是第一用户**：所有子命令都支持 `--json`，退出码按失败原因分支（见下）。
 
+## 0. 快速开始
+
+```bash
+dizzy config set base https://<站点域名>   # ① 先配入口（没有默认 base）
+dizzy login --email me@example.com                    # ② 再登录（密码走环境变量或 stdin）
+dizzy whoami                                          # ③ 验一下
+dizzy chat -m deepseek-flash "你好"                    # ④ 打模型（用 API key，见下）
+```
+
+本地栈把 `base` / `llmBase` / `apiBase` 指到两个端口即可（见 §3.1）。
+没配 `base` 时，需要发请求的命令会退 **2** 并打印可抄的两行命令 —— 不会静默打到一个默认地址。
+
 ---
 
 ## 1. 构建
@@ -48,7 +60,18 @@ CLI 内部按入口自动选路：`chat` / `models` 走 Bearer，`usage` / `keys
   `%USERPROFILE%` 的 ACL）。
 - `DIZZY_HOME` 环境变量可覆盖配置目录（测试与多环境隔离用）。
 
-生产是一个域名（nginx 同时反代 `/v1/*` 与 `/api/*`），所以只配 `base` 就够：
+> **没有默认 `base`。** 需要发请求的命令在「既没配 base、也没给 `--base`」时**直接退 2**，
+> 并打印两条可抄的命令：
+>
+> ```
+> dizzy config set base <url>
+> dizzy --base <url> models
+> ```
+>
+> 这是刻意的：默认指向某个地址（尤其生产）意味着「忘了配」会静默打到线上，而写操作不可撤销。
+> `dizzy config` 与 `--help` 不碰入口地址，没配 base 也能跑。
+
+生产是一个域名（nginx 同时反代 `/v1/*` 与 `/api/*`），所以配一个 `base` 就够：
 
 ```bash
 dizzy config set base https://<站点域名>
@@ -98,9 +121,9 @@ dizzy --base http://127.0.0.1:7791 \
 `dizzy health` 是**验证这条配置对不对**的最快办法：它同时打 `/healthz`（走 `llmBase`）
 与 `/api/health`（走 `apiBase`），两边都通才返回 0。
 
-> ⚠️ **默认 `base` 指生产**（`https://<站点域名>`）。本地栈测试时**别用默认 base
-> 跑写操作** —— `keys create/delete/enable/disable` 与 `admin` 下的写操作会真的落到线上。
-> 写操作执行前会先打一行目标地址（stderr），看一眼再回车。
+> ⚠️ **配过一次就一直生效**：`config set base` 写进 `~/.dizzy/config.json` 后，后续所有命令都会
+> 打那个地址。本地栈测试与线上来回切换时，**写操作执行前会先打一行目标地址**（stderr），
+> 看一眼再回车；或者干脆用 `--base` 临时覆盖，不污染配置文件。
 
 ---
 
