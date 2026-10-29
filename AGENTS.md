@@ -441,12 +441,12 @@ pnpm test:go
   `packages/account-priority/src/service.ts` 1238、`packages/identity/src/service.ts` 1132、
   `packages/api/src/types.ts` 1054、`modules/protoconv/codec_anthropic.go` 1034、
   `packages/web/src/runtime.ts` 977、`modules/protoconv/codec_responses.go` 974、
-  `packages/api/src/http.ts` 872、`internal/httpapi/server.go` 843、
+  `packages/api/src/http.ts` 873、`internal/httpapi/server.go` 843、
   `modules/protoconv/codec_gemini.go` 705、`modules/protoconv/codec_chat.go` 697；
   400～500 的次级面：`packages/web/src/pages/admin_account_detail.ts` 440、
   `packages/web/src/service.ts` 449、`packages/page-template/src/shell.ts` 447。
   往这些文件里加东西时，**顺手把同一职责搬进新的小文件**，让净增行数尽量小。
-- **`packages/api/src` 的路由布局（2026-10-30 拆完，4241 → 872）**：新增 `/api/*` 路由**一律**
+- **`packages/api/src` 的路由布局（2026-10-30 拆完，4241 → 873）**：新增 `/api/*` 路由**一律**
   写进 `routes/<前缀>.ts`，不再进 `http.ts`：
   - `routes/*.ts`：一前缀一个文件（`keys` / `usage` / `admin_usage` / `admin_accounts` …），
     导出一个 `routeXxx(host, req, res, parts, url)`；每个管理面文件**自己先调
