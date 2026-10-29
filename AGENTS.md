@@ -376,6 +376,11 @@ pnpm test:go
 - 当前基线（2026-10-30 实测）：`pnpm test` 782 个用例（781 通过 / 1 跳过），`pnpm typecheck` 干净，
   `go test ./...` **26 包**全 ok，`gofmt -l .` 与 `go vet ./...` 无输出。
   这个数字会变，以实际输出为准。
+- **验收任何分支前先 `pnpm build:go`**（不只是改过 Go 的分支）：`pnpm test` 里有真进程用例会
+  spawn `bin/gatewayd`，worktree 里的 `bin/` 往往还是它自己开工时编的旧二进制。分支合过带 Go
+  改动的 main 之后，旧二进制不认识新 flag，`api-key/test/gateway-gates-pricing.test.ts` 会直接红
+  （2026-10-30 实测：`优化` 首次 793 通过 / 1 失败，`pnpm build:go` 之后 5/5 全绿）。
+  这不是回归，但**不 build 就分不清是不是回归**。
 - **多 worktree 并行跑测试会互相抢端口**：`pnpm test` 里有多条**真进程用例**（`content-audit`
   的 `gateway-smoke`、`account-priority` 的子进程），它们用 `freePort()` 拿临时端口再 spawn
   `bin/gatewayd`。几个 worktree 同时跑全量时，A 释放的端口可能被 B 抢到，表现是
@@ -414,14 +419,23 @@ pnpm test:go
 - **一个文件里不出现两个服务 / 两个模块**。同目录的文件之间保持单向依赖：
   `service → db / types / errors`，反向 import 一律不允许。
 - **已有超限文件只许缩短，不许加长**（大文件债，按需拆，不搞一次性大重构）：
-  `packages/api/src/http.ts` 3856、`packages/usage/src/service.ts` 1326、
+  `packages/usage/src/service.ts` 1326、`packages/api/src/types.ts` 949、
   `packages/account-admin/src/service.ts` 1319、`packages/account-priority/src/service.ts` 1094、
   `packages/identity/src/service.ts` 1036、`modules/protoconv/codec_*.go` 约 900、
-  `packages/web/src/runtime.ts` 892、`internal/httpapi/server.go` 790。
+  `packages/web/src/runtime.ts` 892、`packages/api/src/http.ts` 782、
+  `internal/httpapi/server.go` 790。
   往这些文件里加东西时，**顺手把同一职责搬进新的小文件**，让净增行数尽量小。
-- **`packages/api/src/http.ts` 是最大的债**：它现在是「一个文件装下所有 `/api/*` 路由」。
-  新增路由一律写进按前缀拆的新文件（`routes/keys.ts`、`routes/admin.ts` …），
-  老路由按需迁移，不再往 `http.ts` 里堆。
+- **`packages/api/src` 的路由布局（2026-10-30 拆完，4241 → 782）**：新增 `/api/*` 路由**一律**
+  写进 `routes/<前缀>.ts`，不再进 `http.ts`：
+  - `routes/*.ts`：一前缀一个文件（`keys` / `usage` / `admin_usage` / `admin_accounts` …），
+    导出一个 `routeXxx(host, req, res, parts, url)`；每个管理面文件**自己先调
+    `host.requireAdmin(req)` 再干活**（不要假设上游已经鉴权过）。
+  - `views/*.ts`：DTO 的纯函数映射（`usage` / `commerce` / `account` / `audit` …），不碰 IO。
+  - `http.ts`：只留类字段、生命周期、`dispatch`、`routeApi` 分发与 51 个同名薄委派。
+    **`routeApi` 的判定顺序是不变量**，它有 `/api/usage/export` 必须早于 `/api/usage/:reqId`
+    这类先后依赖；动它之前先看顺序表，改完用全量测试验。
+  - 拆文件时 `routeApi` 的委派层是刻意留的：调用点一个字不改，风险最小。要压掉委派层
+    （能再省约 400 行）属于单独一批，需要同时改所有 `this.xxx` 调用点，不能顺手做。
 - **低耦合的执行标准**：插件之间只经服务接口 / 进程内事件（§2.2 已有）；插件内部
   不跨层直连别人的存储；Go 侧 `modules/*` 只 import `contracts/`（§2.3 已有）；
   传输层 / 渲染层 / 存储层不互相 import 实现文件。
