@@ -9,12 +9,14 @@ import { assertOnlyKeys, optionalAvatar, requiredString } from '../params.ts'
 import { sessionUserOf } from '../views/session.ts'
 import { ApiError, badRequest, notFound, unauthorized } from '../errors.ts'
 import { type IncomingMessage, type ServerResponse } from 'node:http'
+import { allowMethod, jsonBody, sendJson } from '../http_respond.ts'
+import { requireSession, sessionToken } from '../http_session.ts'
 
 export async function routeProfile(host: ApiServer, req: IncomingMessage, res: ServerResponse, parts: readonly string[]): Promise<void> {
   if (parts.length === 1) {
-    if (!host.allowMethod(req, res, ['PATCH'])) return
-    const view = await host.requireSession(req)
-    const body = await host.jsonBody(req)
+    if (!allowMethod(host, req, res, ['PATCH'])) return
+    const view = await requireSession(host, req)
+    const body = await jsonBody(host, req)
     assertOnlyKeys(body, ['name', 'avatar'])
     const patch: { name?: string; avatar?: string | null } = {}
     if (Object.hasOwn(body, 'name')) patch.name = requiredString(body, 'name')
@@ -34,18 +36,18 @@ export async function routeProfile(host: ApiServer, req: IncomingMessage, res: S
     await update.call(host.runtime.user, view.userId, patch)
     const user = await host.runtime.user.get(view.userId)
     if (user === undefined) throw unauthorized('账号已不存在，请重新登录')
-    host.sendJson(req, res, 200, sessionUserOf(user))
+    sendJson(host, req, res, 200, sessionUserOf(user))
     return
   }
 
   if (parts.length === 2 && parts[1] === 'password') {
-    if (!host.allowMethod(req, res, ['POST'])) return
-    const view = await host.requireSession(req)
-    const token = host.sessionToken(req)
-    const body = await host.jsonBody(req)
+    if (!allowMethod(host, req, res, ['POST'])) return
+    const view = await requireSession(host, req)
+    const token = sessionToken(host, req)
+    const body = await jsonBody(host, req)
     const currentPassword = requiredString(body, 'currentPassword')
     const newPassword = requiredString(body, 'newPassword')
-    host.sendJson(req, res, 200, await host.runtime.auth.changePassword(token, currentPassword, newPassword))
+    sendJson(host, req, res, 200, await host.runtime.auth.changePassword(token, currentPassword, newPassword))
     return
   }
 

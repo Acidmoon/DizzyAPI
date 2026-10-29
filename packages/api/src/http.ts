@@ -296,7 +296,7 @@ export class ApiServer {
     // 公开面
     if (parts.length === 1 && parts[0] === 'health') {
       if (!this.allowRead(req, res)) return
-      this.sendJson(req, res, 200, await this.health())
+      sendJson(this, req, res, 200, await health(this))
       return
     }
     if (parts.length === 2 && parts[0] === 'console' && parts[1] === 'manifest') {
@@ -306,7 +306,7 @@ export class ApiServer {
       return
     }
     if (parts[0] === 'auth') {
-      await this.routeAuth(req, res, parts)
+      await routeAuth(this, req, res, parts)
       return
     }
 
@@ -318,28 +318,28 @@ export class ApiServer {
       return
     }
     if (parts[0] === 'profile') {
-      await this.routeProfile(req, res, parts)
+      await routeProfile(this, req, res, parts)
       return
     }
     if (parts[0] === 'keys') {
-      await this.routeKeys(req, res, parts)
+      await routeKeys(this, req, res, parts)
       return
     }
     if (parts.length === 1 && parts[0] === 'usage') {
       if (!this.allowRead(req, res)) return
-      this.sendJson(req, res, 200, await this.usage(req, url))
+      sendJson(this, req, res, 200, await usage(this, req, url))
       return
     }
     if (parts.length === 2 && parts[0] === 'usage' && parts[1] === 'export') {
       if (!this.allowRead(req, res)) return
-      await this.usageExport(req, res, url)
+      await usageExport(this, req, res, url)
       return
     }
     // GET /api/usage/:reqId —— 单条用量详情（详情弹窗用）。
     // 必须排在 `usage/export` 之后：那个是固定子路径，不能被当成 reqId。
     if (parts.length === 2 && parts[0] === 'usage') {
       if (!this.allowRead(req, res)) return
-      await this.usageDetail(req, res, parts[1] as string)
+      await usageDetail(this, req, res, parts[1] as string)
       return
     }
     if (parts[0] === 'pricing') {
@@ -522,41 +522,6 @@ export class ApiServer {
     }
     return contentAudit
   }
-  /** @internal 实现在 routes/health.ts（薄委派；注释与实现在那边，这里只转发）。 */
-async health(): Promise<GatewayHealthView> {
-    return await health(this)
-  }
-
-  /** @internal 实现在 routes/auth.ts（薄委派；注释与实现在那边，这里只转发）。 */
-async routeAuth(req: IncomingMessage, res: ServerResponse, parts: readonly string[]): Promise<void> {
-    return await routeAuth(this, req, res, parts)
-  }
-
-  /** @internal 实现在 routes/profile.ts（薄委派；注释与实现在那边，这里只转发）。 */
-async routeProfile(req: IncomingMessage, res: ServerResponse, parts: readonly string[]): Promise<void> {
-    return await routeProfile(this, req, res, parts)
-  }
-
-  /** @internal 实现在 routes/keys.ts（薄委派；注释与实现在那边，这里只转发）。 */
-async routeKeys(req: IncomingMessage, res: ServerResponse, parts: readonly string[]): Promise<void> {
-    return await routeKeys(this, req, res, parts)
-  }
-
-  /** @internal 实现在 routes/usage.ts（薄委派；注释与实现在那边，这里只转发）。 */
-async usage(req: IncomingMessage, url: URL): Promise<unknown> {
-    return await usage(this, req, url)
-  }
-
-  /** @internal 实现在 routes/usage.ts（薄委派；注释与实现在那边，这里只转发）。 */
-async usageExport(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
-    return await usageExport(this, req, res, url)
-  }
-
-  /** @internal 实现在 routes/usage.ts（薄委派；注释与实现在那边，这里只转发）。 */
-async usageDetail(req: IncomingMessage, res: ServerResponse, reqId: string): Promise<void> {
-    return await usageDetail(this, req, res, reqId)
-  }
-
   /** @internal 实现在 routes/pricing.ts（薄委派；注释与实现在那边，这里只转发）。 */
 async routePricing(
   req: IncomingMessage,

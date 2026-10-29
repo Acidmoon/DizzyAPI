@@ -9,13 +9,15 @@ import { optionalString, requiredString } from '../params.ts'
 import { deviceMeta, readCookie } from '../http_io.ts'
 import { notFound } from '../errors.ts'
 import { type IncomingMessage, type ServerResponse } from 'node:http'
+import { allowMethod, jsonBody, sendJson } from '../http_respond.ts'
+import { clearSessionCookie, loginResponse, setSessionCookie } from '../http_session.ts'
 
 export async function routeAuth(host: ApiServer, req: IncomingMessage, res: ServerResponse, parts: readonly string[]): Promise<void> {
   const action = parts.slice(1).join('/')
   switch (action) {
     case 'register/request': {
-      if (!host.allowMethod(req, res, ['POST'])) return
-      const body = await host.jsonBody(req)
+      if (!allowMethod(host, req, res, ['POST'])) return
+      const body = await jsonBody(host, req)
       const email = requiredString(body, 'email')
       const password = requiredString(body, 'password')
       const name = optionalString(body, 'name')
@@ -24,22 +26,22 @@ export async function routeAuth(host: ApiServer, req: IncomingMessage, res: Serv
         password,
         ...(name === undefined ? {} : { name }),
       })
-      host.sendJson(req, res, 200, ticket)
+      sendJson(host, req, res, 200, ticket)
       return
     }
     case 'register/confirm': {
-      if (!host.allowMethod(req, res, ['POST'])) return
-      const body = await host.jsonBody(req)
+      if (!allowMethod(host, req, res, ['POST'])) return
+      const body = await jsonBody(host, req)
       const email = requiredString(body, 'email')
       const code = requiredString(body, 'code')
       const result = await host.runtime.auth.confirmRegistration({ email, code })
-      host.setSessionCookie(req, res, result.token, result.expiresAt)
-      host.sendJson(req, res, 200, host.loginResponse(result))
+      setSessionCookie(host, req, res, result.token, result.expiresAt)
+      sendJson(host, req, res, 200, loginResponse(host, result))
       return
     }
     case 'login': {
-      if (!host.allowMethod(req, res, ['POST'])) return
-      const body = await host.jsonBody(req)
+      if (!allowMethod(host, req, res, ['POST'])) return
+      const body = await jsonBody(host, req)
       const email = requiredString(body, 'email')
       const password = requiredString(body, 'password')
       const result = await host.runtime.auth.login({
@@ -47,12 +49,12 @@ export async function routeAuth(host: ApiServer, req: IncomingMessage, res: Serv
         password,
         meta: deviceMeta(req),
       })
-      host.setSessionCookie(req, res, result.token, result.expiresAt)
-      host.sendJson(req, res, 200, host.loginResponse(result))
+      setSessionCookie(host, req, res, result.token, result.expiresAt)
+      sendJson(host, req, res, 200, loginResponse(host, result))
       return
     }
     case 'logout': {
-      if (!host.allowMethod(req, res, ['POST'])) return
+      if (!allowMethod(host, req, res, ['POST'])) return
       const token = readCookie(req, host.config.sessionCookieName)
       if (token !== undefined) {
         try {
@@ -61,24 +63,24 @@ export async function routeAuth(host: ApiServer, req: IncomingMessage, res: Serv
           // 登出幂等：令牌无效 / 已过期都算成功。
         }
       }
-      host.clearSessionCookie(req, res)
-      host.sendJson(req, res, 200, { ok: true })
+      clearSessionCookie(host, req, res)
+      sendJson(host, req, res, 200, { ok: true })
       return
     }
     case 'password/reset/request': {
-      if (!host.allowMethod(req, res, ['POST'])) return
-      const body = await host.jsonBody(req)
+      if (!allowMethod(host, req, res, ['POST'])) return
+      const body = await jsonBody(host, req)
       const email = requiredString(body, 'email')
-      host.sendJson(req, res, 200, await host.runtime.auth.requestPasswordReset(email))
+      sendJson(host, req, res, 200, await host.runtime.auth.requestPasswordReset(email))
       return
     }
     case 'password/reset/confirm': {
-      if (!host.allowMethod(req, res, ['POST'])) return
-      const body = await host.jsonBody(req)
+      if (!allowMethod(host, req, res, ['POST'])) return
+      const body = await jsonBody(host, req)
       const email = requiredString(body, 'email')
       const code = requiredString(body, 'code')
       const password = requiredString(body, 'password')
-      host.sendJson(req, res, 200, await host.runtime.auth.confirmPasswordReset({ email, code, password }))
+      sendJson(host, req, res, 200, await host.runtime.auth.confirmPasswordReset({ email, code, password }))
       return
     }
     default:
