@@ -237,3 +237,99 @@ func TestRegisterValidatesConfig(t *testing.T) {
 		t.Fatalf("额度闸门必须是 pre 相位且必需：%+v", registry.Stages()[0])
 	}
 }
+
+// TestStaleStreakDistinguishesSustainedFromOccasional：告警节流不能把「持续失效」藏起来。
+//
+// 生产事故（2026-10-29）：余额快照 15 秒过期后闸门一直放行，但日志被「同一原因一分钟一行」
+// 节流，排障时只看到一行告警，误以为「偶发」。所以这里钉死：
+//   - 第 1 次（偶发）立即报一行，不带「持续失效」；
+//   - 同一分钟内的后续失败不刷屏，但 streak 必须一路涨；
+//   - 连续第 10 次（里程碑）即使还在同一分钟内也补一行，并标注「持续失效」与次数。
+func TestStaleStreakDistinguishesSustainedFromOccasional(t *testing.T) {
+	var buffer bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buffer, &slog.HandlerOptions{Level: slog.LevelWarn}))
+	now := time.Date(2026, 10, 29, 12, 0, 0, 0, time.UTC)
+	balances := &fakeBalances{ready: false}
+	stage := New(Config{SnapshotTTL: time.Second}, balances, logger)
+	stage.now = func() time.Time { return now }
+
+	if _, err := stage.Run(keyCtx("42")); err != nil {
+		t.Fatalf("放行模式不该拒绝：%v", err)
+	}
+	if stats := stage.Stats(); stats.StaleStreak != 1 || stats.StaleReason != "snapshot-unavailable" {
+		t.Fatalf("第一次不可用的观察不对：%+v", stats)
+	}
+	if lines := strings.Count(buffer.String(), "余额快照不可用"); lines != 1 {
+		t.Fatalf("偶发一次应当立即报一行，实际 %d 行", lines)
+	}
+	if strings.Contains(buffer.String(), "持续失效") {
+		t.Fatalf("第一次是偶发，不该标成持续：%s", buffer.String())
+	}
+
+	// 同一分钟内继续失败：不刷屏，但 streak 继续涨。
+	for index := 0; index < 8; index += 1 {
+		now = now.Add(time.Second)
+		if _, err := stage.Run(keyCtx("42")); err != nil {
+			t.Fatalf("放行模式不该拒绝：%v", err)
+		}
+	}
+	if stats := stage.Stats(); stats.StaleStreak != 9 {
+		t.Fatalf("连续不可用次数 = %d，期望 9", stats.StaleStreak)
+	}
+	if lines := strings.Count(buffer.String(), "余额快照不可用"); lines != 1 {
+		t.Fatalf("节流窗口内不该刷屏，实际 %d 行", lines)
+	}
+
+	// 第 10 次是里程碑：即使还在同一分钟内，也要补一行并标注持续。
+	now = now.Add(time.Second)
+	if _, err := stage.Run(keyCtx("42")); err != nil {
+		t.Fatalf("放行模式不该拒绝：%v", err)
+	}
+	if lines := strings.Count(buffer.String(), "余额快照不可用"); lines != 2 {
+		t.Fatalf("持续失效到第 10 次必须补一行，实际 %d 行：%s", lines, buffer.String())
+	}
+	if !strings.Contains(buffer.String(), "持续失效") {
+		t.Fatalf("持续失效的告警要能看出来：%s", buffer.String())
+	}
+	if !strings.Contains(buffer.String(), "staleStreak=10") {
+		t.Fatalf("告警要带连续次数：%s", buffer.String())
+	}
+	if stats := stage.Stats(); stats.StaleForMs != 9_000 {
+		t.Fatalf("持续时长 = %dms，期望 9000ms", stats.StaleForMs)
+	}
+}
+
+// TestStaleStreakResetsAfterRecovery：快照恢复 / 换原因都要重新计数，别把旧 streak 带过去。
+func TestStaleStreakResetsAfterRecovery(t *testing.T) {
+	balances := &fakeBalances{ready: false}
+	stage := New(Config{SnapshotTTL: time.Second}, balances, nil)
+
+	for index := 0; index < 3; index += 1 {
+		if _, err := stage.Run(keyCtx("42")); err != nil {
+			t.Fatalf("放行模式不该拒绝：%v", err)
+		}
+	}
+	if stats := stage.Stats(); stats.StaleStreak != 3 {
+		t.Fatalf("连续不可用次数 = %d，期望 3", stats.StaleStreak)
+	}
+
+	// 快照就绪但没有这个用户：原因变了，从 1 重新数。
+	balances.ready = true
+	balances.balances = map[string]int64{}
+	if _, err := stage.Run(keyCtx("42")); err != nil {
+		t.Fatalf("放行模式不该拒绝：%v", err)
+	}
+	if stats := stage.Stats(); stats.StaleStreak != 1 || stats.StaleReason != "user-missing" {
+		t.Fatalf("换原因后应重新计数：%+v", stats)
+	}
+
+	// 快照覆盖该用户且余额充足：完全恢复，观察清零。
+	balances.balances = map[string]int64{"42": 1_000_000}
+	if _, err := stage.Run(keyCtx("42")); err != nil {
+		t.Fatalf("余额充足不该拒绝：%v", err)
+	}
+	stats := stage.Stats()
+	if stats.StaleStreak != 0 || stats.StaleReason != "" || stats.StaleForMs != 0 {
+		t.Fatalf("恢复后必须清零：%+v", stats)
+	}
+}

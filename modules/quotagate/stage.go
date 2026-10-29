@@ -23,6 +23,11 @@ const (
 	// DefaultWarnInterval 是「同一原因告警」的最小间隔：快照没就绪时每 5 秒一次调用，
 	// 不能每个请求刷一行。
 	DefaultWarnInterval = time.Minute
+	// staleLogEvery 是「持续失效」的里程碑步长：连续第 10 / 20 / 30… 次不可用时补一条告警，
+	// 这样「一直不可用」不会只留第一行就被节流彻底藏住。
+	staleLogEvery = 10
+	// sustainedLogInterval 是里程碑告警的最小间隔，防止高 QPS 下每 10 次刷一行。
+	sustainedLogInterval = 5 * time.Second
 )
 
 // Balances 是消费者定义的只读余额快照接口。实现是 `internal/quota.Cache`。
@@ -60,6 +65,11 @@ type Stage struct {
 	allowedUnknown int
 	blockedLow     int
 	strictBlocked  int
+	// 连续不可用（stale / 用户缺失）的观察：用来区分「偶发」与「持续」。
+	staleStreak int
+	staleReason string
+	staleSince  time.Time
+	staleFor    time.Duration
 }
 
 // Register 校验配置并注册阶段。balances 为 nil 表示没有运行时余额来源：
@@ -114,14 +124,15 @@ func (s *Stage) Run(ctx *contracts.Ctx) (contracts.Decision, error) {
 	userID := ctx.Key.UserID
 
 	if s.snapshotUnavailable() {
+		streak, since := s.noteStale("snapshot-unavailable")
 		if s.config.RequireSnapshot {
-			s.warn(ctx, "snapshot-unavailable", "余额快照不可用，严格模式拒绝请求", "userId", userID)
+			s.warn(ctx, "snapshot-unavailable", streak, since, "余额快照不可用，严格模式拒绝请求", "userId", userID)
 			s.countStrict()
 			return contracts.Decision{}, contracts.Errorf(http.StatusServiceUnavailable,
 				contracts.CodeQuotaSnapshotUnavailable,
 				"余额快照暂时不可用，请稍后重试")
 		}
-		s.warn(ctx, "snapshot-unavailable", "余额快照不可用，本请求放行（后付费结算兜底）", "userId", userID)
+		s.warn(ctx, "snapshot-unavailable", streak, since, "余额快照不可用，本请求放行（后付费结算兜底）", "userId", userID)
 		s.countAllowedUnknown()
 		return continueOn, nil
 	}
@@ -129,17 +140,21 @@ func (s *Stage) Run(ctx *contracts.Ctx) (contracts.Decision, error) {
 	balance, ok := s.balances.Lookup(userID)
 	if !ok {
 		// 快照就绪但没有这个用户：可能是刚注册、还没被下一轮推送覆盖。
+		streak, since := s.noteStale("user-missing")
 		if s.config.RequireSnapshot {
-			s.warn(ctx, "user-missing", "快照里没有该用户，严格模式拒绝请求", "userId", userID)
+			s.warn(ctx, "user-missing", streak, since, "快照里没有该用户，严格模式拒绝请求", "userId", userID)
 			s.countStrict()
 			return contracts.Decision{}, contracts.Errorf(http.StatusServiceUnavailable,
 				contracts.CodeQuotaSnapshotUnavailable,
 				"余额快照里暂时没有这个用户，请稍后重试")
 		}
-		s.warn(ctx, "user-missing", "快照里没有该用户，本请求放行", "userId", userID)
+		s.warn(ctx, "user-missing", streak, since, "快照里没有该用户，本请求放行", "userId", userID)
 		s.countAllowedUnknown()
 		return continueOn, nil
 	}
+
+	// 走到这里说明快照是新鲜且覆盖该用户的：连续不可用的观察清零。
+	s.noteHealthy()
 
 	if balance <= s.config.MinBalanceMicros {
 		s.countBlocked()
@@ -156,17 +171,55 @@ type GateStats struct {
 	AllowedUnknown int
 	BlockedLow     int
 	StrictBlocked  int
+	// 连续不可用（stale / 用户缺失）的观察：偶发时是 1，持续失效时一路涨。
+	StaleStreak int
+	StaleReason string
+	StaleForMs  int64
 }
 
 // Stats 返回计数快照。
 func (s *Stage) Stats() GateStats {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	staleFor := s.staleFor
+	if s.staleStreak > 0 && s.now != nil {
+		staleFor = s.now().Sub(s.staleSince)
+	}
 	return GateStats{
 		AllowedUnknown: s.allowedUnknown,
 		BlockedLow:     s.blockedLow,
 		StrictBlocked:  s.strictBlocked,
+		StaleStreak:    s.staleStreak,
+		StaleReason:    s.staleReason,
+		StaleForMs:     staleFor.Milliseconds(),
 	}
+}
+
+// noteStale 记一次「快照不可用」的观察，返回连续次数与起始时间。
+//
+// 连续次数是区分「偶发」与「持续」的关键：reason 变了或中间恢复过就重新计数。
+func (s *Stage) noteStale(reason string) (int, time.Time) {
+	now := s.now()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.staleStreak == 0 || s.staleReason != reason {
+		s.staleStreak = 0
+		s.staleReason = reason
+		s.staleSince = now
+	}
+	s.staleStreak += 1
+	s.staleFor = now.Sub(s.staleSince)
+	return s.staleStreak, s.staleSince
+}
+
+// noteHealthy 在快照新鲜且覆盖该用户时清零连续不可用的观察。
+func (s *Stage) noteHealthy() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.staleStreak = 0
+	s.staleReason = ""
+	s.staleSince = time.Time{}
+	s.staleFor = 0
 }
 
 // snapshotUnavailable 判断「没有可用快照」：没收到、或超过 TTL。
@@ -184,18 +237,34 @@ func (s *Stage) snapshotUnavailable() bool {
 	return s.balances.Age() > ttl
 }
 
-// warn 按原因节流：同一原因每个 warnInterval 最多一行。
-func (s *Stage) warn(ctx *contracts.Ctx, reason, message string, args ...any) {
+// warn 按原因节流，并区分「偶发」与「持续」：
+//
+//   - 第 1 次（连续次数 == 1）立即报；
+//   - 之后同一原因每分钟最多一行（原有节流，防刷屏）；
+//   - 连续第 10 / 20 / 30… 次（里程碑）时，即使还没到一分钟也补一行，
+//     并带上「已连续 N 次 / 持续 Xs」——这样「一直不可用」不会被节流彻底藏住。
+//
+// 生产事故的教训：stale 每时每刻都在发生，只按分钟节流会让排障时以为「只错了一次」。
+func (s *Stage) warn(ctx *contracts.Ctx, reason string, streak int, since time.Time, message string, args ...any) {
 	now := s.now()
 	s.mu.Lock()
 	last, seen := s.lastWarn[reason]
-	if seen && now.Sub(last) < s.warnInterval {
+	sustainedMilestone := streak > 1 && streak%staleLogEvery == 0 && (!seen || now.Sub(last) >= sustainedLogInterval)
+	if streak != 1 && seen && now.Sub(last) < s.warnInterval && !sustainedMilestone {
 		s.mu.Unlock()
 		return
 	}
 	s.lastWarn[reason] = now
 	s.mu.Unlock()
-	s.logger.Warn(message, append([]any{"reqId", ctx.ReqID, "code", reason}, args...)...)
+
+	fields := []any{"reqId", ctx.ReqID, "code", reason, "staleStreak", streak}
+	if !since.IsZero() {
+		fields = append(fields, "staleForMs", now.Sub(since).Milliseconds())
+	}
+	if streak > 1 {
+		message = message + "（持续失效）"
+	}
+	s.logger.Warn(message, append(fields, args...)...)
 }
 
 func (s *Stage) countAllowedUnknown() {

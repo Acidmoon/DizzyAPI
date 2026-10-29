@@ -19,7 +19,13 @@ declare module 'cordis' {
   }
 }
 
-export { QuotaService, type QuotaSnapshotEntry, type QuotaSnapshotPayload, type QuotaStatus } from './service.ts'
+export {
+  QuotaService,
+  heartbeatTooSlow,
+  type QuotaSnapshotEntry,
+  type QuotaSnapshotPayload,
+  type QuotaStatus,
+} from './service.ts'
 export { QuotaError, isQuotaError, type QuotaErrorCode } from './errors.ts'
 export {
   QUOTA_CONFIG_SCHEMA,

@@ -53,6 +53,8 @@ type handler struct {
 	usage    *usagelog.Ring
 	runtime  *accountruntime.Tracker
 	quota    *quota.Cache
+	// gate 是额度闸门阶段：只用来读它的计数与「连续不可用」观察（quota.status 的 gate 字段）。
+	gate     *quotagate.Stage
 	logger   *slog.Logger
 	shutdown chan struct{}
 	stopOnce sync.Once
@@ -75,6 +77,30 @@ func (h *handler) accountsStatus() accountsStatus {
 	}
 	stats := h.runtime.Summary()
 	return accountsStatus{State: state, Runtime: &stats}
+}
+
+// quotaStatus 是桥命令 quota.status 的响应：余额缓存健康度 + 额度闸门的计数。
+//
+// gate 是**只增不改**的字段（omitempty）：没有注入闸门阶段（测试 / 旧装配）时不出现，
+// 响应与改动前逐字节一致。它不含任何余额明细。
+func (h *handler) quotaStatus() quota.State {
+	var state quota.State
+	if h.quota != nil {
+		state = h.quota.State()
+	}
+	if h.gate == nil {
+		return state
+	}
+	stats := h.gate.Stats()
+	state.Gate = &quota.GateState{
+		AllowedUnknown: stats.AllowedUnknown,
+		BlockedLow:     stats.BlockedLow,
+		StrictBlocked:  stats.StrictBlocked,
+		StaleStreak:    stats.StaleStreak,
+		StaleReason:    stats.StaleReason,
+		StaleForMs:     stats.StaleForMs,
+	}
+	return state
 }
 
 func (h *handler) Handle(_ context.Context, method string, params json.RawMessage) (any, error) {
@@ -166,10 +192,7 @@ func (h *handler) Handle(_ context.Context, method string, params json.RawMessag
 		return result, nil
 
 	case contracts.BridgeMethodQuotaStatus:
-		if h.quota == nil {
-			return quota.State{}, nil
-		}
-		return h.quota.State(), nil
+		return h.quotaStatus(), nil
 
 	case bridge.MethodReplaceKeys:
 		var snapshot apikeys.Snapshot
@@ -378,11 +401,12 @@ func run() error {
 	})
 	// 额度闸门（pre）：按请求的 userId 查余额只读快照，余额 ≤ 阈值直接 402，
 	// 不花钱转发上游。位置必须早于打分与 dispatch，但晚于 key-auth（要 userId）。
-	if _, err := quotagate.Register(registry, quotagate.Config{
+	quotaGate, err := quotagate.Register(registry, quotagate.Config{
 		MinBalanceMicros: *quotaMinBalance,
 		RequireSnapshot:  *quotaRequireSnapshot,
 		SnapshotTTL:      quotaTTL,
-	}, quotaCache, logger); err != nil {
+	}, quotaCache, logger)
+	if err != nil {
 		return fmt.Errorf("初始化额度闸门阶段失败：%w", err)
 	}
 	// 模型路由过滤（pre）：必须在 accountpriority 之前收窄候选。
@@ -485,6 +509,7 @@ func run() error {
 		// 运行时状态只给桥命令看汇总（active / cooling），不进公网 /healthz。
 		runtime:  accountRuntime,
 		quota:    quotaCache,
+		gate:     quotaGate,
 		logger:   logger,
 		shutdown: stop,
 	}
