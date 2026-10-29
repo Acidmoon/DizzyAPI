@@ -270,6 +270,8 @@ export interface UsageRowLike {
   readonly usagePresent: boolean
   readonly usageComplete: boolean
   readonly durationMs: number
+  /** 首字延迟（毫秒）；null = 没采集到（非流式请求 / 历史记录）。 */
+  readonly ttftMs: number | null
   readonly clientIp: string | null
   readonly attempts: number
   readonly startedAt: string
@@ -369,6 +371,8 @@ export interface UsageReplayResultLike {
 
 export interface UsagePort {
   list(query: UsageQueryLike): UsageListPageLike
+  /** 按 reqId 取单条明细；查不到返回 null。权限在 HTTP 层判。 */
+  get(reqId: string): UsageRowLike | null
   summary(query: UsageQueryLike): UsageSummaryLike
   stats(nowMs?: number): UsageStatsLike
   exportRows(query: UsageQueryLike, limit?: number): readonly UsageRowLike[]

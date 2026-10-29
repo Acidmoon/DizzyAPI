@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/Acidmoon/DizzyAPI/contracts"
 	"github.com/Acidmoon/DizzyAPI/internal/accounts"
@@ -393,6 +394,89 @@ func TestStreamUsageAnthropicMergesEventsAfterStreamEnds(t *testing.T) {
 	if record.TotalTokens != 175 || record.Protocol != contracts.ProtocolAnthropic || record.UpstreamProtocol != contracts.ProtocolAnthropic {
 		t.Fatalf("记录不符：%+v", record)
 	}
+}
+
+// TTFT 只在流式请求上采集：非流式请求与「一个字节都没读到」的流都是 0（= 没采集）。
+func TestTtftStreamOnly(t *testing.T) {
+	const sse = "data: {\"id\":\"c1\",\"model\":\"gpt-test\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hi\"}}]}\n\n" +
+		"data: [DONE]\n\n"
+
+	t.Run("流式请求记录首字延迟", func(t *testing.T) {
+		upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			// 先把响应头 flush 出去，再停 30ms 才发首字节：
+			// 这样 TTFT 记的确实是「首字」而不是整段响应时间。
+			if flusher, ok := w.(http.Flusher); ok {
+				flusher.Flush()
+			}
+			time.Sleep(30 * time.Millisecond)
+			_, _ = io.WriteString(w, sse)
+		}))
+		defer upstream.Close()
+
+		world, sink := newUsageGateway(t, keyauth.Config{}, nil)
+		if _, err := world.accounts.Replace(snapshot(upstream.URL, accounts.Account{
+			AccountID: "acc-1", Provider: "openai", Kind: "api_key", Token: "t", Priority: 1,
+		})); err != nil {
+			t.Fatalf("Replace: %v", err)
+		}
+
+		recorder := postWithHeaders(t, world.handler, "/v1/chat/completions",
+			`{"model":"gpt-test","stream":true,"messages":[{"role":"user","content":"hi"}]}`, nil)
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("期望 200，得到 %d：%s", recorder.Code, recorder.Body.String())
+		}
+
+		record := sink.single(t)
+		if record.TtftMs < 20 {
+			t.Fatalf("流式请求应记录首字延迟（上游首字前停了 30ms），得到 %d ms：%+v", record.TtftMs, record)
+		}
+		// 首字不可能晚于整个请求结束；TTFT 向上取整、DurationMs 向下取整，
+		// 所以允许 1ms 的取整差（离线本机上游会出现 30 / 31 这种组合）。
+		if record.TtftMs > record.DurationMs+1 {
+			t.Fatalf("首字延迟不可能超过总耗时：ttft=%d duration=%d", record.TtftMs, record.DurationMs)
+		}
+		encoded, err := json.Marshal(record)
+		if err != nil {
+			t.Fatalf("记录无法序列化：%v", err)
+		}
+		if !strings.Contains(string(encoded), `"ttftMs"`) {
+			t.Fatalf("流式记录的线格式应带 ttftMs：%s", encoded)
+		}
+	})
+
+	t.Run("非流式请求不采集", func(t *testing.T) {
+		upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `{"id":"c1","model":"gpt-test","choices":[],"usage":{"prompt_tokens":1,"completion_tokens":1}}`)
+		}))
+		defer upstream.Close()
+
+		world, sink := newUsageGateway(t, keyauth.Config{}, nil)
+		if _, err := world.accounts.Replace(snapshot(upstream.URL, accounts.Account{
+			AccountID: "acc-1", Provider: "openai", Kind: "api_key", Token: "t", Priority: 1,
+		})); err != nil {
+			t.Fatalf("Replace: %v", err)
+		}
+
+		recorder := postWithHeaders(t, world.handler, "/v1/chat/completions",
+			`{"model":"gpt-test","messages":[{"role":"user","content":"hi"}]}`, nil)
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("期望 200，得到 %d：%s", recorder.Code, recorder.Body.String())
+		}
+
+		record := sink.single(t)
+		if record.TtftMs != 0 {
+			t.Fatalf("非流式请求不应采集 TTFT：%d", record.TtftMs)
+		}
+		encoded, err := json.Marshal(record)
+		if err != nil {
+			t.Fatalf("记录无法序列化：%v", err)
+		}
+		if strings.Contains(string(encoded), `"ttftMs"`) {
+			t.Fatalf("非流式记录的线格式不该出现 ttftMs（omitempty）：%s", encoded)
+		}
+	})
 }
 
 // 确保动态 key 快照下的用户字段也能落进记录。

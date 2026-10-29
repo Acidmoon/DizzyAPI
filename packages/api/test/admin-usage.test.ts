@@ -139,6 +139,7 @@ function usageRow(overrides: Partial<UsageRowLike> = {}): UsageRowLike {
     usagePresent: true,
     usageComplete: true,
     durationMs: 120,
+    ttftMs: null,
     clientIp: '127.0.0.1',
     attempts: 1,
     startedAt: '2026-10-19T10:00:00.000Z',

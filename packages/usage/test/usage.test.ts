@@ -8,6 +8,8 @@ import { Context, FiberState, type Fiber } from 'cordis'
 import { isIssueList } from '@dizzyapi/plugin-kit'
 import UsageService, {
   USAGE_DEFAULTS,
+  USAGE_SCHEMA,
+  openUsageDatabase,
   validateUsageConfig,
   type SettleBatchOutcomeLike,
   type SettleCandidateLike,
@@ -1224,4 +1226,74 @@ test('卸载：轮询定时器停止、数据库连接回收（无残留）', as
   assert.equal(priority.calls.length, callsAfterDispose, '卸载后定时器必须停')
   assert.throws(() => service.list({ fromMs: 0, toMs: 1 }), /尚未装载完成/)
   assert.throws(() => service.listRejected(), /尚未装载完成/)
+})
+
+// ───────────────────────────────── 首字延迟（TTFT）与单条详情 ─────────────────────────────────
+
+test('TTFT：流式记值，非流式 / 未采集落 NULL', async (t) => {
+  const { service } = await boot(t)
+  service.ingest(entry({ requestId: 'ttft-stream', stream: true, ttftMs: 123 }))
+  service.ingest(entry({ requestId: 'ttft-absent' }))
+  service.ingest(entry({ requestId: 'ttft-zero', ttftMs: 0 }))
+
+  const byReqId = new Map(service.list({ ...ALL_TIME }).items.map((row) => [row.reqId, row]))
+  assert.equal(byReqId.get('ttft-stream')?.ttftMs, 123)
+  assert.equal(byReqId.get('ttft-absent')?.ttftMs, null, '非流式请求没有 ttftMs 键 → 落 NULL，不能落 0')
+  assert.equal(byReqId.get('ttft-zero')?.ttftMs, null, '0 与「没采集」同义，也要落 NULL')
+})
+
+test('旧库升级：缺 ttft_ms 时自动补列，历史记录保持 NULL', async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), 'dizzy-usage-migrate-'))
+  const path = join(dir, 'usage.db')
+
+  // 造一个「升级前」的库：先按新 schema 建表，再删掉 ttft_ms，最后塞一条历史记录。
+  // 这样测的是真正的 ALTER 补列路径，而不是新表的 CREATE。
+  const legacy = new DatabaseSync(path)
+  legacy.exec(USAGE_SCHEMA)
+  legacy.exec('ALTER TABLE usage_records DROP COLUMN ttft_ms')
+  legacy
+    .prepare(
+      'INSERT INTO usage_records (req_id, started_at_ms, day, model, ingested_at_ms) VALUES (?, ?, ?, ?, ?)',
+    )
+    .run('legacy-1', Date.parse(BASE_TIME), '2026-10-21', 'model-a', Date.now())
+  legacy.close()
+
+  // 打开时必须自动补列；旧库不能因为缺列被拒（AGENTS.md §5.2）。
+  const db = openUsageDatabase(path)
+  // 先关连接再删目录：Windows 上打开中的库文件删不掉（EPERM）。
+  t.after(() => {
+    try {
+      db.close()
+    } catch {
+      // 已关闭时忽略
+    }
+    rmSync(dir, { recursive: true, force: true })
+  })
+  const columns = db.prepare('PRAGMA table_info(usage_records)').all() as { name?: unknown }[]
+  assert.ok(
+    columns.some((column) => column.name === 'ttft_ms'),
+    '升级后必须补出 ttft_ms 列',
+  )
+  const legacyRow = db.prepare('SELECT ttft_ms FROM usage_records WHERE req_id = ?').get('legacy-1') as
+    | { ttft_ms?: unknown }
+    | undefined
+  assert.equal(legacyRow?.ttft_ms ?? null, null, '历史记录的首字延迟必须是 NULL')
+})
+
+test('单条详情：按 reqId 取（含费用与四桶之外的标记），查不到返回 null', async (t) => {
+  const { service } = await boot(t, { pricing: fakePricing() })
+  service.ingest(
+    entry({ requestId: 'detail-1', stream: true, ttftMs: 42, inputTokens: 10, outputTokens: 5 }),
+  )
+
+  const row = service.get('detail-1')
+  assert.ok(row !== null)
+  assert.equal(row.reqId, 'detail-1')
+  assert.equal(row.ttftMs, 42)
+  assert.equal(row.reasoningTokens, 3)
+  assert.equal(row.usagePresent, true)
+  assert.equal(row.usageComplete, true)
+  // model-a 的假价格：input 1 微元 + output 10 微元。
+  assert.equal(row.costMicros, '60')
+  assert.equal(service.get('missing'), null)
 })
