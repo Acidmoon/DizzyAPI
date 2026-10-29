@@ -20,7 +20,7 @@ export const keysPage: PageModule = {
     const secretBlock = secret === undefined
       ? ''
       : `${t.renderNotice({ kind: 'ok', text: '新的 API key 已生成，只显示这一次，请立即保存。' })}
-<div class="panel" style="padding:16px;margin-bottom:24px"><code class="mono">${t.escapeText(secret)}</code></div>`
+<div class="panel panel--pad"><code class="mono">${t.escapeText(secret)}</code></div>`
 
     const rows = items.map((key) => {
       const toggle = `<form class="inline-form" method="post" action="/console/api-keys?action=toggle">
@@ -49,8 +49,8 @@ export const keysPage: PageModule = {
     return renderConsoleShell(ctx, [
       pageHeader(ctx, 'API keys', '完整 key 只在创建 / 轮换时显示一次；列表里随时可复制。'),
       secretBlock,
-      `<form class="form" method="post" action="/console/api-keys?action=create" style="max-width:none;margin-bottom:24px">
-<div class="row">
+      `<form class="form form--wide form--spaced" method="post" action="/console/api-keys?action=create">
+<div class="row row--stack-actions">
 ${t.renderField({ label: '名称', name: 'name', required: true, placeholder: '例如：本地开发' })}
 <div class="actions"><button class="btn" type="submit">创建 API key</button></div>
 </div>

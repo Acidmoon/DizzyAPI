@@ -17,6 +17,7 @@ import {
   type ChartTheme,
 } from './charts.ts'
 import { escapeAttr, escapeText } from './escape.ts'
+import { renderConfirmDialog, type ConfirmDialogOptions } from './confirm.ts'
 import {
   VENDOR_ASSET_PREFIX,
   VENDOR_SCRIPT_ORDER,
@@ -263,6 +264,11 @@ export class PageTemplateService extends Service {
 
   /** 页面 `<script src>` 里 vendor 部分应有的顺序（`app.js` 由调用方接在最后）。 */
   readonly vendorScriptOrder = VENDOR_SCRIPT_ORDER
+
+  /** 确认框的 `<dialog>` 壳（`renderDocument` 已自动带上，这里给需要定制文案时用）。 */
+  renderConfirmDialog(options?: ConfirmDialogOptions): string {
+    return renderConfirmDialog(options)
+  }
 }
 
 export type {

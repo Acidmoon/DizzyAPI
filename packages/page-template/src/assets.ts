@@ -339,5 +339,66 @@ export const CLIENT_JS = `
   document.addEventListener('keydown', function (event) {
     if (event.key === 'Escape') closeAll(null);
   });
+
+  // ── 确认框（替代 window.confirm）──────────────────────────────────────
+  // 原生 confirm 是浏览器画的模态框，样式完全不可控（CSS 碰不到），还阻塞整个页面。
+  // 这里用原生 <dialog>（没有默认外观，只提供焦点陷阱 / ESC / backdrop），外观自绘。
+  //
+  // 无 JS 时怎么办：<dialog> 默认不显示，所以没有 JS 时点了按钮**直接执行**，
+  // 不会「卡住不动」——这是刻意的降级（浏览器原生 confirm 在无 JS 时也没了）。
+  var confirmDialog = document.getElementById('dizzy-confirm');
+  var confirmText = confirmDialog ? confirmDialog.querySelector('[data-confirm-text]') : null;
+  var confirmOk = confirmDialog ? confirmDialog.querySelector('[data-confirm-ok]') : null;
+  var confirmCancel = confirmDialog ? confirmDialog.querySelector('[data-confirm-cancel]') : null;
+  // 待确认的动作：确认后执行它，取消则丢弃。
+  var pendingAction = null;
+
+  function closeConfirm() {
+    pendingAction = null;
+    if (confirmDialog && confirmDialog.open) confirmDialog.close();
+  }
+
+  if (confirmDialog && confirmOk && confirmCancel) {
+    confirmOk.addEventListener('click', function () {
+      var action = pendingAction;
+      closeConfirm();
+      if (action) action();
+    });
+    confirmCancel.addEventListener('click', closeConfirm);
+    // 点 backdrop（dialog 元素本身）也取消
+    confirmDialog.addEventListener('click', function (event) {
+      if (event.target === confirmDialog) closeConfirm();
+    });
+  }
+
+  // 表单：提交前先确认
+  document.addEventListener('submit', function (event) {
+    var form = event.target;
+    if (!form || !form.getAttribute) return;
+    var message = form.getAttribute('data-confirm');
+    if (!message) return;
+    // 没有 <dialog>（理论上不会发生）就直接放行，不要把用户卡住
+    if (!confirmDialog || !confirmOk) return;
+    event.preventDefault();
+    if (confirmText) confirmText.textContent = message;
+    pendingAction = function () { form.submit(); };
+    confirmDialog.showModal();
+  });
+
+  // 按钮 / 链接：点击前先确认
+  document.addEventListener('click', function (event) {
+    var target = event.target;
+    if (!target || !target.closest) return;
+    var trigger = target.closest('[data-confirm-action]');
+    if (!trigger) return;
+    var message = trigger.getAttribute('data-confirm-action');
+    if (!message) return;
+    if (!confirmDialog || !confirmOk) return;
+    event.preventDefault();
+    event.stopPropagation();
+    if (confirmText) confirmText.textContent = message;
+    pendingAction = function () { trigger.click(); };
+    confirmDialog.showModal();
+  }, true);
 })();
 `

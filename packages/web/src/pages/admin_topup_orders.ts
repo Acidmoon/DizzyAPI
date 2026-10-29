@@ -160,7 +160,7 @@ export const adminTopupOrdersPage: PageModule = {
           rows,
           empty: '没有符合条件的充值订单',
         }),
-        pager.length === 0 ? '' : `<div class="filters" style="margin-top:12px">${pager.join('')}</div>`,
+        pager.length === 0 ? '' : `<div class="filters filters--tight">${pager.join('')}</div>`,
       ].join('\n'),
     )
   },

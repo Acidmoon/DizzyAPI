@@ -126,7 +126,7 @@ export const adminRedeemCodesPage: PageModule = {
             kind: 'ok',
             text: `已生成 ${secretLines.length} 个兑换码，只显示这一次，请立即保存。`,
           }),
-          `<div class="panel" style="padding:16px;margin-bottom:24px">
+          `<div class="panel panel--pad">
 <pre class="mono">${t.escapeText(secretLines.join('\n'))}</pre>
 <div class="actions">${secretLines
             .map(
@@ -175,7 +175,7 @@ export const adminRedeemCodesPage: PageModule = {
         ],
       },
     ]
-    const searchForm = `<form class="form inline-form" method="get" action="/admin/redeem-codes" style="max-width:none">
+    const searchForm = `<form class="form form--wide inline-form" method="get" action="/admin/redeem-codes">
 ${
       current.batch === '' ? '' : `<input type="hidden" name="batch" value="${t.escapeAttr(current.batch)}">`
     }${
@@ -261,7 +261,7 @@ ${t.renderField({ label: '掩码尾号', name: 'keyword', value: current.keyword
         header,
         statCards,
         secretBlock,
-        `<form class="form" method="post" action="/admin/redeem-codes?action=create" style="max-width:none;margin-bottom:16px">
+        `<form class="form form--wide form--spaced" method="post" action="/admin/redeem-codes?action=create">
 <div class="row">
 ${t.renderField({ label: '批次名称', name: 'name', required: true, placeholder: '双十一', hint: '1..20 个字符' })}
 ${t.renderField({ label: '单码额度（元）', name: 'amount', required: true, placeholder: '5.00', hint: '最多 6 位小数，按整数微元入账' })}

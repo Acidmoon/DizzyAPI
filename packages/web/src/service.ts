@@ -7,7 +7,7 @@
 import { randomUUID } from 'node:crypto'
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import { Service, type Context } from 'cordis'
-import { CLIENT_JS, COMPONENT_CSS, PAGE_CSS, VENDOR_ASSET_PREFIX, type PageTemplateService } from '@dizzyapi/plugin-page-template'
+import { CLIENT_JS, COMPONENT_CSS, LAYOUT_CSS, PAGE_CSS, VENDOR_ASSET_PREFIX, type PageTemplateService } from '@dizzyapi/plugin-page-template'
 import { validateWebConfig, type ResolvedWebConfig, type WebConfig } from './config.ts'
 import { assertSameOrigin, readForm, WebError } from './forms.ts'
 import { clearSessionCookie, isSecureRequest, readCookie, sessionCookie } from './session.ts'
@@ -44,12 +44,11 @@ const SECURITY_HEADERS: Readonly<Record<string, string>> = {
 }
 
 const CONFIRM_JS = `
-document.addEventListener('submit', function (event) {
-  var form = event.target;
-  if (!form || !form.getAttribute) return;
-  var message = form.getAttribute('data-confirm');
-  if (message && !window.confirm(message)) event.preventDefault();
-});
+// 注：原先这里用 window.confirm 做「删除前确认」。原生 confirm 是浏览器画的
+// 模态框——样式完全不可控（CSS 碰不到），也阻塞整个页面。
+// 现在改由 page-template 的自绘确认框承担（原生 <dialog> + 自绘外观），
+// 行为在 CLIENT_JS 里：表单带 data-confirm 时，提交前弹确认框。
+// 见 packages/page-template/src/confirm.ts。
 
 document.addEventListener('click', function (event) {
   var target = event.target;
@@ -191,7 +190,7 @@ export class WebService extends Service {
         // 不需要多写 <link>，也不用改 CSP。
         // 用 this.template 而不是 runtime()：pageTemplate 是 static inject，必然已装载。
         const vendorCss = this.template.vendorCss()
-        this.send(res, 200, 'text/css; charset=utf-8', `${PAGE_CSS}${COMPONENT_CSS}\n${vendorCss}\n${fontCss}`, true)
+        this.send(res, 200, 'text/css; charset=utf-8', `${PAGE_CSS}${COMPONENT_CSS}${LAYOUT_CSS}\n${vendorCss}\n${fontCss}`, true)
         return
       }
       if (path.startsWith(VENDOR_ASSET_PREFIX)) {

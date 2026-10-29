@@ -115,7 +115,7 @@ export const adminObservabilityPage: PageModule = {
     const warningHtml =
       report.warnings.length === 0
         ? ''
-        : `<div class="filters" style="flex-wrap:wrap">${report.warnings
+        : `<div class="filters filters--wrap">${report.warnings
             .map((code) => t.renderBadge(warningLabel(code), 'warn'))
             .join(' ')}</div>`
 

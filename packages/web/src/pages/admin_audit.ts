@@ -115,7 +115,7 @@ export const adminAuditPage: PageModule = {
       )
       .join('')
 
-    const filterHtml = `<form class="form inline-form" method="get" action="/admin/audit" style="max-width:none">
+    const filterHtml = `<form class="form form--wide inline-form" method="get" action="/admin/audit">
 <input type="text" name="actor" placeholder="操作者（user:1:admin）" value="${t.escapeAttr(actor)}">
 <select name="action"><option value="">全部动作</option>${actionOptions}</select>
 <select name="targetType"><option value="">全部目标</option>${targetOptions}</select>
@@ -190,7 +190,7 @@ export const adminAuditPage: PageModule = {
           rows,
           empty: '没有符合条件的审计记录',
         }),
-        pager.length === 0 ? '' : `<div class="filters" style="margin-top:12px">${pager.join('')}</div>`,
+        pager.length === 0 ? '' : `<div class="filters filters--tight">${pager.join('')}</div>`,
       ].join('\n'),
     )
   },

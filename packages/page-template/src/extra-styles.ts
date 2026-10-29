@@ -33,8 +33,6 @@ export const COMPONENT_CSS = `
 /* ── 表单 ──────────────────────────────────────────────────────── */
 /* 第 7 条：表单块之间 24px（原先 16px 太挤）；行内控件之间 12px 见 .row；按钮组 8px 见 .actions。 */
 .form { display: flex; flex-direction: column; gap: 24px; max-width: 520px; }
-/* 宽表单：替代页面里那些被 CSP 丢掉的 style="max-width:none"（见 27 处内联样式）。 */
-.form--wide { max-width: none; }
 .field { display: flex; flex-direction: column; gap: 6px; }
 .field > label { font-size: var(--fs-label); line-height: var(--lh-label); color: var(--label-secondary); }
 .field .hint { font-size: var(--fs-caption); line-height: var(--lh-caption); color: var(--label-caption); }
@@ -47,9 +45,6 @@ export const COMPONENT_CSS = `
 .input:focus, .select:focus, .textarea:focus { border-color: var(--border-l3); }
 .row { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-end; }
 .row > .field { flex: 1 1 200px; }
-/* 第 7 条：.row 里的按钮组独占一行——原先「名称输入框 + 创建按钮」挤在 520px 的同一行，
- * 而被 CSP 丢掉的 style="max-width:none" 没能把表单放宽，于是看着「粘在一起」。 */
-.row > .actions { flex: 1 1 100%; }
 .actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 .btn.danger { background: transparent; color: var(--error, #F25A5A); border: 1px solid var(--border-l2); }
 .btn.small { height: 28px; min-width: 0; padding: 0 10px; font-size: var(--fs-caption); border-radius: 14px; }

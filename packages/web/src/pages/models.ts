@@ -118,8 +118,8 @@ export const modelsPage: PageModule = {
           ],
           'metrics',
         ),
-        `<form class="form" method="get" action="/console/models" style="max-width:none;margin-bottom:16px">
-<div class="row">
+        `<form class="form form--wide form--spaced" method="get" action="/console/models">
+<div class="row row--stack-actions">
 ${t.renderField({ label: '搜索模型', name: 'search', required: false, value: search, placeholder: '例如 deepseek' })}
 <div class="actions"><button class="btn" type="submit">筛选</button></div>
 </div>

@@ -56,7 +56,7 @@ export const redeemPage: PageModule = {
       [
         header,
         balanceCards,
-        `<form class="form" method="post" action="/console/redeem?action=redeem" style="max-width:none;margin-bottom:24px">
+        `<form class="form form--wide form--spaced" method="post" action="/console/redeem?action=redeem">
 <div class="row">
 ${t.renderField({
   label: '兑换码',

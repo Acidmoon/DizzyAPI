@@ -61,11 +61,11 @@ export const topUpPage: PageModule = {
         const order = topup.getMine(ctx.user.userId, detailOrderNo)
         detail = [
           t.renderSectionTitle(`订单 ${order.orderNo}`),
-          `<div class="panel" style="padding:16px 18px;margin-bottom:24px">`,
-          `<p style="margin:0 0 10px">金额 <strong>${t.escapeText(formatYuan(order.amountMicro))}</strong>` +
+          `<div class="panel panel--pad-wide">`,
+          `<p class="p--tight">金额 <strong>${t.escapeText(formatYuan(order.amountMicro))}</strong>` +
             ` · 状态 ${t.renderBadge(STATUS_LABEL[order.status] ?? order.status, STATUS_TONE[order.status] ?? 'err')}</p>`,
-          `<p style="margin:0 0 10px">${t.escapeText(order.instructions ?? '请联系管理员确认到账。')}</p>`,
-          `<p class="page-note" style="margin:0">单号 <code class="mono">${t.escapeText(order.orderNo)}</code>` +
+          `<p class="p--tight">${t.escapeText(order.instructions ?? '请联系管理员确认到账。')}</p>`,
+          `<p class="page-note p--flush">单号 <code class="mono">${t.escapeText(order.orderNo)}</code>` +
             ` · 请在 ${t.escapeText(shortTime(order.expiresAt))} UTC 前完成转账</p>`,
           `</div>`,
         ].join('\n')
@@ -101,7 +101,7 @@ export const topUpPage: PageModule = {
           'balances',
         ),
         detail,
-        `<form class="form" method="post" action="/console/top-up?action=create" style="max-width:none;margin-bottom:24px">
+        `<form class="form form--wide form--spaced" method="post" action="/console/top-up?action=create">
 <div class="row">
 ${t.renderField({
   label: `充值金额（元，${formatYuan(options.minAmountMicros)} ~ ${formatYuan(options.maxAmountMicros)}）`,

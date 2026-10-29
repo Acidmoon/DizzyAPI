@@ -139,7 +139,7 @@ export const adminContentAuditPage: PageModule = {
       ].join(' ')
 
       const editForm = `<details class="muted"><summary>编辑</summary>
-<form class="form" method="post" action="/admin/content-audit?action=edit" style="max-width:none">
+<form class="form form--wide" method="post" action="/admin/content-audit?action=edit">
 <input type="hidden" name="ruleId" value="${t.escapeAttr(rule.id)}">
 <input type="text" name="pattern" value="${t.escapeAttr(rule.pattern)}" maxlength="200" required>
 <select name="action">
@@ -163,7 +163,7 @@ export const adminContentAuditPage: PageModule = {
       ]
     })
 
-    const createForm = `<form class="form" method="post" action="/admin/content-audit?action=create" style="max-width:none">
+    const createForm = `<form class="form form--wide" method="post" action="/admin/content-audit?action=create">
 <input type="text" name="pattern" placeholder="关键词（大小写不敏感的子串匹配）" maxlength="200" required>
 <select name="action">
 <option value="block">命中即拒绝（403）</option>

@@ -10,6 +10,8 @@
  */
 import { CLIENT_JS, PAGE_CSS } from './assets.ts'
 import { COMPONENT_CSS } from './extra-styles.ts'
+import { LAYOUT_CSS } from './layout-classes.ts'
+import { renderConfirmDialog } from './confirm.ts'
 import { escapeAttr, escapeText } from './escape.ts'
 import {
   iconBars,
@@ -153,7 +155,7 @@ export interface ModelBlock {
 export function renderDocument(options: DocumentOptions): string {
   const { title, body, assets } = options
   const head = assets === undefined
-    ? `<style>${PAGE_CSS}${COMPONENT_CSS}</style>`
+    ? `<style>${PAGE_CSS}${COMPONENT_CSS}${LAYOUT_CSS}</style>`
     : `<link rel="stylesheet" href="${escapeAttr(assets.cssHref)}">`
   // 外链模式：按给定顺序逐个输出，顺序本身是契约（见 DocumentOptions.assets.jsHrefs）。
   // 内联模式只给测试用——生产 CSP 是 style-src/script-src 'self'，内联会被拦。
@@ -170,6 +172,7 @@ ${head}
 </head>
 <body>
 ${body}
+${renderConfirmDialog()}
 ${script}
 </body>
 </html>

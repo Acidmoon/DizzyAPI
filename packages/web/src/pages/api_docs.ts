@@ -19,7 +19,7 @@ import {
 
 /** 代码块：内容一律转义（错误码表与示例里可能出现 `<` / `&`）。 */
 function codeBlock(t: { escapeText(value: string): string }, text: string): string {
-  return `<pre class="code" style="overflow:auto;padding:14px 16px;margin:0 0 16px"><code>${t.escapeText(text)}</code></pre>`
+  return `<pre class="code code--block"><code>${t.escapeText(text)}</code></pre>`
 }
 
 function errorRows(t: { escapeText(value: string): string }, rows: readonly ApiErrorDoc[]): string[][] {
@@ -43,15 +43,15 @@ export const apiDocsPage: PageModule = {
     const entrySections = API_ENTRIES.map((entry) => {
       const head = [
         t.renderSectionTitle(`${entry.method} ${entry.path}`),
-        `<p class="page-note" style="margin-bottom:10px">${t.escapeText(entry.protocolLabel)}` +
+        `<p class="page-note p--tight">${t.escapeText(entry.protocolLabel)}` +
           `${entry.protocol === '' ? '' : ` · <code class="mono">${t.escapeText(entry.protocol)}</code>`}</p>`,
-        `<p style="margin:0 0 10px">${t.escapeText(entry.summary)}</p>`,
-        `<p style="margin:0 0 4px"><strong>请求</strong></p>`,
-        `<ul style="margin:0 0 10px;padding-left:20px">${entry.request
+        `<p class="p--tight">${t.escapeText(entry.summary)}</p>`,
+        `<p class="p--label"><strong>请求</strong></p>`,
+        `<ul class="list--docs-tight">${entry.request
           .map((item) => `<li>${t.escapeText(item)}</li>`)
           .join('')}</ul>`,
-        `<p style="margin:0 0 4px"><strong>响应</strong></p>`,
-        `<ul style="margin:0 0 16px;padding-left:20px">${entry.response
+        `<p class="p--label"><strong>响应</strong></p>`,
+        `<ul class="list--docs">${entry.response
           .map((item) => `<li>${t.escapeText(item)}</li>`)
           .join('')}</ul>`,
       ]
@@ -86,7 +86,7 @@ export const apiDocsPage: PageModule = {
           ]),
         }),
         t.renderSectionTitle('认证与会话'),
-        `<ul style="margin:0 0 16px;padding-left:20px">
+        `<ul class="list--docs">
 <li>所有 LLM 入口与 <code class="mono">GET /v1/models</code> 都要带 <code class="mono">Authorization: Bearer &lt;API key&gt;</code></li>
 <li>缺 key 返回 401 <code class="mono">MISSING_API_KEY</code>；key 无效返回 401 <code class="mono">INVALID_API_KEY</code></li>
 <li><code class="mono">/api/*</code> 是控制面接口，用登录会话（Cookie），与 LLM 入口的 key 鉴权是两套</li>
@@ -122,7 +122,7 @@ export const apiDocsPage: PageModule = {
           ]),
         }),
         t.renderSectionTitle('有损转换'),
-        `<ul style="margin:0 0 16px;padding-left:20px">${LOSSY_NOTES.map((note) => `<li>${t.escapeText(note)}</li>`).join('')}</ul>`,
+        `<ul class="list--docs">${LOSSY_NOTES.map((note) => `<li>${t.escapeText(note)}</li>`).join('')}</ul>`,
         t.renderSectionTitle('最小示例'),
         examples.join('\n'),
         t.renderSectionTitle('模型与价格'),

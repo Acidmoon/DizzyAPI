@@ -37,6 +37,14 @@ export {
 
 export { PAGE_CSS, THEME_VARS, CLIENT_JS } from './assets.ts'
 export { COMPONENT_CSS } from './extra-styles.ts'
+export { LAYOUT_CSS } from './layout-classes.ts'
+
+export {
+  CONFIRM_DIALOG_ID,
+  confirmAttr,
+  renderConfirmDialog,
+  type ConfirmDialogOptions,
+} from './confirm.ts'
 
 export {
   VENDOR_ASSET_PREFIX,
