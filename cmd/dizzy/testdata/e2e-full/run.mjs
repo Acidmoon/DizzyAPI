@@ -146,12 +146,26 @@ async function main() {
   let chatCostMicros = ''
   let chatReqId = ''
   failures += await step('dizzy chat：打印 token 与花费（与 /api/usage 对账）', async () => {
-    const result = await dizzy(['chat', '-m', model, '--json', '对账测试'])
+    // 额度闸门吃的是**心跳推送**的余额快照（quota 插件 5s 一轮），刚 adjustBalance
+    // 完就 chat 可能还看到旧的 0 → 402。被闸门挡住的请求**不转发上游、不产生用量**，
+    // 所以重试是免费的；等它放行才是「夹具该等的那段最终一致」。
+    const result = await waitForValue(
+      async () => {
+        const attempt = await dizzy(['chat', '-m', model, '--json', '对账测试'])
+        if (attempt.code === 7) return undefined
+        return attempt
+      },
+      30000,
+      'dizzy chat 通过额度闸门（余额快照刷新）',
+    )
     assert(result.code === 0, `退出码应为 0，得到 ${result.code}\n${result.stderr}`)
     const parsed = JSON.parse(result.stdout)
     assert(parsed.usage?.prompt_tokens === 100, 'prompt_tokens 应为 100')
     assert(parsed.usage?.completion_tokens === 50, 'completion_tokens 应为 50')
     assert(typeof parsed.costMicros === 'string' && parsed.costMicros !== '', '应带回 costMicros')
+    // CLI 里**没有**「回查退路」了：reqId 只认响应头（`cmd_chat.go` 直接读
+    // `response.RequestID`），拿不到就打印「未取到 reqId」。所以这条断言成立
+    // 就等于「头那条路径真的通了」。
     assert(
       typeof parsed.reqId === 'string' && parsed.reqId.startsWith('req-'),
       `应带回响应头 X-Request-Id 的 reqId，得到 ${JSON.stringify(parsed.reqId)}`,
@@ -182,6 +196,56 @@ async function main() {
     // 非流式请求没有首字延迟：必须是 null（「没采集」），不能是 0（「极快」）。
     assert(parsed.record.ttftMs === null, `非流式的 ttftMs 应为 null，得到 ${parsed.record.ttftMs}`)
     console.log(`    精确对账一致：reqId=${parsed.record.reqId} · costMicros=${parsed.record.costMicros} · ttftMs=null`)
+  })
+
+  failures += await step('X-Request-Id 走响应头：头 ↔ 记录 ↔ 详情三处同源', async () => {
+    // 绕开 CLI 直接打 Go 入口，验响应头本身（CLI 的 reqId 只认这个头，没有回查退路）。
+    // 402 同理是余额快照还没刷新：被闸门挡住不产生用量，重试免费。
+    const call = await waitForValue(
+      async () => {
+        const attempt = await fetch('http://127.0.0.1:8080/v1/chat/completions', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${process.env.DIZZYAPI_KEY}`,
+          },
+          body: JSON.stringify({ model, messages: [{ role: 'user', content: '响应头测试' }] }),
+        })
+        if (attempt.status === 402) {
+          await attempt.text()
+          return undefined
+        }
+        return attempt
+      },
+      30000,
+      '直连 gatewayd 通过额度闸门',
+    )
+    assert(call.status === 200, `直连 gatewayd 失败：${call.status}`)
+    const headerReqId = call.headers.get('x-request-id')
+    assert(
+      headerReqId !== null && headerReqId.startsWith('req-'),
+      `响应头缺 X-Request-Id：${JSON.stringify(headerReqId)}`,
+    )
+    await call.text()
+
+    // 用量是异步落库的：按**头里的 reqId** 等这条详情出现。
+    const cookie = await login()
+    const record = await waitForValue(
+      async () => {
+        const detail = await api('GET', `/api/usage/${headerReqId}`, { cookie })
+        if (detail.status === 404) return undefined
+        assert(detail.status === 200, `查详情失败：${detail.status} ${JSON.stringify(detail.body)}`)
+        return detail.body.record
+      },
+      10000,
+      `按响应头 reqId=${headerReqId} 查到用量详情`,
+    )
+    assert(record.reqId === headerReqId, `详情 reqId（${record.reqId}）与响应头（${headerReqId}）不一致`)
+    assert(
+      typeof record.costMicros === 'string' && record.costMicros !== '',
+      `详情应带 costMicros，得到 ${JSON.stringify(record.costMicros)}`,
+    )
+    console.log(`    响应头 ↔ 记录 ↔ 详情一致：reqId=${headerReqId} · costMicros=${record.costMicros}`)
   })
 
   failures += await step('dizzy usage --by model：与 /api/usage 一致', async () => {
@@ -301,11 +365,16 @@ function promoteToAdmin() {
   console.log('已把用户提成管理员：', JSON.stringify(row))
 }
 
+// 会话 cookie 缓存：`login()` 会被多处调用（还有轮询），每次都真登录会撞
+// `/api/*` 的认证限流（AUTH_RATE_LIMITED → 429）。服务端会话本身是复用的。
+let cachedCookie
 async function login() {
+  if (cachedCookie !== undefined) return cachedCookie
   const response = await api('POST', '/api/auth/login', { body: { email, password } })
   assert(response.status === 200, `登录失败：${JSON.stringify(response.body)}`)
   const cookie = response.setCookie
   assert(cookie !== undefined, '登录应返回 Set-Cookie')
+  cachedCookie = cookie
   return cookie
 }
 

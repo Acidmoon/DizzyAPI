@@ -374,6 +374,9 @@ const (
 )
 
 // exitCodeOf 从错误里推出退出码。
+//
+// 顺序有意义：`errUsage` 要先于通用失败判——所有用法错误都用 `%w` 包着它，
+// 漏了这一条就全变成「通用失败 1」，agent 分不出「参数写错」和「真出错」。
 func exitCodeOf(err error) int {
 	if err == nil {
 		return exitSuccess
@@ -381,6 +384,9 @@ func exitCodeOf(err error) int {
 	var apiError *APIError
 	if errors.As(err, &apiError) {
 		return apiError.ExitCode()
+	}
+	if errors.Is(err, errUsage) {
+		return exitUsage
 	}
 	if errors.Is(err, ErrCredentialsMissing) {
 		return exitNotLoggedIn
