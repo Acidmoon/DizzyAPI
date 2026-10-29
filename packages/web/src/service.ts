@@ -9,6 +9,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { Service, type Context } from 'cordis'
 import { CLIENT_JS, COMPONENT_CSS, LAYOUT_CSS, PAGE_CSS, VENDOR_ASSET_PREFIX, type PageTemplateService } from '@dizzyapi/plugin-page-template'
 import { validateWebConfig, type ResolvedWebConfig, type WebConfig } from './config.ts'
+import { apiDocsResource } from './content/api_docs.ts'
 import { assertSameOrigin, readForm, WebError } from './forms.ts'
 import { clearSessionCookie, isSecureRequest, readCookie, sessionCookie } from './session.ts'
 import { readNotice, type ActionContext, type PageContext, type PageModule } from './layout.ts'
@@ -230,6 +231,16 @@ export class WebService extends Service {
       if (path === '/favicon.ico') {
         res.writeHead(204, SECURITY_HEADERS)
         res.end()
+        return
+      }
+      // 机器友好副本：`/llms.txt` 与 `/console/api-docs.md`（agent 直接抓）。
+      // 判定逻辑在 `content/api_docs.ts`，这里只负责发字节。
+      // **必须由 web 发**：生产 nginx 只把 `/api/*` 反代 api 的 7791，其余全打 web 的 7792。
+      // **不要求登录**：这两条就是给 agent 抓的（owner 明确要「方便投喂 agent」），
+      // 内容里没有秘密；页面本体 `/console/api-docs` 仍然要登录。
+      const docResource = apiDocsResource(path, url.searchParams.get('base'))
+      if (docResource !== null) {
+        this.send(res, docResource.status, docResource.contentType, docResource.body)
         return
       }
       if (path === '/') {
