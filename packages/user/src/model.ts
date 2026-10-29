@@ -35,6 +35,13 @@ export type Balance = bigint
 export interface BalanceSnapshotEntry {
   readonly userId: string
   readonly balanceMicros: string
+  /**
+   * 该用户的并发上限（正整数）；null / 缺省 = 不限。
+   *
+   * 它跟余额一起走同一份心跳快照：两者都是「用户级的只读执行面事实」，
+   * 分两条快照推只会在过期窗口里出现「余额新、并发旧」的分裂。
+   */
+  readonly concurrencyLimit?: number | null
 }
 
 /** 全量余额只读快照。推送 / 撤销策略由消费方（额度闸门）决定。 */
@@ -63,6 +70,13 @@ export interface User {
   readonly balanceEnabled: boolean
   /** 头像：http(s) URL 或受限的 data:image/* base64；null 表示未设置。 */
   readonly avatar: string | null
+  /**
+   * 该用户的并发上限（正整数）；null = 不限。
+   *
+   * 它与 API key 的并发上限共用 Go 侧同一套原子预留；执行点在 pre 相位的 key-gate。
+   * 这是**运营限流**，不是钱：改动不动余额、不写流水。
+   */
+  readonly concurrencyLimit: number | null
   /** 首次注册时间，ISO 8601。 */
   readonly createdAt: string
   /** 最近一次改动时间，ISO 8601。 */
@@ -108,6 +122,7 @@ export type UserChangedField =
   | 'balanceEnabled'
   | 'avatar'
   | 'balance'
+  | 'concurrencyLimit'
 
 /**
  * 用户写入成功后的通知载荷。

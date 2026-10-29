@@ -391,8 +391,31 @@ export class UserService extends Service {
       entries: this.db.listBalances().map((row) => ({
         userId: row.userId,
         balanceMicros: row.balance.toString(),
+        concurrencyLimit: row.concurrencyLimit,
       })),
     }))
+  }
+
+  /**
+   * 改并发上限（运营限流）。`null` = 不限。
+   *
+   * 它**不是**钱：不动余额、不写流水，也不经过 balanceWriters 白名单——
+   * 走的是管理面 adminPlugins（和改名 / 改角色同一个口子）。
+   * Go 侧的执行点是 pre 相位的 key-gate，本插件只负责存与出。
+   */
+  async setConcurrencyLimit(actor: string, id: UserId, limit: number | null): Promise<User> {
+    this.assertAdmin(actor)
+    const userId = normalizeId(id)
+    const next = normalizeConcurrencyLimit(limit)
+
+    return this.exclusive(async () => {
+      const user = this.db.transaction(() => {
+        this.requireUser(userId)
+        return this.db.setConcurrencyLimit(userId, next, new Date().toISOString())
+      })
+      this.emitChanged(userId, 'updated', ['concurrencyLimit'])
+      return user
+    })
   }
 
   /**
@@ -537,6 +560,18 @@ function normalizeDelta(value: unknown): Balance {
       'USER_BALANCE_INVALID',
       `余额变更必须是以 bigint 表示的整数最小单位，收到 ${typeof value}（AGENTS.md D10：禁止浮点）`,
     )
+  }
+  return value
+}
+
+/** 并发上限：null = 不限；否则必须是 1..100000 的整数（超过就是配置错误）。 */
+function normalizeConcurrencyLimit(value: unknown): number | null {
+  if (value === null) return null
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value <= 0) {
+    throw new UserError('USER_CONCURRENCY_INVALID', '并发上限必须是正整数或 null（null = 不限）')
+  }
+  if (value > 100_000) {
+    throw new UserError('USER_CONCURRENCY_INVALID', '并发上限不得超过 100000')
   }
   return value
 }

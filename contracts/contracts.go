@@ -124,6 +124,16 @@ type Ctx struct {
 	// 它只在 Go 进程内使用，不参与任何桥帧或快照。
 	ReleaseInFlight func()
 
+	// ReleasePreSlot 由 pre 相位（key-gate 的 key 级 / 用户级并发预留）写入；
+	// 释放时机与 ReleaseInFlight 完全一致（响应含整个流写完）。
+	//
+	// 它与 ReleaseInFlight 分开是因为两者由不同层写入：engine 在 dispatch 里覆盖
+	// ReleaseInFlight，若 pre 相位也写同一个字段就会被覆盖掉 → 槽位泄漏。
+	// engine 负责把它们串起来：产生响应时 ReleaseInFlight 同时释放两者；
+	// 任何走不到 dispatch 的出口（pre 拒绝 / 无可用账号 / panic）由 engine 兜底释放。
+	// 两个 release 都必须幂等（panic 兜底 + handler defer 会各调一次）。
+	ReleasePreSlot func()
+
 	// Attempts 是 dispatch 阶段的失败转移记录（账号 id + 状态码/错误码）。
 	// 不含秘密，可安全写入日志。
 	Attempts []AccountAttempt
@@ -218,6 +228,15 @@ type APIKey struct {
 	KeyID   string `json:"keyId,omitempty"`
 	Name    string `json:"name,omitempty"`
 	Profile string `json:"profile,omitempty"`
+
+	// 执行面上限（零值 = 不限）。由 key-auth 从只读 key 快照写进来，key-gate 读它做判定。
+	//
+	// 三个字段都是**纯增量**：旧快照没有它们时零值 = 不限，行为与引入闸门之前一致。
+	ExpiresAt *time.Time `json:"expiresAt,omitempty"`
+	// SpendingLimitMicros 是金额上限（整数微元）。
+	SpendingLimitMicros *int64 `json:"spendingLimitMicros,omitempty"`
+	// ConcurrencyLimit 是并发上限；<= 0 表示不限。
+	ConcurrencyLimit int `json:"concurrencyLimit,omitempty"`
 }
 
 // APIKeyRecord 是 key-auth 从只读 key 快照校验出的一条命中记录。
@@ -229,6 +248,10 @@ type APIKeyRecord struct {
 	UserID  string
 	Name    string
 	Profile string
+	// 执行面上限（nil / 0 = 不限）。key-auth 把它们原样搬进 Ctx.Key。
+	ExpiresAt           *time.Time
+	SpendingLimitMicros *int64
+	ConcurrencyLimit    int
 }
 
 // APIKeyVerifier 是 key-auth 对只读 key 快照的最小依赖。

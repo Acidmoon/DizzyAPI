@@ -25,6 +25,8 @@ export interface UserLike {
   readonly role?: SessionRole
   readonly balanceEnabled?: boolean
   readonly avatar?: string | null
+  /** 并发上限（正整数）；null / 缺省 = 不限。 */
+  readonly concurrencyLimit?: number | null
 }
 
 export interface SessionUserView {
@@ -79,6 +81,8 @@ export interface AdminUserView {
   readonly role: SessionRole
   readonly balanceEnabled: boolean
   readonly balanceMinor: string
+  /** 并发上限（正整数）；null = 不限。 */
+  readonly concurrencyLimit: number | null
   readonly createdAt: string
   readonly updatedAt: string
 }
@@ -95,6 +99,8 @@ export interface UserPort {
   updateProfile?(userId: number, patch: { readonly name?: string; readonly avatar?: string | null }): Promise<unknown>
   setRole?(actor: string, id: number, role: SessionRole): Promise<unknown>
   setBalanceEnabled?(actor: string, id: number, enabled: boolean): Promise<unknown>
+  /** 改并发上限（null = 不限）。 */
+  setConcurrencyLimit?(actor: string, id: number, limit: number | null): Promise<unknown>
 }
 
 export interface AuthPort {
@@ -670,6 +676,12 @@ export interface ApiKeySummaryView {
   readonly lastUsedAt: string | null
   readonly appManaged: boolean
   readonly enabled: boolean
+  /** 过期时间（ISO 8601）；null = 永不过期。 */
+  readonly expiresAt: string | null
+  /** 金额上限（整数微元，十进制字符串）；null = 不限。 */
+  readonly spendingLimitMicros: string | null
+  /** 并发上限；null = 不限。 */
+  readonly concurrencyLimit: number | null
 }
 
 // ───────────────────────────── 兑换码 ─────────────────────────────

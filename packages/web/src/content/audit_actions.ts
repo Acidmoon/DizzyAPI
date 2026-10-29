@@ -16,6 +16,7 @@ export const AUDIT_ACTION_LABELS: Readonly<Record<string, string>> = {
   'user.role.set': '修改用户角色',
   'user.status.set': '修改用户状态',
   'user.balance_enabled.set': '切换余额展示',
+  'user.concurrency.set': '设置用户并发上限',
   'user.rename': '修改用户名',
   'user.remove': '删除用户',
 

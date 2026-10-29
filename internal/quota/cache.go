@@ -44,10 +44,15 @@ type Snapshot struct {
 	Entries  []Entry `json:"entries"`
 }
 
-// Entry 是一个用户的余额。BalanceMicros 是十进制字符串（可负）。
+// Entry 是一个用户的余额与并发上限。BalanceMicros 是十进制字符串（可负）。
+//
+// ConcurrencyLimit 是**用户级并发上限**（正整数）；0 / 缺省 = 不限。它跟余额走同一份
+// 心跳快照：两者都是「用户级的只读执行面事实」，分两条快照会在过期窗口里出现
+// 「余额新、并发旧」的分裂。
 type Entry struct {
-	UserID        string `json:"userId"`
-	BalanceMicros string `json:"balanceMicros"`
+	UserID           string `json:"userId"`
+	BalanceMicros    string `json:"balanceMicros"`
+	ConcurrencyLimit int    `json:"concurrencyLimit,omitempty"`
 }
 
 // Result 是 Replace 的返回：不含任何余额值。
@@ -103,8 +108,13 @@ type compiled struct {
 	revision   string
 	generation int64
 	balances   map[string]int64
-	updatedAt  time.Time
+	// concurrency 是用户级并发上限（正整数；没有就是不限）。
+	concurrency map[string]int
+	updatedAt   time.Time
 }
+
+// MaxConcurrencyLimit 是用户级并发上限的上界；超过它视为配置错误（整份快照拒绝）。
+const MaxConcurrencyLimit = 100_000
 
 // Option 是构造选项（只给单测用）。
 type Option func(*Cache)
@@ -180,6 +190,7 @@ func (c *Cache) Replace(snapshot Snapshot) (Result, error) {
 	}
 
 	balances := make(map[string]int64, len(snapshot.Entries))
+	concurrency := make(map[string]int, len(snapshot.Entries))
 	for index, entry := range snapshot.Entries {
 		if entry.UserID == "" || len(entry.UserID) > MaxUserIDBytes {
 			return Result{}, newError(CodeInvalidSnapshot,
@@ -197,7 +208,16 @@ func (c *Cache) Replace(snapshot Snapshot) (Result, error) {
 			return Result{}, newError(CodeInvalidBalance,
 				"第 %d 条记录的 balanceMicros 必须是十进制整数微元（收到 %q）", index, entry.BalanceMicros)
 		}
+		if entry.ConcurrencyLimit < 0 || entry.ConcurrencyLimit > MaxConcurrencyLimit {
+			// 坏值绝不静默跳过：整份拒绝，宁可没有新快照也不要带着错上限跑。
+			return Result{}, newError(CodeInvalidSnapshot,
+				"第 %d 条记录的 concurrencyLimit 必须在 0..%d 之间（收到 %d）",
+				index, MaxConcurrencyLimit, entry.ConcurrencyLimit)
+		}
 		balances[entry.UserID] = balance
+		if entry.ConcurrencyLimit > 0 {
+			concurrency[entry.UserID] = entry.ConcurrencyLimit
+		}
 	}
 
 	now := c.now()
@@ -227,10 +247,11 @@ func (c *Cache) Replace(snapshot Snapshot) (Result, error) {
 	}
 
 	next := &compiled{
-		revision:   snapshot.Revision,
-		generation: snapshot.Generation,
-		balances:   balances,
-		updatedAt:  now,
+		revision:    snapshot.Revision,
+		generation:  snapshot.Generation,
+		balances:    balances,
+		concurrency: concurrency,
+		updatedAt:   now,
 	}
 	c.snap.Store(next)
 	return Result{
@@ -261,6 +282,22 @@ func (c *Cache) Lookup(userID string) (int64, bool) {
 	}
 	balance, ok := snapshot.balances[userID]
 	return balance, ok
+}
+
+// ConcurrencyLimit 返回某用户的并发上限。
+//
+// ok=false 表示「快照里没有这个用户的上限」——调用方按**不限**处理：
+// 刚注册 / 还没被下一轮推送覆盖，不该因为一条快照没轮到就限流。
+func (c *Cache) ConcurrencyLimit(userID string) (int, bool) {
+	if c == nil || userID == "" {
+		return 0, false
+	}
+	snapshot := c.snap.Load()
+	if snapshot == nil {
+		return 0, false
+	}
+	limit, ok := snapshot.concurrency[userID]
+	return limit, ok
 }
 
 // Age 返回当前快照的年龄；还没有快照时返回 0。

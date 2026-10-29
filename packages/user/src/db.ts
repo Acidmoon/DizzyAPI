@@ -32,6 +32,7 @@ CREATE TABLE IF NOT EXISTS users (
   balance INTEGER NOT NULL DEFAULT 0,
   balance_enabled INTEGER NOT NULL DEFAULT 0,
   avatar TEXT,
+  concurrency_limit INTEGER,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
@@ -50,7 +51,8 @@ CREATE INDEX IF NOT EXISTS idx_balance_entries_user
   ON balance_entries (user_id, id);
 `
 
-const USER_COLUMNS = 'id, name, status, role, balance, balance_enabled, avatar, created_at, updated_at'
+const USER_COLUMNS =
+  'id, name, status, role, balance, balance_enabled, avatar, concurrency_limit, created_at, updated_at'
 const ENTRY_COLUMNS = 'user_id, delta, balance_after, reason, actor, at'
 
 export interface InsertUserInput {
@@ -69,6 +71,8 @@ export interface UserRowPatch {
   readonly role?: UserRole
   readonly balanceEnabled?: boolean
   readonly avatar?: string | null
+  /** undefined = 不改；null = 不限。 */
+  readonly concurrencyLimit?: number | null
   readonly updatedAt: string
 }
 
@@ -252,6 +256,11 @@ export class UserDatabase {
       sets.push('avatar = ?')
       params.push(patch.avatar)
     }
+    if (patch.concurrencyLimit !== undefined) {
+      sets.push('concurrency_limit = ?')
+      // undefined 与 null 语义不同：undefined = 不改，null = 不限。
+      params.push(patch.concurrencyLimit === null ? null : toSqlInt(patch.concurrencyLimit))
+    }
     if (sets.length === 0) return this.requireUser(id)
 
     sets.push('updated_at = ?')
@@ -286,12 +295,24 @@ export class UserDatabase {
    * userId 用十进制字符串：Go 侧同样按字符串标识用户，避免「数字 vs 字符串」
    * 再造一层 JSON 兼容。余额是 bigint 最小单位，绝不经过浮点。
    */
-  listBalances(): { userId: string; balance: Balance }[] {
-    const rows = this.all('SELECT id, balance FROM users ORDER BY id')
+  listBalances(): { userId: string; balance: Balance; concurrencyLimit: number | null }[] {
+    const rows = this.all('SELECT id, balance, concurrency_limit FROM users ORDER BY id')
     return rows.map((row) => ({
       userId: readBigInt(row.id, 'users.id').toString(),
       balance: readBigInt(row.balance, 'users.balance'),
+      concurrencyLimit: readNullableSideInt(row.concurrency_limit, 'users.concurrency_limit'),
     }))
+  }
+
+  /** 只改并发上限（运营限流）；不动余额、不写流水。 */
+  setConcurrencyLimit(id: UserId, limit: number | null, at: string): User {
+    this.run(
+      'UPDATE users SET concurrency_limit = ?, updated_at = ? WHERE id = ?',
+      limit === null ? null : toSqlInt(limit),
+      at,
+      id,
+    )
+    return this.requireUser(id)
   }
 
   /**
@@ -405,7 +426,30 @@ function migrate(db: DatabaseSync): void {
     throw corrupt(`数据库版本 ${version} 高于本插件支持的 ${SCHEMA_VERSION}`)
   }
   db.exec(SCHEMA)
+  // 旧库升级：只加列、不改历史行（历史用户 = 不限并发）。幂等：列已存在就跳过。
+  ensureUserColumns(db, ['concurrency_limit'])
   if (version < SCHEMA_VERSION) db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`)
+}
+
+/**
+ * 幂等加列。`CREATE TABLE IF NOT EXISTS` 不会给已存在的表补列，所以升级路径必须
+ * 单独走 ALTER TABLE；列定义要和建表语句保持一致（类型 + 可空）。
+ */
+function ensureUserColumns(db: DatabaseSync, wanted: readonly string[]): void {
+  const columns = db.prepare('PRAGMA table_info(users)').all()
+  const names = new Set(
+    columns
+      .map((column) => column.name)
+      .filter((name): name is string => typeof name === 'string'),
+  )
+  for (const column of wanted) {
+    if (names.has(column)) continue
+    db.exec(
+      column === 'concurrency_limit'
+        ? 'ALTER TABLE users ADD COLUMN concurrency_limit INTEGER'
+        : `ALTER TABLE users ADD COLUMN ${column} TEXT`,
+    )
+  }
 }
 
 /**
@@ -541,6 +585,7 @@ function readUser(row: Record<string, SQLOutputValue>, where: string): User {
     balance: readBigInt(row.balance, `${where}.balance`),
     balanceEnabled: readBool(row.balance_enabled, `${where}.balance_enabled`),
     avatar: readNullableString(row.avatar, `${where}.avatar`),
+    concurrencyLimit: readNullableSideInt(row.concurrency_limit, `${where}.concurrency_limit`),
     createdAt: readStringCell(row.created_at, `${where}.created_at`),
     updatedAt: readStringCell(row.updated_at, `${where}.updated_at`),
   }
@@ -618,6 +663,26 @@ function readStringCell(value: SQLOutputValue | undefined, where: string): strin
 function readNullableString(value: SQLOutputValue | undefined, where: string): string | null {
   if (value === null || value === undefined) return null
   if (typeof value !== 'string') throw corrupt(`${where} 必须是字符串或 null`)
+  return value
+}
+
+/**
+ * 可空的「运营限流」整数（并发上限）。
+ *
+ * 注意这与余额的读法不同：余额是 int64 bigint，允许负；并发上限是小的正整数，
+ * 超出安全整数范围一律判损坏——它不可能合法地那么大。
+ */
+function readNullableSideInt(value: SQLOutputValue | undefined, where: string): number | null {
+  if (value === null || value === undefined) return null
+  const parsed = readPositiveInt(value, where)
+  return parsed
+}
+
+/** 把并发上限绑进 SQLite。null 已在调用点单独处理。 */
+function toSqlInt(value: number): number {
+  if (!Number.isSafeInteger(value) || value <= 0) {
+    throw corrupt(`并发上限必须是正整数：${String(value)}`)
+  }
   return value
 }
 

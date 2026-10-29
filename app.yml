@@ -400,6 +400,21 @@
       - '@dizzyapi/plugin-api'
       - '@dizzyapi/plugin-web'
 
+# 闸门快照推送（服务名 gateFeed）：把「价格表」与「每个 API key 的累计消费」
+# **心跳式**推给 Go 的两条 pre 相位闸门（桥命令 pricing.replace / keyspend.replace；
+# 内容不变也推、generation 递增——Go 侧按 TTL 判新鲜度，「没变就跳过」会让闸门在
+# TTL 一到按 fail-closed 全 503，这是额度闸门 2026-10-29 踩过的坑）。
+# 它自己不存数据：价格是 pricing 的、key 是 api-key 的、用量是 usage 的；
+# apiKey / usage 在运行期解析（被禁用时只少一份快照），只有 pricing + 桥 + timer 是 inject。
+# pollIntervalMs 要与 Go 侧 -pricing-snapshot-ttl-ms / -keyspend-snapshot-ttl-ms 对齐
+# （TTL 建议 ≥ 3 × 本值）。
+- id: gate-feed
+  name: '@dizzyapi/plugin-gate-feed'
+  config:
+    enabled: true
+    pollIntervalMs: 5000       # 5 秒一轮心跳
+    debounceMs: 1000           # 价格 / key 变更后最多等 1 秒再推
+
 # 开发者控制面板：看插件与服务的依赖图、看运行期概览、改设置、重启单个插件、退出整个进程。
 # 只绑 127.0.0.1；启动日志里会打印一条带一次性 token 的地址，打开后换成 HttpOnly cookie。
 # 必须排在 settings 之后——它要在运行期解析 settings 服务（但不 inject 它，

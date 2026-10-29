@@ -22,6 +22,8 @@ import QuotaService, {
 interface Entry {
   userId: string
   balanceMicros: string
+  /** 用户级并发上限；缺省 = 不限（与 user 插件的 balanceSnapshot 同形状）。 */
+  concurrencyLimit?: number | null
 }
 
 class FakeUser extends Service {
@@ -135,9 +137,10 @@ test('首次推送：版本 / 序号 / 稳定排序的条目与 revision', async
   assert.ok(payload.generation > 0, 'generation 必须是正数')
   assert.match(payload.revision, /^[0-9a-f]{32}$/)
   // 排序稳定：userId 按数值升序，而不是插入顺序。
+  // concurrencyLimit 与余额同源：没设上限就是 null（Go 侧当「不限」）。
   assert.deepEqual(payload.entries, [
-    { userId: '1', balanceMicros: '5000000' },
-    { userId: '2', balanceMicros: '-1500000' },
+    { userId: '1', balanceMicros: '5000000', concurrencyLimit: null },
+    { userId: '2', balanceMicros: '-1500000', concurrencyLimit: null },
   ])
 
   const status = world.quota.status()
@@ -218,7 +221,22 @@ test('余额变更事件经 debounce 补推；非余额字段不触发', async (
   await sleep(300)
   assert.equal(world.gateway.pushed.length, base + 1, '余额变更后应补推一次')
   assert.deepEqual((world.gateway.pushed[base] as QuotaSnapshotPayload).entries, [
-    { userId: '1', balanceMicros: '3000000' },
+    { userId: '1', balanceMicros: '3000000', concurrencyLimit: null },
+  ])
+})
+
+test('用户级并发上限随余额快照一起推（同一条心跳帧）', async (t) => {
+  const world = await boot(t)
+  world.user.entries = [
+    { userId: '1', balanceMicros: '5000000', concurrencyLimit: 3 },
+    { userId: '2', balanceMicros: '-1500000' },
+  ]
+  await world.quota.pushNow()
+
+  const payload = world.gateway.pushed.at(-1) as QuotaSnapshotPayload
+  assert.deepEqual(payload.entries, [
+    { userId: '1', balanceMicros: '5000000', concurrencyLimit: 3 },
+    { userId: '2', balanceMicros: '-1500000', concurrencyLimit: null },
   ])
 })
 

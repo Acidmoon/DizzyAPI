@@ -45,6 +45,12 @@ import type {
   GatewayContentAuditResult,
   GatewayContentAuditSnapshot,
   GatewayContentAuditStatus,
+  GatewayKeySpendResult,
+  GatewayKeySpendSnapshot,
+  GatewayKeySpendStatus,
+  GatewayPricingResult,
+  GatewayPricingSnapshot,
+  GatewayPricingStatus,
   GatewayQuotaResult,
   GatewayQuotaSnapshot,
   GatewayQuotaStatus,
@@ -165,6 +171,10 @@ export class AccountPriorityService extends Service {
       { method: 'quota.status', direction: 'outbound', responseShape: 'GatewayQuotaStatus' },
       { method: 'contentaudit.replace', direction: 'outbound', requestShape: 'GatewayContentAuditSnapshot', responseShape: 'GatewayContentAuditResult' },
       { method: 'contentaudit.status', direction: 'outbound', responseShape: 'GatewayContentAuditStatus' },
+      { method: 'pricing.replace', direction: 'outbound', requestShape: 'GatewayPricingSnapshot', responseShape: 'GatewayPricingResult' },
+      { method: 'pricing.status', direction: 'outbound', responseShape: 'GatewayPricingStatus' },
+      { method: 'keyspend.replace', direction: 'outbound', requestShape: 'GatewayKeySpendSnapshot', responseShape: 'GatewayKeySpendResult' },
+      { method: 'keyspend.status', direction: 'outbound', responseShape: 'GatewayKeySpendStatus' },
     ],
     storage: [
       { key: 'dataPath', kind: 'file', description: '策略组 JSON（TS 是唯一写者）' },
@@ -352,6 +362,51 @@ export class AccountPriorityService extends Service {
   async quotaStatus(): Promise<GatewayQuotaStatus> {
     return this.requireBridge().request<GatewayQuotaStatus>(
       'quota.status',
+      {},
+      this.config.requestTimeoutMs,
+    )
+  }
+
+  /**
+   * 推送价格快照（Go 的定价闸门用）。TS 是价格表的唯一写者，Go 只读。
+   *
+   * **心跳式**：内容不变也推、generation 递增——Go 按 TTL 判新鲜度，
+   * 「没变就跳过」会让闸门在 TTL 一到按 fail-closed 全 503（额度闸门的教训）。
+   */
+  async replacePricing(snapshot: GatewayPricingSnapshot): Promise<GatewayPricingResult> {
+    return this.requireBridge().request<GatewayPricingResult>(
+      'pricing.replace',
+      snapshot,
+      this.config.requestTimeoutMs,
+    )
+  }
+
+  /** Go 侧价格快照的健康度与闸门计数（只读、无参数）。 */
+  async pricingStatus(): Promise<GatewayPricingStatus> {
+    return this.requireBridge().request<GatewayPricingStatus>(
+      'pricing.status',
+      {},
+      this.config.requestTimeoutMs,
+    )
+  }
+
+  /**
+   * 推送「每个 API key 的累计消费」快照（Go 的 key 级金额上限判定用）。
+   *
+   * 花钱的事实只有 TS 知道（结算与算价都在 TS），Go 只读；金额是十进制微元字符串。
+   */
+  async replaceKeySpend(snapshot: GatewayKeySpendSnapshot): Promise<GatewayKeySpendResult> {
+    return this.requireBridge().request<GatewayKeySpendResult>(
+      'keyspend.replace',
+      snapshot,
+      this.config.requestTimeoutMs,
+    )
+  }
+
+  /** Go 侧 key 消费快照的健康度（只读、无参数）。 */
+  async keySpendStatus(): Promise<GatewayKeySpendStatus> {
+    return this.requireBridge().request<GatewayKeySpendStatus>(
+      'keyspend.status',
       {},
       this.config.requestTimeoutMs,
     )

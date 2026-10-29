@@ -659,6 +659,38 @@ pnpm build:go         # 产出 bin/gatewayd(.exe)
 - **anthropic 错误体加 `code` 是纯增量**：别把 `code` 放顶层，也别在空 code 时输出 `"code":""`；
   OpenAI 两个入口的错误体必须逐字节不变（有断言守着）。
 
+### key 级执行面与定价闸门（owner 第 6 / 8 / 10 条）
+
+- **两条闸门都是 pre 相位、都在 key-auth 之后**：`modules/keygate`（过期 / 金额上限 / key 并发 /
+  用户并发）与 `modules/pricinggate`（未定价模型）。它们只判定，不写存储、不碰余额。
+- **pre 相位的槽位用 `Ctx.ReleasePreSlot`，不要抢 `ReleaseInFlight`**：后者由 `engine.runAttempt`
+  在 dispatch 里写，pre 阶段也写就会被覆盖 → 槽位泄漏。engine 在「产生响应」时把两者串起来
+  （一起活到响应含整个流写完），走不到 dispatch 的出口（pre 拒绝 / 无可用账号 / panic）由
+  engine 的 defer 兜底释放。两个 release 都必须幂等。
+- **用户级并发上限是独立判定**：不能因为「key 自己没配上限」就跳过 keygate——否则只给用户设了
+  上限会静默失效（真进程用例抓过这个 bug）。
+- **金额上限靠 `keyspend.replace` 心跳快照**：花钱的事实只有 TS 知道（结算与算价都在 TS），
+  Go 只读、只比大小。消费快照不可用 / 快照里没有这个 key 时**放行 + 计数**（`spendingUnknown`）：
+  上限是运营保护，不是钱（钱由额度闸门 + 后付费结算兜底）。
+- **定价闸门默认关（`-pricing-gate`）**，且是 **fail-closed**：快照没收到 / 超过 TTL → 503
+  `PRICING_SNAPSHOT_UNAVAILABLE`，模型没价 → 403 `MODEL_NOT_PRICED`。与额度闸门 / 内容审核
+  相反（那两个是可用性优先），因为这是「准入」不是「保护」。
+- **`*` 兜底价两处必须同口径**：Go 的 `internal/pricing.Priced()` 与 TS 的
+  `billing.hasPrice()` 都是「精确命中 或 有 `*`」；两处不一致会出现「billing 认为有价、
+  闸门认为没价」的分裂。Go 侧与 TS 侧各有用例。
+- **价格快照同样必须心跳式**：内容不变也推（`revision` 相同、`generation` 递增）。定价闸门
+  是 fail-closed，「没变就跳过」会在 TTL 一到把全部请求打成 503（额度闸门 2026-10-29 同一类错误）。
+  推送方是新插件 `gate-feed`（服务名 `gateFeed`，`packages/gate-feed`）：它只读 pricing /
+  api-key / usage，自己不存数据；`apiKey` / `usage` 运行期解析（被禁用时只少一份快照）。
+- **跨层金额一律十进制字符串**：`spendingLimitMicros` / `spentMicros` 都是十进制微元字符串，
+  Go 解析失败即**整份拒绝**该快照（不按 0 处理）；`limit` 大小比较在 Go 侧用 int64。
+- **部署顺序「先 Go 后 TS」**：新桥命令（`pricing.replace` / `keyspend.replace`）在旧 Go 上返回
+  `BRIDGE_METHOD_NOT_FOUND`（TS 节流告警、LLM 请求不受影响）；反过来「新 Go + 旧 TS」=
+  从没收到快照 → 定价闸门 fail-closed 全 503。**打开 `-pricing-gate` 必须等新 TS 上线**。
+- **真进程用例是真证据**：`packages/api-key/test/gateway-gates.test.ts` 覆盖 401 / 402 / 429（key 与
+  用户两级）/ 403 / 503（无快照与超 TTL）/ `*` 兜底，并断言「被拒的请求上游 0 次」与
+  「请求结束后槽位归零」。改这两个阶段先 `pnpm build:go`。
+
 ### 前端
 
 - 预览用 `pnpm preview:console`；它没有 `/api/*`，真实进程用 `pnpm dev`。

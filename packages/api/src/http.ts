@@ -657,10 +657,34 @@ export class ApiServer {
       if (req.method === 'PATCH') {
         const apiKey = this.requireApiKey()
         const body = await this.jsonBody(req)
-        assertOnlyKeys(body, ['name', 'enabled'])
-        const patch: { name?: string; enabled?: boolean } = {}
+        assertOnlyKeys(body, [
+          'name',
+          'enabled',
+          'expiresAt',
+          'spendingLimitMicros',
+          'concurrencyLimit',
+        ])
+        const patch: {
+          name?: string
+          enabled?: boolean
+          expiresAt?: string | null
+          spendingLimitMicros?: string | null
+          concurrencyLimit?: number | null
+        } = {}
         if (Object.hasOwn(body, 'name')) patch.name = requiredString(body, 'name')
         if (Object.hasOwn(body, 'enabled')) patch.enabled = requiredBoolean(body, 'enabled')
+        // 三个执行面上限：null = 不限 / 永不过期。金额只收十进制字符串
+        // （JSON number 会丢 >2^53 的精度），形状校验在 api-key 插件里做。
+        if (Object.hasOwn(body, 'expiresAt')) {
+          patch.expiresAt = body.expiresAt === null ? null : requiredString(body, 'expiresAt')
+        }
+        if (Object.hasOwn(body, 'spendingLimitMicros')) {
+          patch.spendingLimitMicros =
+            body.spendingLimitMicros === null ? null : requiredString(body, 'spendingLimitMicros')
+        }
+        if (Object.hasOwn(body, 'concurrencyLimit')) {
+          patch.concurrencyLimit = body.concurrencyLimit === null ? null : requiredInteger(body, 'concurrencyLimit')
+        }
         if (Object.keys(patch).length === 0) throw badRequest('没有可修改的字段')
         this.sendJson(req, res, 200, normalizeKeySummary(await apiKey.update(view.userId, id, patch)))
         return
@@ -2022,12 +2046,21 @@ export class ApiServer {
       }
       if (req.method === 'PATCH') {
         const body = await this.jsonBody(req)
-        assertOnlyKeys(body, ['name', 'role', 'status', 'balanceEnabled'])
+        assertOnlyKeys(body, ['name', 'role', 'status', 'balanceEnabled', 'concurrencyLimit'])
         const hasName = Object.hasOwn(body, 'name')
         const hasRole = Object.hasOwn(body, 'role')
         const hasStatus = Object.hasOwn(body, 'status')
         const hasBalanceEnabled = Object.hasOwn(body, 'balanceEnabled')
-        if (!hasName && !hasRole && !hasStatus && !hasBalanceEnabled) throw badRequest('没有可修改的字段')
+        const hasConcurrency = Object.hasOwn(body, 'concurrencyLimit')
+        if (
+          !hasName &&
+          !hasRole &&
+          !hasStatus &&
+          !hasBalanceEnabled &&
+          !hasConcurrency
+        ) {
+          throw badRequest('没有可修改的字段')
+        }
 
         const identity = { actor, actorPlugin: API_ACTOR }
         if (hasName) {
@@ -2105,6 +2138,34 @@ export class ApiServer {
               metadata: { balanceEnabled: enabled },
             },
             () => setBalanceEnabled.call(this.runtime.user, API_ACTOR, id, enabled),
+          )
+        }
+        if (hasConcurrency) {
+          // 并发上限：null = 不限；正整数 = 上限。它是运营限流，不动余额、不写流水。
+          const limit =
+            body.concurrencyLimit === null ? null : requiredInteger(body, 'concurrencyLimit')
+          const setConcurrencyLimit = this.runtime.user.setConcurrencyLimit
+          if (typeof setConcurrencyLimit !== 'function') {
+            throw new ApiError(
+              'API_USER_CONCURRENCY_UNAVAILABLE',
+              503,
+              '用户插件没有提供 setConcurrencyLimit 接口',
+            )
+          }
+          await audited(
+            this.runtime,
+            identity,
+            {
+              action: 'user.concurrency.set',
+              targetType: 'user',
+              targetId: String(id),
+              summary:
+                limit === null
+                  ? `取消用户 #${id} 的并发上限`
+                  : `把用户 #${id} 的并发上限改为 ${String(limit)}`,
+              metadata: { concurrencyLimit: limit },
+            },
+            () => setConcurrencyLimit.call(this.runtime.user, API_ACTOR, id, limit),
           )
         }
 
@@ -3167,6 +3228,15 @@ function requiredBoolean(body: Record<string, unknown>, key: string): boolean {
   return value
 }
 
+/** 必填的正整数（并发上限这类「小的运营限流」用它；金额走十进制字符串）。 */
+function requiredInteger(body: Record<string, unknown>, key: string): number {
+  const value = body[key]
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value <= 0) {
+    throw badRequest(`${key} 必须是正整数`)
+  }
+  return value
+}
+
 function optionalInteger(
   body: Record<string, unknown>,
   key: string,
@@ -3300,6 +3370,11 @@ function adminUserOf(user: UserLike): AdminUserView {
     role: roleOf(user),
     balanceEnabled: user.balanceEnabled === true,
     balanceMinor: user.balance.toString(),
+    // 缺省 / null = 不限：管理台用「不限」显示，不能把 undefined 当 0。
+    concurrencyLimit:
+      typeof user.concurrencyLimit === 'number' && user.concurrencyLimit > 0
+        ? user.concurrencyLimit
+        : null,
     createdAt: user.createdAt,
     updatedAt: user.updatedAt,
   }
@@ -3969,6 +4044,13 @@ function normalizeKeySummary(value: unknown): ApiKeySummaryView {
     lastUsedAt: typeof record.lastUsedAt === 'string' ? record.lastUsedAt : null,
     appManaged: record.appManaged === true,
     enabled: record.enabled !== false,
+    // 三个执行面上限：缺省 = 不限（旧实现不返回它们）。
+    expiresAt: typeof record.expiresAt === 'string' ? record.expiresAt : null,
+    spendingLimitMicros: typeof record.spendingLimitMicros === 'string' ? record.spendingLimitMicros : null,
+    concurrencyLimit:
+      typeof record.concurrencyLimit === 'number' && record.concurrencyLimit > 0
+        ? record.concurrencyLimit
+        : null,
   }
 }
 

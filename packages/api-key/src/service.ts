@@ -60,6 +60,12 @@ export interface CreateApiKeyInput {
 export interface UpdateApiKeyPatch {
   readonly name?: string
   readonly enabled?: boolean
+  /** 过期时间（ISO 8601）；null = 永不过期。 */
+  readonly expiresAt?: string | null
+  /** 金额上限（整数微元，十进制字符串）；null = 不限。 */
+  readonly spendingLimitMicros?: string | null
+  /** 并发上限）；null = 不限。 */
+  readonly concurrencyLimit?: number | null
 }
 
 export interface CreateApiKeyResult {
@@ -80,6 +86,10 @@ export interface RemoveApiKeyResult {
 const ZERO_HASH = '0'.repeat(64)
 const MAX_KEY_ID_LENGTH = 128
 const MAX_KEY_GENERATION_ATTEMPTS = 8
+/** 金额上限的上界：SQLite INTEGER 读取侧的安全整数（≈ 9.0e15 微元 ≈ 90 亿元）。 */
+const MAX_SPENDING_LIMIT_MICROS = BigInt(Number.MAX_SAFE_INTEGER)
+/** 并发上限的上界：超过它就是配置错误，不是「很大」。 */
+const MAX_CONCURRENCY_LIMIT = 100_000
 
 export class ApiKeyService extends Service {
   static Config = API_KEY_CONFIG_SCHEMA
@@ -110,8 +120,11 @@ export class ApiKeyService extends Service {
     ],
     shapes: {
       ApiKeyView:
-        'id,userId,name,trackingId,secret,maskedKey,enabled,appManaged,createdAt,updatedAt,lastUsedAt,rotatedAt',
-      ApiKeySnapshot: 'version,generation,keys[{keyId,userId,keyHash,profile,name}]',
+        'id,userId,name,trackingId,secret,maskedKey,enabled,appManaged,createdAt,updatedAt,lastUsedAt,rotatedAt,' +
+        'expiresAt,spendingLimitMicros,concurrencyLimit',
+      ApiKeySnapshot:
+        'version,generation,keys[{keyId,userId,keyHash,profile,name,' +
+        'expiresAt?,spendingLimitMicros?,concurrencyLimit?}]',
     },
   } as const
 
@@ -153,14 +166,33 @@ export class ApiKeyService extends Service {
     return created
   }
 
-  /** 改名 / 启停。至少提供一个字段。 */
+  /** 改名 / 启停 / 改三个执行面上限。至少提供一个字段。 */
   async update(userId: number, id: string, patch: UpdateApiKeyPatch): Promise<ApiKeyView> {
     const uid = normalizeUserId(userId)
     const keyId = normalizeKeyId(id)
     const name = patch?.name === undefined ? undefined : normalizeName(patch.name)
     const enabled = patch?.enabled === undefined ? undefined : normalizeEnabled(patch.enabled)
-    if (name === undefined && enabled === undefined) {
-      throw new ApiKeyError('API_KEY_INVALID_INPUT', '至少提供 name 或 enabled 之一')
+    const expiresAt =
+      patch?.expiresAt === undefined ? undefined : normalizeExpiresAt(patch.expiresAt)
+    const spendingLimit =
+      patch?.spendingLimitMicros === undefined
+        ? undefined
+        : normalizeSpendingLimit(patch.spendingLimitMicros)
+    const concurrencyLimit =
+      patch?.concurrencyLimit === undefined
+        ? undefined
+        : normalizeConcurrencyLimit(patch.concurrencyLimit)
+    if (
+      name === undefined &&
+      enabled === undefined &&
+      expiresAt === undefined &&
+      spendingLimit === undefined &&
+      concurrencyLimit === undefined
+    ) {
+      throw new ApiKeyError(
+        'API_KEY_INVALID_INPUT',
+        '至少提供 name / enabled / expiresAt / spendingLimitMicros / concurrencyLimit 之一',
+      )
     }
 
     const updated = immediateTransaction(this.db, () => {
@@ -174,9 +206,19 @@ export class ApiKeyService extends Service {
       const nextEnabled = enabled === undefined ? current.enabled : enabled ? 1 : 0
       this.db
         .prepare(
-          'UPDATE api_keys SET name = ?, enabled = ?, updated_at = ? WHERE id = ? AND user_id = ?',
+          'UPDATE api_keys SET name = ?, enabled = ?, expires_at = ?, spending_limit = ?, ' +
+            'concurrency_limit = ?, updated_at = ? WHERE id = ? AND user_id = ?',
         )
-        .run(nextName, nextEnabled, new Date().toISOString(), keyId, uid)
+        .run(
+          nextName,
+          nextEnabled,
+          expiresAt === undefined ? current.expires_at : expiresAt,
+          spendingLimit === undefined ? current.spending_limit : spendingLimit,
+          concurrencyLimit === undefined ? current.concurrency_limit : concurrencyLimit,
+          new Date().toISOString(),
+          keyId,
+          uid,
+        )
       bumpGeneration(this.db)
       return this.requireRow(keyId)
     })
@@ -300,8 +342,8 @@ export class ApiKeyService extends Service {
   async snapshot(): Promise<ApiKeySnapshot> {
     const rows = this.db
       .prepare(
-        'SELECT id, user_id, name, secret_hash, enabled FROM api_keys ' +
-          'WHERE enabled = 1 ORDER BY rowid ASC',
+        'SELECT id, user_id, name, secret_hash, enabled, expires_at, spending_limit, ' +
+          'concurrency_limit FROM api_keys WHERE enabled = 1 ORDER BY rowid ASC',
       )
       .all()
     // rows 与 generation 必须在同一个同步块里读：两者之间不 await，才不会出现
@@ -323,12 +365,19 @@ export class ApiKeyService extends Service {
     for (const raw of rows) {
       const row = asRow(raw)!
       if (!activeUsers.has(row.user_id)) continue
+      const expiresAt = typeof row.expires_at === 'string' ? row.expires_at : null
+      // 过期 key 仍然推给 Go：**由 Go 在 pre 相位拒绝**（401 API_KEY_EXPIRED），
+      // 这样用户能看到明确的错误码，而不是一个「key 无效」的黑盒。
+      const view = toView(row)
       keys.push({
         keyId: row.id,
         userId: row.user_id,
         keyHash: row.secret_hash,
         profile: API_KEY_PROFILE,
         name: row.name,
+        expiresAt,
+        spendingLimitMicros: view.spendingLimitMicros,
+        concurrencyLimit: view.concurrencyLimit,
       })
     }
 
@@ -540,6 +589,63 @@ function normalizeAppManaged(value: unknown): boolean {
 function normalizeEnabled(value: unknown): boolean {
   if (typeof value !== 'boolean') {
     throw new ApiKeyError('API_KEY_INVALID_INPUT', 'enabled 必须是布尔值')
+  }
+  return value
+}
+
+/**
+ * 过期时间：null 清除，字符串必须是合法 ISO 8601 时间。
+ *
+ * 统一存 UTC ISO（`toISOString()`）：Go 侧按 RFC3339 解析，两个时区写法混用会让
+ * 「过期判定」出现几小时的偏差。
+ */
+function normalizeExpiresAt(value: unknown): string | null {
+  if (value === null) return null
+  if (typeof value !== 'string') {
+    throw new ApiKeyError('API_KEY_INVALID_INPUT', 'expiresAt 必须是 ISO 8601 字符串或 null')
+  }
+  const trimmed = value.trim()
+  if (trimmed === '') return null
+  const ms = Date.parse(trimmed)
+  if (!Number.isFinite(ms)) {
+    throw new ApiKeyError('API_KEY_INVALID_INPUT', `expiresAt 不是合法时间：${trimmed}`)
+  }
+  return new Date(ms).toISOString()
+}
+
+/**
+ * 金额上限：null 清除，字符串必须是正整数微元（十进制，无小数、无符号）。
+ *
+ * 不接受 number：JSON number 会丢 >2^53 的精度，调用方必须传十进制字符串。
+ */
+function normalizeSpendingLimit(value: unknown): bigint | null {
+  if (value === null) return null
+  if (typeof value !== 'string') {
+    throw new ApiKeyError('API_KEY_INVALID_INPUT', 'spendingLimitMicros 必须是十进制字符串或 null')
+  }
+  const text = value.trim()
+  if (text === '') return null
+  if (!/^[0-9]+$/.test(text)) {
+    throw new ApiKeyError('API_KEY_INVALID_INPUT', `spendingLimitMicros 必须是正整数微元：${text}`)
+  }
+  const micros = BigInt(text)
+  if (micros <= 0n) {
+    throw new ApiKeyError('API_KEY_INVALID_INPUT', 'spendingLimitMicros 必须大于 0（不限请传 null）')
+  }
+  if (micros > MAX_SPENDING_LIMIT_MICROS) {
+    throw new ApiKeyError('API_KEY_INVALID_INPUT', `spendingLimitMicros 超出上限 ${MAX_SPENDING_LIMIT_MICROS.toString()}`)
+  }
+  return micros
+}
+
+/** 并发上限：null 清除；正整数。 */
+function normalizeConcurrencyLimit(value: unknown): number | null {
+  if (value === null) return null
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value <= 0) {
+    throw new ApiKeyError('API_KEY_INVALID_INPUT', 'concurrencyLimit 必须是正整数或 null')
+  }
+  if (value > MAX_CONCURRENCY_LIMIT) {
+    throw new ApiKeyError('API_KEY_INVALID_INPUT', `concurrencyLimit 不得超过 ${MAX_CONCURRENCY_LIMIT}`)
   }
   return value
 }

@@ -35,14 +35,19 @@ import (
 	contentauditcache "github.com/Acidmoon/DizzyAPI/internal/contentaudit"
 	"github.com/Acidmoon/DizzyAPI/internal/engine"
 	"github.com/Acidmoon/DizzyAPI/internal/httpapi"
+	"github.com/Acidmoon/DizzyAPI/internal/keyspend"
+	"github.com/Acidmoon/DizzyAPI/internal/limits"
 	"github.com/Acidmoon/DizzyAPI/internal/metrics"
+	pricingcache "github.com/Acidmoon/DizzyAPI/internal/pricing"
 	"github.com/Acidmoon/DizzyAPI/internal/quota"
 	"github.com/Acidmoon/DizzyAPI/internal/usagelog"
 	"github.com/Acidmoon/DizzyAPI/internal/usageprobe"
 	"github.com/Acidmoon/DizzyAPI/modules/accountpriority"
 	"github.com/Acidmoon/DizzyAPI/modules/contentaudit"
 	"github.com/Acidmoon/DizzyAPI/modules/keyauth"
+	"github.com/Acidmoon/DizzyAPI/modules/keygate"
 	"github.com/Acidmoon/DizzyAPI/modules/modelroute"
+	"github.com/Acidmoon/DizzyAPI/modules/pricinggate"
 	"github.com/Acidmoon/DizzyAPI/modules/protoconv"
 	"github.com/Acidmoon/DizzyAPI/modules/quotagate"
 	"github.com/Acidmoon/DizzyAPI/modules/transport"
@@ -60,9 +65,17 @@ type handler struct {
 	// contentAudit / contentAuditGate 是内容审核的规则缓存与闸门（只读观察，桥命令用）。
 	contentAudit     *contentauditcache.Cache
 	contentAuditGate *contentaudit.Stage
-	logger           *slog.Logger
-	shutdown         chan struct{}
-	stopOnce         sync.Once
+	// keyGate / keyLimits 是 key 级执行面闸门与它的并发预留（只读观察，桥命令用）。
+	keyGate   *keygate.Stage
+	keyLimits *limits.Tracker
+	// spend 是每个 key 的累计消费快照（TS 心跳式推送；key 级金额上限判定用）。
+	spend *keyspend.Cache
+	// pricingCache / pricingGate 是定价闸门的快照与阶段（默认关：没开时 pricingGate 为 nil）。
+	pricingCache *pricingcache.Cache
+	pricingGate  *pricinggate.Stage
+	logger       *slog.Logger
+	shutdown     chan struct{}
+	stopOnce     sync.Once
 }
 
 // accountsStatus 是桥命令 accounts.status 的响应：accounts.State 原样保留，
@@ -134,6 +147,70 @@ func (h *handler) quotaStatus() quota.State {
 		StaleStreak:    stats.StaleStreak,
 		StaleReason:    stats.StaleReason,
 		StaleForMs:     stats.StaleForMs,
+	}
+	return state
+}
+
+// keysStatus 是桥命令 keys.status 的响应：key 快照健康度原样保留，
+// 只增一个 gate 字段（key 级执行面闸门的计数）。
+//
+// gate 是**只增不改**的字段（omitempty）：没有注入闸门阶段（测试 / 旧装配）时不出现，
+// 响应与改动前逐字节一致。它不含任何 key 级明细。
+type keysStatus struct {
+	apikeys.Status
+	Gate *keyGateState `json:"gate,omitempty"`
+}
+
+// keyGateState 是 key 级执行面闸门的计数（不含 key id、余额或金额明细）。
+type keyGateState struct {
+	Expired                int `json:"expired,omitempty"`
+	SpendingBlocked        int `json:"spendingBlocked,omitempty"`
+	SpendingUnknown        int `json:"spendingUnknown,omitempty"`
+	ConcurrencyBlocked     int `json:"concurrencyBlocked,omitempty"`
+	UserConcurrencyBlocked int `json:"userConcurrencyBlocked,omitempty"`
+	ActiveKeys             int `json:"activeKeys,omitempty"`
+	ActiveUsers            int `json:"activeUsers,omitempty"`
+}
+
+func (h *handler) keysStatus() keysStatus {
+	state := keysStatus{Status: h.keys.Status()}
+	if h.keyGate == nil {
+		return state
+	}
+	stats := h.keyGate.Stats()
+	gate := keyGateState{
+		Expired:                stats.Expired,
+		SpendingBlocked:        stats.SpendingBlocked,
+		SpendingUnknown:        stats.SpendingUnknown,
+		ConcurrencyBlocked:     stats.ConcurrencyBlocked,
+		UserConcurrencyBlocked: stats.UserConcurrencyBlocked,
+	}
+	if h.keyLimits != nil {
+		summary := h.keyLimits.Summary()
+		gate.ActiveKeys = summary.ActiveKeys
+		gate.ActiveUsers = summary.ActiveUsers
+	}
+	state.Gate = &gate
+	return state
+}
+
+// pricingStatus 是桥命令 pricing.status 的响应：价格快照健康度 + 定价闸门计数。
+//
+// gate 是只增字段（omitempty）：闸门关闭（没装阶段）时不出现。
+func (h *handler) pricingStatus() pricingcache.State {
+	var state pricingcache.State
+	if h.pricingCache != nil {
+		state = h.pricingCache.State()
+	}
+	if h.pricingGate == nil {
+		return state
+	}
+	stats := h.pricingGate.Stats()
+	state.Gate = &pricingcache.GateState{
+		Blocked:       stats.Blocked,
+		StrictBlocked: stats.StrictBlocked,
+		Allowed:       stats.Allowed,
+		StaleStreak:   stats.StaleStreak,
 	}
 	return state
 }
@@ -254,6 +331,58 @@ func (h *handler) Handle(_ context.Context, method string, params json.RawMessag
 	case contracts.BridgeMethodContentAuditStatus:
 		return h.contentAuditStatus(), nil
 
+	case contracts.BridgeMethodPricingReplace:
+		if h.pricingCache == nil {
+			return nil, bridge.Errorf("PRICING_UNAVAILABLE", "价格快照缓存未装配")
+		}
+		var snapshot pricingcache.Snapshot
+		if err := decodeParams(params, &snapshot); err != nil {
+			return nil, bridge.Errorf("BRIDGE_BAD_REQUEST", "价格快照参数不合法：%v", err)
+		}
+		result, err := h.pricingCache.Replace(snapshot)
+		if err != nil {
+			var typed *pricingcache.Error
+			if errors.As(err, &typed) {
+				return nil, bridge.Errorf(typed.Code, "%s", typed.Message)
+			}
+			return nil, bridge.Errorf("PRICING_INVALID_SNAPSHOT", "价格快照更新失败")
+		}
+		// 只记版本与计数：价格明细不进日志（它是运营数据，不是秘密，但没必要落）。
+		h.logger.Info("价格快照已更新",
+			"revision", result.Revision, "prices", result.Prices,
+			"wildcard", result.Wildcard, "generation", result.Generation)
+		return result, nil
+
+	case contracts.BridgeMethodPricingStatus:
+		return h.pricingStatus(), nil
+
+	case contracts.BridgeMethodKeySpendReplace:
+		if h.spend == nil {
+			return nil, bridge.Errorf("KEYSPEND_UNAVAILABLE", "key 消费快照缓存未装配")
+		}
+		var snapshot keyspend.Snapshot
+		if err := decodeParams(params, &snapshot); err != nil {
+			return nil, bridge.Errorf("BRIDGE_BAD_REQUEST", "key 消费快照参数不合法：%v", err)
+		}
+		result, err := h.spend.Replace(snapshot)
+		if err != nil {
+			var typed *keyspend.Error
+			if errors.As(err, &typed) {
+				return nil, bridge.Errorf(typed.Code, "%s", typed.Message)
+			}
+			return nil, bridge.Errorf("KEYSPEND_INVALID_SNAPSHOT", "key 消费快照更新失败")
+		}
+		// 只记版本与计数：金额明细不进日志。
+		h.logger.Info("key 消费快照已更新",
+			"revision", result.Revision, "entries", result.Entries, "generation", result.Generation)
+		return result, nil
+
+	case contracts.BridgeMethodKeySpendStatus:
+		if h.spend == nil {
+			return keyspend.State{}, nil
+		}
+		return h.spend.State(), nil
+
 	case bridge.MethodReplaceKeys:
 		var snapshot apikeys.Snapshot
 		if err := decodeParams(params, &snapshot); err != nil {
@@ -272,7 +401,7 @@ func (h *handler) Handle(_ context.Context, method string, params json.RawMessag
 		return result, nil
 
 	case bridge.MethodKeysStatus:
-		return h.keys.Status(), nil
+		return h.keysStatus(), nil
 
 	case contracts.BridgeMethodUsageSince:
 		var query struct {
@@ -408,6 +537,14 @@ func run() error {
 	contentAuditSnapshotTTLMs := flag.Int("content-audit-snapshot-ttl-ms", 15000,
 		fmt.Sprintf("内容审核规则快照有效期（毫秒），应 ≥ 3 × TS 的 pushIntervalMs；超出 %d..%d 直接启动失败",
 			minContentAuditSnapshotTTLMs, maxContentAuditSnapshotTTLMs))
+	pricingGateEnabled := flag.Bool("pricing-gate", false,
+		"定价闸门：模型没有配置价格时返回 403 MODEL_NOT_PRICED；默认关，上线确认价格快照正常后再打开")
+	pricingSnapshotTTLMs := flag.Int("pricing-snapshot-ttl-ms", 15000,
+		fmt.Sprintf("价格快照有效期（毫秒），应 ≥ 3 × TS 的 pushIntervalMs；超出 %d..%d 直接启动失败",
+			minGateSnapshotTTLMs, maxGateSnapshotTTLMs))
+	keySpendSnapshotTTLMs := flag.Int("keyspend-snapshot-ttl-ms", 15000,
+		fmt.Sprintf("key 消费快照有效期（毫秒），应 ≥ 3 × TS 的 pushIntervalMs；超出 %d..%d 直接启动失败",
+			minGateSnapshotTTLMs, maxGateSnapshotTTLMs))
 	flag.Parse()
 
 	logger := newLogger(*logFormat)
@@ -454,6 +591,23 @@ func run() error {
 	}
 	contentAuditCache := contentauditcache.New(contentauditcache.WithTTL(contentAuditTTL))
 
+	// 价格快照（定价闸门用）：纯内存只读缓存，价格权威数据在 TS 的 pricing 插件里。
+	// 闸门只判「有没有价」，算钱仍然只在 TS（一个数据一个写者）。
+	pricingTTL, err := parseGateSnapshotTTL("-pricing-snapshot-ttl-ms", *pricingSnapshotTTLMs)
+	if err != nil {
+		return err
+	}
+	pricingCache := pricingcache.New(pricingcache.WithTTL(pricingTTL))
+
+	// key 消费快照（金额上限判定用）：花钱的事实只有 TS 知道，Go 只读、只比大小。
+	keySpendTTL, err := parseGateSnapshotTTL("-keyspend-snapshot-ttl-ms", *keySpendSnapshotTTLMs)
+	if err != nil {
+		return err
+	}
+	keySpendCache := keyspend.New(keyspend.WithTTL(keySpendTTL))
+	// key 级与用户级并发共用同一套原子预留（AGENTS.md：别写两遍）。
+	keyLimits := limits.New()
+
 	// 组合根是唯一组装点：注册顺序就是阶段顺序 pre → dispatch → post。
 	//
 	// 装配顺序（也是阶段顺序）：
@@ -471,6 +625,26 @@ func run() error {
 		Profile:  *profile,
 		Verifier: keyCache,
 	})
+	// key 级执行面（pre）：过期 / 金额上限 / key 并发 / 用户并发。
+	// 位置必须紧跟 key-auth（要用它写进 ctx.Key 的上限），早于任何转发判断。
+	keyGate, err := keygate.Register(registry, keygate.Config{}, keygate.Deps{
+		Spends:       keySpendCache,
+		UserLimits:   quotaCache,
+		Reservations: keyLimits,
+	}, logger)
+	if err != nil {
+		return fmt.Errorf("初始化 key-gate 阶段失败：%w", err)
+	}
+	// 定价闸门（pre）：默认关（owner 拍板），上线确认价格快照正常后再用 -pricing-gate 打开。
+	// 没打开时**不注册阶段**：省掉热路径上的一次判空，也让「关」是真正零行为。
+	var pricingGateStage *pricinggate.Stage
+	if *pricingGateEnabled {
+		stage, err := pricinggate.Register(registry, pricinggate.Config{SnapshotTTL: pricingTTL}, pricingCache, logger)
+		if err != nil {
+			return fmt.Errorf("初始化定价闸门阶段失败：%w", err)
+		}
+		pricingGateStage = stage
+	}
 	// 内容审核（pre）：按用户输入文本查规则快照，命中 block 规则直接 403。
 	// 位置在 key-auth 之后、额度闸门之前：内容不合规就不该占用余额判断与选号。
 	contentAuditGate, err := contentaudit.Register(registry, contentaudit.Config{
@@ -594,8 +768,16 @@ func run() error {
 
 		contentAudit:     contentAuditCache,
 		contentAuditGate: contentAuditGate,
-		logger:           logger,
-		shutdown:         stop,
+
+		keyGate:   keyGate,
+		keyLimits: keyLimits,
+		spend:     keySpendCache,
+
+		pricingCache: pricingCache,
+		pricingGate:  pricingGateStage,
+
+		logger:   logger,
+		shutdown: stop,
 	}
 
 	status := service.Status()
@@ -637,6 +819,14 @@ func run() error {
 		"minBalanceMicros", *quotaMinBalance,
 		"requireSnapshot", *quotaRequireSnapshot,
 		"snapshotTtlMs", quotaTTL.Milliseconds())
+	logger.Info("key-gate 策略",
+		"keyspendTtlMs", keySpendTTL.Milliseconds(),
+		"keyConcurrency", "按 key 快照的 concurrencyLimit",
+		"userConcurrency", "按余额快照的 concurrencyLimit")
+	logger.Info("定价闸门策略",
+		"enabled", *pricingGateEnabled,
+		"snapshotTtlMs", pricingTTL.Milliseconds(),
+		"mode", "fail-closed（快照不可用 → 503）")
 
 	// cordis 用这一行拿到实际地址（TCP :0 时端口是系统分配的）。
 	ready, err := json.Marshal(map[string]any{
