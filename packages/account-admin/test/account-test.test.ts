@@ -187,6 +187,34 @@ test('连通性测试：anthropic 用 x-api-key + anthropic-version，不发送 
   })
 })
 
+test('连通性测试：gemini 用 x-goog-api-key，模型名进路径，不发送 Bearer', async (t) => {
+  const world = await boot(t)
+  const account = await createAccount(world, {
+    provider: 'custom',
+    kind: 'api_key',
+    label: 'gemini',
+    baseUrl: 'https://generativelanguage.googleapis.com/v1beta',
+    protocol: 'gemini',
+    models: ['gemini-2.5-flash'],
+  }, { apiKey: 'AIza-test' })
+  const calls = injectFetch(world, async () => jsonResponse({ candidates: [] }))
+
+  const result = await world.admin.testConnection(account.id)
+  assert.equal(result.ok, true)
+  assert.equal(result.protocol, 'gemini')
+  assert.equal(
+    calls[0]!.url,
+    'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent',
+  )
+  const headers = headersOf(calls[0]!.init)
+  assert.equal(headers['x-goog-api-key'], 'AIza-test')
+  assert.equal(headers.authorization, undefined, 'Gemini 不该带 Authorization')
+  assert.deepEqual(bodyOf(calls[0]!.init), {
+    contents: [{ role: 'user', parts: [{ text: 'hi' }] }],
+    generationConfig: { maxOutputTokens: 16 },
+  })
+})
+
 test('连通性测试：无声明协议时按 provider 推断（openai → chat，claude → anthropic）', async (t) => {
   const world = await boot(t)
   const openai = await createAccount(world, {

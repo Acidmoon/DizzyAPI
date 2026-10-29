@@ -47,16 +47,32 @@ const (
 	AuthBearer AuthStyle = iota
 	// AuthXAPIKey 写 x-api-key: <token>（Anthropic）。
 	AuthXAPIKey
+	// AuthXGoogAPIKey 写 x-goog-api-key: <token>（Google Gemini）。
+	AuthXGoogAPIKey
 )
+
+// modelPlaceholder 是方言路径里的模型名占位符。
+const modelPlaceholder = "{model}"
 
 // Dialect 是一种上游协议的方言：路径后缀、鉴权方式与固定附加头。
 //
 // 路径约定：baseUrl 自带版本前缀（openai 默认 https://api.openai.com/v1），
 // 这里的 Path 是版本之后的后缀（如 /chat/completions、/messages）。
+//
+// Path 里可以带 `{model}` 占位（Gemini 的模型名在路径里）：
+// 渲染时用请求的模型名替换它，并按路径段做转义。
 type Dialect struct {
 	Path         string
 	Auth         AuthStyle
 	ExtraHeaders map[string]string
+	// StreamPath 是流式请求用的路径（空 = 与 Path 相同）。
+	//
+	// Gemini 的流式端点是另一个方法名（:streamGenerateContent），路径随流式
+	// 变化时用它。
+	StreamPath string
+	// StreamQuery 是流式请求追加的查询串（不含 ?）。Gemini 用 alt=sse 决定
+	// 返回 SSE 还是 JSON 数组。
+	StreamQuery string
 }
 
 // DefaultDialects 是内置方言表。调用方可在 Config.Dialects 覆盖单个协议。
@@ -75,6 +91,15 @@ var DefaultDialects = map[contracts.Protocol]Dialect{
 		ExtraHeaders: map[string]string{
 			"anthropic-version": "2023-06-01",
 		},
+	},
+	// Gemini：模型名在路径里（models/{model}:generateContent），鉴权用
+	// `x-goog-api-key` 头（官方 REST 约定，密钥只在 query 里也常见，但 query
+	// 会进日志与代理记录，头更安全）。
+	contracts.ProtocolGemini: {
+		Path:        "/models/{model}:generateContent",
+		StreamPath:  "/models/{model}:streamGenerateContent",
+		StreamQuery: "alt=sse",
+		Auth:        AuthXGoogAPIKey,
 	},
 }
 
@@ -227,9 +252,12 @@ func (s *Stage) Run(ctx *contracts.Ctx) (contracts.Decision, error) {
 		dialect = Dialect{Path: s.config.Path, Auth: AuthBearer}
 	}
 
-	target, err := joinURL(credential.BaseURL, dialect.Path)
+	target, err := joinURL(credential.BaseURL, dialectPath(dialect, upstreamModelOf(ctx)))
 	if err != nil {
 		return contracts.Decision{}, contracts.Errorf(http.StatusBadGateway, "UPSTREAM_URL_INVALID", "上游地址不合法")
+	}
+	if ctx.Meta.Stream {
+		target = applyStreamTarget(target, dialect, upstreamModelOf(ctx))
 	}
 
 	requestContext := ctx.Context
@@ -350,10 +378,15 @@ func applyAuth(request *http.Request, dialect Dialect, token string) {
 	switch dialect.Auth {
 	case AuthXAPIKey:
 		request.Header.Set("x-api-key", token)
+	case AuthXGoogAPIKey:
+		request.Header.Set("x-goog-api-key", token)
 	default:
 		request.Header.Set("Authorization", "Bearer "+token)
 	}
 	for name, value := range dialect.ExtraHeaders {
+		if value == "" {
+			continue
+		}
 		request.Header.Set(name, value)
 	}
 }
@@ -460,6 +493,71 @@ func joinURL(baseURL, path string) (string, error) {
 	parsed.RawQuery = ""
 	parsed.Fragment = ""
 	return parsed.String(), nil
+}
+
+// upstreamModelOf 返回要发给上游的模型名。
+//
+// 有模型映射时用映射后的名字（Ctx.UpstreamModel，由模型映射阶段写入），
+// 否则用客户端请求的模型名。Gemini 的模型名在路径里，靠它拼 URL。
+func upstreamModelOf(ctx *contracts.Ctx) string {
+	if ctx == nil {
+		return ""
+	}
+	if ctx.UpstreamModel != "" {
+		return ctx.UpstreamModel
+	}
+	return ctx.Meta.Model
+}
+
+// dialectPath 渲染方言路径：把 `{model}` 占位换成请求的模型名。
+//
+// Gemini 的模型名在路径里（models/{model}:generateContent）。模型名来自客户端，
+// 所以必须转义（否则可能带 `/`、`:` 之类改变路径语义）；转义后仍保留 Gemini
+// 需要的字面冒号（`generateContent` 前的那个分隔冒号不是占位的一部分）。
+func dialectPath(dialect Dialect, model string) string {
+	path := dialect.Path
+	if !strings.Contains(path, modelPlaceholder) {
+		return path
+	}
+	replaced := strings.ReplaceAll(path, modelPlaceholder, url.PathEscape(strings.TrimSpace(model)))
+	// PathEscape 会把字面冒号也转义掉（%3A）；Gemini 的方法分隔冒号必须是字面量。
+	replaced = strings.ReplaceAll(replaced, "%3A", ":")
+	return replaced
+}
+
+// applyStreamTarget 把流式请求的 URL 换成方言的流式路径并补上查询串。
+//
+// Gemini 的流式端点是另一个方法名（:streamGenerateContent），且必须带
+// alt=sse 才返回 SSE。其它协议的流式与非流式路径相同，查询串为空。
+func applyStreamTarget(target string, dialect Dialect, model string) string {
+	if dialect.StreamPath == "" && dialect.StreamQuery == "" {
+		return target
+	}
+	parsed, err := url.Parse(target)
+	if err != nil {
+		return target
+	}
+	if dialect.StreamPath != "" {
+		trimmed := strings.TrimRight(parsed.Path, "/")
+		// 去掉非流式的方法后缀（:generateContent），再接上流式方法名。
+		nonStream := dialectPath(Dialect{Path: dialect.Path}, model)
+		trimmed = strings.TrimSuffix(trimmed, nonStream)
+		parsed.Path = trimmed + dialectPath(Dialect{Path: dialect.StreamPath}, model)
+	}
+	if dialect.StreamQuery != "" {
+		query := parsed.Query()
+		for _, pair := range strings.Split(dialect.StreamQuery, "&") {
+			name, value, _ := strings.Cut(pair, "=")
+			if name == "" {
+				continue
+			}
+			if query.Get(name) == "" {
+				query.Set(name, value)
+			}
+		}
+		parsed.RawQuery = query.Encode()
+	}
+	return parsed.String()
 }
 
 // upstreamMessage 优先取 OpenAI 风格的 error.message，取不到再退回截断后的原文。

@@ -5,6 +5,7 @@
 //
 // 口径归一化（contracts/usage.go）：
 //   - OpenAI 系（openai-chat / openai-responses）的 input/prompt tokens **包含**缓存命中；
+//   - Gemini 的 promptTokenCount 同样**包含** cachedContentTokenCount（与 OpenAI 同口径）；
 //   - Anthropic 的 input_tokens **不含**缓存部分。
 //
 // 因此 Normalize 按**上游协议**把 Usage 换算成「input 不含缓存」的四桶口径。
@@ -50,7 +51,12 @@ func (p *Probe) Extract(protocol contracts.Protocol, body []byte) (contracts.Usa
 	if err := json.Unmarshal(body, &fields); err != nil {
 		return contracts.Usage{}, false
 	}
-	raw, present := fields["usage"]
+	// Gemini 的用量键叫 usageMetadata（OpenAI / Anthropic 都是 usage）。
+	usageKey := "usage"
+	if protocol == contracts.ProtocolGemini {
+		usageKey = "usageMetadata"
+	}
+	raw, present := fields[usageKey]
 	if !present || isJSONNull(raw) {
 		return contracts.Usage{}, false
 	}
@@ -159,12 +165,14 @@ func (w *watcher) merge(usage contracts.Usage) {
 // Normalize 按上游协议把 Usage 换算成「input 不含缓存」的口径。
 //
 //   - OpenAI 系：input = max(input - cacheRead, 0)，cacheCreate = 0；
+//   - Gemini：promptTokenCount 含 cachedContentTokenCount（与 OpenAI 同口径），
+//     同样做减法；Gemini 没有写缓存，cacheCreate 恒为 0；
 //   - Anthropic：input 已经是净输入，cacheCreate 保持；
 //   - 未知协议：原样返回（调用方通常已经回退到客户端协议）。
 //
 // ReasoningTokens 是 output 的子集，不参与任何相减。
 func Normalize(usage contracts.Usage, upstream contracts.Protocol) contracts.Usage {
-	if upstream.IsOpenAI() {
+	if upstream.IsOpenAI() || upstream == contracts.ProtocolGemini {
 		usage.InputTokens = max(usage.InputTokens-usage.CacheReadInputTokens, 0)
 		usage.CacheCreationInputTokens = 0
 	}

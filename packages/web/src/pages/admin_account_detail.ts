@@ -95,6 +95,7 @@ ${selectField('上游协议', 'protocol', [
   { value: 'openai-chat', label: 'openai-chat' },
   { value: 'openai-responses', label: 'openai-responses' },
   { value: 'anthropic', label: 'anthropic' },
+  { value: 'gemini', label: 'gemini' },
 ], account.protocol ?? '')}
 </div>
 <div class="row">

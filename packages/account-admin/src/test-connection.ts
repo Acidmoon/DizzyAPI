@@ -44,7 +44,12 @@ const PROVIDER_DEFAULT_BASE_URL: Readonly<Record<AccountProvider, string | null>
   custom: null,
 }
 
-const PROTOCOLS: ReadonlySet<string> = new Set(['openai-chat', 'openai-responses', 'anthropic'])
+const PROTOCOLS: ReadonlySet<string> = new Set([
+  'openai-chat',
+  'openai-responses',
+  'anthropic',
+  'gemini',
+])
 
 /** 参数 → 账号声明 → provider 推断。 */
 export function resolveTestProtocol(
@@ -55,7 +60,7 @@ export function resolveTestProtocol(
     if (typeof requested !== 'string' || !PROTOCOLS.has(requested)) {
       throw new AccountAdminError(
         'ACCOUNT_TEST_PROTOCOL_INVALID',
-        'protocol 只能是 openai-chat / openai-responses / anthropic',
+        'protocol 只能是 openai-chat / openai-responses / anthropic / gemini',
       )
     }
     return requested as AccountProtocol
@@ -64,7 +69,7 @@ export function resolveTestProtocol(
     if (!PROTOCOLS.has(target.protocol)) {
       throw new AccountAdminError(
         'ACCOUNT_TEST_PROTOCOL_INVALID',
-        '账号声明的 protocol 不合法（只能是 openai-chat / openai-responses / anthropic）',
+        '账号声明的 protocol 不合法（只能是 openai-chat / openai-responses / anthropic / gemini）',
       )
     }
     return target.protocol
@@ -125,6 +130,9 @@ function planRequest(
   if (protocol === 'anthropic') {
     headers['x-api-key'] = token
     headers['anthropic-version'] = '2023-06-01'
+  } else if (protocol === 'gemini') {
+    // Gemini 用 x-goog-api-key，不要同时带 Authorization。
+    headers['x-goog-api-key'] = token
   } else {
     headers.authorization = `Bearer ${token}`
   }
@@ -157,6 +165,18 @@ function planRequest(
         input: [{ role: 'user', content: 'hi' }],
         max_output_tokens: 16,
         stream: false,
+      }),
+    }
+  }
+  if (protocol === 'gemini') {
+    // Gemini：模型名在路径里，密钥走 x-goog-api-key 头。
+    return {
+      method: 'POST',
+      url: `${base}/models/${encodeURIComponent(model)}:generateContent`,
+      headers,
+      body: JSON.stringify({
+        contents: [{ role: 'user', parts: [{ text: 'hi' }] }],
+        generationConfig: { maxOutputTokens: 16 },
       }),
     }
   }

@@ -397,7 +397,8 @@ func validProtocol(protocol string) bool {
 	switch protocol {
 	case string(contracts.ProtocolOpenAIChat),
 		string(contracts.ProtocolOpenAIResponses),
-		string(contracts.ProtocolAnthropic):
+		string(contracts.ProtocolAnthropic),
+		string(contracts.ProtocolGemini):
 		return true
 	default:
 		return false

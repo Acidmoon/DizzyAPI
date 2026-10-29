@@ -24,7 +24,7 @@ import (
 // protocol_responses_test.go 覆盖；这里补的是 Responses ↔ Anthropic 这一对，
 // 它是三个 codec 里唯一必须三个都注册才能跑的路径。
 
-// newGatewayWithAllCodecs 挂上全部三个 codec 的网关。
+// newGatewayWithAllCodecs 挂上全部四个 codec 的网关。
 func newGatewayWithAllCodecs(t *testing.T, upstreamURL string, keyConfig keyauth.Config) gateway {
 	t.Helper()
 	cache := accounts.New()
@@ -38,6 +38,7 @@ func newGatewayWithAllCodecs(t *testing.T, upstreamURL string, keyConfig keyauth
 		protoconv.NewChatCodec(),
 		protoconv.NewResponsesCodec(),
 		protoconv.NewAnthropicCodec(protoconv.AnthropicConfig{}),
+		protoconv.NewGeminiCodec(),
 	} {
 		if err := codecs.Register(codec); err != nil {
 			t.Fatalf("注册 %s codec: %v", codec.Protocol(), err)

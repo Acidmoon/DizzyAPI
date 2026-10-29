@@ -160,6 +160,9 @@ test('protocol：create 透传、UPDATE_KEYS 接受、toView 与 catalog shapes 
 
   const updated = await world.admin.update(ACTOR, view.id, { protocol: 'anthropic' })
   assert.equal(updated.protocol, 'anthropic')
+  const gemini = await world.admin.update(ACTOR, view.id, { protocol: 'gemini' })
+  assert.equal(gemini.protocol, 'gemini', 'gemini 能通过门面写进 identity')
+  assert.equal(world.identity.get(view.id).protocol, 'gemini')
   const cleared = await world.admin.update(ACTOR, view.id, { protocol: null })
   assert.equal(cleared.protocol, null)
 

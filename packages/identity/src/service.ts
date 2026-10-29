@@ -904,13 +904,20 @@ function normalizeBaseUrl(value: string | null | undefined): string | null {
   return trimmed.replace(/\/+$/, '')
 }
 
-/** 只接受三个枚举值或 `null` / `undefined`；非法值明确失败，不静默降级。 */
+/** 只接受枚举里的协议值或 `null` / `undefined`；非法值明确失败，不静默降级。 */
 function normalizeProtocol(value: string | null | undefined): IdentityProtocol | null {
   if (value === undefined || value === null) return null
-  if (value === 'openai-chat' || value === 'openai-responses' || value === 'anthropic') return value
+  if (
+    value === 'openai-chat' ||
+    value === 'openai-responses' ||
+    value === 'anthropic' ||
+    value === 'gemini'
+  ) {
+    return value
+  }
   throw new IdentityError(
     'IDENTITY_ACCOUNT_INVALID',
-    'protocol 只能是 openai-chat / openai-responses / anthropic',
+    'protocol 只能是 openai-chat / openai-responses / anthropic / gemini',
   )
 }
 

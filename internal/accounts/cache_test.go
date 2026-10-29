@@ -97,6 +97,21 @@ func TestExpiredAccountsAreNotCandidates(t *testing.T) {
 	}
 }
 
+func TestAcceptsGeminiProtocol(t *testing.T) {
+	cache := New()
+	gemini := account("acc-gemini", "AIza-test")
+	gemini.Protocol = "gemini"
+	if _, err := cache.Replace(snapshot(gemini)); err != nil {
+		t.Fatalf("gemini 是合法协议：%v", err)
+	}
+	if len(cache.Candidates()) != 1 {
+		t.Fatal("gemini 账号应成为候选")
+	}
+	if _, ok := cache.Credential("acc-gemini"); !ok {
+		t.Fatal("gemini 账号应返回凭据")
+	}
+}
+
 func TestRejectsInvalidAccount(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -108,7 +123,7 @@ func TestRejectsInvalidAccount(t *testing.T) {
 		{"user info", Account{AccountID: "a", Provider: "openai", BaseURL: "https://u:p@x.test", Token: "t"}},
 		{"empty token", Account{AccountID: "a", Provider: "openai", BaseURL: "https://x.test"}},
 		{"bad kind", Account{AccountID: "a", Provider: "openai", Kind: "unknown", BaseURL: "https://x.test", Token: "t"}},
-		{"bad protocol", Account{AccountID: "a", Provider: "openai", BaseURL: "https://x.test", Token: "t", Protocol: "gemini"}},
+		{"bad protocol", Account{AccountID: "a", Provider: "openai", BaseURL: "https://x.test", Token: "t", Protocol: "bogus"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

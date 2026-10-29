@@ -120,6 +120,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/v1/chat/completions", s.llmHandler(contracts.ProtocolOpenAIChat, "/v1/chat/completions"))
 	mux.HandleFunc("/v1/responses", s.llmHandler(contracts.ProtocolOpenAIResponses, "/v1/responses"))
 	mux.HandleFunc("/v1/messages", s.llmHandler(contracts.ProtocolAnthropic, "/v1/messages"))
+	// Gemini 的模型名在路径里（/v1beta/models/{model}:generateContent），
+	// ServeMux 的通配符不支持「通配 + 字面后缀」，所以这一段自己解析路径。
+	mux.HandleFunc("/v1beta/models/", s.handleGemini)
 	return s.recover(mux)
 }
 
@@ -199,6 +202,26 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 // llmHandler 构造某个客户端协议的路由处理器。三个协议共用同一套
 // 「读体 → 探针 → 构造 Ctx → 交给 engine → 写响应 → 记录用量」流程，只是协议不同。
 func (s *Server) llmHandler(protocol contracts.Protocol, path string) http.HandlerFunc {
+	return s.llmRouteHandler(llmRoute{protocol: protocol, path: path})
+}
+
+// llmRoute 描述一个 LLM 入口路由。
+type llmRoute struct {
+	protocol contracts.Protocol
+	// path 是错误消息里用的路径说明。
+	path string
+	// modelFromPath 为真时模型名从 URL 路径里取（Gemini：模型在路径里，
+	// body 里没有 model 字段）。
+	modelFromPath bool
+	// streamFromPath 为真时是否流式由路径后缀决定（Gemini 的
+	// :streamGenerateContent）。
+	streamFromPath bool
+}
+
+// llmRouteHandler 是四个协议共用的入口处理流程。
+func (s *Server) llmRouteHandler(route llmRoute) http.HandlerFunc {
+	protocol := route.protocol
+	path := route.path
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			writeErrorFor(w, protocol, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "只支持 POST "+path)
@@ -217,13 +240,27 @@ func (s *Server) llmHandler(protocol contracts.Protocol, path string) http.Handl
 			writeErrorFor(w, protocol, http.StatusBadRequest, "INVALID_REQUEST", "请求体必须是合法 JSON")
 			return
 		}
-		if envelope.Model == "" {
+		model := envelope.Model
+		stream := envelope.Stream
+		if route.modelFromPath {
+			// Gemini：模型名与流式标记都在路径里，body 里没有这两个字段。
+			parsed, ok := parseGeminiModelPath(r.URL.EscapedPath())
+			if !ok {
+				writeErrorFor(w, protocol, http.StatusNotFound, "NOT_FOUND", "不支持的 Gemini 路径")
+				return
+			}
+			model = parsed.model
+			if route.streamFromPath {
+				stream = parsed.stream
+			}
+		}
+		if model == "" {
 			writeErrorFor(w, protocol, http.StatusBadRequest, "INVALID_REQUEST", "缺少 model")
 			return
 		}
 		// openai-chat 流式请求默认不带 usage。只有显式开启时才改写请求体：
 		// 关闭时 body 必须与客户端发来的字节逐字节相同（回归约束）。
-		if s.config.RecordStreamUsage && protocol == contracts.ProtocolOpenAIChat && envelope.Stream {
+		if s.config.RecordStreamUsage && protocol == contracts.ProtocolOpenAIChat && stream {
 			body = injectStreamUsage(body)
 		}
 
@@ -232,8 +269,8 @@ func (s *Server) llmHandler(protocol contracts.Protocol, path string) http.Handl
 			Context: r.Context(),
 			ReqID:   requestID,
 			Meta: contracts.RequestMeta{
-				Model:    envelope.Model,
-				Stream:   envelope.Stream,
+				Model:    model,
+				Stream:   stream,
 				Strategy: s.config.Strategy,
 			},
 			Headers:           r.Header.Clone(),
@@ -295,9 +332,9 @@ func (s *Server) llmHandler(protocol contracts.Protocol, path string) http.Handl
 
 		s.logger.Info("LLM 请求完成",
 			"reqId", requestID,
-			"model", envelope.Model,
+			"model", model,
 			"protocol", string(protocol),
-			"stream", envelope.Stream,
+			"stream", stream,
 			"status", status,
 			"durationMs", time.Since(started).Milliseconds(),
 			// Attempts 记录的是 dispatch 阶段执行次数（一次请求每个阶段一条），
@@ -636,6 +673,9 @@ func protocolForPath(path string) contracts.Protocol {
 	case "/v1/chat/completions":
 		return contracts.ProtocolOpenAIChat
 	default:
+		if strings.HasPrefix(path, geminiPathPrefix) {
+			return contracts.ProtocolGemini
+		}
 		return contracts.Protocol("")
 	}
 }

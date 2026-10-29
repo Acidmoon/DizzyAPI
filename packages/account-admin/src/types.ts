@@ -10,7 +10,7 @@
 export type AccountProvider = 'claude' | 'openai' | 'custom'
 
 /** 与 identity 的 protocol 保持一致：上游端点说哪种协议。 */
-export type AccountProtocol = 'openai-chat' | 'openai-responses' | 'anthropic'
+export type AccountProtocol = 'openai-chat' | 'openai-responses' | 'anthropic' | 'gemini'
 
 /** 订阅账号（OAuth，可刷新）与静态 API key。 */
 export type AccountKind = 'oauth' | 'api_key'

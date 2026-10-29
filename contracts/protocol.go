@@ -117,11 +117,32 @@ func (r *CodecRegistry) Protocols() []Protocol {
 //     官方 schema 只有 type / message，`code` 是**纯增量**的超集字段，让客户端
 //     能机器可读地区分网关拒因（例如 ALL_ACCOUNTS_SATURATED）；code 为空时
 //     不输出该键，保持与老形状完全一致。
+//   - gemini → {"error":{"code","message","status","reason"}}：官方 schema 是
+//     {"error":{"code","message","status"}}，其中 `code` 是**整数 HTTP 状态**
+//     （SDK 按整数解析），`status` 是 Google 的枚举名。所以这两个字段必须保持
+//     官方语义，网关的稳定 code 放在**纯增量**的 `reason` 里（空 code 不输出该键），
+//     与 anthropic 那侧的取舍一致：先保证官方形状不坏，再加可读的拒因。
 //
 // 状态码越界（<400 或 >599）一律按 500 渲染，与 engine 一致。
 func RenderError(protocol Protocol, status int, code, message string) []byte {
 	if status < 400 || status > 599 {
 		status = http.StatusInternalServerError
+	}
+	if protocol == ProtocolGemini {
+		detail := map[string]any{
+			"code":    status,
+			"message": message,
+			"status":  geminiErrorStatus(status),
+		}
+		// 稳定错误码只增不改：空 code 不写。
+		if code != "" {
+			detail["reason"] = code
+		}
+		body, err := json.Marshal(map[string]any{"error": detail})
+		if err != nil {
+			return []byte(`{"error":{"code":500,"message":"网关内部错误","status":"INTERNAL"}}`)
+		}
+		return body
 	}
 	if protocol == ProtocolAnthropic {
 		detail := map[string]any{
@@ -183,5 +204,38 @@ func anthropicErrorType(status int) string {
 		return "api_error"
 	default:
 		return "invalid_request_error"
+	}
+}
+
+// geminiErrorStatus 是 Gemini（Google API）错误体的 status 映射。
+//
+// 官方形状里 `status` 是 google.rpc.Status 的枚举名，`code` 是对应的整数 HTTP
+// 状态；客户端 SDK 按这两个字段识别错误类别，所以不能挪作它用。
+func geminiErrorStatus(status int) string {
+	switch {
+	case status == http.StatusBadRequest:
+		return "INVALID_ARGUMENT"
+	case status == http.StatusUnauthorized:
+		return "UNAUTHENTICATED"
+	case status == http.StatusForbidden:
+		return "PERMISSION_DENIED"
+	case status == http.StatusNotFound:
+		return "NOT_FOUND"
+	case status == http.StatusConflict:
+		return "ABORTED"
+	case status == http.StatusTooManyRequests:
+		return "RESOURCE_EXHAUSTED"
+	case status == http.StatusPaymentRequired || status == http.StatusPreconditionFailed:
+		return "FAILED_PRECONDITION"
+	case status == http.StatusNotImplemented:
+		return "UNIMPLEMENTED"
+	case status == http.StatusServiceUnavailable:
+		return "UNAVAILABLE"
+	case status == http.StatusGatewayTimeout:
+		return "DEADLINE_EXCEEDED"
+	case status >= 500:
+		return "INTERNAL"
+	default:
+		return "UNKNOWN"
 	}
 }

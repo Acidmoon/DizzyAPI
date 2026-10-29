@@ -161,6 +161,9 @@ test('protocol：update 可改可清空，非法值明确失败', async (t) => {
   const changed = await world.identity.update(account.id, { protocol: 'anthropic' })
   assert.equal(changed.protocol, 'anthropic')
 
+  const gemini = await world.identity.update(account.id, { protocol: 'gemini' })
+  assert.equal(gemini.protocol, 'gemini', 'gemini 是合法协议')
+
   const cleared = await world.identity.update(account.id, { protocol: null })
   assert.equal(cleared.protocol, null)
 
