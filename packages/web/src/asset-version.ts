@@ -47,8 +47,25 @@ export const APP_CSS_BODY = [
 /** `/assets/app.js` 的正文（与 `web` 路由发出去的逐字节一致）。 */
 export const APP_JS_BODY = `${CLIENT_JS}\n${COPY_JS}`
 
-/** 页面 `<link rel="stylesheet">` 该用的地址（带版本串）。 */
-export const APP_CSS_HREF = `/assets/app.css?v=${shortHash(APP_CSS_BODY)}`
-
 /** 页面 `<script src>` 该用的地址（带版本串）。 */
 export const APP_JS_HREF = `/assets/app.js?v=${shortHash(APP_JS_BODY)}`
+
+let cachedFontCss: string | undefined
+let cachedCssHref = ''
+
+/**
+ * 页面 `<link rel="stylesheet">` 该用的地址（带版本串）。
+ *
+ * **必须把 `fontCss` 算进哈希**，不能做成常量：`/assets/app.css` 实际发出去的正文是
+ * `APP_CSS_BODY + fontSmiley.css()`，字体块要运行时才有（`font-smiley` 可能没装载、
+ * `scope` 也可能被配置改）。只哈希 `APP_CSS_BODY` 的话，改字体 scope / 换字体版本时
+ * URL 不变 —— 回访浏览器一年内还在用旧 CSS，跟「完全没有版本串」是同一类 bug。
+ *
+ * 按 `fontCss` 记忆：同一份字体 CSS 下哈希只算一次。
+ */
+export function appCssHref(fontCss: string): string {
+  if (cachedFontCss === fontCss) return cachedCssHref
+  cachedCssHref = `/assets/app.css?v=${shortHash(`${APP_CSS_BODY}${fontCss}`)}`
+  cachedFontCss = fontCss
+  return cachedCssHref
+}
