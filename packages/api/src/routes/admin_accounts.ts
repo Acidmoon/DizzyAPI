@@ -12,6 +12,8 @@ import { API_ACTOR } from '../constants.ts'
 import { ApiError, badRequest, notFound } from '../errors.ts'
 import { type IncomingMessage, type ServerResponse } from 'node:http'
 
+// ───────────────────────────────── 管理员：上游账号 ─────────────────────────────────
+
 export async function routeAccounts(host: ApiServer, req: IncomingMessage, res: ServerResponse, parts: readonly string[]): Promise<void> {
   const { view: adminView } = await host.requireAdmin(req)
   const identity = { actor: auditActorOf(adminView), actorPlugin: API_ACTOR }
@@ -347,5 +349,3 @@ export async function routeAccounts(host: ApiServer, req: IncomingMessage, res: 
 
   throw notFound('没有这个账号接口')
 }
-
-// ───────────────────────────────── 管理员：目录与设置 ─────────────────────────────────

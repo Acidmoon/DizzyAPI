@@ -13,6 +13,8 @@ import { notFound, toApiError } from '../errors.ts'
 import { type IncomingMessage, type ServerResponse } from 'node:http'
 import type { ContentAuditRuleLike } from '../types.ts'
 
+// ───────────────────────────────── 管理员：内容审核 ─────────────────────────────────
+
 /**
  * 管理面内容审核规则：`/api/admin/content-audit`。
  *
@@ -127,18 +129,3 @@ parts: readonly string[],
 
   throw notFound('没有这个内容审核接口')
 }
-
-// ───────────────────────────────── 管理员：运维总览 ─────────────────────────────────
-
-/**
- * `GET /api/admin/observability`：运维总览（只读聚合）。
- *
- * 返回 `observability` 插件现算的报告：六块事实 + 每块的**数据源健康度**
- * （`ok` / `degraded` / `unavailable` + 人话原因）+ 异常摘要 `warnings`。
- *
- * 两条纪律：
- * - **单块数据源缺失不是 HTTP 错误**：报告里标 `degraded`，接口照常 200；
- *   只有聚合插件本身不在运行时才 503（`OBSERVABILITY_UNAVAILABLE`）。
- * - 金额一律十进制字符串（整数微元），报告里没有 bigint；账号 id / label / baseUrl
- *   与任何秘密都不出现。
- */

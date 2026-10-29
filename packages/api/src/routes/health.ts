@@ -9,6 +9,8 @@ import { priorityState } from '../views/catalog.ts'
 import { API_VERSION } from '../constants.ts'
 import type { GatewayComponentHealth, GatewayHealthState, GatewayHealthView } from '../types.ts'
 
+// ───────────────────────────────── 健康 ─────────────────────────────────
+
 export async function health(host: ApiServer, ): Promise<GatewayHealthView> {
   const components: GatewayComponentHealth[] = [
     { name: 'api', state: 'ok', detail: `listen 127.0.0.1:${host.port}` },
@@ -98,5 +100,3 @@ export async function health(host: ApiServer, ): Promise<GatewayHealthView> {
     components,
   }
 }
-
-// ───────────────────────────────── 内部工具 ─────────────────────────────────

@@ -184,8 +184,6 @@ url: URL,
 }
 
 /** 管理面：批次列表与单个批次。 */
-
-/** 管理面：批次列表与单个批次。 */
 export async function routeAdminRedeemBatches(
 host: ApiServer,
 req: IncomingMessage,
@@ -216,8 +214,6 @@ url: URL,
 }
 
 /** 管理面：兑换码统计。 */
-
-/** 管理面：兑换码统计。 */
 export async function routeAdminRedeemStats(
 host: ApiServer,
 req: IncomingMessage,
@@ -228,12 +224,3 @@ res: ServerResponse,
   const redeem = host.requireRedeem()
   host.sendJson(req, res, 200, redeemStatsOf(await redeem.stats(API_ACTOR)))
 }
-
-// ───────────────────────────────── 管理员：结算 ─────────────────────────────────
-
-/**
- * `GET /api/admin/billing`：结算记录 + 汇总（只读，真实扣费不在 HTTP 层发生）。
- *
- * 查询参数：`status`（结算状态或 `problem`）、`limit`、`offset`。
- * 金额一律写成十进制字符串（整数微元），浏览器用 BigInt 解析。
- */

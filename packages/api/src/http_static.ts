@@ -14,6 +14,8 @@ import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { FrontendPort } from './types.ts'
 
+// ───────────────────────────────── 静态 ─────────────────────────────────
+
 export function assetPrefix(host: ApiServer, ): string {
   const configured = host.runtime.frontend()?.config?.publicBase
   const base = typeof configured === 'string' && configured !== '' ? configured : '/assets/frontend'
@@ -92,8 +94,6 @@ export async function serveIndex(host: ApiServer, req: IncomingMessage, res: Ser
 }
 
 /** 前端插件卸载时会把 `state.json.enabled` 置 false；此时静态字节一律 404。 */
-
-/** 前端插件卸载时会把 `state.json.enabled` 置 false；此时静态字节一律 404。 */
 export async function frontendEnabled(host: ApiServer, frontend: FrontendPort): Promise<boolean> {
   try {
     const assets = await frontend.assets()
@@ -106,5 +106,3 @@ export async function frontendEnabled(host: ApiServer, frontend: FrontendPort): 
     return true
   }
 }
-
-// ───────────────────────────────── API 路由 ─────────────────────────────────
