@@ -899,9 +899,43 @@ pnpm build:all        # 两个二进制一起编
 - **模态弹窗用原生 `<dialog>`**（`showModal()`）：焦点陷阱、ESC 关闭、`::backdrop` 交给浏览器，
   外观全自绘（`.dialog*` 在 `layout-classes.ts`）。**不要自己实现焦点陷阱**——
   手写的版本在 Safari / 移动端都会被 tab 键绕出去。
-- **控件渲染有单测**：`packages/page-template/test/controls.test.ts`（11 条）断言「无 JS 可用」
+- **控件渲染有单测**：`packages/page-template/test/controls.test.ts`（22 条）断言「无 JS 可用」
   （原生元素在、`name` / `value` / `selected` 对、转义到位）和「有 JS 能升级」（钩子、
-  幂等守卫、`try/catch`、`htmx:afterSwap` 重跑）。
+  幂等守卫、`try/catch`、`htmx:afterSwap` 重跑），以及下面这几条踩过的坑。
+- **`CLIENT_JS` 单独一个文件**（`packages/page-template/src/client-script.ts`，`assets.ts`
+  只重新导出）。它现在是站点行为的唯一入口，和像素级 CSS 混在一个文件会同时违反
+  「一个文件一个职责」与单文件行数上限。**不要往 `assets.ts` 里塞脚本**。
+- **vendor 库的外观必须自己重画**（`packages/page-template/src/vendor-theme.ts` 的
+  `VENDOR_THEME_CSS`）：Tom Select 与 flatpickr 都自带**浅色主题**，直接 vendor 进来会在
+  深色站上出现白色下拉框与白色日历。只覆盖颜色 / 圆角 / 间距 / 字号，**不碰定位**
+  （浮层定位由库自己用 CSSOM 算）。
+  **拼接顺序是契约**：`PAGE_CSS + COMPONENT_CSS + LAYOUT_CSS + MODAL_CSS + vendorCss +
+  VENDOR_THEME_CSS`。同优先级按顺序取胜，主题必须排在 `vendorCss` **之后**，否则被浅色盖回去。
+- **`.ts-hidden-accessible` 得自己写**：Tom Select 给原始 `<select>` 加了这个类名，
+  但**规则不在它的 min.css 里**（截图实测：原生下拉和 `.ts-wrapper` 同时显示，
+  表现为同一行两个「全部动作」、控件比同排输入框高一截）。`VENDOR_THEME_CSS` 里补了一份
+  标准写法（`clip: rect(0 0 0 0)` + `position: absolute` + `!important`）。
+- **Tom Select 会把原生控件的 class 抄到自己的 `.ts-wrapper` 上**：我们的 `<select
+  class="input">` 于是让 wrapper 也带 `.input`，两层边框内边距叠加成「框里套框」、
+  比同排控件高。升级后要 `wrapper.classList.remove('input')`——皮肤归 `.ts-control`。
+- **原生 `<input type="date">` 升级成 flatpickr 前要改成 `type="text"`**：否则浏览器自带的
+  日历图标与 flatpickr 的浮层叠在一起。改 `type` 是 DOM 属性赋值，不涉及 `style`，CSP 不管。
+- **弹窗里的 flatpickr 日历要搬进 `<dialog>`**：`<dialog>` 用 `showModal()` 打开后在
+  **顶层（top layer）**，而 flatpickr 把日历挂在 `document.body` 上——会被 backdrop 盖住，
+  日历 `open` 类加上了、屏幕上什么都没有。搬进最近的 `<dialog>` 就能进顶层；但换父元素
+  改变了定位参照系（dialog 是定位元素），flatpickr 按文档坐标算的 `left/top` 会跑偏，
+  所以 `CLIENT_JS` 里要在 focus/click 之后**按视口重算一次**（含「下面放不下就上翻」），
+  并把 dialog 的 `overflow` 放开（`hidden` 会把日历裁掉）。
+- **异步闭包里不要用循环变量**：`for (var j …)` 里 `dates[j]` 被 `setTimeout` 捕获，读到的
+  是循环结束后的 `j`（= length，`undefined`），表现为「逻辑明明写了却没生效、而且不报错」。
+  这是「日历位置纠正不生效」的真因。先把当前元素取成局部变量再用。
+- **行内筛选栏用 `.form--inline`，不要用老的 `.inline-form`**：`.form` 是纵向列容器，
+  `.input` 又是 `width: 100%`，`display: inline` 的写法实际效果是每个控件各占一行
+  （审计页筛选栏一直是上下堆着的）。`.form--inline` 给行容器 + 控件显式宽度，
+  Tom Select 的可见框是 `.ts-control` 不是 `.input`，高度要单独钉住才和同排输入框等高。
+- **弹窗打开后要把焦点放到第一个输入框**：否则浏览器把焦点给右上角的关闭按钮，
+  每次打开都有一圈焦点环，看起来像按钮坏了。`CLIENT_JS` 打开后 focus
+  `.dialog__body--modal input.input`。
 
 ### 字号与图表几何
 

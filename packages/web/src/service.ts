@@ -7,7 +7,7 @@
 import { randomUUID } from 'node:crypto'
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import { Service, type Context } from 'cordis'
-import { CLIENT_JS, COMPONENT_CSS, LAYOUT_CSS, PAGE_CSS, VENDOR_ASSET_PREFIX, type PageTemplateService } from '@dizzyapi/plugin-page-template'
+import { CLIENT_JS, COMPONENT_CSS, LAYOUT_CSS, MODAL_CSS, PAGE_CSS, VENDOR_ASSET_PREFIX, VENDOR_THEME_CSS, type PageTemplateService } from '@dizzyapi/plugin-page-template'
 import { validateWebConfig, type ResolvedWebConfig, type WebConfig } from './config.ts'
 import { apiDocsResource } from './content/api_docs.ts'
 import { assertSameOrigin, readForm, WebError } from './forms.ts'
@@ -191,7 +191,8 @@ export class WebService extends Service {
         // 不需要多写 <link>，也不用改 CSP。
         // 用 this.template 而不是 runtime()：pageTemplate 是 static inject，必然已装载。
         const vendorCss = this.template.vendorCss()
-        this.send(res, 200, 'text/css; charset=utf-8', `${PAGE_CSS}${COMPONENT_CSS}${LAYOUT_CSS}\n${vendorCss}\n${fontCss}`, true)
+        // 顺序是契约：vendor 主题覆盖必须排在 vendorCss **之后**，否则被浅色主题盖回去。
+        this.send(res, 200, 'text/css; charset=utf-8', `${PAGE_CSS}${COMPONENT_CSS}${LAYOUT_CSS}${MODAL_CSS}\n${vendorCss}\n${VENDOR_THEME_CSS}\n${fontCss}`, true)
         return
       }
       if (path.startsWith(VENDOR_ASSET_PREFIX)) {

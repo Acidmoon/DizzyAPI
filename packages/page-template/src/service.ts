@@ -20,6 +20,7 @@ import { escapeAttr, escapeText } from './escape.ts'
 import { renderConfirmDialog, type ConfirmDialogOptions } from './confirm.ts'
 import { renderSelect, renderSelectShell, type SelectOptions, type SelectShellOptions } from './select.ts'
 import { renderDatePicker, type DatePickerOptions } from './date-picker.ts'
+import { dialogOpenAttr, renderModal, type ModalOptions } from './modal.ts'
 import {
   VENDOR_ASSET_PREFIX,
   VENDOR_SCRIPT_ORDER,
@@ -290,6 +291,16 @@ export class PageTemplateService extends Service {
   /** 日期：`<input type="date" data-flatpickr>`。 */
   renderDatePicker(options: DatePickerOptions): string {
     return renderDatePicker(options)
+  }
+
+  /** 弹窗外壳（原生 `<dialog>` + 自绘外观）。 */
+  renderModal(options: ModalOptions): string {
+    return renderModal(options)
+  }
+
+  /** 打开某个弹窗的属性片段（前面带一个空格，直接拼进触发元素）。 */
+  dialogOpenAttr(id: string): string {
+    return dialogOpenAttr(id)
   }
 }
 

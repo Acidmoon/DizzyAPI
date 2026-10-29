@@ -38,6 +38,29 @@ const LAYOUT_CLASSES = `
  * 一处改样式、全站变样，所以改成按需加类。 */
 .row--stack-actions > .actions { flex: 1 1 100%; }
 
+/* ── 行内表单 ──────────────────────────────────────────────────────
+ * .form 是**纵向**列容器（gap 24px，一行一个字段），适合编辑表单。
+ * 筛选栏要的是「控件横向排一行、窄了自动换行」，那是 .form--inline。
+ *
+ * 为什么不能继续用原来的 .inline-form（display: inline）：.input 是 width: 100%，
+ * 在 inline 容器里每个控件都占满整行，视觉上等于纵向堆叠——审计页的筛选栏一直是
+ * 这样堆着的（实测截图）。这里给 .input 显式宽度，让它真的排成一行。 */
+.form--inline {
+  display: flex;
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  max-width: none;
+}
+.form--inline .input { width: auto; min-width: 150px; height: 38px; }
+.form--inline .input--narrow { min-width: 0; width: 110px; }
+.form--inline .btn { height: 38px; }
+/* Tom Select 的可见框是 .ts-control（不是 .input），高度要单独钉住，
+ * 否则它按库默认的 padding 撑到 40px+，比同排的输入框高、并且会压到下面的内容。 */
+.form--inline .ts-wrapper .ts-control { min-height: 38px; height: 38px; padding: 0 12px; }
+.form--inline .ts-wrapper { min-width: 170px; }
+
 /* ── 面板：内边距 ────────────────────────────────────────────────
  * .panel 默认是卡片（overflow:hidden，用于表格容器）。内容型面板
  * （放一段说明或一段代码）用 --pad 给自己的内边距。 */
