@@ -373,7 +373,7 @@ pnpm test:go
 
 - 新增插件必须有 `test/*.test.ts`；新增 Go 模块必须有单测。
 - 测试失败先修实现，不允许删断言或放宽断言来变绿。
-- 当前基线（2026-10-30 实测）：`pnpm test` 820 个用例（819 通过 / 1 跳过），`pnpm typecheck` 干净，
+- 当前基线（2026-10-30 实测）：`pnpm test` 822 个用例（821 通过 / 1 跳过），`pnpm typecheck` 干净，
   `go test ./...` **26 包**全 ok，`gofmt -l .` 与 `go vet ./...` 无输出。
   这个数字会变，以实际输出为准。
 - **验收任何分支前先 `pnpm build:go`**（不只是改过 Go 的分支）：`pnpm test` 里有真进程用例会
@@ -411,12 +411,11 @@ pnpm test:go
   `page-template/src/vendor.ts`（`vendorHref()`）。页面里**不许手拼** `/assets/vendor/...`。
   这些字节发的是 `Cache-Control: public, max-age=31536000, immutable`（一年、不重新验证），
   没有版本串就等于「改了样式用户看不到」。
-- **已知债：`app.css` 的哈希不含 `font-smiley` 追加的 `@font-face` 块**。那一块要运行时才有
-  （服务端渲染 `<link>` 时 font 插件还没注入），所以改字体 `scope` 或换字体版本时，
-  `app.css` 的 URL 哈希不变 → 回访浏览器一年内还在用旧 CSS。
-  `/assets/fonts/*.woff2` 本身也是固定路径 + `immutable`。**两者要一起修**（把 href 改成
-  由 `web` 在拿到 `fontCss()` 之后惰性算，或让 `font-smiley` 给自己的字体 URL 带版本串），
-  别只修一半。
+- **`app.css` 的地址不能是常量**：实际发出去的正文是 `APP_CSS_BODY + fontSmiley.css()`，
+  字体块要运行时才有，所以地址走 `appCssHref(fontCss)` / `documentAssets(fontCss)`，
+  页面渲染用 `fontCssOf(ctx)`；字体 URL 自己也带 `?v=<字体字节哈希>`。
+  **改回常量就是 2026-10-30 修掉的那个洞**（改字体 scope 后 URL 不变 → 回访浏览器一年用旧 CSS）。
+  具体规则与护栏见 §7「前端」。
 
 ### 5.6 文件粒度与耦合（owner 2026-10-29 追加）
 
