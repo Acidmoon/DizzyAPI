@@ -284,6 +284,142 @@ func TestGeminiClientStreamingGeminiUpstream(t *testing.T) {
 	}
 }
 
+// 官方 REST 形状：客户端路径带 `models/` 前缀（官方 SDK 默认就这么拼），
+// 上游 URL 必须只有一层 `models/`；body 与非流式路径仍逐字节直通。
+func TestGeminiEntryAcceptsModelsPrefix(t *testing.T) {
+	var upstreamPath, upstreamBody string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamPath = r.URL.Path
+		raw, _ := io.ReadAll(r.Body)
+		upstreamBody = string(raw)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, geminiResponseBody)
+	}))
+	defer upstream.Close()
+
+	world := newGatewayWithAllCodecs(t, upstream.URL, keyauth.Config{})
+	if _, err := world.accounts.Replace(snapshot(upstream.URL+"/v1beta", accounts.Account{
+		AccountID: "acc-1", Provider: "custom", Kind: "api_key",
+		Token: "AIza-secret", Protocol: "gemini",
+	})); err != nil {
+		t.Fatalf("Replace: %v", err)
+	}
+
+	body := `{"contents":[{"role":"user","parts":[{"text":"hi"}]}]}`
+	for _, path := range []string{
+		"/v1beta/models/models/gemini-2.5-flash:generateContent",
+		"/v1beta/models/models%2Fgemini-2.5-flash:generateContent",
+		"/v1beta/models/gemini-2.5-flash:generateContent",
+	} {
+		recorder := postPath(t, world.handler, path, body)
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("%s：期望 200，得到 %d：%s", path, recorder.Code, recorder.Body.String())
+		}
+		if upstreamPath != "/v1beta/models/gemini-2.5-flash:generateContent" {
+			t.Fatalf("%s：上游路径 %q，期望只有一层 models/", path, upstreamPath)
+		}
+		if upstreamBody != body {
+			t.Fatalf("%s：同协议直通必须逐字节不变：%s", path, upstreamBody)
+		}
+		if recorder.Body.String() != geminiResponseBody {
+			t.Fatalf("%s：响应必须逐字节不变：%s", path, recorder.Body.String())
+		}
+	}
+}
+
+// 带 models/ 前缀 + 流式：方法名与 alt=sse 仍正确，上游仍只有一层 models/。
+func TestGeminiEntryModelsPrefixWithStream(t *testing.T) {
+	var upstreamPath, upstreamRawQuery string
+	frames := "data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"hi\"}]}}]}\n\n"
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamPath = r.URL.Path
+		upstreamRawQuery = r.URL.RawQuery
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, frames)
+	}))
+	defer upstream.Close()
+
+	world := newGatewayWithAllCodecs(t, upstream.URL, keyauth.Config{})
+	if _, err := world.accounts.Replace(snapshot(upstream.URL+"/v1beta", accounts.Account{
+		AccountID: "acc-1", Provider: "custom", Kind: "api_key",
+		Token: "AIza-secret", Protocol: "gemini",
+	})); err != nil {
+		t.Fatalf("Replace: %v", err)
+	}
+
+	recorder := postPath(t, world.handler,
+		"/v1beta/models/models/gemini-2.5-flash:streamGenerateContent", `{"contents":[]}`)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("期望 200，得到 %d：%s", recorder.Code, recorder.Body.String())
+	}
+	if upstreamPath != "/v1beta/models/gemini-2.5-flash:streamGenerateContent" {
+		t.Fatalf("上游流式路径不对：%s", upstreamPath)
+	}
+	if upstreamRawQuery != "alt=sse" {
+		t.Fatalf("流式请求必须带 alt=sse：%q", upstreamRawQuery)
+	}
+}
+
+// 非法路径（双层前缀、剥完仍带斜杠）→ 404，不是 500，也不该打到上游。
+func TestGeminiEntryRejectsUnsafePaths(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("非法路径不该到达上游：%s", r.URL.Path)
+	}))
+	defer upstream.Close()
+
+	world := newGatewayWithAllCodecs(t, upstream.URL, keyauth.Config{})
+	if _, err := world.accounts.Replace(snapshot(upstream.URL+"/v1beta", accounts.Account{
+		AccountID: "acc-1", Provider: "custom", Kind: "api_key",
+		Token: "AIza-secret", Protocol: "gemini",
+	})); err != nil {
+		t.Fatalf("Replace: %v", err)
+	}
+
+	for _, path := range []string{
+		"/v1beta/models/models/models/gemini:generateContent",
+		"/v1beta/models/models/a/b:generateContent",
+		"/v1beta/models/a%2F..%2Fb:generateContent",
+		"/v1beta/models/models%2F..%2Fetc:generateContent",
+		"/v1beta/models/a%5Cb:generateContent",
+	} {
+		recorder := postPath(t, world.handler, path, `{"contents":[]}`)
+		if recorder.Code != http.StatusNotFound {
+			t.Fatalf("%s：期望 404，得到 %d：%s", path, recorder.Code, recorder.Body.String())
+		}
+	}
+}
+
+// 带 models/ 前缀的 Gemini 客户端 → OpenAI 上游：渲染进 body 的模型名是裸名。
+func TestGeminiEntryPrefixCrossProtocolUsesBareModel(t *testing.T) {
+	var upstreamBody map[string]any
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(raw, &upstreamBody)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"chatcmpl-1","object":"chat.completion","model":"gpt-5",
+			"choices":[{"index":0,"message":{"role":"assistant","content":"hi"},"finish_reason":"stop"}],
+			"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)
+	}))
+	defer upstream.Close()
+
+	world := newGatewayWithAllCodecs(t, upstream.URL, keyauth.Config{})
+	if _, err := world.accounts.Replace(snapshot(upstream.URL+"/v1", accounts.Account{
+		AccountID: "acc-1", Provider: "openai", Kind: "api_key",
+		Token: "sk-openai", Protocol: "openai-chat",
+	})); err != nil {
+		t.Fatalf("Replace: %v", err)
+	}
+
+	body := `{"contents":[{"role":"user","parts":[{"text":"hi"}]}]}`
+	recorder := postPath(t, world.handler, "/v1beta/models/models/gemini-2.5-flash:generateContent", body)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("期望 200，得到 %d：%s", recorder.Code, recorder.Body.String())
+	}
+	if upstreamBody["model"] != "gemini-2.5-flash" {
+		t.Fatalf("渲染进上游 body 的模型名应是裸名：%v", upstreamBody["model"])
+	}
+}
+
 // 跨协议但缺 codec：仍然 fail-closed（加 Gemini codec 不能顺带放开别的协议）。
 func TestGeminiCrossProtocolWithoutCodecFailsClosed(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
