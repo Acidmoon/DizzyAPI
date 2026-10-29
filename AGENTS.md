@@ -443,6 +443,15 @@ pnpm build:cli        # 产出 bin/dizzy(.exe)（命令行客户端，见 §6.2�
 pnpm build:all        # 两个二进制一起编
 ```
 
+- **多 worktree 并行时，路径敏感的写操作一律用绝对路径**（2026-10-30 实测踩坑）：在工具调用里
+  先 `cd <worktree>` 再用相对路径调 `[IO.File]` / `Set-Content` 之类，`cd` **不一定作用到**
+  这些 API 的路径解析上，文件会落到**主仓库**里。表现是主仓库里冒出一个不该存在的文件
+  （曾把 `packages/web/test/helpers/docs-fixture.ts` 建成 0 字节空文件，害得 `git merge --ff-only`
+  报「untracked working tree files would be overwritten」）。所以：
+  - 文件操作**写绝对路径**，或直接用工具的 `workdir` 参数，不要靠同一条命令里的 `cd`；
+  - **提交 / 合并前先看主仓库 `git status --porcelain` 必须为空**，不为空先停下查清来源，
+    不要顺手删、也不要带着它继续操作。
+
 ### 6.2 命令行客户端 `dizzy`（`cmd/dizzy`）
 
 `dizzy` 是**客户端**：静态 Go 二进制，零环境依赖，只通过 HTTP 访问网关，
