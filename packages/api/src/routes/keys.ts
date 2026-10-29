@@ -8,7 +8,7 @@ import type { ApiServer } from '../http.ts'
 import { assertOnlyKeys, requiredBoolean, requiredInteger, requiredString } from '../params.ts'
 import { normalizeCreatedKey, normalizeKeyList, normalizeKeySummary } from '../views/account.ts'
 import { badRequest, notFound } from '../errors.ts'
-import { type IncomingMessage, type ServerResponse } from 'node:http'
+import { IncomingMessage, ServerResponse } from 'node:http'
 import { requireSession } from '../http_session.ts'
 import { allowMethod, jsonBody, sendJson, sendMethodNotAllowed } from '../http_respond.ts'
 

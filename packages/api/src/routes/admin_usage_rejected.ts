@@ -10,7 +10,7 @@ import { rejectedRowOf } from '../views/usage.ts'
 import { audited } from '../audit.ts'
 import { API_ACTOR } from '../constants.ts'
 import { badRequest, notFound } from '../errors.ts'
-import { type IncomingMessage, type ServerResponse } from 'node:http'
+import { IncomingMessage, ServerResponse } from 'node:http'
 import type { UsagePort, UsageRejectedQueryLike } from '../types.ts'
 import { allowMethod, allowRead, jsonBody, sendJson } from '../http_respond.ts'
 

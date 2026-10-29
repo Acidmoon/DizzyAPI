@@ -8,7 +8,7 @@ import type { ApiServer } from '../http.ts'
 import { queryStringOf } from '../params.ts'
 import { modelCatalogOf } from '../views/catalog.ts'
 import { ApiError, badRequest } from '../errors.ts'
-import { type IncomingMessage, type ServerResponse } from 'node:http'
+import { IncomingMessage, ServerResponse } from 'node:http'
 import { allowRead, sendJson } from '../http_respond.ts'
 import { requireSession } from '../http_session.ts'
 

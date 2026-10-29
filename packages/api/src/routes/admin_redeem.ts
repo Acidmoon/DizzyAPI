@@ -5,12 +5,22 @@
  * 判定顺序与分发在 http.ts 的 routeApi，本文件不自行分发。
  */
 import type { ApiServer } from '../http.ts'
-import { assertOnlyKeys, nullableString, optionalInteger, optionalString, parseIntegerParam, queryStringOf, readStringArray, requiredMicros, requiredString } from '../params.ts'
+import {
+  assertOnlyKeys,
+  nullableString,
+  optionalInteger,
+  optionalString,
+  parseIntegerParam,
+  queryStringOf,
+  readStringArray,
+  requiredMicros,
+  requiredString,
+} from '../params.ts'
 import { redeemBatchOf, redeemCodeOf, redeemStatsOf } from '../views/commerce.ts'
 import { auditActorOf, audited } from '../audit.ts'
 import { API_ACTOR } from '../constants.ts'
 import { badRequest, notFound } from '../errors.ts'
-import { type IncomingMessage, type ServerResponse } from 'node:http'
+import { IncomingMessage, ServerResponse } from 'node:http'
 import { requireAdmin } from '../http_session.ts'
 import { allowMethod, allowRead, jsonBody, sendJson, sendMethodNotAllowed } from '../http_respond.ts'
 

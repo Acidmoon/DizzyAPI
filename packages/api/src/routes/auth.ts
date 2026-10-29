@@ -8,7 +8,7 @@ import type { ApiServer } from '../http.ts'
 import { optionalString, requiredString } from '../params.ts'
 import { deviceMeta, readCookie } from '../http_io.ts'
 import { notFound } from '../errors.ts'
-import { type IncomingMessage, type ServerResponse } from 'node:http'
+import { IncomingMessage, ServerResponse } from 'node:http'
 import { allowMethod, jsonBody, sendJson } from '../http_respond.ts'
 import { clearSessionCookie, loginResponse, setSessionCookie } from '../http_session.ts'
 

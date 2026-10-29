@@ -15,84 +15,25 @@
  * 不引第三方运行时依赖。
  */
 import { randomBytes } from 'node:crypto'
-import { readFile } from 'node:fs/promises'
-import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
-import { extname, join } from 'node:path'
-import { BALANCE_MINOR_UNITS_PER_CENT, type ResolvedApiConfig } from './config.ts'
-import { audited, auditActorOf } from './audit.ts'
-import { ApiError, badRequest, forbidden, isApiError, notFound, toApiError, unauthorized } from './errors.ts'
+import { createServer, IncomingMessage, Server, ServerResponse } from 'node:http'
+import { join } from 'node:path'
+import { ResolvedApiConfig } from './config.ts'
+import { ApiError, notFound } from './errors.ts'
 import type {
   AccountAdminPort,
-  AccountPriorityPort,
-  AccountViewLike,
-  AdminUserView,
   ApiKeyPort,
-  ApiKeySummaryView,
   ApiRuntime,
-  AuditQueryLike,
-  AuthPort,
   BillingPort,
-  CatalogModuleView,
   CatalogPort,
   ContentAuditPort,
-  ContentAuditRuleInputLike,
-  ContentAuditRuleLike,
-  ContentAuditRulePatchLike,
-  ContentAuditStatusLike,
-  FrontendPageLike,
   FrontendPort,
-  GatewayComponentHealth,
-  GatewayHealthState,
-  GatewayHealthView,
-  LoginResultLike,
-  ModelCatalogLike,
-  ModelEntryLike,
-  ModelPriceInputLike,
-  ModelPriceLike,
-  PricingPort,
-  RedeemBatchLike,
-  RedeemCodeLike,
   RedeemPort,
-  RedeemResultLike,
-  RedeemStatsLike,
-  RedemptionLike,
-  SessionInfoView,
-  SessionRole,
-  SessionUserView,
-  SessionViewLike,
-  SettleDailyLike,
-  SettleModelLike,
-  SettleRecordLike,
-  SettleSummaryLike,
-  SettleTotalsLike,
   SettingsPort,
-  TopupOptionsLike,
-  TopupOrderLike,
   TopupPort,
-  TopupStatsLike,
-  UsageDailyPointLike,
-  UsageModelBreakdownLike,
   UsagePort,
-  UsageQueryLike,
-  UsageRejectedQueryLike,
-  UsageRejectedRowLike,
-  UsageRowLike,
-  UsageTotalsLike,
-  UsageUserBreakdownLike,
-  UserLike,
-  UserPort,
-  UserStatusLike,
 } from './types.ts'
-import { contentTypeOf, decodeSegment, deviceMeta, isSpaPath, readBody, readCookie, requestIdOf } from './http_io.ts'
-import { accountCredentialOf, assertOnlyKeys, errorCodeOf, isPlainObject, nullableString, nullableStringArray, nullableStringMap, optionalAvatar, optionalInteger, optionalString, optionalStringArray, optionalStringMap, parseIntegerParam, parsePositiveInteger, queryStringOf, readStringArray, requiredBoolean, requiredInteger, requiredMicros, requiredString, safeJson } from './params.ts'
-import { centsOf, dateOf } from './views/common.ts'
-import { adminUsageCsv, adminUsageRowOf, rejectedRowOf, usageCsv, usageDailyOf, usageDetailOf, usageModelOf, usageRowOf, usageTotalsOf, usageUserOf } from './views/usage.ts'
-import { adminUserOf, parseUserId, roleOf, sessionInfoOf, sessionUserOf } from './views/session.ts'
-import { redeemBatchOf, redeemCodeOf, redeemResultOf, redeemStatsOf, redemptionOf, settleDailyOf, settleModelOf, settleRecordOf, settleTotalsOf, topupOptionsOf, topupOrderOf, topupStatsOf } from './views/commerce.ts'
-import { catalogState, modelCatalogOf, priorityState } from './views/catalog.ts'
-import { accountOf, keyPortResult, normalizeBulkImport, normalizeCreatedKey, normalizeKeyList, normalizeKeySummary } from './views/account.ts'
-import { contentAuditInputOf, contentAuditPatchOf, contentAuditRuleMetadata, contentAuditRuleOf, contentAuditStatusOf } from './views/audit.ts'
-import { ADMIN_USAGE_EXPORT_LIMIT, API_ACTOR, API_REQUEST_HEADER, API_VERSION, CONTENT_SECURITY_POLICY, IMMUTABLE, NO_STORE, STATS_USER_MAX_PAGES, STATS_USER_PAGE, USAGE_RANGE_DAYS, UsageRange } from './constants.ts'
+import { decodeSegment, isSpaPath } from './http_io.ts'
+import { API_ACTOR, API_REQUEST_HEADER, API_VERSION, NO_STORE } from './constants.ts'
 
 export { API_ACTOR, API_REQUEST_HEADER, API_VERSION } from './constants.ts'
 import { health } from './routes/health.ts'
@@ -110,15 +51,14 @@ import { routeAdminTopupOrders } from './routes/admin_topup.ts'
 import { routeAdminAudit } from './routes/admin_audit.ts'
 import { routeAdminContentAudit } from './routes/admin_content_audit.ts'
 import { routeAdminObservability } from './routes/admin_observability.ts'
-import { routeAdminUsage, adminUsageQuery, userNameResolver } from './routes/admin_usage.ts'
-import { routeAdminUsageRejected, adminRejectedView } from './routes/admin_usage_rejected.ts'
-import { adminStats, allUsers } from './routes/admin_stats.ts'
+import { routeAdminUsage } from './routes/admin_usage.ts'
+import { adminStats } from './routes/admin_stats.ts'
 import { routeUsers } from './routes/admin_users.ts'
 import { routeAccounts } from './routes/admin_accounts.ts'
 import { routeSettings, catalogModules } from './routes/settings.ts'
-import { assetPrefix, isAssetPath, serveAsset, serveIndex, frontendEnabled } from './http_static.ts'
-import { sessionToken, requireSession, requireAdmin, sessionResponse, loginResponse, emailOf, setSessionCookie, clearSessionCookie, secureCookie } from './http_session.ts'
-import { allowRead, allowMethod, jsonBody, sendJson, sendBody, sendMethodNotAllowed, respondError } from './http_respond.ts'
+import { isAssetPath, serveAsset, serveIndex } from './http_static.ts'
+import { requireSession, requireAdmin, sessionResponse } from './http_session.ts'
+import { allowRead, sendJson, sendMethodNotAllowed, respondError } from './http_respond.ts'
 
 /**
  * HTTP 服务器。它只依赖 `ApiRuntime` 这组端口，不 import 任何具体插件类；
@@ -224,7 +164,7 @@ export class ApiServer {
       }
 
       if (req.method !== 'GET' && req.method !== 'HEAD') {
-        this.sendMethodNotAllowed(req, res, ['GET', 'HEAD'])
+        sendMethodNotAllowed(this, req, res, ['GET', 'HEAD'])
         return
       }
 
@@ -234,19 +174,19 @@ export class ApiServer {
         return
       }
 
-      if (this.isAssetPath(pathname)) {
-        await this.serveAsset(req, res, pathname)
+      if (isAssetPath(this, pathname)) {
+        await serveAsset(this, req, res, pathname)
         return
       }
 
       if (isSpaPath(pathname)) {
-        await this.serveIndex(req, res)
+        await serveIndex(this, req, res)
         return
       }
 
       throw notFound('没有这个页面')
     } catch (error) {
-      this.respondError(req, res, error)
+      respondError(this, req, res, error)
     }
   }
 
@@ -295,14 +235,14 @@ export class ApiServer {
 
     // 公开面
     if (parts.length === 1 && parts[0] === 'health') {
-      if (!this.allowRead(req, res)) return
+      if (!allowRead(this, req, res)) return
       sendJson(this, req, res, 200, await health(this))
       return
     }
     if (parts.length === 2 && parts[0] === 'console' && parts[1] === 'manifest') {
-      if (!this.allowRead(req, res)) return
+      if (!allowRead(this, req, res)) return
       const frontend = this.requireFrontend()
-      this.sendJson(req, res, 200, await frontend.manifest(), { 'Cache-Control': NO_STORE })
+      sendJson(this, req, res, 200, await frontend.manifest(), { 'Cache-Control': NO_STORE })
       return
     }
     if (parts[0] === 'auth') {
@@ -312,9 +252,9 @@ export class ApiServer {
 
     // 需要会话
     if (parts.length === 1 && parts[0] === 'session') {
-      if (!this.allowRead(req, res)) return
-      const view = await this.requireSession(req)
-      this.sendJson(req, res, 200, await this.sessionResponse(view))
+      if (!allowRead(this, req, res)) return
+      const view = await requireSession(this, req)
+      sendJson(this, req, res, 200, await sessionResponse(this, view))
       return
     }
     if (parts[0] === 'profile') {
@@ -326,19 +266,19 @@ export class ApiServer {
       return
     }
     if (parts.length === 1 && parts[0] === 'usage') {
-      if (!this.allowRead(req, res)) return
+      if (!allowRead(this, req, res)) return
       sendJson(this, req, res, 200, await usage(this, req, url))
       return
     }
     if (parts.length === 2 && parts[0] === 'usage' && parts[1] === 'export') {
-      if (!this.allowRead(req, res)) return
+      if (!allowRead(this, req, res)) return
       await usageExport(this, req, res, url)
       return
     }
     // GET /api/usage/:reqId —— 单条用量详情（详情弹窗用）。
     // 必须排在 `usage/export` 之后：那个是固定子路径，不能被当成 reqId。
     if (parts.length === 2 && parts[0] === 'usage') {
-      if (!this.allowRead(req, res)) return
+      if (!allowRead(this, req, res)) return
       await usageDetail(this, req, res, parts[1] as string)
       return
     }
@@ -397,7 +337,7 @@ export class ApiServer {
       return
     }
     if (parts.length === 2 && parts[0] === 'admin' && parts[1] === 'stats') {
-      if (!this.allowRead(req, res)) return
+      if (!allowRead(this, req, res)) return
       await adminStats(this, req, res)
       return
     }
@@ -410,8 +350,8 @@ export class ApiServer {
       return
     }
     if (parts.length === 2 && parts[0] === 'catalog' && parts[1] === 'modules') {
-      if (!this.allowRead(req, res)) return
-      await this.requireAdmin(req)
+      if (!allowRead(this, req, res)) return
+      await requireAdmin(this, req)
       const catalog = this.requireCatalog()
       sendJson(this, req, res, 200, await catalogModules(this, catalog))
       return
@@ -522,127 +462,4 @@ export class ApiServer {
     }
     return contentAudit
   }
-  /** @internal 实现在 http_static.ts（薄委派；注释与实现在那边，这里只转发）。 */
-assetPrefix(): string {
-    return assetPrefix(this)
-  }
-
-  /** @internal 实现在 http_static.ts（薄委派；注释与实现在那边，这里只转发）。 */
-isAssetPath(pathname: string): boolean {
-    return isAssetPath(this, pathname)
-  }
-
-  /** @internal 实现在 http_static.ts（薄委派；注释与实现在那边，这里只转发）。 */
-async serveAsset(req: IncomingMessage, res: ServerResponse, pathname: string): Promise<void> {
-    return await serveAsset(this, req, res, pathname)
-  }
-
-  /** @internal 实现在 http_static.ts（薄委派；注释与实现在那边，这里只转发）。 */
-async serveIndex(req: IncomingMessage, res: ServerResponse): Promise<void> {
-    return await serveIndex(this, req, res)
-  }
-
-  /** @internal 实现在 http_static.ts（薄委派；注释与实现在那边，这里只转发）。 */
-async frontendEnabled(frontend: FrontendPort): Promise<boolean> {
-    return await frontendEnabled(this, frontend)
-  }
-
-  /** @internal 实现在 http_session.ts（薄委派；注释与实现在那边，这里只转发）。 */
-sessionToken(req: IncomingMessage): string {
-    return sessionToken(this, req)
-  }
-
-  /** @internal 实现在 http_session.ts（薄委派；注释与实现在那边，这里只转发）。 */
-async requireSession(req: IncomingMessage): Promise<SessionViewLike> {
-    return await requireSession(this, req)
-  }
-
-  /** @internal 实现在 http_session.ts（薄委派；注释与实现在那边，这里只转发）。 */
-async requireAdmin(req: IncomingMessage): Promise<{ view: SessionViewLike; role: SessionRole }> {
-    return await requireAdmin(this, req)
-  }
-
-  /** @internal 实现在 http_session.ts（薄委派；注释与实现在那边，这里只转发）。 */
-async sessionResponse(view: SessionViewLike): Promise<unknown> {
-    return await sessionResponse(this, view)
-  }
-
-  /** @internal 实现在 http_session.ts（薄委派；注释与实现在那边，这里只转发）。 */
-loginResponse(result: LoginResultLike): unknown {
-    return loginResponse(this, result)
-  }
-
-  /** @internal 实现在 http_session.ts（薄委派；注释与实现在那边，这里只转发）。 */
-async emailOf(userId: number): Promise<string | null> {
-    return await emailOf(this, userId)
-  }
-
-  /** @internal 实现在 http_session.ts（薄委派；注释与实现在那边，这里只转发）。 */
-setSessionCookie(
-  req: IncomingMessage,
-  res: ServerResponse,
-  token: string,
-  expiresAt: string,
-): void {
-    return setSessionCookie(this, req, res, token, expiresAt)
-  }
-
-  /** @internal 实现在 http_session.ts（薄委派；注释与实现在那边，这里只转发）。 */
-clearSessionCookie(req: IncomingMessage, res: ServerResponse): void {
-    return clearSessionCookie(this, req, res)
-  }
-
-  /** @internal 实现在 http_session.ts（薄委派；注释与实现在那边，这里只转发）。 */
-secureCookie(req: IncomingMessage): string {
-    return secureCookie(this, req)
-  }
-
-  /** @internal 实现在 http_respond.ts（薄委派；注释与实现在那边，这里只转发）。 */
-allowRead(req: IncomingMessage, res: ServerResponse): boolean {
-    return allowRead(this, req, res)
-  }
-
-  /** @internal 实现在 http_respond.ts（薄委派；注释与实现在那边，这里只转发）。 */
-allowMethod(req: IncomingMessage, res: ServerResponse, allowed: readonly string[]): boolean {
-    return allowMethod(this, req, res, allowed)
-  }
-
-  /** @internal 实现在 http_respond.ts（薄委派；注释与实现在那边，这里只转发）。 */
-async jsonBody(req: IncomingMessage): Promise<Record<string, unknown>> {
-    return await jsonBody(this, req)
-  }
-
-  /** @internal 实现在 http_respond.ts（薄委派；注释与实现在那边，这里只转发）。 */
-sendJson(
-  req: IncomingMessage,
-  res: ServerResponse,
-  status: number,
-  value: unknown,
-  headers: Readonly<Record<string, string>> = {},
-): void {
-    return sendJson(this, req, res, status, value, headers)
-  }
-
-  /** @internal 实现在 http_respond.ts（薄委派；注释与实现在那边，这里只转发）。 */
-sendBody(
-  req: IncomingMessage,
-  res: ServerResponse,
-  status: number,
-  contentType: string,
-  body: Buffer,
-  headers: Readonly<Record<string, string>> = {},
-): void {
-    return sendBody(this, req, res, status, contentType, body, headers)
-  }
-
-  /** @internal 实现在 http_respond.ts（薄委派；注释与实现在那边，这里只转发）。 */
-sendMethodNotAllowed(req: IncomingMessage, res: ServerResponse, allowed: readonly string[]): void {
-    return sendMethodNotAllowed(this, req, res, allowed)
-  }
-
-  /** @internal 实现在 http_respond.ts（薄委派；注释与实现在那边，这里只转发）。 */
-respondError(req: IncomingMessage, res: ServerResponse, error: unknown): void {
-    return respondError(this, req, res, error)
-  }
-
 }

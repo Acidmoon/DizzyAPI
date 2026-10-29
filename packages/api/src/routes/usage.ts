@@ -11,7 +11,7 @@ import { usageCsv, usageDetailOf, usageRowOf, usageTotalsOf } from '../views/usa
 import { parseUserId, roleOf } from '../views/session.ts'
 import { USAGE_RANGE_DAYS } from '../constants.ts'
 import { ApiError, badRequest, notFound, unauthorized } from '../errors.ts'
-import { type IncomingMessage, type ServerResponse } from 'node:http'
+import { IncomingMessage, ServerResponse } from 'node:http'
 import type { UsageQueryLike } from '../types.ts'
 import { requireSession } from '../http_session.ts'
 import { sendJson } from '../http_respond.ts'

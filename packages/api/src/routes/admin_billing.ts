@@ -9,7 +9,7 @@ import { parseIntegerParam, queryStringOf } from '../params.ts'
 import { settleDailyOf, settleModelOf, settleRecordOf, settleTotalsOf } from '../views/commerce.ts'
 import { API_ACTOR } from '../constants.ts'
 import { notFound } from '../errors.ts'
-import { type IncomingMessage, type ServerResponse } from 'node:http'
+import { IncomingMessage, ServerResponse } from 'node:http'
 import { requireAdmin } from '../http_session.ts'
 import { allowRead, sendJson } from '../http_respond.ts'
 

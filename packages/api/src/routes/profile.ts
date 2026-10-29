@@ -8,7 +8,7 @@ import type { ApiServer } from '../http.ts'
 import { assertOnlyKeys, optionalAvatar, requiredString } from '../params.ts'
 import { sessionUserOf } from '../views/session.ts'
 import { ApiError, badRequest, notFound, unauthorized } from '../errors.ts'
-import { type IncomingMessage, type ServerResponse } from 'node:http'
+import { IncomingMessage, ServerResponse } from 'node:http'
 import { allowMethod, jsonBody, sendJson } from '../http_respond.ts'
 import { requireSession, sessionToken } from '../http_session.ts'
 

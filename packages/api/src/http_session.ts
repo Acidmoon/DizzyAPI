@@ -9,7 +9,7 @@ import { errorCodeOf } from './params.ts'
 import { readCookie } from './http_io.ts'
 import { roleOf, sessionInfoOf, sessionUserOf } from './views/session.ts'
 import { ApiError, forbidden, isApiError, unauthorized } from './errors.ts'
-import { type IncomingMessage, type ServerResponse } from 'node:http'
+import { IncomingMessage, ServerResponse } from 'node:http'
 import type { LoginResultLike, SessionInfoView, SessionRole, SessionViewLike } from './types.ts'
 
 // ───────────────────────────────── 会话 ─────────────────────────────────
@@ -25,7 +25,7 @@ export function sessionToken(host: ApiServer, req: IncomingMessage): string {
  * banned 是 403，其余会话问题统一 401。
  */
 export async function requireSession(host: ApiServer, req: IncomingMessage): Promise<SessionViewLike> {
-  const token = host.sessionToken(req)
+  const token = sessionToken(host, req)
   try {
     return await host.runtime.auth.verifySession(token)
   } catch (error) {
@@ -46,7 +46,7 @@ export async function requireSession(host: ApiServer, req: IncomingMessage): Pro
 }
 
 export async function requireAdmin(host: ApiServer, req: IncomingMessage): Promise<{ view: SessionViewLike; role: SessionRole }> {
-  const view = await host.requireSession(req)
+  const view = await requireSession(host, req)
   const role = roleOf(view.user)
   if (role !== 'admin') throw forbidden()
   return { view, role }
@@ -57,7 +57,7 @@ export async function sessionResponse(host: ApiServer, view: SessionViewLike): P
   const viewEmail = typeof view.email === 'string' && view.email !== '' ? view.email : null
   return {
     user: sessionUserOf(view.user),
-    email: viewEmail ?? (await host.emailOf(view.userId)),
+    email: viewEmail ?? (await emailOf(host, view.userId)),
     session: sessionInfoOf(view),
     permissions: { admin: roleOf(view.user) === 'admin' },
   }
@@ -100,14 +100,14 @@ expiresAt: string,
     : 60 * 60
   res.setHeader(
     'Set-Cookie',
-    `${host.config.sessionCookieName}=${encodeURIComponent(token)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAge}${host.secureCookie(req)}`,
+    `${host.config.sessionCookieName}=${encodeURIComponent(token)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAge}${secureCookie(host, req)}`,
   )
 }
 
 export function clearSessionCookie(host: ApiServer, req: IncomingMessage, res: ServerResponse): void {
   res.setHeader(
     'Set-Cookie',
-    `${host.config.sessionCookieName}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0${host.secureCookie(req)}`,
+    `${host.config.sessionCookieName}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0${secureCookie(host, req)}`,
   )
 }
 

@@ -6,7 +6,7 @@
  */
 import type { ApiServer } from '../http.ts'
 import { ApiError } from '../errors.ts'
-import { type IncomingMessage, type ServerResponse } from 'node:http'
+import { IncomingMessage, ServerResponse } from 'node:http'
 import { requireAdmin } from '../http_session.ts'
 import { allowRead, sendJson } from '../http_respond.ts'
 

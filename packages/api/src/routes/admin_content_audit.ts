@@ -6,11 +6,17 @@
  */
 import type { ApiServer } from '../http.ts'
 import { assertOnlyKeys } from '../params.ts'
-import { contentAuditInputOf, contentAuditPatchOf, contentAuditRuleMetadata, contentAuditRuleOf, contentAuditStatusOf } from '../views/audit.ts'
+import {
+  contentAuditInputOf,
+  contentAuditPatchOf,
+  contentAuditRuleMetadata,
+  contentAuditRuleOf,
+  contentAuditStatusOf,
+} from '../views/audit.ts'
 import { auditActorOf, audited } from '../audit.ts'
 import { API_ACTOR } from '../constants.ts'
 import { notFound, toApiError } from '../errors.ts'
-import { type IncomingMessage, type ServerResponse } from 'node:http'
+import { IncomingMessage, ServerResponse } from 'node:http'
 import type { ContentAuditRuleLike } from '../types.ts'
 import { requireAdmin } from '../http_session.ts'
 import { allowMethod, allowRead, jsonBody, sendJson, sendMethodNotAllowed } from '../http_respond.ts'
