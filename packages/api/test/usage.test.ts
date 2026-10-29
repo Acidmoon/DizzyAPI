@@ -70,6 +70,7 @@ function row(overrides: Partial<UsageRowLike> = {}): UsageRowLike {
     usagePresent: true,
     usageComplete: true,
     durationMs: 120,
+    ttftMs: null,
     clientIp: '127.0.0.1',
     attempts: 1,
     startedAt: '2026-10-19T01:00:00.000Z',
@@ -209,4 +210,50 @@ test('用量：usage 端口缺失时查询与导出都 503', async (t) => {
   const exported = await get(fixture.server, '/api/usage/export?format=csv', cookie)
   assert.equal(exported.status, 503)
   assert.equal(exported.json.error.code, 'API_USAGE_UNAVAILABLE')
+})
+
+test('用量详情：用户只能查自己的、管理员能查全部；补齐 reasoning / 标记 / TTFT', async (t) => {
+  const fixture = await setup(t)
+  const adminCookie = cookieOf(fixture.auth, 1)
+  const userCookie = cookieOf(fixture.auth, 2)
+  fixture.usage.rows.push(
+    row({ userId: 2, reqId: 'mine', stream: true, ttftMs: 321, reasoningTokens: 7 }),
+    row({ userId: 1, reqId: 'owners' }),
+  )
+
+  const mine = await get(fixture.server, '/api/usage/mine', userCookie)
+  assert.equal(mine.status, 200, mine.text)
+  const record = mine.json.record
+  assert.equal(record.reqId, 'mine')
+  assert.equal(record.ttftMs, 321)
+  assert.equal(record.reasoningTokens, 7)
+  assert.equal(record.usagePresent, true)
+  assert.equal(record.usageComplete, true)
+  assert.equal(record.costMicros, '12345678')
+  // 管理面字段仍然不进用户面响应。
+  assert.equal('profile' in record, false)
+  assert.equal('accountId' in record, false)
+  assert.equal('attempts' in record, false)
+
+  // 别人的记录与「不存在」返回同一个 404：不泄露某个 reqId 是否存在。
+  const others = await get(fixture.server, '/api/usage/owners', userCookie)
+  assert.equal(others.status, 404)
+  assert.equal(others.json.error.code, 'USAGE_RECORD_NOT_FOUND')
+  const missing = await get(fixture.server, '/api/usage/req-nope', userCookie)
+  assert.equal(missing.status, 404)
+  assert.equal(missing.json.error.code, 'USAGE_RECORD_NOT_FOUND')
+
+  // 管理员能查任何人的；非流式记录的首字延迟是 null（页面显示「—」）。
+  const asAdmin = await get(fixture.server, '/api/usage/owners', adminCookie)
+  assert.equal(asAdmin.status, 200, asAdmin.text)
+  assert.equal(asAdmin.json.record.userId, 1)
+  assert.equal(asAdmin.json.record.ttftMs, null)
+})
+
+test('用量详情：usage 端口缺失时 503', async (t) => {
+  const fixture = await setup(t, { withoutUsage: true })
+  const cookie = cookieOf(fixture.auth, 2)
+  const reply = await get(fixture.server, '/api/usage/some-req', cookie)
+  assert.equal(reply.status, 503)
+  assert.equal(reply.json.error.code, 'API_USAGE_UNAVAILABLE')
 })
