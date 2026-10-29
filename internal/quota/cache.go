@@ -68,6 +68,22 @@ type State struct {
 	UpdatedAt  *time.Time `json:"updatedAt,omitempty"`
 	AgeMs      int64      `json:"ageMs"`
 	TtlMs      int64      `json:"ttlMs"`
+	// Gate 是额度闸门的运行时观察（只增不改，omitempty）。
+	//
+	// 它回答「快照到底新不新鲜、闸门有没有真的在拦」：连续不可用次数与持续时长
+	// 能把「偶发一次」与「一直失效」区分开——这正是 2026-10-29 生产事故里
+	// 被日志节流藏住的信息。
+	Gate *GateState `json:"gate,omitempty"`
+}
+
+// GateState 是额度闸门的计数与连续不可用观察（不含任何余额明细）。
+type GateState struct {
+	AllowedUnknown int    `json:"allowedUnknown,omitempty"`
+	BlockedLow     int    `json:"blockedLow,omitempty"`
+	StrictBlocked  int    `json:"strictBlocked,omitempty"`
+	StaleStreak    int    `json:"staleStreak,omitempty"`
+	StaleReason    string `json:"staleReason,omitempty"`
+	StaleForMs     int64  `json:"staleForMs,omitempty"`
 }
 
 // Error 是带稳定码的领域错误。

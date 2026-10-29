@@ -9,6 +9,7 @@ import (
 
 	"github.com/Acidmoon/DizzyAPI/contracts"
 	"github.com/Acidmoon/DizzyAPI/internal/quota"
+	"github.com/Acidmoon/DizzyAPI/modules/quotagate"
 )
 
 func quotaSnapshotJson(t *testing.T, generation int64, revision string, entries string) json.RawMessage {
@@ -54,6 +55,78 @@ func TestQuotaReplaceAndStatusThroughBridge(t *testing.T) {
 		t.Fatalf("quota.status 不对：%+v", state)
 	}
 	// 桥响应不许带余额明细。
+	payload, err := json.Marshal(status)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if strings.Contains(string(payload), "1500000") || strings.Contains(string(payload), "userId") {
+		t.Fatalf("quota.status 不许暴露余额明细：%s", payload)
+	}
+	// 没注入闸门阶段时 gate 键不出现（只增不改，响应与改动前逐字节一致）。
+	if strings.Contains(string(payload), `"gate"`) {
+		t.Fatalf("没有闸门阶段时不该出现 gate 字段：%s", payload)
+	}
+}
+
+// 闸门的「连续不可用」观察要能通过 quota.status 读出来：偶发 1 次 vs 持续 N 次。
+func TestQuotaStatusExposesGateStaleStreak(t *testing.T) {
+	h := testHandler(t)
+	cache := quota.New(quota.WithTTL(time.Second))
+	h.quota = cache
+	h.gate = quotagate.New(quotagate.Config{SnapshotTTL: time.Second}, cache, nil)
+
+	// 还没有任何快照：放行模式不报错，但闸门要记下连续不可用。
+	requestCtx := func() *contracts.Ctx {
+		return &contracts.Ctx{
+			Context: context.Background(),
+			ReqID:   "req-quota",
+			Key:     &contracts.APIKey{KeyID: "key-1", UserID: "7"},
+		}
+	}
+	for index := 0; index < 3; index += 1 {
+		if _, err := h.gate.Run(requestCtx()); err != nil {
+			t.Fatalf("放行模式不该拒绝：%v", err)
+		}
+	}
+
+	status, err := h.Handle(context.Background(), contracts.BridgeMethodQuotaStatus, nil)
+	if err != nil {
+		t.Fatalf("quota.status: %v", err)
+	}
+	state, ok := status.(quota.State)
+	if !ok {
+		t.Fatalf("返回类型不对：%T", status)
+	}
+	if state.Gate == nil {
+		t.Fatal("注入了闸门阶段时 gate 字段必须出现")
+	}
+	if state.Gate.StaleStreak != 3 {
+		t.Fatalf("连续不可用次数 = %d，期望 3", state.Gate.StaleStreak)
+	}
+	if state.Gate.StaleReason != "snapshot-unavailable" {
+		t.Fatalf("staleReason = %q", state.Gate.StaleReason)
+	}
+	if state.Gate.AllowedUnknown != 3 {
+		t.Fatalf("放行计数 = %d，期望 3", state.Gate.AllowedUnknown)
+	}
+
+	// 快照到位且覆盖该用户后，连续不可用清零。
+	if _, err := cache.Replace(quota.Snapshot{
+		Version:    quota.SnapshotVersion,
+		Generation: 10,
+		Revision:   "rev-1",
+		Entries:    []quota.Entry{{UserID: "7", BalanceMicros: "1500000"}},
+	}); err != nil {
+		t.Fatalf("Replace: %v", err)
+	}
+	if _, err := h.gate.Run(requestCtx()); err != nil {
+		t.Fatalf("余额充足不该拒绝：%v", err)
+	}
+	if stats := h.gate.Stats(); stats.StaleStreak != 0 {
+		t.Fatalf("恢复后连续不可用必须归零：%+v", stats)
+	}
+
+	// 桥响应仍然不许带余额明细。
 	payload, err := json.Marshal(status)
 	if err != nil {
 		t.Fatalf("Marshal: %v", err)

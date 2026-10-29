@@ -2,7 +2,13 @@
  * 余额只读快照推送插件（服务名 `quota`）。
  *
  * 它只做一件事：把 `user` 的全量余额（只读）打包成快照，经 `accountPriority` 的
- * 控制桥推给 Go 的额度闸门（`quota.replace`）。周期推送 + 余额变更后 debounce 补推。
+ * 控制桥推给 Go 的额度闸门（`quota.replace`）。
+ *
+ * **推送是心跳式**：每个 `pollIntervalMs` 周期都推一次，即使余额内容没变
+ * （`revision` 相同、`generation` 递增）。Go 侧按 TTL 判快照新鲜度，
+ * 「没变就跳过」等于让闸门在余额不变的十几秒后自动失效——那是拿正确性换流量，
+ * 2026-10-29 生产上就是这么漏的（余额已 -97 仍然 200）。余额变更时另有
+ * debounce 立即补推。
  *
  * 边界（AGENTS.md §2.2 / §2.4）：
  * - **自己不存数据、不做判断**：不落盘、没有 SQLite、不读余额表；
@@ -57,11 +63,19 @@ export interface QuotaStatus {
   readonly lastPushAt: string | null
   /** 最近一次失败的描述；成功一次即清空。 */
   readonly lastError: string | null
-  /** 成功推送次数（内容没变而跳过的轮次不计）。 */
+  /** 成功推送次数（含心跳）。 */
   readonly pushes: number
   readonly failures: number
-  /** 内容没变、跳过推送的轮次。 */
-  readonly skipped: number
+  /** 内容没变、但仍按心跳推出去的次数（`pushes` 的子集）。 */
+  readonly heartbeats: number
+  /** 连续失败次数；成功一次即归零。 */
+  readonly failureStreak: number
+  /** 最近一次成功推送的时间；还没成功过为 null。 */
+  readonly lastSuccessAt: string | null
+  /** Go 侧的快照 TTL（读一次 quota.status 得到）；读不到为 null。 */
+  readonly goTtlMs: number | null
+  /** Go 侧 TTL 是否不足以覆盖两个推送周期（配置耦合错误，心跳也救不了）。 */
+  readonly heartbeatTooSlow: boolean
   /** 当前是否有一次推送在飞。 */
   readonly inFlight: boolean
 }
@@ -82,7 +96,7 @@ export class QuotaService extends Service {
 
   /** 纯后台任务：没有 HTTP 路由、没有存储；桥命令是出站的 quota.replace / quota.status。 */
   static catalog = {
-    capabilities: ['balance-snapshot-push', 'quota-gate-feed'],
+    capabilities: ['balance-snapshot-push', 'quota-gate-feed', 'snapshot-heartbeat'],
     events: [
       {
         name: 'quota/pushed',
@@ -119,7 +133,10 @@ export class QuotaService extends Service {
   private lastError: string | null = null
   private pushes = 0
   private failures = 0
-  private skipped = 0
+  private heartbeats = 0
+  private failureStreak = 0
+  private lastSuccessAt: string | null = null
+  private goTtlMs: number | null = null
   private inFlight = false
   private disposed = false
   private debounceTimer: NodeJS.Timeout | undefined
@@ -174,7 +191,11 @@ export class QuotaService extends Service {
       lastError: this.lastError,
       pushes: this.pushes,
       failures: this.failures,
-      skipped: this.skipped,
+      heartbeats: this.heartbeats,
+      failureStreak: this.failureStreak,
+      lastSuccessAt: this.lastSuccessAt,
+      goTtlMs: this.goTtlMs,
+      heartbeatTooSlow: this.goTtlMs !== null && heartbeatTooSlow(this.goTtlMs, this.config.pollIntervalMs),
       inFlight: this.inFlight,
     }
   }
@@ -234,11 +255,12 @@ export class QuotaService extends Service {
       if (this.disposed) return
       const entries = this.normalizeEntries(snapshot.entries)
       const revision = hashEntries(entries)
-      // 内容没变且上一次是成功的：不重复占桥（Go 端幂等也会接受，但没必要发）。
-      if (revision === this.revision && this.lastError === null) {
-        this.skipped += 1
-        return
-      }
+      const unchanged = revision === this.revision
+      // 心跳推送：内容没变也照推（revision 相同、generation 递增）。
+      //
+      // **绝不能「没变就跳过」**：Go 侧按 TTL 判快照新鲜度，跳过等于让额度闸门在
+      // 余额不变的十几秒后自动失效（2026-10-29 生产事故：余额已 -97 仍 200）。
+      // Go 侧对「同 revision + 更大 generation」是接受的，并会刷新 updatedAt。
       const payload: QuotaSnapshotPayload = {
         version: 1,
         generation: this.nextGeneration(),
@@ -248,14 +270,27 @@ export class QuotaService extends Service {
       await this.bridgeSeam().replaceQuota(payload)
       this.revision = revision
       this.lastPushAt = new Date().toISOString()
+      this.lastSuccessAt = this.lastPushAt
       this.lastError = null
+      this.failureStreak = 0
       this.pushes += 1
-      this.logger.debug(`余额快照已推送：revision=${revision} entries=${String(entries.length)}`)
+      if (unchanged) this.heartbeats += 1
+      // 首次成功推送到 Go 之后，读一次它的 TTL：心跳间隔必须明显小于 TTL，
+      // 否则「心跳也救不了」（配置耦合错误会让闸门周期性失效）。
+      if (this.goTtlMs === null) void this.inspectGoTtl()
+      this.logger.debug(
+        `余额快照已推送（${reason}${unchanged ? '，内容未变=心跳' : ''}）：revision=${revision} entries=${String(entries.length)}`,
+      )
       this.ctx.emit('quota/pushed', revision, entries.length)
     } catch (error) {
       this.failures += 1
+      this.failureStreak += 1
       this.lastError = describeError(error)
-      this.warnThrottled(`推送余额快照失败（${reason}）：${this.lastError}`)
+      // 告警要能区分「偶发」与「持续」：第 1 次立即报，之后每 10 次再报一次，
+      // 文案带上连续次数，避免「一直在失败」被 30 秒节流彻底藏起来。
+      this.warnThrottled(
+        `推送余额快照失败（${reason}，连续第 ${String(this.failureStreak)} 次）：${this.lastError}`,
+      )
       this.ctx.emit('quota/error', 'QUOTA_PUSH_FAILED', this.lastError)
       // 失败重试：走同一个 debounce 窗口，不额外造一条无界重试循环。
       this.schedule()
@@ -302,11 +337,43 @@ export class QuotaService extends Service {
     return this.generation
   }
 
+  /**
+   * 失败告警：区分「偶发」与「持续」。
+   *
+   * 第 1 次连续失败立即报；之后每 10 次连续失败再报一次（文案带连续次数），
+   * 中间还有最小间隔保护，避免高频失败刷屏。这样「一直推不出去」不会被节流藏起来。
+   */
   private warnThrottled(message: string): void {
+    const first = this.failureStreak === 1
+    const sustained = this.failureStreak > 1 && this.failureStreak % 10 === 0
+    if (!first && !sustained) return
     const now = Date.now()
     if (now - this.lastWarnAt < DEFAULT_WARN_THROTTLE_MS) return
     this.lastWarnAt = now
     this.logger.warn(message)
+  }
+
+  /**
+   * 读一次 Go 侧的快照 TTL，暴露到 status()，并在「心跳间隔不够快」时明确告警。
+   *
+   * 这是配置耦合的护栏：TTL 必须 ≥ 3 × pollIntervalMs（见 AGENTS.md「额度闸门」）。
+   * 读不到（旧 Go / 桥断）就静默跳过——它只是观测，不能影响推送本身。
+   */
+  private async inspectGoTtl(): Promise<void> {
+    try {
+      const state = (await this.bridgeSeam().quotaStatus()) as { ttlMs?: unknown }
+      const ttlMs = typeof state.ttlMs === 'number' && state.ttlMs > 0 ? state.ttlMs : null
+      if (ttlMs === null) return
+      this.goTtlMs = ttlMs
+      if (heartbeatTooSlow(ttlMs, this.config.pollIntervalMs)) {
+        this.logger.warn(
+          `Go 侧快照 TTL=${String(ttlMs)}ms 小于 2 × 推送间隔 ${String(this.config.pollIntervalMs)}ms：` +
+            '心跳可能来不及刷新，请把 -quota-snapshot-ttl-ms 提到 ≥ 3 倍推送间隔',
+        )
+      }
+    } catch {
+      // 观测失败不影响推送。
+    }
   }
 
   private userSeam(): UserSeam {
@@ -320,6 +387,17 @@ export class QuotaService extends Service {
 
 function hashEntries(entries: readonly QuotaSnapshotEntry[]): string {
   return createHash('sha256').update(JSON.stringify(entries)).digest('hex').slice(0, 32)
+}
+
+/**
+ * 判断 Go 侧 TTL 是否跟不上推送节奏（配置耦合护栏）。
+ *
+ * 心跳能刷新快照的前提是「两次推送之间的间隔明显小于 TTL」；经验值是 TTL ≥ 3 × 间隔，
+ * 这里按 2 × 间隔做最低告警线（留一次网络抖动 / 事件循环延迟的余量）。
+ */
+export function heartbeatTooSlow(ttlMs: number, pollIntervalMs: number): boolean {
+  if (ttlMs <= 0 || pollIntervalMs <= 0) return false
+  return ttlMs < pollIntervalMs * 2
 }
 
 export type { QuotaConfig }
