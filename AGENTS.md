@@ -373,7 +373,7 @@ pnpm test:go
 
 - 新增插件必须有 `test/*.test.ts`；新增 Go 模块必须有单测。
 - 测试失败先修实现，不允许删断言或放宽断言来变绿。
-- 当前基线（2026-10-29 实测）：`pnpm test` 745 个用例（744 通过 / 1 跳过），`pnpm typecheck` 干净，
+- 当前基线（2026-10-30 实测）：`pnpm test` 760 个用例（759 通过 / 1 跳过），`pnpm typecheck` 干净，
   `go test ./...` **21 包**全 ok（含 `cmd/dizzy`），`gofmt -l .` 与 `go vet ./...` 无输出。
   这个数字会变，以实际输出为准。
 - **多 worktree 并行跑测试会互相抢端口**：`pnpm test` 里有多条**真进程用例**（`content-audit`
@@ -817,9 +817,13 @@ pnpm build:all        # 两个二进制一起编
   放 `packages/api/src/http.ts` 在线上必 404。
   **这两条不要求登录**：它们就是给 agent 抓的（owner 明确要「方便投喂 agent」），内容里
   没有秘密；页面本体 `/console/api-docs` 仍然要登录。
-- **部署必须带上仓库根的 `docs/api/`**：文档内容在运行时从
-  `packages/web/src/content/` 往上四级（`../../../../docs/api/`）读；只拷 `packages/`
-  会让这一页报「文档源缺失」（只影响这一页，不会拖垮整站，见下条）。
+- **部署必须带上仓库根的 `docs/api/`、`contracts/`、`modules/`、`internal/` 与 `packages/*/src`**：
+  文档的叙述从 `../../../../docs/api/` 读，事实表还要**读 Go 与 TS 源码**（`internal/httpapi/server.go`、
+  `internal/httpapi/gemini.go`、`contracts/ir.go`、`packages/api/src/errors.ts`，并递归扫
+  `contracts` / `modules` / `internal` 的 `.go` 与 `packages` 的 `.ts`）。所以 web 进程的部署树里
+  **必须有源码**，不能只发 `bin/` 与 `dist/`。现在用 `git archive` 全量导出，天然满足；
+  将来若改成精简部署，必须把这些目录一并带上，否则这一页报「读不到源码」。
+  读失败**只影响这两条路由与该页**，不会拖垮整个 web 插件（见下条）。
 - **读文档不能放在模块顶层**：`pages/index.ts` 会把所有页面 import 进来，模块顶层
   `readFileSync` 抛错会连带整个 web 插件装载失败、全站不可用。文档缺失是内容问题，
   只能让这一页报错。
