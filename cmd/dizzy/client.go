@@ -21,6 +21,13 @@ const (
 	apiRequestHeaderValue = "dizzyapi"
 )
 
+// requestIDHeaderName 是网关回写请求 id 的响应头。
+//
+// 它由 Go 侧 `internal/httpapi` 产出，**本批还没有**（走独立分支）。CLI 只读：
+// 有就用它做精确对账，没有就退回「按时间窗 + 最大 id 排除」的近似匹配，
+// 绝不因为缺这个头而失败。
+const requestIDHeaderName = "X-Request-Id"
+
 // maxErrorBodyBytes 是错误响应体最多读多少字节。
 //
 // 上游可能回一个巨大的 HTML 错误页；只读头部足够定位问题，也不会把
@@ -137,6 +144,11 @@ type Response struct {
 	Stream io.ReadCloser
 	// Cookie 是捕获到的 cookie 值（见 Request.CaptureCookie）。
 	Cookie string
+	// RequestID 是响应头 X-Request-Id 的值（服务端没发就是空串）。
+	//
+	// 它是「这一条用量记录」的权威标识：有它就能直接对上 /api/usage 的
+	// reqId，不必猜「哪条才是刚打的那次」。
+	RequestID string
 }
 
 // Do 发一次请求。**不**在出错时把响应体吞掉：错误响应会转成 APIError。
@@ -206,10 +218,11 @@ func (c *Client) Do(request Request) (*Response, error) {
 
 	if request.Stream {
 		return &Response{
-			Status: httpResponse.StatusCode,
-			Header: httpResponse.Header,
-			Stream: httpResponse.Body,
-			Cookie: captureCookie(httpResponse, request.CaptureCookie),
+			Status:    httpResponse.StatusCode,
+			Header:    httpResponse.Header,
+			Stream:    httpResponse.Body,
+			Cookie:    captureCookie(httpResponse, request.CaptureCookie),
+			RequestID: strings.TrimSpace(httpResponse.Header.Get(requestIDHeaderName)),
 		}, nil
 	}
 	defer httpResponse.Body.Close()
@@ -218,10 +231,11 @@ func (c *Client) Do(request Request) (*Response, error) {
 		return nil, fmt.Errorf("读取响应体失败：%w", err)
 	}
 	return &Response{
-		Status: httpResponse.StatusCode,
-		Header: httpResponse.Header,
-		Body:   body,
-		Cookie: captureCookie(httpResponse, request.CaptureCookie),
+		Status:    httpResponse.StatusCode,
+		Header:    httpResponse.Header,
+		Body:      body,
+		Cookie:    captureCookie(httpResponse, request.CaptureCookie),
+		RequestID: strings.TrimSpace(httpResponse.Header.Get(requestIDHeaderName)),
 	}, nil
 }
 

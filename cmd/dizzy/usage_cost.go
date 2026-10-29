@@ -1,23 +1,22 @@
 package main
 
 import (
-	"errors"
 	"net/url"
 	"strconv"
 	"time"
 )
 
-// usageCostPoll 是「chat 之后回查权威费用」的轮询参数。
+// usageCostPoll 是「chat 之后按 reqId 回查权威费用」的轮询参数。
 //
 // 用量是**异步**落库的：Go 把记录放进环形缓冲，TS 的 usage 插件每秒轮询一次
 // （app.yml 的 usage.pollIntervalMs = 1000），再落 SQLite 并结算。所以请求刚
-// 返回时那条记录通常还查不到，必须等一两秒。
+// 返回时那条记录通常还查不到（404），必须等一两秒。
 const (
 	usageCostPollAttempts = 8
 	usageCostPollInterval = 500 * time.Millisecond
 )
 
-// usageCostLookup 负责「按刚打完的那条请求，回 /api/usage 查权威费用」。
+// usageCostLookup 按 reqId 精确回查**这一条**记录的费用。
 //
 // **为什么不在 CLI 里自己算钱**：
 //   - 价格表归 pricing 插件（控制面），CLI 未必登录、也未必有权限读；
@@ -27,113 +26,65 @@ const (
 //     protoconv 渲染回客户端时 `prompt_tokens` 填的是**净输入**。
 //     所以 CLI 按响应里的 token 硬算，一定存在对不上的情形。
 //
-// 结论：费用只有一个权威来源 —— `/api/usage` 的 `costMicros`。
+// **为什么不用「模型 + 时间窗 + 已见最大 id」猜**：并发请求、跨零点、同一模型
+// 多条记录时，猜出来的那条可能是别人的。宁可显示「未取到」，也不报一个错的数。
+//
+// 结论：费用只有一个权威来源 —— `GET /api/usage/:reqId` 的 `costMicros`。
 type usageCostLookup struct {
 	client *Client
-	// model 是**客户端请求的**模型名（用量记录的 model 也是它，不是上游名）。
-	model string
-	// since 是请求开始时间；只接受不早于它（减去容差）的记录。
-	since time.Time
-	// seenBefore 是请求前已存在的最大用量 id，用来排除旧记录。
-	seenBefore int64
+	// reqID 来自响应头 X-Request-Id（网关自己给的，与用量记录的 reqId 同源）。
+	reqID string
 }
 
-// lookup 轮询 /api/usage 找本次请求的那条记录，返回它的费用（整数微元）。
+// cost 轮询这条记录，返回费用（整数微元）与「取到了没」。
 //
-// 找不到就返回空字符串（不是错误）：用量有延迟时「查不到」是正常情况，
-// 不该让一条已经成功的 chat 变成失败。
-func (l *usageCostLookup) cost() (string, string, bool) {
-	if l == nil || l.client == nil {
-		return "", "", false
+// 取不到不是错误：用量有延迟、或服务端还没有这个头时，chat 本身已经成功了，
+// 不该因为查不到费用而变成失败。
+func (l *usageCostLookup) cost() (string, bool) {
+	if l == nil || l.client == nil || l.reqID == "" {
+		return "", false
 	}
 	for attempt := 0; attempt < usageCostPollAttempts; attempt++ {
 		if attempt > 0 {
 			time.Sleep(usageCostPollInterval)
 		}
-		cost, reqID, ok := l.once()
-		if ok {
-			return cost, reqID, true
+		if cost, ok := l.once(); ok {
+			return cost, true
 		}
 	}
-	return "", "", false
+	return "", false
 }
 
-// once 查一轮。
-func (l *usageCostLookup) once() (string, string, bool) {
-	query := url.Values{}
-	// 用一个够宽的窗口：跨零点时 7d 也覆盖得到；limit 取小值，只关心最近几条。
-	query.Set("range", "7d")
-	query.Set("limit", "20")
-	if l.model != "" {
-		query.Set("model", l.model)
-	}
-
-	var response usageResponse
-	if err := l.client.DoJSON(Request{Method: "GET", Path: "/api/usage", Query: query}, &response); err != nil {
-		return "", "", false
-	}
-
-	// 明细按 id 倒序（服务端 ORDER BY id DESC），第一条匹配的就是最新一条。
-	for _, record := range response.Records.Items {
-		if record.Model != l.model {
-			continue
-		}
-		if l.seenBefore > 0 && rowID(record) <= l.seenBefore {
-			// 这是请求之前就存在的旧记录。
-			continue
-		}
-		startedAt, err := time.Parse(time.RFC3339Nano, record.StartedAt)
-		if err == nil && startedAt.Before(l.since.Add(-5*time.Second)) {
-			continue
-		}
-		return record.CostMicros, record.ReqID, true
-	}
-	return "", "", false
-}
-
-// rowID 取明细行的数值 id。etime 解析不出来时按 0 处理（等于「不作排除」）。
-func rowID(record usageRow) int64 {
-	if record.ID <= 0 {
-		return 0
-	}
-	return record.ID
-}
-
-// maxUsageID 取当前最大的用量记录 id（请求前调用，用于排除旧记录）。
+// once 查一轮单条详情。
 //
-// 查不到（没登录 / 用量插件没运行）返回 0：那时 cost 查询本来也会失败，
-// 不影响 chat 本身成功。
-func maxUsageID(client *Client) int64 {
-	query := url.Values{}
-	query.Set("range", "7d")
-	query.Set("limit", "1")
-	var response usageResponse
-	if err := client.DoJSON(Request{Method: "GET", Path: "/api/usage", Query: query}, &response); err != nil {
-		return 0
+// 404 在这里是**正常情况**（记录还没落库），不是错误；其它错误同样只让这一轮
+// 落空，不向上抛 —— 见 cost 的注释。
+func (l *usageCostLookup) once() (string, bool) {
+	var response usageDetailResponse
+	if err := l.client.DoJSON(Request{
+		Method: "GET",
+		Path:   "/api/usage/" + url.PathEscape(l.reqID),
+	}, &response); err != nil {
+		return "", false
 	}
-	if len(response.Records.Items) == 0 {
-		return 0
+	if response.Record.ReqID != l.reqID {
+		// 防御：服务端回的不是这条（正常不会发生）。
+		return "", false
 	}
-	return rowID(response.Records.Items[0])
+	return response.Record.CostMicros, true
 }
 
-// newUsageCostLookup 在**发请求之前**建一个查询器（它要先记下当前最大 id）。
-//
-// 拿不到会话时返回 nil：chat 只用 Bearer key 也该能跑，只是不打印费用。
-func newUsageCostLookup(config Config, globals globalFlags, model string) (*usageCostLookup, error) {
+// lookupCostByRequestID 按 reqId 回查费用。没有会话或没有 reqId 时返回 false。
+func lookupCostByRequestID(config Config, globals globalFlags, reqID string) (string, bool) {
+	if reqID == "" {
+		return "", false
+	}
 	client, err := newAPIClient(config, globals)
 	if err != nil {
-		if errors.Is(err, ErrCredentialsMissing) {
-			return nil, nil
-		}
-		return nil, err
+		// 没有会话（只有 Bearer key）时 chat 照常跑，只是不打印费用。
+		return "", false
 	}
-	return &usageCostLookup{
-		client:     client,
-		model:      model,
-		since:      time.Now(),
-		seenBefore: maxUsageID(client),
-	}, nil
+	return (&usageCostLookup{client: client, reqID: reqID}).cost()
 }
 
 // formatCostMicros 把费用渲染成「元（微元）」形式。

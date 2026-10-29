@@ -64,6 +64,44 @@ dizzy config set apiBase http://127.0.0.1:7791
 
 也可以每次用 `--base` / `--llm-base` / `--api-base` 临时覆盖。
 
+> **`apiBase` 必须能让 `/api/*` 通过 Host 校验**。api 插件只接受
+> `127.0.0.1:<api 端口>` 或 `localhost:<api 端口>` 的 Host（`packages/api/src/http.ts:257`），
+> 否则 403 `API_HOST_FORBIDDEN`。所以：
+>
+> - **本地开发直连回环**：`apiBase = http://127.0.0.1:7791`（上面那组）。
+> - **生产走公网域名**：能过，是因为宝塔 nginx 把 `/api/*` 反代到 `7791` 时**把 Host
+>   改写成回环**（AGENTS.md §6.3）。若你换一个不改写 Host 的反代，`base` 指公网就会 403 ——
+>   那不是 CLI 的问题，是反代配置少了一行。
+>
+> 注意方向：是**反代把进来的公网 Host 改写成回环**，不是客户端自己把 Host 设成回环。
+
+### 3.1 本地开发怎么指（可直接抄）
+
+本地栈是**两个端口**，必须分开指：`llmBase` → gatewayd `8080`（`/v1/*`），
+`apiBase` → api 插件 `7791`（`/api/*`）。`base` 随便填一个合法的就行（两个都被覆盖）。
+
+```bash
+dizzy config set base    http://127.0.0.1:7791
+dizzy config set llmBase http://127.0.0.1:8080
+dizzy config set apiBase http://127.0.0.1:7791
+```
+
+或者不改配置、每次临时覆盖（推荐给脚本与实测）：
+
+```bash
+dizzy --base http://127.0.0.1:7791 \
+      --llm-base http://127.0.0.1:8080 \
+      --api-base http://127.0.0.1:7791 \
+      health
+```
+
+`dizzy health` 是**验证这条配置对不对**的最快办法：它同时打 `/healthz`（走 `llmBase`）
+与 `/api/health`（走 `apiBase`），两边都通才返回 0。
+
+> ⚠️ **默认 `base` 指生产**（`https://<站点域名>`）。本地栈测试时**别用默认 base
+> 跑写操作** —— `keys create/delete/enable/disable` 与 `admin` 下的写操作会真的落到线上。
+> 写操作执行前会先打一行目标地址（stderr），看一眼再回车。
+
 ---
 
 ## 4. 子命令
@@ -97,6 +135,12 @@ dizzy chat -m gpt-4o-mini --system "你很简洁" "你好"     # 带系统提示
 没有会话时只打 token —— **CLI 不自己算钱**：客户端看到的 `prompt_tokens` 含缓存命中，
 而网关记账的 `input` 不含缓存，跨协议时这个关系还不成立，硬算必然对不上。
 
+**请求 id**：`chat` 会打印本条请求的 `reqId`（`--json` 里是 `reqId` 字段）。它取自响应头
+`X-Request-Id`（`internal/httpapi/server.go` 回写，与用量记录的 `reqId` 同源）。
+费用就是按这个 id 精确回查 `GET /api/usage/<reqId>` 得到的 —— **不猜**：没有这个头就
+明说「未取到 reqId」，不退化成「按模型 + 时间窗 + 最大 id」的近似匹配（并发、跨零点、
+同模型多条时那套必错）。
+
 ### 看模型
 
 ```bash
@@ -110,14 +154,29 @@ dizzy models --catalog --search gpt
 ```bash
 dizzy usage                        # 汇总 + 明细
 dizzy usage --range 7d --by model  # 7 天 / 30 天 / 90 天；按模型聚合
-dizzy usage --by key               # 按 API key 聚合（基于返回明细，不是全量）
+dizzy usage --by key               # 按 API key 聚合（本地聚合，非全量，见下）
 dizzy usage --limit 50
+dizzy usage show <reqId>           # 单条详情（chat 打印的那个 reqId）
 dizzy usage export --range 7d --output usage.csv
 dizzy usage --json
 ```
 
+`usage show <reqId>` 打一条记录的完整事实：模型 / 上游模型 / 协议 / 流式 / 状态 / 错误码 /
+四桶 token + 推理 token / 耗时 / 首字延迟 / 费用 / key 名。**首字延迟是 `null` 时显示
+「—（未采集）」而不是 0 ms** —— 非流式请求本来就没有首字延迟。
+
+`usage --by key` 是**本地聚合**：服务端只有 `totals` / `daily` / `models` 三个维度
+（`packages/usage/src/service.ts:547`），所以 CLI 拿明细自己按 `apiKeyName` 分组。
+输出会先打一行 `按 key 聚合：覆盖最近 N 条明细（--limit N），不是全量`；
+同时给了 `--range` 时会再提醒「可能少于该时间窗全量」。要看全量就别用它，按 key 过滤
+用 `--key-id`。
+
 金额一律**整数微元**（1 元 = 1_000_000 微元），人类可读输出同时给「元」和「微元」两种。
 CLI 全程整数运算，不用浮点。
+
+`usage export` 拿到的 CSV 是服务端**原样**给的两处装饰（`packages/api/src/http.ts:3613/3645`）：
+开头一个 UTF-8 BOM（Excel 认），以及 `= + - @` 开头的单元格带前导 `'`（防公式注入）。
+CLI 只剥 BOM 用来数行，**单元格原样透传**；你要在脚本里读单元格值，得自己剥那个前导 `'`。
 
 ### 管 key
 
@@ -130,6 +189,10 @@ dizzy keys enable <id> / disable <id> / delete <id>
 ```
 
 完整 key 只在创建 / 轮换时出现一次。CLI **默认掩码**：要完整值必须显式加 `--show`。
+
+**写操作会先打目标地址**：`keys create/rotate/enable/disable/delete` 与 `admin` 下的写操作
+（账号启停、连通性测试、改价格）执行前都会在 stderr 打一行 `动作 → 目标地址`。
+默认 `base` 指生产，这一行就是让你确认「没打错机器」的最后一道闸。
 
 ### 健康检查
 
@@ -173,15 +236,25 @@ dizzy admin pricing set --model m --input 2 --output 8
 | 码 | 含义 |
 |---|---|
 | 0 | 成功 |
-| 1 | 通用失败（含健康检查未全过） |
+| 1 | 通用失败（含健康检查未全过、本地错误） |
 | 2 | 用法错误（参数非法） |
 | 3 | 未登录 / 缺凭据 |
 | 4 | 认证失败（HTTP 401） |
 | 5 | 权限不足（HTTP 403） |
 | 6 | 不存在（HTTP 404） |
-| 7 | 余额不足（HTTP 402） |
-| 8 | 限流（HTTP 429） |
+| 7 | 余额不足（HTTP 402，**仅 `/v1/*`**） |
+| 8 | 限流（HTTP 429，**`/v1/*` 上游 / 账号冷却为主**） |
 | 9 | 上游 / 网关错误（HTTP 5xx） |
+
+**402 只出现在 `/v1/*`**：它是 Go 侧额度闸门（`modules/quotagate`）判「余额 ≤ 阈值」，
+`/api/*` 里没有任何 402。
+
+**429 两处来源不同**：`/v1/*` 是上游限流 / 账号冷却（`modules/transport` 记冷却，
+可重试、可换号）；`/api/*` 是认证限流（`AUTH_RATE_LIMITED` / `AUTH_CODE_ATTEMPTS_EXCEEDED`，
+`packages/api/src/errors.ts:91`）。退出码都是 8，要分清是哪种得看错误体里的 `code`。
+
+**9 是「5xx 一律」**：`/v1/*` 的上游失败与 `/api/*` 的内部 500 都归 9（都是网关侧出错，
+脚本的处理方式一样：重试或报障）。本地错误（读文件失败、解析失败）是 1。
 
 ---
 

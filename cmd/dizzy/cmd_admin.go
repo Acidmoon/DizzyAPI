@@ -158,6 +158,7 @@ func runAdminAccounts(args []string, globals globalFlags) error {
 			body["model"] = *testModel
 		}
 		var result map[string]any
+		announceWriteTarget(config, "账号连通性测试 "+set.Arg(0))
 		if err := client.DoJSON(Request{
 			Method: "POST",
 			Path:   "/api/accounts/" + set.Arg(0) + "/test",
@@ -182,6 +183,7 @@ func runAdminAccounts(args []string, globals globalFlags) error {
 		}
 		enabled := action == "enable"
 		var item adminAccount
+		announceWriteTarget(config, action+" 账号 "+set.Arg(0))
 		if err := client.DoJSON(Request{
 			Method: "PATCH",
 			Path:   "/api/accounts/" + set.Arg(0),
@@ -281,6 +283,7 @@ func runAdminPricing(args []string, globals globalFlags) error {
 			return fmt.Errorf("%w：pricing set 需要 --model / --input / --output", errUsage)
 		}
 		var written catalogPrice
+		announceWriteTarget(config, "设置价格 "+*model)
 		if err := client.DoJSON(Request{
 			Method: "PUT",
 			Path:   "/api/pricing/" + *model,

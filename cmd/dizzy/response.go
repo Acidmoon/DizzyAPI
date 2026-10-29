@@ -34,6 +34,14 @@ func decodeJSON(raw []byte, out any) error {
 	return nil
 }
 
+// announceWriteTarget 在执行**写操作**前打一行目标地址（stderr，一行）。
+//
+// 默认 base 指**生产**（defaultBaseURL），所以写操作必须让人一眼看到自己打的是哪台：
+// 本地栈测试时忘了加 `--base` 就会写到线上。这不是理论风险，是踩过的。
+func announceWriteTarget(config Config, action string) {
+	fmt.Fprintf(os.Stderr, "%s → %s\n", action, config.APIURL())
+}
+
 // loginResponse 是 `POST /api/auth/login` 的响应。
 //
 // 会话 token **不在**这个 JSON 里（它是 HttpOnly cookie），

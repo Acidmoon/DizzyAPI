@@ -126,6 +126,7 @@ func runKeysCreate(args []string, globals globalFlags) error {
 	}
 
 	var created apiKeySummary
+	announceWriteTarget(config, "创建 API key")
 	if err := client.DoJSON(Request{
 		Method: "POST",
 		Path:   "/api/keys",
@@ -169,6 +170,7 @@ func runKeysRotate(args []string, globals globalFlags) error {
 	}
 
 	var rotated apiKeySummary
+	announceWriteTarget(config, "轮换 API key "+keyID)
 	if err := client.DoJSON(Request{
 		Method: "POST",
 		Path:   "/api/keys/" + keyID + "/rotate",
@@ -213,6 +215,7 @@ func runKeysToggle(args []string, globals globalFlags, enabled bool) error {
 	}
 
 	var updated apiKeySummary
+	announceWriteTarget(config, action+" API key "+keyID)
 	if err := client.DoJSON(Request{
 		Method: "PATCH",
 		Path:   "/api/keys/" + keyID,
@@ -246,6 +249,7 @@ func runKeysDelete(args []string, globals globalFlags) error {
 	if err != nil {
 		return err
 	}
+	announceWriteTarget(config, "删除 API key "+keyID)
 	if err := client.DoJSON(Request{
 		Method: "DELETE",
 		Path:   "/api/keys/" + keyID,

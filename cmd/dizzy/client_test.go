@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 )
 
 // newTestClient 造一个指向测试服务器的客户端。
@@ -140,6 +141,99 @@ func TestCaptureCookieFromSetCookie(t *testing.T) {
 	}
 	if response.Cookie != "captured-token" {
 		t.Fatalf("没捕获到会话 cookie：%q", response.Cookie)
+	}
+}
+
+// TestRequestIDHeaderCaptured 断言响应头 X-Request-Id 被捕获。
+//
+// 这个头由 Go 侧 `internal/httpapi` 产出（本批还没有，走独立分支）。CLI 只读：
+// 有它就能把 chat 和 /api/usage 的那条记录精确对上。
+func TestRequestIDHeaderCaptured(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Request-Id", "req-1793278671895159400-1")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"chatcmpl-1"}`))
+	}))
+	defer server.Close()
+
+	client := newTestClient(t, server, ClientOptions{APIKey: "sk-test-key"})
+	response, err := client.Do(Request{Method: "POST", Path: "/v1/chat/completions"})
+	if err != nil {
+		t.Fatalf("请求失败：%v", err)
+	}
+	if response.RequestID != "req-1793278671895159400-1" {
+		t.Fatalf("没捕获到 X-Request-Id：%q", response.RequestID)
+	}
+}
+
+// TestRequestIDHeaderMissingDegrades 断言没有这个头时是空串，不是错误。
+func TestRequestIDHeaderMissingDegrades(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"chatcmpl-1"}`))
+	}))
+	defer server.Close()
+
+	client := newTestClient(t, server, ClientOptions{APIKey: "sk-test-key"})
+	response, err := client.Do(Request{Method: "POST", Path: "/v1/chat/completions"})
+	if err != nil {
+		t.Fatalf("请求失败：%v", err)
+	}
+	if response.RequestID != "" {
+		t.Fatalf("没有该头时应为空串，得到 %q", response.RequestID)
+	}
+}
+
+// TestUsageCostLookupUsesRequestID 断言费用回查打的是 `/api/usage/<reqId>`。
+//
+// 这是 A3 的核心：只认响应头给的请求 id，不再靠「模型 + 时间窗 + 最大 id」猜。
+func TestUsageCostLookupUsesRequestID(t *testing.T) {
+	var gotPath string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"record":{"reqId":"req-1-1","costMicros":"570"}}`))
+	}))
+	defer server.Close()
+
+	client := newTestClient(t, server, ClientOptions{SessionToken: "s", APIRequestHeader: true})
+	cost, ok := (&usageCostLookup{client: client, reqID: "req-1-1"}).once()
+	if !ok || cost != "570" {
+		t.Fatalf("应取到 570，得到 %q（ok=%v）", cost, ok)
+	}
+	if gotPath != "/api/usage/req-1-1" {
+		t.Fatalf("回查路径不对：%q", gotPath)
+	}
+}
+
+// TestUsageCostLookupRejectsOtherRecord 断言服务端回的不是这条时不采信。
+func TestUsageCostLookupRejectsOtherRecord(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"record":{"reqId":"req-2-2","costMicros":"999"}}`))
+	}))
+	defer server.Close()
+
+	client := newTestClient(t, server, ClientOptions{SessionToken: "s", APIRequestHeader: true})
+	if cost, ok := (&usageCostLookup{client: client, reqID: "req-1-1"}).once(); ok {
+		t.Fatalf("reqId 不匹配时不该采信，得到 %q", cost)
+	}
+}
+
+// TestUsageCostLookupWithoutRequestIDIsImmediate 断言没有 reqId 时不发请求、不等待。
+func TestUsageCostLookupWithoutRequestIDIsImmediate(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("没有 reqId 时不该发请求")
+	}))
+	defer server.Close()
+
+	client := newTestClient(t, server, ClientOptions{SessionToken: "s", APIRequestHeader: true})
+	started := time.Now()
+	if _, ok := (&usageCostLookup{client: client, reqID: ""}).cost(); ok {
+		t.Fatal("没有 reqId 时应返回 false")
+	}
+	if elapsed := time.Since(started); elapsed > 200*time.Millisecond {
+		t.Fatalf("没有 reqId 时不该轮询，耗时 %s", elapsed)
 	}
 }
 

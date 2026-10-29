@@ -100,16 +100,11 @@ func runChat(args []string, globals globalFlags) error {
 
 	// 费用只在**有会话**时回查：价格表与用量都在控制面（/api/usage），
 	// 而 Bearer key 只能打 LLM 入口。没有会话时 chat 照常跑，只是不打印费用。
-	lookup, lookupErr := newUsageCostLookup(config, globals, name)
-	if lookupErr != nil {
-		// 回查器建不起来不影响 chat 本身（例如 API base 不可达）。
-		lookup = nil
-	}
-
+	// 注意回查发生在**请求之后**：要先拿到响应头 X-Request-Id 才能精确对账。
 	if *stream {
-		return runChatStream(client, request, config, lookup)
+		return runChatStream(client, request, config, globals)
 	}
-	return runChatOnce(client, request, config, lookup)
+	return runChatOnce(client, request, config, globals)
 }
 
 // collectPrompt 收集用户输入。
@@ -196,7 +191,7 @@ func (u *chatUsage) netInput() int {
 	return net
 }
 
-func runChatOnce(client *Client, request chatRequest, config Config, lookup *usageCostLookup) error {
+func runChatOnce(client *Client, request chatRequest, config Config, globals globalFlags) error {
 	response, err := client.Do(Request{
 		Method: "POST",
 		Path:   "/v1/chat/completions",
@@ -219,10 +214,9 @@ func runChatOnce(client *Client, request chatRequest, config Config, lookup *usa
 	}
 
 	// 费用来自 /api/usage 的权威值，不在 CLI 里自己算（口径不同，见 usage_cost.go）。
-	cost, reqID, costOK := "", "", false
-	if lookup != nil {
-		cost, reqID, costOK = lookup.cost()
-	}
+	// 请求 id 优先用响应头（权威、零成本），拿不到就没有费用可查 —— **不猜**。
+	reqID := response.RequestID
+	cost, costOK := lookupCostByRequestID(config, globals, reqID)
 
 	if config.JSON {
 		payload := map[string]any{
@@ -232,9 +226,11 @@ func runChatOnce(client *Client, request chatRequest, config Config, lookup *usa
 			"finishReason": finish,
 			"usage":        parsed.Usage,
 		}
+		if reqID != "" {
+			payload["reqId"] = reqID
+		}
 		if costOK {
 			payload["costMicros"] = cost
-			payload["reqId"] = reqID
 		}
 		return printJSON(payload)
 	}
@@ -243,7 +239,7 @@ func runChatOnce(client *Client, request chatRequest, config Config, lookup *usa
 	if text != "" && !strings.HasSuffix(text, "\n") {
 		fmt.Fprintln(os.Stdout)
 	}
-	printChatUsage(parsed.Usage, parsed.Model, finish, cost, costOK)
+	printChatUsage(parsed.Usage, parsed.Model, finish, cost, costOK, reqID)
 	return nil
 }
 
@@ -252,7 +248,7 @@ func runChatOnce(client *Client, request chatRequest, config Config, lookup *usa
 // 费用只有在**查到了权威值**时才打印：CLI 手上没有价格表，而按响应里的
 // prompt_tokens（含缓存）硬算与 /api/usage 的 costMicros（不含缓存）口径不同，
 // 跨协议时更是对不上。宁可显示「未知」，也不显示一个错的数。
-func printChatUsage(usage *chatUsage, model, finish, cost string, costOK bool) {
+func printChatUsage(usage *chatUsage, model, finish, cost string, costOK bool, reqID string) {
 	if usage == nil {
 		fmt.Fprintln(os.Stderr, "（响应里没有 usage：这一条不会被网关记账）")
 		return
@@ -275,10 +271,18 @@ func printChatUsage(usage *chatUsage, model, finish, cost string, costOK bool) {
 	switch {
 	case costOK:
 		fmt.Fprintf(os.Stderr, "费用：%s\n", formatCostMicros(cost))
+	case reqID == "":
+		fmt.Fprintln(os.Stderr, "费用：未取到（响应里没有 X-Request-Id 头，无法精确定位这条记录）")
 	case !hasSession():
-		fmt.Fprintln(os.Stderr, "费用：未查（没有会话；`dizzy login` 后 chat 会自动回查 /api/usage）")
+		fmt.Fprintln(os.Stderr, "费用：未查（没有会话；`dizzy login` 后 chat 会按 reqId 回查 /api/usage）")
 	default:
-		fmt.Fprintln(os.Stderr, "费用：暂未查到（用量是异步落库的；稍后用 `dizzy usage --limit 5` 看）")
+		fmt.Fprintf(os.Stderr, "费用：未取到这条记录（用量异步落库；稍后 `dizzy usage show %s` 可查）\n", reqID)
+	}
+	// 请求 id 一定给：拿不到就明说，不留空、不编。
+	if reqID != "" {
+		fmt.Fprintf(os.Stderr, "请求 id：%s\n", reqID)
+	} else {
+		fmt.Fprintln(os.Stderr, "请求 id：未取到（网关没回 X-Request-Id 头）")
 	}
 }
 
@@ -289,7 +293,7 @@ func hasSession() bool {
 }
 
 // runChatStream 跑流式请求，逐块打印增量内容。
-func runChatStream(client *Client, request chatRequest, config Config, lookup *usageCostLookup) error {
+func runChatStream(client *Client, request chatRequest, config Config, globals globalFlags) error {
 	response, err := client.Do(Request{
 		Method: "POST",
 		Path:   "/v1/chat/completions",
@@ -342,10 +346,9 @@ func runChatStream(client *Client, request chatRequest, config Config, lookup *u
 		return fmt.Errorf("读流失败：%w", err)
 	}
 
-	cost, reqID, costOK := "", "", false
-	if lookup != nil {
-		cost, reqID, costOK = lookup.cost()
-	}
+	// 与 runChatOnce 同口径：reqId 只认响应头，费用只按 reqId 精确回查。
+	reqID := response.RequestID
+	cost, costOK := lookupCostByRequestID(config, globals, reqID)
 
 	if config.JSON {
 		payload := map[string]any{
@@ -353,16 +356,18 @@ func runChatStream(client *Client, request chatRequest, config Config, lookup *u
 			"content": content.String(),
 			"usage":   usage,
 		}
+		if reqID != "" {
+			payload["reqId"] = reqID
+		}
 		if costOK {
 			payload["costMicros"] = cost
-			payload["reqId"] = reqID
 		}
 		return printJSON(payload)
 	}
 	if content.Len() > 0 {
 		fmt.Fprintln(os.Stdout)
 	}
-	printChatUsage(usage, model, "", cost, costOK)
+	printChatUsage(usage, model, "", cost, costOK, reqID)
 	return nil
 }
 

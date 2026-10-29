@@ -128,17 +128,23 @@ async function main() {
 
   failures += await step('dizzy models（Bearer key 路径）', async () => {
     const key = await createKeyViaDizzy()
+    process.env.DIZZYAPI_KEY = key
     // key 快照是**异步**推到 gatewayd 的（account-priority 的 KEYS_PUSH_DEBOUNCE_MS=100）。
     // 建完立刻打 /v1/* 会撞上「快照还没到」→ 401 INVALID_API_KEY。
-    // 这不是 CLI 的 bug，是夹具必须等的那一小段最终一致时间。
-    await waitForKeysSnapshot(stackLog, 1, 10000)
-    process.env.DIZZYAPI_KEY = key
+    // 这不是 CLI 的 bug，是夹具必须等的那一小段最终一致时间。等**这个 key 真能用**为止：
+    // 用日志里的 keys=N 数不可靠（那是全站计数，`keys list` 只给当前用户）。
+    await waitFor(
+      async () => (await dizzy(['models'])).code === 0,
+      15000,
+      'dizzy models 用新 key 成功（key 快照落定）',
+    )
     const result = await dizzy(['models'])
     assert(result.code === 0, `退出码应为 0，得到 ${result.code}\n${result.stderr}`)
     assert(result.stdout.includes(model), `应列出 ${model}`)
   })
 
   let chatCostMicros = ''
+  let chatReqId = ''
   failures += await step('dizzy chat：打印 token 与花费（与 /api/usage 对账）', async () => {
     const result = await dizzy(['chat', '-m', model, '--json', '对账测试'])
     assert(result.code === 0, `退出码应为 0，得到 ${result.code}\n${result.stderr}`)
@@ -146,6 +152,10 @@ async function main() {
     assert(parsed.usage?.prompt_tokens === 100, 'prompt_tokens 应为 100')
     assert(parsed.usage?.completion_tokens === 50, 'completion_tokens 应为 50')
     assert(typeof parsed.costMicros === 'string' && parsed.costMicros !== '', '应带回 costMicros')
+    assert(
+      typeof parsed.reqId === 'string' && parsed.reqId.startsWith('req-'),
+      `应带回响应头 X-Request-Id 的 reqId，得到 ${JSON.stringify(parsed.reqId)}`,
+    )
 
     // 权威值：/api/usage 里那条记录的 costMicros。
     const usage = await getUsage()
@@ -156,7 +166,22 @@ async function main() {
       `chat 的 costMicros（${parsed.costMicros}）与 /api/usage（${record.costMicros}）不一致`,
     )
     chatCostMicros = parsed.costMicros
+    chatReqId = parsed.reqId
     console.log(`    token 与费用一致：costMicros=${parsed.costMicros}（reqId ${parsed.reqId}）`)
+  })
+
+  failures += await step('dizzy usage show <reqId>：与 chat 的 costMicros 完全一致', async () => {
+    const result = await dizzy(['usage', 'show', chatReqId, '--json'])
+    assert(result.code === 0, `退出码应为 0，得到 ${result.code}\n${result.stderr}`)
+    const parsed = JSON.parse(result.stdout)
+    assert(parsed.record.reqId === chatReqId, `reqId 不一致：${parsed.record.reqId}`)
+    assert(
+      parsed.record.costMicros === chatCostMicros,
+      `详情费用（${parsed.record.costMicros}）与 chat（${chatCostMicros}）不一致`,
+    )
+    // 非流式请求没有首字延迟：必须是 null（「没采集」），不能是 0（「极快」）。
+    assert(parsed.record.ttftMs === null, `非流式的 ttftMs 应为 null，得到 ${parsed.record.ttftMs}`)
+    console.log(`    精确对账一致：reqId=${parsed.record.reqId} · costMicros=${parsed.record.costMicros} · ttftMs=null`)
   })
 
   failures += await step('dizzy usage --by model：与 /api/usage 一致', async () => {
@@ -170,6 +195,15 @@ async function main() {
     assert(viaDizzy.stdout.includes(yuan), `CLI 输出应含元值 ${yuan}`)
     assert(viaDizzy.stdout.includes(model), `CLI 输出应含模型名 ${model}`)
     console.log(`    汇总一致：请求 ${totals.requests} · costMicros=${totals.costMicros}（${yuan}）`)
+  })
+
+  failures += await step('dizzy usage --by key：标明是本地聚合、覆盖范围', async () => {
+    const result = await dizzy(['usage', '--range', '7d', '--by', 'key'])
+    assert(result.code === 0, `退出码应为 0，得到 ${result.code}\n${result.stderr}`)
+    assert(result.stdout.includes('按 key 聚合：覆盖最近'), `应标明覆盖范围：${result.stdout}`)
+    assert(result.stdout.includes('不是全量'), '应明确说不是全量')
+    assert(result.stdout.includes('e2e-key'), `按 key 聚合里应出现 e2e-key：${result.stdout}`)
+    console.log('    覆盖范围已标注（本地聚合，不是全量）')
   })
 
   failures += await step('dizzy usage --json：costMicros 与 chat 一致', async () => {
@@ -315,9 +349,21 @@ async function adjustBalance(cookie) {
 
 // ───────────────────────────── dizzy 调用 ─────────────────────────────
 
+/**
+ * 建一个 key，返回明文。
+ *
+ * 注意**不要**用「Go 侧快照里应该有几个 key」去等：`keys list` 是按**当前用户**
+ * 返回的，而 gatewayd 的快照是**全站**的（跨运行累加），两个数永远对不上。
+ * 正确做法见调用处：等「这个新 key 真的能用」。
+ */
 async function createKeyViaDizzy() {
-  const result = await dizzy(['keys', 'create', '--name', 'e2e-key', '--show'])
+  const result = await dizzy(['keys', 'create', '--name', `e2e-key-${runId}`, '--show'])
   assert(result.code === 0, `建 key 失败：${result.stderr}`)
+  // 写操作必须先打目标地址：默认 base 指生产，这行是「没打错机器」的最后一道闸。
+  assert(
+    result.stderr.includes('http://127.0.0.1:7791'),
+    `写操作应先打印目标 base，stderr 里没有：${result.stderr}`,
+  )
   const match = result.stdout.match(/(sk-dz-[A-Za-z0-9_-]+)/)
   assert(match !== null, `没拿到 key：${result.stdout}`)
   return match[1]
@@ -327,26 +373,6 @@ async function getUsage() {
   const response = await api('GET', '/api/usage?range=7d&limit=20', { cookie: await login() })
   assert(response.status === 200, `查用量失败：${JSON.stringify(response.body)}`)
   return response.body
-}
-
-/**
- * 等 gatewayd 收到**含至少 expectedKeys 个 key** 的快照。
- *
- * `api-key` 的变更经 account-priority 以 100ms debounce 推给 Go；CLI 建完 key
- * 立刻用会 401。这里按 Go 侧日志里「API key 快照已更新 ... keys=N」等它落定，
- * 而不是盲目 sleep（盲目 sleep 在慢机器上照样会假失败）。
- */
-async function waitForKeysSnapshot(stackLog, expectedKeys, timeoutMs) {
-  await waitFor(
-    () => {
-      const text = stackLog.join('')
-      const matches = [...text.matchAll(/API key 快照已更新[^\n]*keys=(\d+)/g)]
-      if (matches.length === 0) return false
-      return Number(matches.at(-1)[1]) >= expectedKeys
-    },
-    timeoutMs,
-    `gatewayd 收到 ${expectedKeys} 个 key 的快照`,
-  )
 }
 
 function dizzy(args, options = {}) {
@@ -452,7 +478,8 @@ async function waitTCP(addr, timeoutMs) {
 async function waitFor(predicate, timeoutMs, what) {
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
-    if (predicate()) return
+    // 必须 await：谓词可能是 async（例如「再打一次 dizzy models 看通不通」）。
+    if (await predicate()) return
     await sleep(100)
   }
   throw new Error(`等待「${what}」超时`)
@@ -461,7 +488,7 @@ async function waitFor(predicate, timeoutMs, what) {
 async function waitForValue(predicate, timeoutMs, what) {
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
-    const value = predicate()
+    const value = await predicate()
     if (value !== undefined) return value
     await sleep(100)
   }
