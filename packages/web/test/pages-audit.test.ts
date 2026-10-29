@@ -77,6 +77,7 @@ class FakeUser extends Service {
       role: 'admin',
       balance: this.balance,
       balanceEnabled: true,
+      concurrencyLimit: null,
       avatar: null,
       createdAt: '2026-01-01T00:00:00.000Z',
       updatedAt: '2026-01-01T00:00:00.000Z',
@@ -331,7 +332,8 @@ test('接线：管理台改余额会记审计（actor / actorPlugin / action / �
 test('接线：审计 record 抛错时动作照常成功（旁路纪律）', async (t) => {
   const app = await boot(t)
   app.audit!.failRecord = true
-  const response = await post(app, '/admin/users?action=status', 'id=2&status=banned')
+  // 用户页的写入口已收进「编辑」弹窗（`action=edit`），它逐项 diff 后只写变了的字段。
+  const response = await post(app, '/admin/users?action=edit', 'id=2&name=alice&role=admin&status=banned')
   assert.equal(response.status, 303)
   assert.ok((response.headers.get('location') ?? '').startsWith('/admin/users?ok='))
   assert.deepEqual(app.user.calls, ['status:@dizzyapi/plugin-web:2:banned'])
@@ -339,7 +341,7 @@ test('接线：审计 record 抛错时动作照常成功（旁路纪律）', asy
 
 test('接线：缺 audit 服务时动作照常成功', async (t) => {
   const app = await boot(t, { withAudit: false })
-  const response = await post(app, '/admin/users?action=role', 'id=2&role=user')
+  const response = await post(app, '/admin/users?action=edit', 'id=2&name=alice&role=user&status=enabled')
   assert.equal(response.status, 303)
   assert.ok((response.headers.get('location') ?? '').startsWith('/admin/users?ok='))
   assert.deepEqual(app.user.calls, ['role:@dizzyapi/plugin-web:2:user'])

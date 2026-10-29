@@ -22,6 +22,7 @@ const SESSION: SessionView = {
     role: 'admin',
     balance: 2_500_000n,
     balanceEnabled: true,
+    concurrencyLimit: null,
     avatar: null,
     createdAt: '2026-10-19T00:00:00.000Z',
     updatedAt: '2026-10-19T00:00:00.000Z',
