@@ -76,6 +76,8 @@
       - '@dizzyapi/plugin-admin'
       - '@dizzyapi/plugin-api'
       - '@dizzyapi/plugin-web'
+      # 运维总览要读结算汇总与各状态计数（只读，具体金额仍只在管理面）。
+      - '@dizzyapi/plugin-observability'
 
 # 充值订单插件：订单的唯一写者（服务名 topup），存储 data/topup.db。
 # 状态机 pending → paid / canceled / expired；到账只经 user.adjustBalance（幂等靠
@@ -365,6 +367,21 @@
       - '@dizzyapi/plugin-admin'
       - '@dizzyapi/plugin-api'
       - '@dizzyapi/plugin-web'
+      # 运维总览要读「最近 24 小时按动作分组 + 最近几条」与总量。
+      - '@dizzyapi/plugin-observability'
+
+# 运维总览：**纯只读聚合**，不落盘、不发事件、不挂 HTTP、无定时器。
+# 把用量链路（usage.status + 桥命令 usage.stats）、结算汇总（billing.summary）、
+# 额度快照（quota.status）、账号运行时（accounts.status 的 runtime）、审计（audit.list/stats）、
+# 账号池健康（accountAdmin.list + accountHealth.status）拼成一屏；
+# 每块自带数据源健康度（ok / degraded / unavailable + 原因），缺谁只降级那一块。
+# 不 inject 任何服务：全部运行期解析，缺服务不影响入口（D5）。
+# adminPlugins：本插件名必须登记在 billing / audit 的读白名单里（它以自己的身份读汇总）。
+- id: observability
+  name: '@dizzyapi/plugin-observability'
+  config:
+    # 审计窗口一次最多扫多少条（1..1000）；超出时报告标 windowTruncated。
+    auditWindowLimit: 200
 
 # 开发者控制面板：看插件与服务的依赖图、看运行期概览、改设置、重启单个插件、退出整个进程。
 # 只绑 127.0.0.1；启动日志里会打印一条带一次性 token 的地址，打开后换成 HttpOnly cookie。

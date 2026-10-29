@@ -21,6 +21,7 @@ import type {
   CatalogLike,
   FontLike,
   ModelHubLike,
+  ObservabilityLike,
   PricingLike,
   RedeemLike,
   SessionView,
@@ -165,6 +166,7 @@ export class WebService extends Service {
       billing: get<BillingLike>('billing'),
       topup: get<TopupLike>('topup'),
       audit: get<AuditLike>('audit'),
+      observability: get<ObservabilityLike>('observability'),
       fontSmiley: get<FontLike>('fontSmiley'),
     }
   }

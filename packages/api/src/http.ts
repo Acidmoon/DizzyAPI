@@ -469,6 +469,10 @@ export class ApiServer {
       await this.routeAdminAudit(req, res, url)
       return
     }
+    if (parts.length === 2 && parts[0] === 'admin' && parts[1] === 'observability') {
+      await this.routeAdminObservability(req, res)
+      return
+    }
     if (parts[0] === 'admin' && parts[1] === 'usage') {
       await this.routeAdminUsage(req, res, parts, url)
       return
@@ -1826,6 +1830,37 @@ export class ApiServer {
       limit: page.limit,
       ...(wantStats ? { stats: audit.stats(API_ACTOR) } : {}),
     })
+  }
+
+  // ───────────────────────────────── 管理员：运维总览 ─────────────────────────────────
+
+  /**
+   * `GET /api/admin/observability`：运维总览（只读聚合）。
+   *
+   * 返回 `observability` 插件现算的报告：六块事实 + 每块的**数据源健康度**
+   * （`ok` / `degraded` / `unavailable` + 人话原因）+ 异常摘要 `warnings`。
+   *
+   * 两条纪律：
+   * - **单块数据源缺失不是 HTTP 错误**：报告里标 `degraded`，接口照常 200；
+   *   只有聚合插件本身不在运行时才 503（`OBSERVABILITY_UNAVAILABLE`）。
+   * - 金额一律十进制字符串（整数微元），报告里没有 bigint；账号 id / label / baseUrl
+   *   与任何秘密都不出现。
+   */
+  private async routeAdminObservability(
+    req: IncomingMessage,
+    res: ServerResponse,
+  ): Promise<void> {
+    await this.requireAdmin(req)
+    if (!this.allowRead(req, res)) return
+    const observability = this.runtime.observability()
+    if (observability === undefined) {
+      throw new ApiError(
+        'OBSERVABILITY_UNAVAILABLE',
+        503,
+        '运维总览服务不在运行：暂时看不到聚合状态',
+      )
+    }
+    this.sendJson(req, res, 200, await observability.observe())
   }
 
   // ───────────────────────────────── 管理员：用户 ─────────────────────────────────

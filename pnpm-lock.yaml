@@ -89,6 +89,9 @@ importers:
       '@dizzyapi/plugin-modelhub':
         specifier: workspace:*
         version: link:packages/modelhub
+      '@dizzyapi/plugin-observability':
+        specifier: workspace:*
+        version: link:packages/observability
       '@dizzyapi/plugin-page-template':
         specifier: workspace:*
         version: link:packages/page-template
@@ -311,6 +314,15 @@ importers:
         version: link:../credentials
 
   packages/modelhub:
+    dependencies:
+      '@dizzyapi/plugin-kit':
+        specifier: workspace:*
+        version: link:../kit
+      cordis:
+        specifier: ^4.0.0-rc.11
+        version: 4.0.0-rc.11(@cordisjs/plugin-include@1.1.1)(@cordisjs/plugin-loader@1.0.0-rc.8)
+
+  packages/observability:
     dependencies:
       '@dizzyapi/plugin-kit':
         specifier: workspace:*

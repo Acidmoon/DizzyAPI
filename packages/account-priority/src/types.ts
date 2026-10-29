@@ -10,6 +10,17 @@ export type StrategySelection = 'rank' | 'weighted-random'
 export type StrategyHealthPolicy = 'exclude_unhealthy' | 'require_healthy' | 'allow_all'
 export type StrategyDirection = 'asc' | 'desc'
 
+/**
+ * Go 侧账号运行时的**全站聚合**计数（`accounts.status` 的只增字段 `runtime`）。
+ *
+ * 只有两个整数：正在处理的请求数、处于短期冷却的账号数。**没有账号级明细、没有秘密**，
+ * 也不适合进一步下钻——它存在的意义是给运维页看一眼「现在堵不堵」。
+ */
+export interface AccountsRuntimeSummary {
+  readonly active: number
+  readonly cooling: number
+}
+
 export interface FactorRule {
   /** 0 表示不启用该因子。 */
   readonly weight: number

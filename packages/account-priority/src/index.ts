@@ -53,6 +53,7 @@ export {
   type AccountCandidate,
   type AccountPriorityHealth,
   type AccountPriorityStatus,
+  type AccountsRuntimeSummary,
   type ChildState,
   type ExcludedAccount,
   type FactorRule,

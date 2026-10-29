@@ -524,6 +524,19 @@ export interface AuditPort {
   stats(actor: string): AuditStatsLike
 }
 
+// ───────────────────────────── 运维总览 ─────────────────────────────
+
+/**
+ * 运维总览服务端口。
+ *
+ * `observe()` 返回的是一份**已经 JSON 友好**的报告：金额是十进制字符串、没有 bigint、
+ * 没有账号 id / label / baseUrl / 秘密（由 observability 插件保证）。所以 HTTP 层直接透传，
+ * 不再做二次转换——这也让「插件与接口看到的是同一份事实」。
+ */
+export interface ObservabilityPort {
+  observe(nowMs?: number): Promise<unknown>
+}
+
 // ───────────────────────────── 设置与 API key ─────────────────────────────
 
 /** 设置插件的读/写面。只有运行中的 settings 服务才提供。 */
@@ -923,6 +936,8 @@ export interface ApiRuntime {
   topup(): TopupPort | undefined
   /** 审计服务；不在运行时只有 /api/admin/audit 503，写操作照常成功（审计是旁路）。 */
   audit(): AuditPort | undefined
+  /** 运维总览（只读聚合）；不在运行时只有 /api/admin/observability 503。 */
+  observability(): ObservabilityPort | undefined
   now(): Date
   uptimeSec(): number
   log(level: 'info' | 'warn' | 'error', message: string): void
