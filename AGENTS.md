@@ -368,7 +368,7 @@ pnpm test:go
 
 - 新增插件必须有 `test/*.test.ts`；新增 Go 模块必须有单测。
 - 测试失败先修实现，不允许删断言或放宽断言来变绿。
-- 当前基线（2026-10-29 实测）：`pnpm test` 744 个用例（743 通过 / 1 跳过），`pnpm typecheck` 干净，
+- 当前基线（2026-10-29 实测）：`pnpm test` 745 个用例（744 通过 / 1 跳过），`pnpm typecheck` 干净，
   `go test ./...` **20 包**全 ok，`gofmt -l .` 与 `go vet ./...` 无输出。
   这个数字会变，以实际输出为准。
 - **多 worktree 并行跑测试会互相抢端口**：`pnpm test` 里有多条**真进程用例**（`content-audit`
@@ -592,6 +592,15 @@ pnpm build:all        # 两个二进制一起编
   （不泄露某个 reqId 是否存在）。响应比列表多 `reasoningTokens` / `usagePresent` /
   `usageComplete` / `ttftMs`，但**仍然不给** profile / accountId / attempts（用户面拿不到
   上游账号拓扑）。
+- **给 `UsagePort` 加方法必须同批改 `packages/api/src/service.ts` 的方法清单**：
+  `usage: () => this.optionalService<UsagePort>('usage', [...])` 里的数组是**整个 usage 端口**
+  的可用性闸门——清单里列了 `get` 而 usage 插件没有它时，不是「只有新接口 503」，而是
+  `/api/usage`、导出、详情**全部 503**（fail-closed，故意的：那说明版本错配）。
+  所以加方法 = 改三处（`packages/usage` 的实现、`api/src/types.ts` 的 `UsagePort`、
+  `api/src/service.ts` 的清单），漏了第三处会连带打挂旧接口。
+- **管理面看首字延迟走 `/admin/usage`**：页面新增「最近请求」表（`usage.list` 最近 20 条全站
+  明细），列里带「首字延迟」，null 显示「—」；纯用现有表格渲染，不依赖 `page-template` 的
+  新控件（那是设计线的地盘）。
 - **`X-Request-Id` 只在「查得到」时才发**：`internal/httpapi` 在 `requestID :=
   s.nextRequestID()` 之后、任何写响应之前写这个头，值与用量记录的 `RequestID` 同源；
   只加头、不改体（错误体逐字节不变有断言守着）。**早期拒绝**（方法不对 / 请求体读失败 /
