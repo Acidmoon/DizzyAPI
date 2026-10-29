@@ -17,6 +17,12 @@ import type {
   AccountViewLike,
   ApiKeyPort,
   ApiRuntime,
+  AuditEntryLike,
+  AuditPageLike,
+  AuditPort,
+  AuditQueryLike,
+  AuditRecordLike,
+  AuditStatsLike,
   AuthPort,
   BillingPort,
   CatalogPluginLike,
@@ -693,6 +699,8 @@ export class FakeAccountAdmin implements AccountAdminPort {
 export class FakeSettings implements SettingsPort {
   readonly calls: { method: string; args: unknown[] }[] = []
   readonly namespaces = [{ ns: 'mailer', plugin: '@dizzyapi/plugin-mailer', writable: true, fields: [] }]
+  /** 设置后 update / reset 抛带这个 code 的领域错误（验证失败路径）。 */
+  failCode: string | undefined
 
   async describe(): Promise<unknown> {
     this.calls.push({ method: 'describe', args: [] })
@@ -702,11 +710,13 @@ export class FakeSettings implements SettingsPort {
 
   async update(actor: string, ns: string, patch: Record<string, unknown>, expectedRevision?: string): Promise<unknown> {
     this.calls.push({ method: 'update', args: [actor, ns, patch, expectedRevision] })
+    if (this.failCode !== undefined) throw new DomainError(this.failCode, '测试拒绝：设置写入失败')
     return { ns, revision: 'rev-2', patch }
   }
 
   async reset(actor: string, ns: string): Promise<unknown> {
     this.calls.push({ method: 'reset', args: [actor, ns] })
+    if (this.failCode !== undefined) throw new DomainError(this.failCode, '测试拒绝：设置重置失败')
     return { ns, overridden: false }
   }
 }
@@ -1352,6 +1362,82 @@ export class FakeModelHub implements ModelHubPort {
   }
 }
 
+/** 审计服务的假实现：记录收到的写入、支持筛选与分页；可以让 record 抛错。 */
+export class FakeAudit implements AuditPort {
+  readonly calls: AuditEntryLike[] = []
+  readonly reads: { readonly actor: string; readonly query?: AuditQueryLike }[] = []
+  /** 置 true 后 `record` 抛错：用来验证「审计挂了业务照常成功」。 */
+  failRecord = false
+  private items: AuditRecordLike[] = []
+  private nextId = 1
+
+  record(entry: AuditEntryLike): AuditRecordLike {
+    if (this.failRecord) throw new Error('审计库写入失败（测试注入）')
+    const atMs = entry.atMs ?? Date.UTC(2026, 9, 19, 12, 0, 0)
+    const stored: AuditRecordLike = {
+      id: this.nextId++,
+      at: new Date(atMs).toISOString(),
+      atMs,
+      actor: entry.actor,
+      actorPlugin: entry.actorPlugin,
+      action: entry.action,
+      targetType: entry.targetType ?? '',
+      targetId: entry.targetId ?? '',
+      summary: entry.summary,
+      metadata: entry.metadata ?? null,
+      result: entry.result ?? 'ok',
+      errorCode: entry.errorCode ?? null,
+    }
+    this.calls.push(entry)
+    this.items.push(stored)
+    return stored
+  }
+
+  list(actor: string, query: AuditQueryLike = {}): AuditPageLike {
+    this.reads.push({ actor, query })
+    const filtered = this.items.filter((item) => {
+      if (query.actor !== undefined && item.actor !== query.actor) return false
+      if (query.action !== undefined && item.action !== query.action) return false
+      if (query.targetType !== undefined && item.targetType !== query.targetType) return false
+      if (query.targetId !== undefined && item.targetId !== query.targetId) return false
+      return true
+    })
+    const sorted = [...filtered].sort((a, b) => b.atMs - a.atMs || b.id - a.id)
+    const offset = query.offset ?? 0
+    const limit = query.limit ?? 50
+    return {
+      items: sorted.slice(offset, offset + limit),
+      total: sorted.length,
+      offset,
+      limit,
+    }
+  }
+
+  stats(actor: string): AuditStatsLike {
+    this.reads.push({ actor })
+    const byAction = new Map<string, number>()
+    const byActor = new Map<string, number>()
+    for (const item of this.items) {
+      byAction.set(item.action, (byAction.get(item.action) ?? 0) + 1)
+      byActor.set(item.actor, (byActor.get(item.actor) ?? 0) + 1)
+    }
+    return {
+      total: this.items.length,
+      today: this.items.length,
+      last24h: this.items.length,
+      failed: this.items.filter((item) => item.result === 'failed').length,
+      lastAt: this.items.length === 0 ? null : this.items[this.items.length - 1]!.at,
+      byAction: [...byAction].map(([action, count]) => ({ action, count })),
+      byActor: [...byActor].map(([actor, count]) => ({ actor, count })),
+    }
+  }
+
+  /** 只给用例读：预置一条历史记录（模拟「昨天有人改过余额」）。 */
+  seed(entry: AuditEntryLike): AuditRecordLike {
+    return this.record(entry)
+  }
+}
+
 export interface Fixture {
   readonly runtime: ApiRuntime
   readonly user: FakeUser
@@ -1368,6 +1454,7 @@ export interface Fixture {
   readonly billing: FakeBilling
   readonly topup: FakeTopup
   readonly modelhub: FakeModelHub
+  readonly audit: FakeAudit
   readonly cleanup: () => Promise<void>
 }
 
@@ -1387,6 +1474,7 @@ export interface FixtureOptions {
   readonly withoutBilling?: boolean
   readonly withoutTopup?: boolean
   readonly withoutModelHub?: boolean
+  readonly withoutAudit?: boolean
   readonly pages?: FrontendPageLike[]
 }
 
@@ -1405,6 +1493,7 @@ export async function createFixture(options: FixtureOptions = {}): Promise<Fixtu
   const billing = new FakeBilling()
   const topup = new FakeTopup()
   const modelhub = new FakeModelHub()
+  const audit = new FakeAudit()
 
   const runtime: ApiRuntime = {
     config: resolvedConfig(options.config),
@@ -1423,6 +1512,7 @@ export async function createFixture(options: FixtureOptions = {}): Promise<Fixtu
     billing: () => (options.withoutBilling === true ? undefined : billing),
     topup: () => (options.withoutTopup === true ? undefined : topup),
     modelhub: () => (options.withoutModelHub === true ? undefined : modelhub),
+    audit: () => (options.withoutAudit === true ? undefined : audit),
     now: () => new Date('2026-10-19T12:00:00.000Z'),
     uptimeSec: () => 42,
     log: () => undefined,
@@ -1444,6 +1534,7 @@ export async function createFixture(options: FixtureOptions = {}): Promise<Fixtu
     billing,
     topup,
     modelhub,
+    audit,
     async cleanup() {
       await rm(frontend.root, { recursive: true, force: true })
     },

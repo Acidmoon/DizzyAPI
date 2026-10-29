@@ -19,6 +19,7 @@ import { readFile } from 'node:fs/promises'
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import { extname, join } from 'node:path'
 import { BALANCE_MINOR_UNITS_PER_CENT, type ResolvedApiConfig } from './config.ts'
+import { audited, auditActorOf } from './audit.ts'
 import { ApiError, badRequest, forbidden, isApiError, notFound, toApiError, unauthorized } from './errors.ts'
 import type {
   AccountAdminPort,
@@ -28,6 +29,8 @@ import type {
   ApiKeyPort,
   ApiKeySummaryView,
   ApiRuntime,
+  AuditQueryLike,
+  AuthPort,
   BillingPort,
   CatalogModuleView,
   CatalogPort,
@@ -462,6 +465,10 @@ export class ApiServer {
       await this.routeAdminTopupOrders(req, res, parts, url)
       return
     }
+    if (parts[0] === 'admin' && parts[1] === 'audit') {
+      await this.routeAdminAudit(req, res, url)
+      return
+    }
     if (parts[0] === 'admin' && parts[1] === 'usage') {
       await this.routeAdminUsage(req, res, parts, url)
       return
@@ -856,7 +863,7 @@ export class ApiServer {
     }
 
     if (req.method === 'PUT') {
-      await this.requireAdmin(req)
+      const { view } = await this.requireAdmin(req)
       const pricing = requirePricing()
       const body = await this.jsonBody(req)
       assertOnlyKeys(body, [
@@ -873,14 +880,41 @@ export class ApiServer {
         ...(cacheRead === undefined ? {} : { cacheReadPerMillion: cacheRead }),
         ...(cacheWrite === undefined ? {} : { cacheWritePerMillion: cacheWrite }),
       }
-      this.sendJson(req, res, 200, viewOf(await pricing.set(API_ACTOR, model, input)))
+      const written = await audited(
+        this.runtime,
+        { actor: auditActorOf(view), actorPlugin: API_ACTOR },
+        {
+          action: 'pricing.write',
+          targetType: 'pricing',
+          targetId: model,
+          summary: `写入模型 ${model} 的价格`,
+          metadata: {
+            inputPerMillion: String(input.inputPerMillion),
+            outputPerMillion: String(input.outputPerMillion),
+          },
+        },
+        () => pricing.set(API_ACTOR, model, input),
+      )
+      this.sendJson(req, res, 200, viewOf(written))
       return
     }
 
     if (req.method === 'DELETE') {
-      await this.requireAdmin(req)
+      const { view } = await this.requireAdmin(req)
       const pricing = requirePricing()
-      this.sendJson(req, res, 200, { removed: await pricing.remove(API_ACTOR, model) })
+      const removed = await audited(
+        this.runtime,
+        { actor: auditActorOf(view), actorPlugin: API_ACTOR },
+        {
+          action: 'pricing.remove',
+          targetType: 'pricing',
+          targetId: model,
+          summary: `删除模型 ${model} 的价格`,
+          metadataOf: (result) => ({ removed: result }),
+        },
+        () => pricing.remove(API_ACTOR, model),
+      )
+      this.sendJson(req, res, 200, { removed })
       return
     }
 
@@ -947,9 +981,9 @@ export class ApiServer {
     parts: readonly string[],
     url: URL,
   ): Promise<void> {
-    await this.requireAdmin(req)
+    const { view: adminView } = await this.requireAdmin(req)
     if (parts[2] === 'rejected') {
-      await this.routeAdminUsageRejected(req, res, parts, url)
+      await this.routeAdminUsageRejected(req, res, parts, url, auditActorOf(adminView))
       return
     }
     if (parts.length > 3 || (parts.length === 3 && parts[2] !== 'export')) {
@@ -1013,6 +1047,7 @@ export class ApiServer {
     res: ServerResponse,
     parts: readonly string[],
     url: URL,
+    actor: string,
   ): Promise<void> {
     const usage = this.requireUsage()
     if (parts.length === 3) {
@@ -1029,14 +1064,39 @@ export class ApiServer {
     const body = await this.jsonBody(req)
     assertOnlyKeys(body, ['reqId'])
     const reqId = requiredString(body, 'reqId')
+    const identity = { actor, actorPlugin: API_ACTOR }
 
     if (action === 'ignore') {
-      usage.ignoreRejected(reqId)
+      await audited(
+        this.runtime,
+        identity,
+        {
+          action: 'usage.rejected.ignore',
+          targetType: 'usage-record',
+          targetId: reqId,
+          // 忽略 = 这笔用量永久不结算、不扣钱，等于放弃收入：属于高危动作。
+          summary: `忽略一条被隔离的用量记录（永久不结算）`,
+        },
+        async () => usage.ignoreRejected(reqId),
+      )
       this.sendJson(req, res, 200, { reqId, status: 'ignored' })
       return
     }
 
-    this.sendJson(req, res, 200, { reqId, ...(await usage.replayRejected(reqId)) })
+    const replayed = await audited(
+      this.runtime,
+      identity,
+      {
+        action: 'usage.rejected.replay',
+        targetType: 'usage-record',
+        targetId: reqId,
+        // 重放会补结算（扣钱），失败也记：漏记一次就是账对不上。
+        summary: '重放一条被隔离的用量记录（补结算）',
+        metadataOf: (out) => ({ inserted: out.inserted, status: out.status }),
+      },
+      () => usage.replayRejected(reqId),
+    )
+    this.sendJson(req, res, 200, { reqId, ...replayed })
   }
 
   /** 隔离区列表视图：分页与状态筛选都在这里校验，非法值明确 400。 */
@@ -1336,7 +1396,8 @@ export class ApiServer {
     parts: readonly string[],
     url: URL,
   ): Promise<void> {
-    await this.requireAdmin(req)
+    const { view: adminView } = await this.requireAdmin(req)
+    const identity = { actor: auditActorOf(adminView), actorPlugin: API_ACTOR }
     const topup = this.requireTopup()
 
     if (parts.length === 2) {
@@ -1379,7 +1440,23 @@ export class ApiServer {
       const orderNo = parts[2] as string
       if (parts[3] === 'confirm') {
         if (!this.allowMethod(req, res, ['POST'])) return
-        const result = await topup.confirmPaid(API_ACTOR, orderNo)
+        const result = await audited(
+          this.runtime,
+          identity,
+          {
+            action: 'topup.order.confirm',
+            targetType: 'topup-order',
+            targetId: orderNo,
+            // 确认到账会**真的加余额**：失败也记（加余额失败要能查到是哪一次）。
+            summary: `确认充值订单 ${orderNo} 到账`,
+            metadataOf: (out) => ({
+              credited: out.credited,
+              userId: out.order.userId,
+              amountMicros: out.order.amountMicro.toString(),
+            }),
+          },
+          () => topup.confirmPaid(API_ACTOR, orderNo),
+        )
         this.sendJson(req, res, 200, {
           order: topupOrderOf(result.order),
           credited: result.credited,
@@ -1388,7 +1465,19 @@ export class ApiServer {
       }
       if (parts[3] === 'cancel') {
         if (!this.allowMethod(req, res, ['POST'])) return
-        this.sendJson(req, res, 200, topupOrderOf(await topup.cancel(API_ACTOR, orderNo)))
+        const canceled = await audited<TopupOrderLike>(
+          this.runtime,
+          identity,
+          {
+            action: 'topup.order.cancel',
+            targetType: 'topup-order',
+            targetId: orderNo,
+            summary: `取消充值订单 ${orderNo}`,
+            metadataOf: (order) => ({ userId: order.userId, status: order.status }),
+          },
+          async () => topup.cancel(API_ACTOR, orderNo),
+        )
+        this.sendJson(req, res, 200, topupOrderOf(canceled))
         return
       }
     }
@@ -1442,7 +1531,8 @@ export class ApiServer {
     parts: readonly string[],
     url: URL,
   ): Promise<void> {
-    await this.requireAdmin(req)
+    const { view: adminView } = await this.requireAdmin(req)
+    const identity = { actor: auditActorOf(adminView), actorPlugin: API_ACTOR }
     const redeem = this.requireRedeem()
 
     if (parts.length === 2) {
@@ -1482,13 +1572,26 @@ export class ApiServer {
         const expiresAt =
           Object.hasOwn(body, 'expiresAt') ? nullableString(body, 'expiresAt') : undefined
         const notes = Object.hasOwn(body, 'notes') ? optionalString(body, 'notes') : undefined
-        const created = await redeem.createBatch(API_ACTOR, {
-          name,
-          amountMicro,
-          count,
-          ...(expiresAt === undefined ? {} : { expiresAt }),
-          ...(notes === undefined ? {} : { notes }),
-        })
+        const created = await audited(
+          this.runtime,
+          identity,
+          {
+            action: 'redeem.batch.generate',
+            targetType: 'redeem-batch',
+            summary: `生成兑换码批次「${name}」（${count} 张）`,
+            // 明文码只在响应里出现一次，**绝不进审计**；只记批次与额度。
+            metadata: { count, amountMicros: amountMicro.toString(), expiresAt: expiresAt ?? null },
+            metadataOf: (result) => ({ batchId: result.batch.id }),
+          },
+          () =>
+            redeem.createBatch(API_ACTOR, {
+              name,
+              amountMicro,
+              count,
+              ...(expiresAt === undefined ? {} : { expiresAt }),
+              ...(notes === undefined ? {} : { notes }),
+            }),
+        )
         this.sendJson(req, res, 200, {
           batch: redeemBatchOf(created.batch),
           codes: created.codes,
@@ -1499,7 +1602,18 @@ export class ApiServer {
         const body = await this.jsonBody(req)
         assertOnlyKeys(body, ['ids'])
         const ids = readStringArray(body.ids, 'ids')
-        const result = await redeem.deleteCodes(API_ACTOR, ids)
+        const result = await audited(
+          this.runtime,
+          identity,
+          {
+            action: 'redeem.code.delete',
+            targetType: 'redeem-code',
+            summary: `批量删除 ${ids.length} 张兑换码`,
+            metadata: { ids, count: ids.length },
+            metadataOf: (out) => ({ deleted: out.deleted, rejected: out.rejected.length }),
+          },
+          () => redeem.deleteCodes(API_ACTOR, ids),
+        )
         this.sendJson(req, res, 200, {
           deleted: result.deleted,
           rejected: result.rejected.map((item) => ({ id: item.id, reason: item.reason })),
@@ -1519,7 +1633,25 @@ export class ApiServer {
       if (status !== 'enabled' && status !== 'disabled') {
         throw badRequest('status 只能是 enabled / disabled')
       }
-      this.sendJson(req, res, 200, redeemCodeOf(await redeem.setCodeStatus(API_ACTOR, id, status)))
+      this.sendJson(
+        req,
+        res,
+        200,
+        redeemCodeOf(
+          await audited(
+            this.runtime,
+            identity,
+            {
+              action: 'redeem.code.status',
+              targetType: 'redeem-code',
+              targetId: id,
+              summary: `把兑换码 ${id} 改为 ${status}`,
+              metadata: { status },
+            },
+            () => redeem.setCodeStatus(API_ACTOR, id, status),
+          ),
+        ),
+      )
       return
     }
 
@@ -1536,7 +1668,21 @@ export class ApiServer {
         req,
         res,
         200,
-        redeemCodeOf(await redeem.resolveRedeeming(API_ACTOR, id, outcome)),
+        redeemCodeOf(
+          await audited(
+            this.runtime,
+            identity,
+            {
+              action: 'redeem.code.resolve',
+              targetType: 'redeem-code',
+              targetId: id,
+              // 人工核查影响「这张码还能不能再加钱」，属于高危：失败也记。
+              summary: `人工核查兑换码 ${id}：${outcome === 'used' ? '标记为已用' : '退回可用'}`,
+              metadata: { outcome },
+            },
+            () => redeem.resolveRedeeming(API_ACTOR, id, outcome),
+          ),
+        ),
       )
       return
     }
@@ -1621,10 +1767,72 @@ export class ApiServer {
     })
   }
 
+  // ───────────────────────────────── 管理员：审计 ─────────────────────────────────
+
+  /**
+   * `GET /api/admin/audit`：管理员操作审计（只读，时间倒序分页）。
+   *
+   * 查询参数：
+   * - `actor` / `actorPlugin` / `action` / `targetType` / `targetId`：精确匹配；
+   * - `from` / `to`：毫秒时间范围，左闭右开；
+   * - `limit`（1..200，默认 50）/ `offset`（默认 0）；
+   * - `stats=1`：附带汇总（总量 / 今天 / 24 小时 / 失败数 / Top 动作与操作者）。
+   *
+   * 读权限由审计服务判（`adminPlugins` 白名单，actor 是本插件）。审计服务缺席只让这条
+   * 路由 503——**写操作照常成功**，审计是旁路（见 `audit.ts`）。
+   */
+  private async routeAdminAudit(
+    req: IncomingMessage,
+    res: ServerResponse,
+    url: URL,
+  ): Promise<void> {
+    await this.requireAdmin(req)
+    if (!this.allowRead(req, res)) return
+    const audit = this.runtime.audit()
+    if (audit === undefined) {
+      throw new ApiError('AUDIT_UNAVAILABLE', 503, '审计服务不在运行：暂时不能查询审计记录')
+    }
+
+    const query: {
+      actor?: string
+      actorPlugin?: string
+      action?: string
+      targetType?: string
+      targetId?: string
+      fromMs?: number
+      toMs?: number
+      limit?: number
+      offset?: number
+    } = {}
+    for (const key of ['actor', 'actorPlugin', 'action', 'targetType', 'targetId'] as const) {
+      const value = queryStringOf(url, key)
+      if (value !== undefined) query[key] = value
+    }
+    const fromMs = parseIntegerParam(url.searchParams.get('from'), 'from', 0, 0, Number.MAX_SAFE_INTEGER)
+    if (fromMs !== undefined && fromMs > 0) query.fromMs = fromMs
+    const toMs = parseIntegerParam(url.searchParams.get('to'), 'to', 0, 0, Number.MAX_SAFE_INTEGER)
+    if (toMs !== undefined && toMs > 0) query.toMs = toMs
+    const limit = parseIntegerParam(url.searchParams.get('limit'), 'limit', 50, 1, 200)
+    if (limit !== undefined) query.limit = limit
+    const offset = parseIntegerParam(url.searchParams.get('offset'), 'offset', 0, 0, 10_000_000)
+    if (offset !== undefined) query.offset = offset
+
+    const page = audit.list(API_ACTOR, query as AuditQueryLike)
+    const wantStats = url.searchParams.get('stats') === '1'
+    this.sendJson(req, res, 200, {
+      items: page.items,
+      total: page.total,
+      offset: page.offset,
+      limit: page.limit,
+      ...(wantStats ? { stats: audit.stats(API_ACTOR) } : {}),
+    })
+  }
+
   // ───────────────────────────────── 管理员：用户 ─────────────────────────────────
 
   private async routeUsers(req: IncomingMessage, res: ServerResponse, parts: readonly string[]): Promise<void> {
-    await this.requireAdmin(req)
+    const { view: adminView } = await this.requireAdmin(req)
+    const actor = auditActorOf(adminView)
 
     if (parts.length === 1) {
       if (!this.allowRead(req, res)) return
@@ -1661,11 +1869,36 @@ export class ApiServer {
         const hasBalanceEnabled = Object.hasOwn(body, 'balanceEnabled')
         if (!hasName && !hasRole && !hasStatus && !hasBalanceEnabled) throw badRequest('没有可修改的字段')
 
-        if (hasName) await this.runtime.user.rename(API_ACTOR, id, requiredString(body, 'name'))
+        const identity = { actor, actorPlugin: API_ACTOR }
+        if (hasName) {
+          await audited(
+            this.runtime,
+            identity,
+            {
+              action: 'user.rename',
+              targetType: 'user',
+              targetId: String(id),
+              summary: `改名用户 #${id}`,
+              metadata: { name: requiredString(body, 'name') },
+            },
+            () => this.runtime.user.rename(API_ACTOR, id, requiredString(body, 'name')),
+          )
+        }
         if (hasStatus) {
           const status = requiredString(body, 'status')
           if (status !== 'enabled' && status !== 'banned') throw badRequest('status 只能是 enabled / banned')
-          await this.runtime.user.setStatus(API_ACTOR, id, status)
+          await audited(
+            this.runtime,
+            identity,
+            {
+              action: 'user.status.set',
+              targetType: 'user',
+              targetId: String(id),
+              summary: `把用户 #${id} 的状态改为 ${status}`,
+              metadata: { status },
+            },
+            () => this.runtime.user.setStatus(API_ACTOR, id, status),
+          )
         }
         if (hasRole) {
           const role = requiredString(body, 'role')
@@ -1678,7 +1911,18 @@ export class ApiServer {
               '用户插件没有提供 setRole 接口',
             )
           }
-          await setRole.call(this.runtime.user, API_ACTOR, id, role)
+          await audited(
+            this.runtime,
+            identity,
+            {
+              action: 'user.role.set',
+              targetType: 'user',
+              targetId: String(id),
+              summary: `把用户 #${id} 的角色改为 ${role}`,
+              metadata: { role },
+            },
+            () => setRole.call(this.runtime.user, API_ACTOR, id, role),
+          )
         }
         if (hasBalanceEnabled) {
           const enabled = requiredBoolean(body, 'balanceEnabled')
@@ -1690,7 +1934,18 @@ export class ApiServer {
               '用户插件没有提供 setBalanceEnabled 接口',
             )
           }
-          await setBalanceEnabled.call(this.runtime.user, API_ACTOR, id, enabled)
+          await audited(
+            this.runtime,
+            identity,
+            {
+              action: 'user.balance_enabled.set',
+              targetType: 'user',
+              targetId: String(id),
+              summary: `${enabled ? '打开' : '关闭'}用户 #${id} 的余额展示`,
+              metadata: { balanceEnabled: enabled },
+            },
+            () => setBalanceEnabled.call(this.runtime.user, API_ACTOR, id, enabled),
+          )
         }
 
         const user = await this.runtime.user.get(id)
@@ -1699,7 +1954,17 @@ export class ApiServer {
         return
       }
       if (req.method === 'DELETE') {
-        await this.runtime.user.remove(API_ACTOR, id)
+        await audited(
+          this.runtime,
+          { actor, actorPlugin: API_ACTOR },
+          {
+            action: 'user.remove',
+            targetType: 'user',
+            targetId: String(id),
+            summary: `删除用户 #${id}`,
+          },
+          () => this.runtime.user.remove(API_ACTOR, id),
+        )
         this.sendJson(req, res, 200, { removed: true })
         return
       }
@@ -1714,7 +1979,20 @@ export class ApiServer {
       const deltaText = requiredString(body, 'delta')
       if (!/^-?\d+$/.test(deltaText)) throw badRequest('delta 必须是十进制整数字符串（最小单位）')
       const reason = requiredString(body, 'reason')
-      const balance = await this.runtime.user.adjustBalance(API_ACTOR, id, BigInt(deltaText), reason)
+      const balance = await audited(
+        this.runtime,
+        { actor, actorPlugin: API_ACTOR },
+        {
+          action: 'user.balance.adjust',
+          targetType: 'user',
+          targetId: String(id),
+          summary: `调整用户 #${id} 的余额（${deltaText} 微元）：${reason}`,
+          // 金额一律十进制字符串：变化量走整数最小单位，不经浮点。
+          metadata: { deltaMicros: deltaText, reason },
+          metadataOf: (after) => ({ balanceAfterMicros: after.toString() }),
+        },
+        () => this.runtime.user.adjustBalance(API_ACTOR, id, BigInt(deltaText), reason),
+      )
       this.sendJson(req, res, 200, { balanceMinor: balance.toString() })
       return
     }
@@ -1725,7 +2003,8 @@ export class ApiServer {
   // ───────────────────────────────── 管理员：上游账号 ─────────────────────────────────
 
   private async routeAccounts(req: IncomingMessage, res: ServerResponse, parts: readonly string[]): Promise<void> {
-    await this.requireAdmin(req)
+    const { view: adminView } = await this.requireAdmin(req)
+    const identity = { actor: auditActorOf(adminView), actorPlugin: API_ACTOR }
     const accountAdmin = this.requireAccountAdmin()
 
     if (parts.length === 1) {
@@ -1775,7 +2054,25 @@ export class ApiServer {
           ...(enabled === undefined ? {} : { enabled }),
           ...(credential === undefined ? {} : { credential }),
         }
-        this.sendJson(req, res, 200, accountOf(await create.call(accountAdmin, API_ACTOR, input)))
+        this.sendJson(
+          req,
+          res,
+          200,
+          accountOf(
+            await audited(
+              this.runtime,
+              identity,
+              {
+                action: 'account.create',
+                targetType: 'account',
+                summary: `新建上游账号 ${label}`,
+                metadata: { provider, kind },
+                metadataOf: (account) => ({ accountId: accountOf(account).id }),
+              },
+              () => create.call(accountAdmin, API_ACTOR, input),
+            ),
+          ),
+        )
         return
       }
       if (req.method !== 'GET' && req.method !== 'HEAD') {
@@ -1815,14 +2112,48 @@ export class ApiServer {
         const payload = requiredString(body, 'payload')
         const defaults = Object.hasOwn(body, 'defaults') ? body.defaults : undefined
         const input = { source, payload, ...(defaults === undefined ? {} : { defaults }) }
-        this.sendJson(req, res, 200, normalizeBulkImport(await importSource.call(accountAdmin, API_ACTOR, input)))
+        this.sendJson(
+          req,
+          res,
+          200,
+          normalizeBulkImport(
+            await audited(
+              this.runtime,
+              identity,
+              {
+                action: 'account.import',
+                targetType: 'account',
+                summary: `按来源批量导入上游账号（${source}）`,
+                // 只记来源格式与选项，**绝不记 payload**（里面是 key / 凭据）。
+                metadata: { source, hasDefaults: defaults !== undefined },
+              },
+              () => importSource.call(accountAdmin, API_ACTOR, input),
+            ),
+          ),
+        )
         return
       }
       const bulk = accountAdmin.importAccounts
       if (typeof bulk !== 'function') {
         throw new ApiError('API_ACCOUNT_IMPORT_UNAVAILABLE', 503, '账号管理服务不支持批量导入')
       }
-      this.sendJson(req, res, 200, normalizeBulkImport(await bulk.call(accountAdmin, API_ACTOR, body)))
+      this.sendJson(
+        req,
+        res,
+        200,
+        normalizeBulkImport(
+          await audited(
+            this.runtime,
+            identity,
+            {
+              action: 'account.import',
+              targetType: 'account',
+              summary: '批量导入上游账号（逐项格式）',
+            },
+            () => bulk.call(accountAdmin, API_ACTOR, body),
+          ),
+        ),
+      )
       return
     }
 
@@ -1900,18 +2231,49 @@ export class ApiServer {
           if (Object.hasOwn(body, 'models')) patch.models = nullableStringArray(body, 'models')
           if (Object.hasOwn(body, 'modelMap')) patch.modelMap = nullableStringMap(body, 'modelMap')
           if (Object.hasOwn(body, 'priority')) patch.priority = optionalInteger(body, 'priority', 0, 1000)
-          await accountAdmin.update(API_ACTOR, id, patch)
+          await audited(
+            this.runtime,
+            identity,
+            {
+              action: 'account.update',
+              targetType: 'account',
+              targetId: id,
+              summary: `修改上游账号 ${id} 的字段：${Object.keys(patch).join(' / ')}`,
+              metadata: { fields: Object.keys(patch) },
+            },
+            () => accountAdmin.update(API_ACTOR, id, patch),
+          )
         }
         if (hasEnabled) {
           const enabled = requiredBoolean(body, 'enabled')
-          if (enabled) await accountAdmin.enable(API_ACTOR, id)
-          else await accountAdmin.disable(API_ACTOR, id)
+          await audited(
+            this.runtime,
+            identity,
+            {
+              action: enabled ? 'account.enable' : 'account.disable',
+              targetType: 'account',
+              targetId: id,
+              summary: `${enabled ? '启用' : '停用'}上游账号 ${id}`,
+              metadata: { enabled },
+            },
+            () => (enabled ? accountAdmin.enable(API_ACTOR, id) : accountAdmin.disable(API_ACTOR, id)),
+          )
         }
         this.sendJson(req, res, 200, accountOf(await accountAdmin.get(id)))
         return
       }
       if (req.method === 'DELETE') {
-        await accountAdmin.remove(API_ACTOR, id)
+        await audited(
+          this.runtime,
+          identity,
+          {
+            action: 'account.remove',
+            targetType: 'account',
+            targetId: id,
+            summary: `删除上游账号 ${id}`,
+          },
+          () => accountAdmin.remove(API_ACTOR, id),
+        )
         this.sendJson(req, res, 200, { removed: true })
         return
       }
@@ -1954,7 +2316,21 @@ export class ApiServer {
         req,
         res,
         200,
-        accountOf(await importCredentials.call(accountAdmin, API_ACTOR, id, input)),
+        accountOf(
+          await audited(
+            this.runtime,
+            identity,
+            {
+              action: 'account.import_credentials',
+              targetType: 'account',
+              targetId: id,
+              summary: `为上游账号 ${id} 导入凭据`,
+              // 只记格式；**payload 里是凭据，绝不进审计**。
+              metadata: { format: format ?? 'auto' },
+            },
+            () => importCredentials.call(accountAdmin, API_ACTOR, id, input),
+          ),
+        ),
       )
       return
     }
@@ -1995,7 +2371,8 @@ export class ApiServer {
   }
 
   private async routeSettings(req: IncomingMessage, res: ServerResponse, parts: readonly string[]): Promise<void> {
-    await this.requireAdmin(req)
+    const { view: adminView } = await this.requireAdmin(req)
+    const identity = { actor: auditActorOf(adminView), actorPlugin: API_ACTOR }
 
     if (parts.length === 1) {
       if (!this.allowRead(req, res)) return
@@ -2022,17 +2399,37 @@ export class ApiServer {
         assertOnlyKeys(body, ['patch', 'expectedRevision'])
         if (!isPlainObject(body.patch)) throw badRequest('patch 必须是对象')
         const expectedRevision = optionalString(body, 'expectedRevision')
-        this.sendJson(
-          req,
-          res,
-          200,
-          await settings.update(API_ACTOR, ns, body.patch, expectedRevision),
+        const patch = body.patch as Record<string, unknown>
+        const updated = await audited(
+          this.runtime,
+          identity,
+          {
+            action: 'settings.write',
+            targetType: 'settings',
+            targetId: ns,
+            summary: `修改设置 ${ns}：${Object.keys(patch).join(' / ')}`,
+            // 只记字段名：设置里可能有 pass / 授权码之类，值不进审计。
+            metadata: { fields: Object.keys(patch), expectedRevision: expectedRevision ?? null },
+          },
+          () => settings.update(API_ACTOR, ns, patch, expectedRevision),
         )
+        this.sendJson(req, res, 200, updated)
         return
       }
       if (req.method === 'DELETE') {
         const settings = this.requireSettings()
-        this.sendJson(req, res, 200, await settings.reset(API_ACTOR, ns))
+        const reset = await audited(
+          this.runtime,
+          identity,
+          {
+            action: 'settings.reset',
+            targetType: 'settings',
+            targetId: ns,
+            summary: `把设置 ${ns} 重置为 app.yml 的基线`,
+          },
+          () => settings.reset(API_ACTOR, ns),
+        )
+        this.sendJson(req, res, 200, reset)
         return
       }
       this.sendMethodNotAllowed(req, res, ['POST', 'DELETE'])

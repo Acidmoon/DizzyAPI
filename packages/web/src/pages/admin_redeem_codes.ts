@@ -9,6 +9,7 @@ import { pageHeader, renderAdminShell, type PageModule } from '../layout.ts'
 import type { PageTemplateService } from '@dizzyapi/plugin-page-template'
 import { formatYuan, parseYuanToMicros, requiredString, WebError } from '../forms.ts'
 import { WEB_ACTOR, type RedeemCodeView, type RedeemStatsView } from '../runtime.ts'
+import { auditedAction } from '../audit.ts'
 
 const PAGE_LIMIT = 50
 
@@ -328,13 +329,25 @@ ${t.renderField({ label: '备注（可选）', name: 'notes', placeholder: '活�
       }
       const notes = ctx.form.get('notes')?.trim() ?? ''
 
-      const created = await redeem.createBatch(WEB_ACTOR, {
-        name,
-        amountMicro,
-        count,
-        ...(expiresAt === undefined ? {} : { expiresAt }),
-        ...(notes === '' ? {} : { notes }),
-      })
+      const created = await auditedAction(
+        ctx,
+        {
+          action: 'redeem.batch.generate',
+          targetType: 'redeem-batch',
+          summary: `生成兑换码批次「${name}」（${count} 张）`,
+          // 明文码只进一次性 stash，**绝不进审计**。
+          metadata: { count, amountMicros: amountMicro.toString(), expiresAt: expiresAt ?? null },
+          metadataOf: (out) => ({ batchId: out.batch.id }),
+        },
+        () =>
+          redeem.createBatch(WEB_ACTOR, {
+            name,
+            amountMicro,
+            count,
+            ...(expiresAt === undefined ? {} : { expiresAt }),
+            ...(notes === '' ? {} : { notes }),
+          }),
+      )
       const secretId = ctx.stashSecret(created.codes.join('\n'))
       return `/admin/redeem-codes?new=${encodeURIComponent(secretId)}&batch=${encodeURIComponent(created.batch.id)}`
     },
@@ -344,7 +357,17 @@ ${t.renderField({ label: '备注（可选）', name: 'notes', placeholder: '活�
       if (redeem === undefined) throw new WebError('WEB_NO_REDEEM', '兑换码服务未运行')
       const id = requiredString(ctx.form, 'id', '兑换码')
       const status = ctx.form.get('status') === 'enabled' ? 'enabled' : 'disabled'
-      await redeem.setCodeStatus(WEB_ACTOR, id, status)
+      await auditedAction(
+        ctx,
+        {
+          action: 'redeem.code.status',
+          targetType: 'redeem-code',
+          targetId: id,
+          summary: `把兑换码 ${id} 改为 ${status}`,
+          metadata: { status },
+        },
+        () => redeem.setCodeStatus(WEB_ACTOR, id, status),
+      )
       return `/admin/redeem-codes?ok=${encodeURIComponent(status === 'enabled' ? '已启用' : '已停用')}`
     },
 
@@ -356,7 +379,17 @@ ${t.renderField({ label: '备注（可选）', name: 'notes', placeholder: '活�
       if (raw !== 'used' && raw !== 'enabled') {
         throw new WebError('WEB_INVALID_OUTCOME', 'outcome 只能是 used / enabled')
       }
-      await redeem.resolveRedeeming(WEB_ACTOR, id, raw)
+      await auditedAction(
+        ctx,
+        {
+          action: 'redeem.code.resolve',
+          targetType: 'redeem-code',
+          targetId: id,
+          summary: `人工核查兑换码 ${id}：${raw === 'used' ? '标记为已用' : '退回可用'}`,
+          metadata: { outcome: raw },
+        },
+        () => redeem.resolveRedeeming(WEB_ACTOR, id, raw),
+      )
       return `/admin/redeem-codes?ok=${encodeURIComponent(raw === 'used' ? '已标记为已用' : '已退回可用')}`
     },
 
@@ -368,7 +401,17 @@ ${t.renderField({ label: '备注（可选）', name: 'notes', placeholder: '活�
         .map((value) => value.trim())
         .filter((value) => value !== '')
       if (ids.length === 0) throw new WebError('WEB_NO_SELECTION', '没有选择要删除的兑换码')
-      const result = await redeem.deleteCodes(WEB_ACTOR, ids)
+      const result = await auditedAction(
+        ctx,
+        {
+          action: 'redeem.code.delete',
+          targetType: 'redeem-code',
+          summary: `批量删除 ${ids.length} 张兑换码`,
+          metadata: { ids },
+          metadataOf: (out) => ({ deleted: out.deleted, rejected: out.rejected.length }),
+        },
+        () => redeem.deleteCodes(WEB_ACTOR, ids),
+      )
       if (result.deleted === 0) {
         const text = `没有删除任何兑换码：${result.rejected.length} 个已用或兑换中，不能删除`
         return `/admin/redeem-codes?err=${encodeURIComponent(text)}`

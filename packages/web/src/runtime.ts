@@ -478,6 +478,77 @@ export interface TopupLike {
   stats(actor: string, nowMs?: number): TopupStatsView
 }
 
+// ───────────────────────────────── 管理员审计 ─────────────────────────────────
+
+/** 写一条审计记录的输入（web 侧只塞这些字段）。 */
+export interface AuditEntryView {
+  readonly actor: string
+  readonly actorPlugin: string
+  readonly action: string
+  readonly targetType?: string
+  readonly targetId?: string
+  readonly summary: string
+  readonly metadata?: Readonly<Record<string, unknown>>
+  readonly result?: 'ok' | 'failed'
+  readonly errorCode?: string | null
+  readonly atMs?: number
+}
+
+/** 一条审计记录（元数据已脱敏）。 */
+export interface AuditRecordView {
+  readonly id: number
+  readonly at: string
+  readonly atMs: number
+  readonly actor: string
+  readonly actorPlugin: string
+  readonly action: string
+  readonly targetType: string
+  readonly targetId: string
+  readonly summary: string
+  readonly metadata: Readonly<Record<string, unknown>> | null
+  readonly result: 'ok' | 'failed'
+  readonly errorCode: string | null
+}
+
+export interface AuditQueryView {
+  readonly actor?: string
+  readonly actorPlugin?: string
+  readonly action?: string
+  readonly targetType?: string
+  readonly targetId?: string
+  readonly fromMs?: number
+  readonly toMs?: number
+  readonly limit?: number
+  readonly offset?: number
+}
+
+export interface AuditPageView {
+  readonly items: readonly AuditRecordView[]
+  readonly total: number
+  readonly offset: number
+  readonly limit: number
+}
+
+export interface AuditStatsView {
+  readonly total: number
+  readonly today: number
+  readonly last24h: number
+  readonly failed: number
+  readonly lastAt: string | null
+  readonly byAction: readonly { readonly action: string; readonly count: number }[]
+  readonly byActor: readonly { readonly actor: string; readonly count: number }[]
+}
+
+/**
+ * 审计服务（写 + 读）。写不设限；读要求 actor 在审计插件的 `adminPlugins` 白名单里。
+ * 页面与动作**绝不 inject** 它：审计缺席只让 `/admin/audit` 降级，写操作照常。
+ */
+export interface AuditLike {
+  record(entry: AuditEntryView): unknown
+  list(actor: string, query?: AuditQueryView): AuditPageView
+  stats(actor: string): AuditStatsView
+}
+
 export interface SettingsField {
   readonly path: string
   readonly label: string
@@ -680,6 +751,7 @@ export interface WebRuntime {
   readonly redeem: RedeemLike | undefined
   readonly billing: BillingLike | undefined
   readonly topup: TopupLike | undefined
+  readonly audit: AuditLike | undefined
   readonly fontSmiley: FontLike | undefined
 }
 

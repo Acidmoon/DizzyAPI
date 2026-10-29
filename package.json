@@ -34,6 +34,7 @@
     "@dizzyapi/plugin-admin": "workspace:*",
     "@dizzyapi/plugin-api": "workspace:*",
     "@dizzyapi/plugin-api-key": "workspace:*",
+    "@dizzyapi/plugin-audit": "workspace:*",
     "@dizzyapi/plugin-auth": "workspace:*",
     "@dizzyapi/plugin-billing": "workspace:*",
     "@dizzyapi/plugin-catalog": "workspace:*",

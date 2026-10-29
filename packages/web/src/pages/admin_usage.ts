@@ -1,6 +1,7 @@
 /** 管理台 · 全站用量：今日 / 累计与按模型汇总 + 坏记录隔离区。 */
 import { pageHeader, renderAdminShell, type PageContext, type PageModule } from '../layout.ts'
 import { formatYuan, requiredString, WebError } from '../forms.ts'
+import { auditedAction } from '../audit.ts'
 
 const REJECTED_LIMIT = 20
 
@@ -143,7 +144,17 @@ export const adminUsagePage: PageModule = {
       const usage = ctx.services.usage
       if (usage === undefined) throw new WebError('WEB_NO_USAGE', '用量服务未运行')
       const reqId = requiredString(ctx.form, 'reqId', '隔离记录')
-      usage.ignoreRejected(reqId)
+      await auditedAction(
+        ctx,
+        {
+          action: 'usage.rejected.ignore',
+          targetType: 'usage-record',
+          targetId: reqId,
+          // 忽略 = 这笔用量永久不结算、不扣钱，等于放弃收入。
+          summary: '忽略一条被隔离的用量记录（永久不结算）',
+        },
+        () => usage.ignoreRejected(reqId),
+      )
       return `/admin/usage?ok=${encodeURIComponent('已忽略这条隔离记录：不结算、不扣钱')}`
     },
 
@@ -151,7 +162,18 @@ export const adminUsagePage: PageModule = {
       const usage = ctx.services.usage
       if (usage === undefined) throw new WebError('WEB_NO_USAGE', '用量服务未运行')
       const reqId = requiredString(ctx.form, 'reqId', '隔离记录')
-      const result = await usage.replayRejected(reqId)
+      const result = await auditedAction(
+        ctx,
+        {
+          action: 'usage.rejected.replay',
+          targetType: 'usage-record',
+          targetId: reqId,
+          // 重放会补结算（扣钱）：失败也记，漏记一次账就对不上。
+          summary: '重放一条被隔离的用量记录（补结算）',
+          metadataOf: (out) => ({ inserted: out.inserted, status: out.status }),
+        },
+        () => usage.replayRejected(reqId),
+      )
       const text = result.inserted
         ? '已重放并补写用量明细'
         : '已重放：这条记录此前已补写成功，没有重复插入'

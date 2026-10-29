@@ -33,6 +33,29 @@ import {
 /** 面板写设置时声明的身份。必须出现在 `settings.adminPlugins` 白名单里。 */
 export const ADMIN_ACTOR = '@dizzyapi/plugin-admin'
 
+/**
+ * 面板写操作的审计操作者。
+ *
+ * 面板是**本机单 token** 的开发者工具，没有「哪个管理员」这个概念（拿到那条一次性地址的
+ * 人就是操作者），所以 actor 只能是这个稳定标识；发起插件仍是 `ADMIN_ACTOR`。
+ */
+export const PANEL_AUDIT_ACTOR = 'operator:panel'
+
+/** 审计服务里面板用到的面。结构声明，不 import 审计插件的类。 */
+interface AuditPort {
+  record(entry: {
+    readonly actor: string
+    readonly actorPlugin: string
+    readonly action: string
+    readonly targetType?: string
+    readonly targetId?: string
+    readonly summary: string
+    readonly metadata?: Readonly<Record<string, unknown>>
+    readonly result?: 'ok' | 'failed'
+    readonly errorCode?: string | null
+  }): unknown
+}
+
 /** 设置插件里面板实际用到的面。结构声明，不 import 它的类（避免把它的启动带进来）。 */
 interface SettingsPort {
   describe(): Promise<readonly SettingsNamespaceView[]>
@@ -289,11 +312,23 @@ export class AdminService extends Service {
     patch: ConfigPatch,
     expectedRevision?: string,
   ): Promise<SettingsNamespaceView> {
-    return this.requireSettings().update(ADMIN_ACTOR, ns, patch, expectedRevision)
+    return this.audited(
+      'settings.write',
+      ns,
+      `面板修改设置 ${ns}：${Object.keys(patch).join(' / ')}`,
+      { fields: Object.keys(patch) },
+      () => this.requireSettings().update(ADMIN_ACTOR, ns, patch, expectedRevision),
+    )
   }
 
   async resetSettings(ns: string): Promise<SettingsNamespaceView> {
-    return this.requireSettings().reset(ADMIN_ACTOR, ns)
+    return this.audited(
+      'settings.reset',
+      ns,
+      `面板把设置 ${ns} 重置为 app.yml 的基线`,
+      undefined,
+      () => this.requireSettings().reset(ADMIN_ACTOR, ns),
+    )
   }
 
   // ───────────────────────────────── 退出 ─────────────────────────────────
@@ -329,6 +364,76 @@ export class AdminService extends Service {
       throw new AdminError('ADMIN_SETTINGS_UNAVAILABLE', '设置插件没有运行：面板只能看图，不能改配置')
     }
     return impl.value as SettingsPort
+  }
+
+  /**
+   * 包住一次面板写操作：成功 / 失败各记一条审计。
+   *
+   * 面板是**本机单 token** 的开发者工具，没有「哪个管理员」这个概念，所以 actor 固定是
+   * `operator:panel`（谁拿到那条一次性地址谁就是操作者）。
+   *
+   * 审计是旁路：`audit` 缺席或 `record` 抛错时只忽略——**写操作照常成功**（不 inject）。
+   */
+  private async audited<T>(
+    action: string,
+    targetId: string,
+    summary: string,
+    metadata: Record<string, unknown> | undefined,
+    task: () => Promise<T>,
+  ): Promise<T> {
+    const audit = this.optionalAudit()
+    try {
+      const result = await task()
+      this.recordAudit(audit, action, targetId, summary, metadata, 'ok', null)
+      return result
+    } catch (error) {
+      const code = (error as { code?: unknown } | null)?.code
+      this.recordAudit(
+        audit,
+        action,
+        targetId,
+        summary,
+        metadata,
+        'failed',
+        typeof code === 'string' && /^[A-Z][A-Z0-9_]*$/.test(code) ? code : null,
+      )
+      throw error
+    }
+  }
+
+  private recordAudit(
+    audit: AuditPort | undefined,
+    action: string,
+    targetId: string,
+    summary: string,
+    metadata: Record<string, unknown> | undefined,
+    result: 'ok' | 'failed',
+    errorCode: string | null,
+  ): void {
+    if (audit === undefined) return
+    try {
+      audit.record({
+        actor: PANEL_AUDIT_ACTOR,
+        actorPlugin: ADMIN_ACTOR,
+        action,
+        targetType: 'settings',
+        targetId,
+        summary,
+        ...(metadata === undefined ? {} : { metadata }),
+        result,
+        ...(errorCode === null ? {} : { errorCode }),
+      })
+    } catch (error) {
+      this.logger.warn(`审计写入失败（面板操作不受影响）：${(error as Error).message}`)
+    }
+  }
+
+  /** 运行期解析审计服务，**不 inject**：它缺席时面板照常能改设置。 */
+  private optionalAudit(): AuditPort | undefined {
+    const impl = this.ctx.root.reflect._getImpl('audit', false)
+    if (impl === undefined || impl.ctx.fiber.state !== FiberState.ACTIVE) return undefined
+    const value = impl.value as Partial<AuditPort> | undefined
+    return typeof value?.record === 'function' ? (value as AuditPort) : undefined
   }
 
   /** 只在真正监听时才构造：`port` 之类的配置在构造期还没有实际端口可用。 */

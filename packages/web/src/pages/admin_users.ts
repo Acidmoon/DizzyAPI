@@ -2,6 +2,7 @@
 import { pageHeader, renderAdminShell, type PageModule } from '../layout.ts'
 import { formatYuan, requiredString, WebError } from '../forms.ts'
 import { WEB_ACTOR } from '../runtime.ts'
+import { auditedAction } from '../audit.ts'
 
 export const adminUsersPage: PageModule = {
   path: '/admin/users',
@@ -69,7 +70,17 @@ ${t.renderField({ label: '原因', name: 'reason', required: true, placeholder: 
       if (users === undefined) throw new WebError('WEB_NO_USER', '用户服务未运行')
       const id = Number(requiredString(ctx.form, 'id', '用户 ID'))
       const status = ctx.form.get('status') === 'banned' ? 'banned' : 'enabled'
-      await users.setStatus(WEB_ACTOR, id, status)
+      await auditedAction(
+        ctx,
+        {
+          action: 'user.status.set',
+          targetType: 'user',
+          targetId: String(id),
+          summary: `把用户 #${id} 的状态改为 ${status}`,
+          metadata: { status },
+        },
+        () => users.setStatus(WEB_ACTOR, id, status),
+      )
       return '/admin/users?ok=' + encodeURIComponent('状态已更新')
     },
 
@@ -78,7 +89,17 @@ ${t.renderField({ label: '原因', name: 'reason', required: true, placeholder: 
       if (users === undefined) throw new WebError('WEB_NO_USER', '用户服务未运行')
       const id = Number(requiredString(ctx.form, 'id', '用户 ID'))
       const role = ctx.form.get('role') === 'admin' ? 'admin' : 'user'
-      await users.setRole(WEB_ACTOR, id, role)
+      await auditedAction(
+        ctx,
+        {
+          action: 'user.role.set',
+          targetType: 'user',
+          targetId: String(id),
+          summary: `把用户 #${id} 的角色改为 ${role}`,
+          metadata: { role },
+        },
+        () => users.setRole(WEB_ACTOR, id, role),
+      )
       return '/admin/users?ok=' + encodeURIComponent('角色已更新')
     },
 
@@ -89,7 +110,19 @@ ${t.renderField({ label: '原因', name: 'reason', required: true, placeholder: 
       const deltaYuan = requiredString(ctx.form, 'deltaYuan', '增减金额')
       const reason = requiredString(ctx.form, 'reason', '原因')
       const delta = parseYuanToMicros(deltaYuan)
-      await users.adjustBalance(WEB_ACTOR, id, delta, reason)
+      await auditedAction(
+        ctx,
+        {
+          action: 'user.balance.adjust',
+          targetType: 'user',
+          targetId: String(id),
+          summary: `调整用户 #${id} 的余额（${deltaYuan} 元）：${reason}`,
+          // 金额一律整数最小单位：变化量与变动后余额都记十进制字符串。
+          metadata: { deltaMicros: delta.toString(), reason },
+          metadataOf: (after) => ({ balanceAfterMicros: after.toString() }),
+        },
+        () => users.adjustBalance(WEB_ACTOR, id, delta, reason),
+      )
       return '/admin/users?ok=' + encodeURIComponent('余额已调整')
     },
 
@@ -97,7 +130,16 @@ ${t.renderField({ label: '原因', name: 'reason', required: true, placeholder: 
       const users = ctx.services.user
       if (users === undefined) throw new WebError('WEB_NO_USER', '用户服务未运行')
       const id = Number(requiredString(ctx.form, 'id', '用户 ID'))
-      await users.remove(WEB_ACTOR, id)
+      await auditedAction(
+        ctx,
+        {
+          action: 'user.remove',
+          targetType: 'user',
+          targetId: String(id),
+          summary: `删除用户 #${id}`,
+        },
+        () => users.remove(WEB_ACTOR, id),
+      )
       return '/admin/users?ok=' + encodeURIComponent('用户已删除')
     },
   },
