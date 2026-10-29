@@ -34,6 +34,7 @@ import (
 	"github.com/Acidmoon/DizzyAPI/internal/bridge"
 	"github.com/Acidmoon/DizzyAPI/internal/engine"
 	"github.com/Acidmoon/DizzyAPI/internal/httpapi"
+	"github.com/Acidmoon/DizzyAPI/internal/metrics"
 	"github.com/Acidmoon/DizzyAPI/internal/quota"
 	"github.com/Acidmoon/DizzyAPI/internal/usagelog"
 	"github.com/Acidmoon/DizzyAPI/internal/usageprobe"
@@ -317,6 +318,8 @@ func run() error {
 	quotaSnapshotTTLMs := flag.Int("quota-snapshot-ttl-ms", int(quota.DefaultTTL/time.Millisecond),
 		fmt.Sprintf("余额快照有效期（毫秒），应 ≥ 3 × quota 插件的 pollIntervalMs；超出 %d..%d 直接启动失败",
 			minQuotaSnapshotTTLMs, maxQuotaSnapshotTTLMs))
+	metricsEnabled := flag.Bool("metrics", true,
+		"在 LLM 入口的回环监听上暴露 GET /metrics（Prometheus 文本格式）；关闭时该路径 404")
 	flag.Parse()
 
 	logger := newLogger(*logFormat)
@@ -433,6 +436,16 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	// 请求级指标：热路径只做原子加法，文本渲染在 scrape 时发生。
+	// gauges 现算（运行时 / 用量缓冲 / 余额快照），全部是全站聚合值，
+	// 不含账号 id / 用户 id / IP / 模型名（AGENTS.md §5.1）。
+	metricsRegistry := metrics.New(metrics.Gauges{
+		InflightActive:          func() int { return accountRuntime.Summary().Active },
+		AccountsCooling:         func() int { return accountRuntime.Summary().Cooling },
+		UsageRingDropped:        func() int64 { return usageRing.Stats().Dropped },
+		UsageRingGap:            func() int64 { return usageRing.Stats().Gap },
+		QuotaSnapshotAgeSeconds: func() float64 { return quotaCache.Age().Seconds() },
+	})
 	httpAPI, err := httpapi.New(requestEngine, accountCache, logger, httpapi.Config{
 		MaxBodyBytes: *maxBody,
 		Strategy:     *strategy,
@@ -442,6 +455,8 @@ func run() error {
 		UsageProbe:        usageprobe.New(codecs),
 		RecordStreamUsage: *recordStreamUsage,
 		TrustedProxyHops:  *trustedProxyHops,
+		Metrics:           metricsRegistry,
+		MetricsEnabled:    *metricsEnabled,
 	})
 	if err != nil {
 		return fmt.Errorf("初始化 HTTP 入口失败：%w", err)

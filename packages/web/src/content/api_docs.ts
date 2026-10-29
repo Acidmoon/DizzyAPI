@@ -123,6 +123,23 @@ export const API_ENTRIES: readonly ApiEntry[] = [
     ],
   },
   {
+    method: 'POST',
+    path: '/v1/embeddings',
+    protocol: 'openai-chat',
+    protocolLabel: 'OpenAI Embeddings',
+    summary:
+      'OpenAI 兼容的向量化入口：与 chat 同协议、同鉴权，但**只有 OpenAI 兼容账号**能处理（anthropic / gemini 账号没有 embeddings 端点）。',
+    request: [
+      '`model` 必填；`input` 是字符串或字符串数组（最多 2048 条、总计 1048576 字符）',
+      '`encoding_format` / `dimensions` / `user` 原样转发给上游',
+      '**不支持流式**：`stream: true` 直接 400',
+    ],
+    response: [
+      'OpenAI 形状：`{object: "list", data: [{object: "embedding", index, embedding[]}], model, usage}`',
+      '`usage` 只有 `prompt_tokens` / `total_tokens`（输出与缓存桶恒 0）',
+    ],
+  },
+  {
     method: 'GET',
     path: '/healthz',
     protocol: '',
@@ -130,6 +147,19 @@ export const API_ENTRIES: readonly ApiEntry[] = [
     summary: '网关存活探针，不分协议、不鉴权、不泄漏任何账号信息。',
     request: ['无请求体', '不需要鉴权'],
     response: ['`{status: "ok"}` 形状的轻量响应'],
+  },
+  {
+    method: 'GET',
+    path: '/metrics',
+    protocol: '',
+    protocolLabel: '运行期指标',
+    summary:
+      'Prometheus 文本格式指标：只在 gatewayd 的回环监听上暴露（nginx 不反代），可用 `-metrics=false` 关闭（关闭后该路径 404）。',
+    request: ['无请求体', '不需要鉴权（只监听回环，运维面）'],
+    response: [
+      '`# HELP` / `# TYPE` + 指标行；`dizzy_request_total{protocol,status}`、`dizzy_tokens_total{bucket}`、`dizzy_upstream_attempt_total` 等',
+      '标签只用固定枚举（协议名 / 状态码 / 失败码 / token 桶），**不含**账号 id、用户 id、IP 与模型名',
+    ],
   },
 ]
 

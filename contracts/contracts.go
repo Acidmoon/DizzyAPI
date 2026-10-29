@@ -70,6 +70,27 @@ type RequestMeta struct {
 	Tags     map[string]string `json:"tags,omitempty"`
 }
 
+// Operation 是**请求级操作类型**：同一协议族里的不同端点。
+//
+// 它存在的理由只有一个：OpenAI 兼容族里 chat 与 embeddings 讲同一种协议
+// （同一套 JSON 习惯、同一个鉴权头），但**路径不同**（/chat/completions 与
+// /embeddings）。用 Protocol 表达会污染协议语义与 codec 注册表，所以单独一个
+// 纯增量字段。
+//
+// 零值（""）必须等于「chat」——既有入口一个字段都不写，行为逐字节不变。
+type Operation string
+
+const (
+	// OperationChat 是文本生成类请求（chat / responses / messages / gemini）。
+	// 它是零值，所有既有路径都不显式写它。
+	OperationChat Operation = ""
+	// OperationEmbeddings 是向量化请求（POST /v1/embeddings），非流式。
+	OperationEmbeddings Operation = "embeddings"
+)
+
+// IsEmbeddings 报告是否为向量化请求。
+func (o Operation) IsEmbeddings() bool { return o == OperationEmbeddings }
+
 // Ctx 只用于 LLM 请求作用域（AGENTS.md §2.3）：
 // 它绑定客户端生命周期、随断连取消；控制消息不得复用它。
 type Ctx struct {
@@ -136,6 +157,11 @@ type Ctx struct {
 	// UpstreamModel 是模型映射阶段写下的上游真实模型名；空 = 没有映射。
 	// 与 MappedBody 一样每个 attempt 都要显式重置。
 	UpstreamModel string
+
+	// Operation 是请求级操作类型（零值 = chat）。目前只有 embeddings 会显式写它：
+	// 它与 chat 同属 OpenAI 兼容族、路径不同，transport 按它选方言路径。
+	// 它不参与快照 / 桥帧，只在 Go 进程内使用。
+	Operation Operation
 }
 
 // UpstreamRequest 是协议转换阶段交给 transport 的上游请求。
