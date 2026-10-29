@@ -22,6 +22,7 @@ import { adminPricingPage } from './admin_pricing.ts'
 import { adminRedeemCodesPage } from './admin_redeem_codes.ts'
 import { adminAuditPage } from './admin_audit.ts'
 import { adminObservabilityPage } from './admin_observability.ts'
+import { adminContentAuditPage } from './admin_content_audit.ts'
 
 export const PAGES: readonly PageModule[] = [
   loginPage,
@@ -46,4 +47,5 @@ export const PAGES: readonly PageModule[] = [
   adminRedeemCodesPage,
   adminAuditPage,
   adminObservabilityPage,
+  adminContentAuditPage,
 ]

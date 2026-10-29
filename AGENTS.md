@@ -129,7 +129,7 @@ export default FooService
 
 ## 4. 现状地图
 
-### 4.1 TS 插件（28 个包；`console` 是已禁用的 SPA，`kit` 是共用底座）
+### 4.1 TS 插件（29 个包；`console` 是已禁用的 SPA，`kit` 是共用底座）
 
 | 包 | 服务 | 职责 |
 |---|---|---|
@@ -149,6 +149,7 @@ export default FooService
 | `@dizzyapi/plugin-modelhub` | `modelhub` | 模型广场聚合（**只读、不落盘**）：把 `pricing` 的价格 + 账号声明的 `models`/`modelMap` + `protocol`/`health`/凭据状态合成模型目录，区分 `available` / `unavailable`（带原因）；`/api/models` 与 `/console/models` 的数据源；账号 id / label / baseUrl 一律不出 |
 | `@dizzyapi/plugin-audit` | `audit` | 审计日志唯一写者：`data/audit.db`；`record`（不限）/`list`/`stats`（要 actor 在 `adminPlugins`）；高危管理员写操作在**成功后**接线留痕（actor / action / target / 结果 / 脱敏 metadata），每日按 `retentionDays`（默认 180）分批清理；**不 inject**，审计失败不影响业务 |
 | `@dizzyapi/plugin-observability` | `observability` | 运维总览聚合（**只读、不落盘**）：把用量链路（`usage.status` + `usage.stats`）、结算各状态与透支、额度快照新鲜度（`quota.status`）、账号运行时（`accounts.status.runtime`）、审计最近动作（`audit.list/stats`）、账号池健康合成一个 DTO；任一源缺席只降级该块，页面 `degraded` 但仍 200；`/admin/observability` + `/api/admin/observability` |
+| `@dizzyapi/plugin-content-audit` | `contentAudit` | 内容审核规则的唯一写者：`data/content-audit.json`；规则**心跳式**推给 Go 的 pre 相位审核闸门（桥命令 `contentaudit.replace`，内容不变也推、`revision` 相同 `generation` 递增；审核关闭时推 `enabled:false` + 空规则），命中统计从 `contentaudit.status` 读回；只做**大小写不敏感子串匹配**（不做正则）；`/admin/content-audit` + `/api/admin/content-audit`；**对 `audit` 零依赖**（留痕在 `api` / `web` 的调用点） |
 | `@dizzyapi/plugin-catalog` | `catalog` | 插件能力目录（只读，反射 + 声明） |
 | `@dizzyapi/plugin-frontend` | `frontend` | SPA 静态资源版本 / 清单 / 回滚（**已禁用**，由 `web` 取代） |
 | `@dizzyapi/plugin-api` | `api` | 产品 HTTP 入口：SPA + `/api/*`，进程内调用控制面服务 |
@@ -173,12 +174,14 @@ export default FooService
 | `modules/protoconv/` | 协议转换中间件：dispatch 相位阶段（请求方向）+ 响应转换器；Chat / Responses / Anthropic / **Gemini（含流式）** 四个 codec |
 | `modules/transport/` | 按选中账号发上游请求，透传普通响应与 SSE；按协议的方言表决定路径、鉴权头、流式路径与查询串（Gemini：`/models/{model}:generateContent`、`x-goog-api-key`、流式 `:streamGenerateContent?alt=sse`，`{model}` 只放归一后的裸名；**`EmbeddingsPath` 供 `/v1/embeddings` 按 `Ctx.Operation` 选路径**）；429 / 额度耗尽记账号冷却并回可重试错误 |
 | `modules/keyauth/` | 动态 API key 哈希快照校验 |
+| `modules/contentaudit/` | pre 相位内容审核闸门（`NeedBody()=true`，注册在 keyauth 之后、quotagate 之前）：只审**用户输入文本**（chat / anthropic 的 `role=user`、responses 的 `input`、gemini 的 `contents`、embeddings 的 `input`），命中 `block` 规则 → **403 `CONTENT_BLOCKED`（不可重试、不转发上游）**，命中 `log` 规则 → 放行 + 计数 + 日志（只记 ruleId / category，**绝不回显被审文本**）；快照未就绪 / 过期默认放行 + 计数，`-content-audit-require-snapshot` 严格模式才 503 `CONTENT_AUDIT_SNAPSHOT_UNAVAILABLE`；解析失败 / 无可审文本放行；单请求扫描上限 256 KiB（`truncated` 计数暴露） |
 | `internal/bridge/` | 控制桥：长度前缀 JSON、UDS / 回环 TCP、优雅关闭 |
 | `internal/engine/` | pre → dispatch → post 调度；失败转移；统一错误渲染；**并发闸门**（dispatch 前按 `concurrency` 原子预留，预留失败换下一个账号、全饱和直接 503 不排队） |
 | `internal/accounts/` | 账号 / 令牌只读快照缓存 |
 | `internal/accountruntime/` | 账号运行时状态（纯进程内）：真实 in-flight 计数 + 429 / 额度耗尽短期冷却；`Apply` 把真实值写进候选快照给打分用、`Acquire` 原子预留槽位（release 幂等）；不落盘、不上桥、不回写 TS |
 | `internal/apikeys/` | API key 哈希快照缓存；`Ready()` 区分「没收到」与「空快照」 |
 | `internal/quota/` | 余额只读快照缓存：`Ready()` / `Lookup()` / `Age()` / `Stale()` / `State()`；金额是十进制 bigint 字符串，整份校验、任一条不合法整份拒绝；`generation` 回退明确拒绝（不覆盖旧快照） |
+| `internal/contentaudit/` | 内容审核规则快照缓存：`Snapshot{version,generation,revision,enabled,rules}`；规则**预编译成小写子串**（`Rule.pattern` ≤ 200 字节，≤ 500 条，`id` ≤ 64）；整份校验、任一条非法整份拒绝，`generation` 回退拒绝不覆盖、同代同 revision 幂等；`Match` 返回 `[]contracts.ContentAuditHit`；`State()` 给 `contentaudit.status`（含 `gate` 计数与按规则命中） |
 | `internal/usagelog/` | 用量环形缓冲（容量可配，默认 32768，边界 1..1048576，非法值启动失败；满了丢最旧并计数 `dropped`，其中「没被任何 reader 取走就被覆盖」单独记 `gap`）；`Seq` + `Epoch`，经 `usage.since` 给 TS 轮询，`usage.stats` 给 TS 告警 |
 | `internal/usageprobe/` | 用 codec 从**发回客户端**的响应字节里提取 usage（流式只观察不改字节）；按上游协议归一化四桶 |
 | `internal/metrics/` | Prometheus 文本指标（只在回环监听、`-metrics` 默认开）：请求数与耗时、四桶 token、上游尝试/失败（按固定错误码枚举）、in-flight、冷却账号数、用量缓冲 dropped/gap、额度快照 age；热路径只有 `atomic.Uint64` 加法，标签只用编译期常量 |
@@ -190,12 +193,13 @@ export default FooService
 - 数据：`data/users.db`、`data/auth.db`、`data/api-keys.db`、`data/accounts.json`、
   `data/credentials.json`、`data/settings.json`、`data/account-priority.json`、
   `data/pricing.json`、`data/usage.db`、`data/redeem.db`、`data/billing.db`、`data/topup.db`、
-  `data/audit.db`、`data/frontend/`。
+  `data/audit.db`、`data/content-audit.json`、`data/frontend/`。
 - 用量只有 `usage` 插件写 `usage.db`（含 `usage_rejected` 隔离表）；结算账本只有 `billing`
   插件写 `billing.db`；充值订单只有 `topup` 插件写 `topup.db`（加余额只经 `user`）；
   价格只有 `pricing` 插件写 `pricing.json`；
+  内容审核规则只有 `content-audit` 插件写 `content-audit.json`（规则是关键词，不含秘密）；
   兑换码只有 `redeem` 插件写 `redeem.db`（只存 sha256 与掩码）；
-  Go 只把用量放进内存环形缓冲，不落盘。
+  Go 只把用量放进内存环形缓冲、把规则快照放内存，不落盘。
 - 本地端口：`web` `127.0.0.1:7792`（服务端渲染前端）、`api` `127.0.0.1:7791`、
   gatewayd `127.0.0.1:8080`、面板 `127.0.0.1:7788`。旧的 `frontend` SPA 与
   `deepseek-usage`（7793）已禁用。
@@ -305,6 +309,13 @@ export default FooService
   只有聚合插件本身缺席才 503
 - 用量投递健康度：`usage.stats` 桥命令给 TS 报 `capacity/size/dropped/gap/epoch/lastSeq`，
   `gap` 只统计「真丢」的部分；轮询默认 1s，落库失败不吞错、游标只推进到实际落库的最大 seq
+- **内容审核（`content-audit`）**：管理面维护关键词规则（`/admin/content-audit` +
+  `/api/admin/content-audit`，`block` = 命中拒绝 / `log` = 只记日志），规则**心跳式**推给 Go
+  （`contentaudit.replace`，5s 一轮、内容不变也推；审核关闭时推 `enabled:false` + 空规则）；
+  Go 的 `modules/contentaudit` 在 **pre 相位**（keyauth 之后、quotagate 之前）只看**用户输入文本**，
+  命中 `block` → **403 `CONTENT_BLOCKED`、不可重试、不转发上游**。命中统计与快照新鲜度从
+  `contentaudit.status` 读回页面。**只做大小写不敏感子串匹配，不做正则**；解析失败 / 无文本 /
+  快照不可用默认放行（可用性优先），严格模式 `-content-audit-require-snapshot` 才 503
 - **账号并发闸门与短期冷却（Go 侧，纯进程内）**：每个 attempt 按账号 `concurrency` 原子预留槽位，
   预留失败换下一个候选、全饱和时返回 `ALL_ACCOUNTS_SATURATED`（503、不可重试，不排队、不放行）；
   上游 429 / 额度耗尽把账号标记进冷却（`-account-cooldown-ms`，默认 30s，0 = 关闭，非法值启动失败），
@@ -356,9 +367,12 @@ pnpm test:go
 
 - 新增插件必须有 `test/*.test.ts`；新增 Go 模块必须有单测。
 - 测试失败先修实现，不允许删断言或放宽断言来变绿。
-- 当前基线（2026-10-29 实测）：`pnpm test` 707 个用例（706 通过 / 1 跳过），`pnpm typecheck` 干净，
-  `go test ./...` **18 包**全 ok，`gofmt -l .` 与 `go vet ./...` 无输出。
+- 当前基线（2026-10-29 实测）：`pnpm test` 739 个用例（738 通过 / 1 跳过），`pnpm typecheck` 干净，
+  `go test ./...` **20 包**全 ok，`gofmt -l .` 与 `go vet ./...` 无输出。
   这个数字会变，以实际输出为准。
+- `packages/content-audit/test/gateway-smoke.test.ts` 是**真进程用例**（真 `bin/gatewayd` +
+  真桥 + 真 HTTP 入口，小 TTL）：有二进制才跑，没有就 skip。它抓的是「Go 侧到底有没有照做」，
+  内存假 Go 的用例抓不到（额度闸门踩过这个坑）。改动 Go 侧审核逻辑时**先 `pnpm build:go`**。
 
 ### 5.5 前端
 
@@ -599,6 +613,36 @@ pnpm build:go         # 产出 bin/gatewayd(.exe)
 - **未审计的动作要照实写进报告**：定时器自动动作（`account-health` 自动停用/恢复）、
   identity 令牌刷新、用量轮询与自动结算都不在审计里，不要假装全覆盖。
 
+### 内容审核
+
+- **规则只做大小写不敏感子串匹配，不做正则**：正则表达式来自管理面输入，一条
+  `(a+)+$` 就能把网关的 pre 相位打死（ReDoS），而且审核是**热路径**。要正则就得先上
+  超时 / 隔离执行，那是另一件事。Go 侧预编译成小写子串（`internal/contentaudit`）。
+- **推送同样是心跳式**：`pushIntervalMs`（默认 5s）到期就推，内容不变也推（`revision` 相同、
+  `generation` 递增）；`enabled=false` 时推 `enabled:false` + **空规则**，让 Go 立刻全放行。
+  「不推」会让 Go 按 TTL 判过期——严格模式下反而全 503（与额度闸门同一条教训）。
+- **只审用户输入文本**：chat / anthropic 只看 `role=user` 的 `content`（字符串或 parts 里的
+  `text`），responses 看 `input`，gemini 看 `contents`（role 为空也算 user），embeddings 看
+  `input`。system / assistant / 工具结果**不审**（不是用户输入，误伤成本高）。
+- **日志与桥响应绝不回显被审文本**：日志只放 `ruleId` / `category` / 计数；`contentaudit.status`
+  不含 `pattern`；`/api/admin/content-audit` 的审计元数据也只放 id / action / 启停，
+  **不放关键字本身**（`packages/content-audit/test/content-audit.test.ts` 里那条
+  「审计不在这层写」与 `packages/api/test/content-audit.test.ts` 的元数据断言都守着）。
+- **审核不在这层记审计**：`content-audit` 插件对 `audit` **零依赖**（事务性写也不需要它），
+  留痕在 `api` 的 HTTP 路由与 `web` 的页面动作里用 `audited(...)` 记 —— actor 身份只有入口层知道。
+- **解析失败 / 无可审文本 / 快照不可用默认放行**（可用性优先），并分别计数
+  （`parseFailed` / `noText` / `allowedStale`）；严格模式（`-content-audit-require-snapshot`）
+  才 503。扫描上限 256 KiB / 256 段文本，超出计 `truncated`——**这是已知有损面，不是 bug**。
+- **`gate.*` 计数与 `stale` 是 `omitempty` 纯增量**：读 `contentaudit.status` 时 `0` / `false`
+  可能是「键不出现」，判「过没过期」要用 `!== true` 或 `?? 0`，别直接 `=== false`。
+- **部署顺序仍然是「先 Go 后 TS」**：`contentaudit.replace` 在旧 Go 上返回
+  `BRIDGE_METHOD_NOT_FOUND`（TS 会节流告警、LLM 请求不受影响）；反过来「新 Go + 旧 TS」
+  等于从没收到快照，默认策略全放行、行为与上线前一致。**严格模式必须等新 TS 上线后再开**。
+- **真进程用例是真证据**：`packages/content-audit/test/gateway-smoke.test.ts` 会 spawn 真
+  `bin/gatewayd`、用真控制桥推快照、打真 HTTP 入口，断言「命中 → 403 且上游 0 次」「未命中 → 200
+  且上游 1 次」「停推超 TTL → 放行 + `allowedStale`」「严格模式无快照 → 503」。改 Go 侧审核逻辑
+  前先 `pnpm build:go`，否则用例会因为二进制过旧而跳过（skip 不算绿）。
+
 ### 并发闸门与冷却
 
 - **槽位的生命周期是「预留 → 转交 → 释放」**：engine 预留成功才把它交给 `ctx.ReleaseInFlight`，
@@ -646,7 +690,7 @@ pnpm build:go         # 产出 bin/gatewayd(.exe)
 以下仍是目标，不要当成已实现：
 
 - 描述符下发、profile 编排、按 profile 切换阶段
-- `quota-check`、`content-audit`、`settle`
+- `quota-check`、`settle`
 - **真实支付通道**：只有 `manual`（线下转账 + 管理员人工确认）；没有在线支付、没有回调验签、
   没有发票 / 退款 / 对账文件。`PaymentProvider` seam 已留好，接渠道时按 §7「充值与支付」补
 - **扣费是「后付费 + 闸门」**：结算已做（幂等 reqId、读时算价→按真实 usage 结算、余额原子调整），
@@ -664,6 +708,10 @@ pnpm build:go         # 产出 bin/gatewayd(.exe)
 - `account-state`（限流、额度、并发等运行时状态）、粘性会话
 - **多模态入口只有 embeddings**：`images` / `audio` / `batch` / `files` 都还没有；
   embeddings 只支持 OpenAI 兼容上游
+- **内容审核的边界**：只做大小写不敏感**子串**匹配（要正则得先解决 ReDoS：超时 / 隔离执行）；
+  只审**用户输入文本**（system / assistant / 工具结果 / 响应正文都不审）；单请求扫描上限
+  256 KiB / 256 段文本，超出部分计 `truncated` 后不审（有损）；没有规则热更新以外的
+  灰度 / 例外名单 / 命中样本留存（命中只记 ruleId + category，**看不到被拦的原文**）；
 - **可观测的剩余缺口**：有 `/metrics` 与运维总览，但**请求 / 响应正文不落库**、
   没有直方图分位数、错误率要从状态码自己算、`account-health` 的自动动作**不进审计**；
   `/api/health` 的 components 仍只覆盖少数插件

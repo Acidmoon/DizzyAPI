@@ -382,3 +382,61 @@ export interface UsageStatsResult {
   readonly dropped: number
   readonly gap: number
 }
+
+/**
+ * 内容审核规则快照（TS → Go，桥命令 `contentaudit.replace`）。
+ *
+ * 规则是控制面数据、不含秘密；Go 侧只读、预编译成小写后做子串匹配。
+ * `enabled:false` 表示审核整体关闭：rules 必须为空，Go 侧立刻回到全放行。
+ */
+export interface GatewayContentAuditRule {
+  readonly id: string
+  readonly pattern: string
+  readonly action: 'block' | 'log'
+  readonly category?: string
+}
+
+export interface GatewayContentAuditSnapshot {
+  readonly version: 1
+  readonly generation: number
+  readonly revision: string
+  readonly enabled: boolean
+  readonly rules: readonly GatewayContentAuditRule[]
+}
+
+/** `contentaudit.replace` 的响应（不含规则内容）。 */
+export interface GatewayContentAuditResult {
+  readonly ready: boolean
+  readonly revision: string
+  readonly generation: number
+  readonly rules: number
+  readonly enabled: boolean
+  readonly updatedAt: string
+}
+
+/** `contentaudit.status` 的响应：缓存健康度 + 闸门计数与命中统计（无被审文本）。 */
+export interface GatewayContentAuditStatus {
+  readonly ready: boolean
+  readonly revision?: string
+  readonly generation?: number
+  readonly size: number
+  readonly enabled: boolean
+  readonly updatedAt?: string
+  readonly ageMs: number
+  readonly ttlMs: number
+  readonly stale?: boolean
+  readonly gate?: {
+    readonly blocked?: number
+    readonly logged?: number
+    readonly allowedStale?: number
+    readonly strictFailed?: number
+    readonly parseFailed?: number
+    readonly noText?: number
+    readonly truncated?: number
+    readonly staleStreak?: number
+    readonly staleReason?: string
+    readonly staleForMs?: number
+    readonly ruleHitTotal?: number
+    readonly ruleHits?: Readonly<Record<string, number>>
+  }
+}
