@@ -409,9 +409,36 @@ pnpm typecheck
 pnpm test
 pnpm test:go
 pnpm build:go         # 产出 bin/gatewayd(.exe)
+pnpm build:cli        # 产出 bin/dizzy(.exe)（命令行客户端，见 §6.2）
+pnpm build:all        # 两个二进制一起编
 ```
 
-### 6.2 部署
+### 6.2 命令行客户端 `dizzy`（`cmd/dizzy`）
+
+`dizzy` 是**客户端**：静态 Go 二进制，零环境依赖，只通过 HTTP 访问网关，
+**绝不直连 SQLite / JSON 数据文件**。完整用法见 `docs/cli.md`。
+
+- **两条鉴权路径严格分开**：`/v1/*` 走 `Authorization: Bearer <API key>`
+  （`--key` 或 `DIZZYAPI_KEY`，**不落盘**）；`/api/*` 走 HttpOnly 会话 cookie，
+  且**每个**请求都必须带 `X-Requested-With: dizzyapi`（登录前也要 —— 它与会话是
+  两个独立开关，绑在会话上会 403）。
+- **配置**：`~/.dizzy/config.json`（0644，`base` / `llmBase` / `apiBase`）、
+  `~/.dizzy/credentials.json`（0600，**只存会话 token**）。本地开发时 gatewayd 与
+  api 是两个端口，要用 `llmBase` / `apiBase` 分开指；生产一个域名指 `base` 就够。
+- **费用只有一个权威来源 = `/api/usage` 的 `costMicros`**：客户端看到的
+  `prompt_tokens` **含**缓存命中，而网关记账的四桶里 `input` **不含**缓存
+  （`internal/usageprobe.Normalize`），跨协议时这个关系还不成立。所以 `dizzy chat`
+  自己**不算钱**，登录状态下回查 `/api/usage`；没有会话就只打 token。
+- **秘密纪律**：完整 API key 默认**掩码打印**，要完整值必须显式 `--show`；
+  `--verbose` 只打方法与路径，不打 Authorization / cookie。
+- **退出码**：0 成功、1 通用失败、2 用法、3 未登录、4 认证(401)、5 权限(403)、
+  6 不存在、7 余额不足(402)、8 限流(429)、9 上游/网关(5xx)。agent 按它分支。
+- **实测夹具**（不进 `pnpm test`，要真进程）：
+  - `cmd/dizzy/testdata/e2e`：假上游 + 真 gatewayd，验 Bearer 路径与坏 key 拒绝；
+  - `cmd/dizzy/testdata/e2e-full/run.mjs`：整套栈 + 会话路径，**断言 `dizzy chat`
+    的 `costMicros` 与 `/api/usage` 逐条相等**。跑前先确保 7791/7792/8080 空闲。
+
+### 6.3 部署
 
 - 生产服务器 `<生产服务器>` / `<SERVER_IP>`（root），代码 `/opt/dizzyapi`，systemd `dizzyapi.service`；
   公网入口 `https://<站点域名>`：宝塔 nginx 把 `/v1/*`、**`/v1beta/*`** 与 `/healthz` 反代 gatewayd
