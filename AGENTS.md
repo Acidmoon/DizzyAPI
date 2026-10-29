@@ -244,10 +244,11 @@ export default FooService
   改写 body 顶层 `model`（同协议只动这一个字段，跨协议交给 protoconv 基于改名后的 body 解析 IR）
 - OpenAI 兼容 `/v1/chat/completions`、`/v1/responses`、Anthropic `/v1/messages`、
   `GET /v1/models`（当前可用对外模型名并集）、SSE 透传、`/healthz`
-- 用量记录：Go 在请求结束时采集「谁用的 / 哪个账号与模型 / 四个 token 桶 / 耗时 / 状态 /
-  客户端 IP」，经控制桥 `usage.since` 由 TS 轮询落 SQLite；`/api/usage`（用户）与
+- 用量记录：Go 在请求结束时采集「谁用的 / 哪个账号与模型 / 四个 token 桶 / 耗时 / 首字延迟 /
+  状态 / 客户端 IP」，经控制桥 `usage.since` 由 TS 轮询落 SQLite；`/api/usage`（用户）与
   `/api/admin/usage`（全站）提供明细、汇总、按天/按模型/按用户聚合与 CSV 导出；
-  `/console/usage` 只加明细表，`/admin/usage` 是独立页面
+  `GET /api/usage/:reqId` 是**单条详情**（详情弹窗用，普通用户只能查自己的、管理员查全部，
+  查不到与「不是自己的」统一 404）；`/console/usage` 只加明细表，`/admin/usage` 是独立页面
 - 模型价格：`/api/pricing` 读、`/api/pricing/:model` 读写（写需管理员），`/admin/pricing` 页面；
   用量费用在**读取时**按价格表计算（整数微元，1 元 = 1_000_000 微元）
 - **真实扣费（`billing`，后付费）**：`usage` 每轮 `usage.since` 拉到用量后，按
@@ -530,6 +531,18 @@ pnpm build:go         # 产出 bin/gatewayd(.exe)
   `requestId` / 时间非法的记录要跳过 + 计数 + 告警，绝不能抛——抛一次就是结算和统计一起停摆。
 - **`app.yml` 会覆盖插件默认值**：`usage.pollIntervalMs` 在 `app.yml` 里写着 `1000`，
   改代码里的默认值时别忘了同步改配置文件，否则线上仍走旧值。
+- **TTFT（首字延迟）只有流式请求才有**：Go 在 `copyStream` 第一次读到字节时打点（相对请求
+  开始，向上取整到 1ms），非流式请求一个字节都不填——非流式的 `DurationMs` 就是完整响应
+  时间，再报 TTFT 只会误导。线格式用 `omitempty`，**缺失 = 没采集，落库必须是 NULL 而不是
+  0**；页面对 null 显示「—」。历史记录（这条字段之前就有的行）迁移后保持 NULL。
+- **`usage_records.ttft_ms` 是幂等补列**：`CREATE TABLE IF NOT EXISTS` 对已存在的老库一个字段
+  都不加，所以 v1 之后新增的列必须在 `packages/usage/src/db.ts` 的 `migrate()` 里用
+  `PRAGMA table_info` 查一遍再 `ALTER TABLE`。老库升级不能因为缺列被拒（§5.2）。
+- **单条详情走 `GET /api/usage/:reqId`**：路由必须排在 `usage/export` 之后（那是固定子路径，
+  不能被当成 reqId）。权限与列表同口径，**「查不到」与「不是自己的」返回同一个 404**
+  （不泄露某个 reqId 是否存在）。响应比列表多 `reasoningTokens` / `usagePresent` /
+  `usageComplete` / `ttftMs`，但**仍然不给** profile / accountId / attempts（用户面拿不到
+  上游账号拓扑）。
 
 ### 充值与支付
 

@@ -39,6 +39,9 @@ CREATE TABLE IF NOT EXISTS usage_records (
   usage_present       INTEGER NOT NULL DEFAULT 0,
   usage_complete      INTEGER NOT NULL DEFAULT 1,
   duration_ms         INTEGER NOT NULL DEFAULT 0,
+  -- 首字延迟（毫秒）。**可空**：只有流式请求才有值；非流式请求与升级前的历史记录
+  -- 都是 NULL，页面必须显示「—」而不是 0。绝不能拿默认值 0 冒充「0 毫秒」。
+  ttft_ms             INTEGER DEFAULT NULL,
   client_ip           TEXT,
   attempts            INTEGER NOT NULL DEFAULT 0,
   ingested_at_ms      INTEGER NOT NULL
@@ -83,6 +86,7 @@ export function openUsageDatabase(path: string | undefined): DatabaseSync {
     db.exec('PRAGMA synchronous = NORMAL')
     db.exec('PRAGMA busy_timeout = 5000')
     db.exec(USAGE_SCHEMA)
+    migrate(db)
     return db
   } catch (error) {
     try {
@@ -93,4 +97,23 @@ export function openUsageDatabase(path: string | undefined): DatabaseSync {
     if (error instanceof UsageError) throw error
     throw new UsageError('USAGE_STORE_CORRUPT', `用量数据库无法打开：${describeError(error)}`)
   }
+}
+
+/**
+ * 幂等补列（旧库升级不能因为缺列就拒绝启动，AGENTS.md §5.2）。
+ *
+ * `CREATE TABLE IF NOT EXISTS` 只对新库生效：老库已经存在同名表时它一个字段都不加，
+ * 所以 v1 之后新增的列必须在这里逐列 ALTER。`ttft_ms` 是**可空列**，补列后历史行
+ * 天然是 NULL —— 这正是我们要的「历史记录没有首字延迟」。
+ */
+function migrate(db: DatabaseSync): void {
+  ensureColumn(db, 'usage_records', 'ttft_ms', 'INTEGER DEFAULT NULL')
+}
+
+function ensureColumn(db: DatabaseSync, table: string, column: string, type: string): void {
+  const rows = db.prepare(`PRAGMA table_info(${table})`).all()
+  for (const row of rows) {
+    if (row.name === column) return
+  }
+  db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`)
 }
