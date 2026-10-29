@@ -90,6 +90,11 @@ func (s *Stage) Run(ctx *contracts.Ctx) (contracts.Decision, error) {
 	if err != nil {
 		return contracts.Decision{}, convertFailed()
 	}
+	// Gemini 的请求体里没有 model（模型名在路径里），解析出来的 IR.Model 为空。
+	// 跨协议到别的上游时必须补上，否则渲染出来的 body 会带空 model。
+	if request.Model == "" {
+		request.Model = upstreamModel(ctx)
+	}
 	rendered, err := outbound.RenderRequest(request)
 	if err != nil {
 		return contracts.Decision{}, convertFailed()
@@ -112,4 +117,13 @@ func (s *Stage) Run(ctx *contracts.Ctx) (contracts.Decision, error) {
 	}
 	s.service.logLossy(ctx.ReqID, notes)
 	return continueDecision, nil
+}
+
+// upstreamModel 返回应写进上游请求体的模型名：模型映射后的上游名优先，
+// 其次客户端请求的模型名。
+func upstreamModel(ctx *contracts.Ctx) string {
+	if ctx.UpstreamModel != "" {
+		return ctx.UpstreamModel
+	}
+	return ctx.Meta.Model
 }

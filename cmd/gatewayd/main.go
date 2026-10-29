@@ -403,6 +403,7 @@ func run() error {
 		protoconv.NewChatCodec(),
 		protoconv.NewResponsesCodec(),
 		protoconv.NewAnthropicCodec(protoconv.AnthropicConfig{DefaultMaxTokens: *defaultMaxTokens}),
+		protoconv.NewGeminiCodec(),
 	} {
 		if err := codecs.Register(codec); err != nil {
 			return fmt.Errorf("注册 %s codec 失败：%w", codec.Protocol(), err)

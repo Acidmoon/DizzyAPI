@@ -66,6 +66,20 @@ func (s *MapStage) Run(ctx *contracts.Ctx) (contracts.Decision, error) {
 
 	// 4) 命中：替换 body 顶层 model 字段，写进 MappedBody。
 	//    ctx.Meta.Model 保持客户端请求的模型名不变（日志与错误消息要用它）。
+	//
+	//    Gemini 例外：它的模型名在 URL 路径里，body 里**没有** model 字段。
+	//    给 Gemini 注入 model 会被上游拒（400 Unknown name），所以这里只记
+	//    上游模型名（transport 用它拼路径），不改 body。
+	if ctx.ClientProtocol == contracts.ProtocolGemini {
+		ctx.UpstreamModel = upstreamModel
+		s.service.logger.Info("模型映射",
+			"reqId", ctx.ReqID,
+			"model", model,
+			"upstreamModel", upstreamModel,
+			"accountId", credential.AccountID,
+		)
+		return continueDecision, nil
+	}
 	if ctx.Body == nil {
 		return contracts.Decision{}, mapFailed()
 	}

@@ -29,7 +29,12 @@ import type {
 } from './types.ts'
 
 const SOURCE_FORMATS: ReadonlySet<string> = new Set(['auto', 'new-api', 'sub2api', 'plain-keys'])
-const PROTOCOLS: ReadonlySet<string> = new Set(['openai-chat', 'openai-responses', 'anthropic'])
+const PROTOCOLS: ReadonlySet<string> = new Set([
+  'openai-chat',
+  'openai-responses',
+  'anthropic',
+  'gemini',
+])
 const DEFAULT_KEYS = ['provider', 'kind', 'baseUrl', 'protocol', 'enabled', 'labelPrefix'] as const
 
 function fail(code: 'ACCOUNT_IMPORT_SOURCE_INVALID' | 'ACCOUNT_IMPORT_FIELD_INVALID', message: string): never {
@@ -155,7 +160,10 @@ function normalizeDefaultBaseUrl(value: unknown): string | undefined {
 function normalizeProtocol(value: unknown): AccountProtocol | undefined {
   if (value === undefined || value === null) return undefined
   if (typeof value !== 'string' || !PROTOCOLS.has(value)) {
-    fail('ACCOUNT_IMPORT_FIELD_INVALID', 'protocol 只能是 openai-chat / openai-responses / anthropic')
+    fail(
+      'ACCOUNT_IMPORT_FIELD_INVALID',
+      'protocol 只能是 openai-chat / openai-responses / anthropic / gemini',
+    )
   }
   return value as AccountProtocol
 }

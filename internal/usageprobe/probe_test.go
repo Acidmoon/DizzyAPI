@@ -17,6 +17,7 @@ func newRegistry(t *testing.T) *contracts.CodecRegistry {
 		protoconv.NewChatCodec(),
 		protoconv.NewResponsesCodec(),
 		protoconv.NewAnthropicCodec(protoconv.AnthropicConfig{}),
+		protoconv.NewGeminiCodec(),
 	}
 	for _, codec := range codecs {
 		if err := registry.Register(codec); err != nil {
@@ -74,6 +75,34 @@ func TestExtractNonStream(t *testing.T) {
 		}
 		if total := usageprobe.TotalTokens(normalized); total != 25 {
 			t.Fatalf("total = %d，期望 25", total)
+		}
+	})
+
+	t.Run("gemini：promptTokenCount 含缓存，按上游协议做减法", func(t *testing.T) {
+		body := []byte(`{"candidates":[],"usageMetadata":{"promptTokenCount":100,"candidatesTokenCount":20,"cachedContentTokenCount":30,"thoughtsTokenCount":8,"totalTokenCount":128}}`)
+		usage, present := probe.Extract(contracts.ProtocolGemini, body)
+		if !present {
+			t.Fatal("应识别到 usage")
+		}
+		if usage.InputTokens != 100 || usage.OutputTokens != 20 {
+			t.Fatalf("原始口径不符：%+v", usage)
+		}
+		if usage.CacheReadInputTokens != 30 || usage.ReasoningTokens != 8 {
+			t.Fatalf("缓存 / 思考 token 不符：%+v", usage)
+		}
+		normalized := usageprobe.Normalize(usage, contracts.ProtocolGemini)
+		if normalized.InputTokens != 70 || normalized.CacheReadInputTokens != 30 {
+			t.Fatalf("Gemini 归一化不符：%+v", normalized)
+		}
+		if normalized.CacheCreationInputTokens != 0 {
+			t.Fatalf("Gemini 没有写缓存：%+v", normalized)
+		}
+		if normalized.OutputTokens != 20 || normalized.ReasoningTokens != 8 {
+			t.Fatalf("输出桶不该被减去：%+v", normalized)
+		}
+		// 不重复相加：reasoning 是 output 的子集。
+		if total := usageprobe.TotalTokens(normalized); total != 120 {
+			t.Fatalf("total = %d，期望 120", total)
 		}
 	})
 

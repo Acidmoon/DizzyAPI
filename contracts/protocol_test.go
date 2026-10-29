@@ -168,6 +168,45 @@ func TestRenderErrorOpenAIBytesUnchanged(t *testing.T) {
 	}
 }
 
+// TestRenderErrorGeminiKeepsOfficialShape：Gemini 官方 schema 的 `code` 是整数
+// HTTP 状态、`status` 是 Google 枚举名；网关稳定码只以 `reason` 增量出现，
+// 空码时不输出该键（老客户端看到的形状不变）。
+func TestRenderErrorGeminiKeepsOfficialShape(t *testing.T) {
+	body := RenderError(ProtocolGemini, 503, CodeAllAccountsSaturated, "msg")
+	var payload struct {
+		Error map[string]json.RawMessage `json:"error"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("不是合法 JSON：%v（%s）", err, body)
+	}
+	if got := string(payload.Error["code"]); got != "503" {
+		t.Fatalf("error.code 必须是整数 HTTP 状态：%s", got)
+	}
+	if got := string(payload.Error["status"]); got != `"UNAVAILABLE"` {
+		t.Fatalf("error.status 不对：%s", got)
+	}
+	if got := string(payload.Error["reason"]); got != `"`+CodeAllAccountsSaturated+`"` {
+		t.Fatalf("error.reason 不对：%s", got)
+	}
+	if _, ok := payload.Error["type"]; ok {
+		t.Fatalf("Gemini 错误体不该带 Anthropic 的 type 键：%s", body)
+	}
+
+	empty := RenderError(ProtocolGemini, 500, "", "msg")
+	var plain struct {
+		Error map[string]json.RawMessage `json:"error"`
+	}
+	if err := json.Unmarshal(empty, &plain); err != nil {
+		t.Fatalf("不是合法 JSON：%v（%s）", err, empty)
+	}
+	if _, ok := plain.Error["reason"]; ok {
+		t.Fatalf("空 code 不许输出 reason：%s", empty)
+	}
+	if len(plain.Error) != 3 {
+		t.Fatalf("error 对象只允许 code / message / status 三个键：%s", empty)
+	}
+}
+
 func TestProtocolIsOpenAI(t *testing.T) {
 	if !ProtocolOpenAIChat.IsOpenAI() || !ProtocolOpenAIResponses.IsOpenAI() {
 		t.Fatal("openai 族应报告 true")

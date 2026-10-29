@@ -1129,8 +1129,13 @@ function normalizeNullableProtocol(value: unknown): AccountProtocol | null {
 }
 
 function requireProtocol(value: unknown): AccountProtocol {
-  if (value !== 'openai-chat' && value !== 'openai-responses' && value !== 'anthropic') {
-    failInput('protocol 只能是 openai-chat / openai-responses / anthropic')
+  if (
+    value !== 'openai-chat' &&
+    value !== 'openai-responses' &&
+    value !== 'anthropic' &&
+    value !== 'gemini'
+  ) {
+    failInput('protocol 只能是 openai-chat / openai-responses / anthropic / gemini')
   }
   return value
 }

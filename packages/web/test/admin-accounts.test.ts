@@ -411,6 +411,21 @@ test('详情页：分组折叠 + 保存调度参数带 WEB_ACTOR', async (t) => 
   })
 })
 
+test('详情页：上游协议下拉含 gemini，保存基本信息能提交 gemini', async (t) => {
+  const app = await boot(t)
+  const page = await fetch(`${app.base}/admin/accounts/detail?id=acc-1`, { headers: { cookie: SESSION_COOKIE } })
+  assert.equal(page.status, 200)
+  const html = await page.text()
+  assert.ok(html.includes('value="gemini"'), '详情页应能选 gemini 协议')
+
+  const saved = await post(app, '/admin/accounts/detail?action=update&id=acc-1', 'id=acc-1&protocol=gemini&label=acc-1')
+  assert.equal(saved.status, 303)
+  const call = app.admin.lastCall()
+  assert.equal(call?.method, 'update')
+  assert.equal(call?.args?.[0], WEB_ACTOR)
+  assert.equal((call?.args?.[2] as Record<string, unknown>).protocol, 'gemini')
+})
+
 test('详情页：自动停用账号给出恢复入口，恢复走 autoEnable(WEB_ACTOR)', async (t) => {
   const app = await boot(t)
   const page = await fetch(`${app.base}/admin/accounts/detail?id=acc-2`, { headers: { cookie: SESSION_COOKIE } })

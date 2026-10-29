@@ -17,7 +17,7 @@ export type IdentityProvider = 'claude' | 'openai' | 'custom'
  * 上游端点说哪种协议；协议转换中间件按它决定怎么翻译请求。
  * `null` = 未声明，走旧行为（兼容存量账号）。
  */
-export type IdentityProtocol = 'openai-chat' | 'openai-responses' | 'anthropic'
+export type IdentityProtocol = 'openai-chat' | 'openai-responses' | 'anthropic' | 'gemini'
 
 /** 订阅账号（OAuth，可以刷新）与外部 API（只有静态 key）。 */
 export type IdentityAccountKind = 'oauth' | 'api_key'
