@@ -10,6 +10,8 @@ import { API_ACTOR } from '../constants.ts'
 import { ApiError } from '../errors.ts'
 import { type IncomingMessage, type ServerResponse } from 'node:http'
 import type { AuditQueryLike } from '../types.ts'
+import { requireAdmin } from '../http_session.ts'
+import { allowRead, sendJson } from '../http_respond.ts'
 
 // ───────────────────────────────── 管理员：审计 ─────────────────────────────────
 
@@ -31,8 +33,8 @@ req: IncomingMessage,
 res: ServerResponse,
 url: URL,
 ): Promise<void> {
-  await host.requireAdmin(req)
-  if (!host.allowRead(req, res)) return
+  await requireAdmin(host, req)
+  if (!allowRead(host, req, res)) return
   const audit = host.runtime.audit()
   if (audit === undefined) {
     throw new ApiError('AUDIT_UNAVAILABLE', 503, '审计服务不在运行：暂时不能查询审计记录')
@@ -64,7 +66,7 @@ url: URL,
 
   const page = audit.list(API_ACTOR, query as AuditQueryLike)
   const wantStats = url.searchParams.get('stats') === '1'
-  host.sendJson(req, res, 200, {
+  sendJson(host, req, res, 200, {
     items: page.items,
     total: page.total,
     offset: page.offset,

@@ -10,6 +10,8 @@ import { settleDailyOf, settleModelOf, settleRecordOf, settleTotalsOf } from '..
 import { API_ACTOR } from '../constants.ts'
 import { notFound } from '../errors.ts'
 import { type IncomingMessage, type ServerResponse } from 'node:http'
+import { requireAdmin } from '../http_session.ts'
+import { allowRead, sendJson } from '../http_respond.ts'
 
 // ───────────────────────────────── 管理员：结算 ─────────────────────────────────
 
@@ -26,9 +28,9 @@ res: ServerResponse,
 parts: readonly string[],
 url: URL,
 ): Promise<void> {
-  await host.requireAdmin(req)
+  await requireAdmin(host, req)
   if (parts.length !== 2) throw notFound('没有这个结算接口')
-  if (!host.allowRead(req, res)) return
+  if (!allowRead(host, req, res)) return
   const billing = host.requireBilling()
 
   const status = queryStringOf(url, 'status')
@@ -40,7 +42,7 @@ url: URL,
     ...(offset === undefined ? {} : { offset }),
   })
   const summary = await billing.summary(API_ACTOR)
-  host.sendJson(req, res, 200, {
+  sendJson(host, req, res, 200, {
     totals: settleTotalsOf(summary.totals),
     daily: summary.daily.map(settleDailyOf),
     models: summary.models.map(settleModelOf),

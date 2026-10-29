@@ -10,6 +10,9 @@ import { keyPortResult } from '../views/account.ts'
 import { STATS_USER_MAX_PAGES, STATS_USER_PAGE } from '../constants.ts'
 import { type IncomingMessage, type ServerResponse } from 'node:http'
 import type { ApiKeyPort, UserLike, UserPort } from '../types.ts'
+import { userNameResolver } from './admin_usage.ts'
+import { requireAdmin } from '../http_session.ts'
+import { allowRead, sendJson } from '../http_respond.ts'
 
 /**
  * `GET /api/admin/stats`：全站计数与 token 汇总。
@@ -19,10 +22,10 @@ import type { ApiKeyPort, UserLike, UserPort } from '../types.ts'
  * 整个接口照常返回；只有 usage 缺席时 `usage: null`。
  */
 export async function adminStats(host: ApiServer, req: IncomingMessage, res: ServerResponse): Promise<void> {
-  await host.requireAdmin(req)
-  if (!host.allowRead(req, res)) return
+  await requireAdmin(host, req)
+  if (!allowRead(host, req, res)) return
 
-  const users = await host.allUsers()
+  const users = await allUsers(host)
   const userPort = host.runtime.user as UserPort & { count?: () => Promise<number> }
   const countedUsers = typeof userPort.count === 'function' ? await userPort.count.call(host.runtime.user) : null
   const userTotal = countedUsers ?? users.length
@@ -55,7 +58,7 @@ export async function adminStats(host: ApiServer, req: IncomingMessage, res: Ser
     }
   }
 
-  const nameOf = host.userNameResolver()
+  const nameOf = userNameResolver(host)
   const usage = host.runtime.usage()
   let usageView: {
     today: ReturnType<typeof usageTotalsOf>
@@ -75,7 +78,7 @@ export async function adminStats(host: ApiServer, req: IncomingMessage, res: Ser
     }
   }
 
-  host.sendJson(req, res, 200, {
+  sendJson(host, req, res, 200, {
     generatedAt: host.runtime.now().toISOString(),
     users: {
       total: userTotal,

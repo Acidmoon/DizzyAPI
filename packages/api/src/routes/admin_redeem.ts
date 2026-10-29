@@ -11,6 +11,8 @@ import { auditActorOf, audited } from '../audit.ts'
 import { API_ACTOR } from '../constants.ts'
 import { badRequest, notFound } from '../errors.ts'
 import { type IncomingMessage, type ServerResponse } from 'node:http'
+import { requireAdmin } from '../http_session.ts'
+import { allowMethod, allowRead, jsonBody, sendJson, sendMethodNotAllowed } from '../http_respond.ts'
 
 /**
  * 管理面：兑换码列表 / 生成批次 / 单码启停 / 人工核查 / 批量删除。
@@ -24,7 +26,7 @@ res: ServerResponse,
 parts: readonly string[],
 url: URL,
 ): Promise<void> {
-  const { view: adminView } = await host.requireAdmin(req)
+  const { view: adminView } = await requireAdmin(host, req)
   const identity = { actor: auditActorOf(adminView), actorPlugin: API_ACTOR }
   const redeem = host.requireRedeem()
 
@@ -49,14 +51,14 @@ url: URL,
       if (offset !== undefined) query.offset = offset
 
       const page = await redeem.listCodes(API_ACTOR, query)
-      host.sendJson(req, res, 200, {
+      sendJson(host, req, res, 200, {
         items: page.items.map(redeemCodeOf),
         total: page.total,
       })
       return
     }
     if (req.method === 'POST') {
-      const body = await host.jsonBody(req)
+      const body = await jsonBody(host, req)
       assertOnlyKeys(body, ['name', 'amountMicro', 'count', 'expiresAt', 'notes'])
       const name = requiredString(body, 'name')
       const amountMicro = requiredMicros(body, 'amountMicro')
@@ -85,14 +87,14 @@ url: URL,
             ...(notes === undefined ? {} : { notes }),
           }),
       )
-      host.sendJson(req, res, 200, {
+      sendJson(host, req, res, 200, {
         batch: redeemBatchOf(created.batch),
         codes: created.codes,
       })
       return
     }
     if (req.method === 'DELETE') {
-      const body = await host.jsonBody(req)
+      const body = await jsonBody(host, req)
       assertOnlyKeys(body, ['ids'])
       const ids = readStringArray(body.ids, 'ids')
       const result = await audited(
@@ -107,26 +109,26 @@ url: URL,
         },
         () => redeem.deleteCodes(API_ACTOR, ids),
       )
-      host.sendJson(req, res, 200, {
+      sendJson(host, req, res, 200, {
         deleted: result.deleted,
         rejected: result.rejected.map((item) => ({ id: item.id, reason: item.reason })),
       })
       return
     }
-    host.sendMethodNotAllowed(req, res, ['GET', 'HEAD', 'POST', 'DELETE'])
+    sendMethodNotAllowed(host, req, res, ['GET', 'HEAD', 'POST', 'DELETE'])
     return
   }
 
   if (parts.length === 3 && parts[2] === 'status') {
-    if (!host.allowMethod(req, res, ['POST'])) return
-    const body = await host.jsonBody(req)
+    if (!allowMethod(host, req, res, ['POST'])) return
+    const body = await jsonBody(host, req)
     assertOnlyKeys(body, ['id', 'status'])
     const id = requiredString(body, 'id')
     const status = requiredString(body, 'status')
     if (status !== 'enabled' && status !== 'disabled') {
       throw badRequest('status 只能是 enabled / disabled')
     }
-    host.sendJson(
+    sendJson(host, 
       req,
       res,
       200,
@@ -149,15 +151,15 @@ url: URL,
   }
 
   if (parts.length === 3 && parts[2] === 'resolve') {
-    if (!host.allowMethod(req, res, ['POST'])) return
-    const body = await host.jsonBody(req)
+    if (!allowMethod(host, req, res, ['POST'])) return
+    const body = await jsonBody(host, req)
     assertOnlyKeys(body, ['id', 'outcome'])
     const id = requiredString(body, 'id')
     const outcome = requiredString(body, 'outcome')
     if (outcome !== 'used' && outcome !== 'enabled') {
       throw badRequest('outcome 只能是 used / enabled')
     }
-    host.sendJson(
+    sendJson(host, 
       req,
       res,
       200,
@@ -191,8 +193,8 @@ res: ServerResponse,
 parts: readonly string[],
 url: URL,
 ): Promise<void> {
-  await host.requireAdmin(req)
-  if (!host.allowRead(req, res)) return
+  await requireAdmin(host, req)
+  if (!allowRead(host, req, res)) return
   const redeem = host.requireRedeem()
 
   if (parts.length === 2) {
@@ -202,12 +204,12 @@ url: URL,
       ...(limit === undefined ? {} : { limit }),
       ...(offset === undefined ? {} : { offset }),
     })
-    host.sendJson(req, res, 200, { items: batches.map(redeemBatchOf) })
+    sendJson(host, req, res, 200, { items: batches.map(redeemBatchOf) })
     return
   }
   if (parts.length === 3) {
     const id = parts[2] as string
-    host.sendJson(req, res, 200, redeemBatchOf(await redeem.getBatch(API_ACTOR, id)))
+    sendJson(host, req, res, 200, redeemBatchOf(await redeem.getBatch(API_ACTOR, id)))
     return
   }
   throw notFound('没有这个批次接口')
@@ -219,8 +221,8 @@ host: ApiServer,
 req: IncomingMessage,
 res: ServerResponse,
 ): Promise<void> {
-  await host.requireAdmin(req)
-  if (!host.allowRead(req, res)) return
+  await requireAdmin(host, req)
+  if (!allowRead(host, req, res)) return
   const redeem = host.requireRedeem()
-  host.sendJson(req, res, 200, redeemStatsOf(await redeem.stats(API_ACTOR)))
+  sendJson(host, req, res, 200, redeemStatsOf(await redeem.stats(API_ACTOR)))
 }

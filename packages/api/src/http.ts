@@ -361,35 +361,35 @@ export class ApiServer {
 
     // 管理员面
     if (parts[0] === 'admin' && parts[1] === 'redeem-codes') {
-      await this.routeAdminRedeemCodes(req, res, parts, url)
+      await routeAdminRedeemCodes(this, req, res, parts, url)
       return
     }
     if (parts[0] === 'admin' && parts[1] === 'redeem-batches') {
-      await this.routeAdminRedeemBatches(req, res, parts, url)
+      await routeAdminRedeemBatches(this, req, res, parts, url)
       return
     }
     if (parts[0] === 'admin' && parts[1] === 'redeem-stats') {
-      await this.routeAdminRedeemStats(req, res)
+      await routeAdminRedeemStats(this, req, res)
       return
     }
     if (parts[0] === 'admin' && parts[1] === 'billing') {
-      await this.routeAdminBilling(req, res, parts, url)
+      await routeAdminBilling(this, req, res, parts, url)
       return
     }
     if (parts[0] === 'admin' && parts[1] === 'topup-orders') {
-      await this.routeAdminTopupOrders(req, res, parts, url)
+      await routeAdminTopupOrders(this, req, res, parts, url)
       return
     }
     if (parts[0] === 'admin' && parts[1] === 'audit') {
-      await this.routeAdminAudit(req, res, url)
+      await routeAdminAudit(this, req, res, url)
       return
     }
     if (parts[0] === 'admin' && parts[1] === 'content-audit') {
-      await this.routeAdminContentAudit(req, res, parts)
+      await routeAdminContentAudit(this, req, res, parts)
       return
     }
     if (parts.length === 2 && parts[0] === 'admin' && parts[1] === 'observability') {
-      await this.routeAdminObservability(req, res)
+      await routeAdminObservability(this, req, res)
       return
     }
     if (parts[0] === 'admin' && parts[1] === 'usage') {
@@ -398,7 +398,7 @@ export class ApiServer {
     }
     if (parts.length === 2 && parts[0] === 'admin' && parts[1] === 'stats') {
       if (!this.allowRead(req, res)) return
-      await this.adminStats(req, res)
+      await adminStats(this, req, res)
       return
     }
     if (parts[0] === 'users') {
@@ -522,80 +522,6 @@ export class ApiServer {
     }
     return contentAudit
   }
-  /** @internal 实现在 routes/admin_redeem.ts（薄委派；注释与实现在那边，这里只转发）。 */
-async routeAdminRedeemCodes(
-  req: IncomingMessage,
-  res: ServerResponse,
-  parts: readonly string[],
-  url: URL,
-): Promise<void> {
-    return await routeAdminRedeemCodes(this, req, res, parts, url)
-  }
-
-  /** @internal 实现在 routes/admin_redeem.ts（薄委派；注释与实现在那边，这里只转发）。 */
-async routeAdminRedeemBatches(
-  req: IncomingMessage,
-  res: ServerResponse,
-  parts: readonly string[],
-  url: URL,
-): Promise<void> {
-    return await routeAdminRedeemBatches(this, req, res, parts, url)
-  }
-
-  /** @internal 实现在 routes/admin_redeem.ts（薄委派；注释与实现在那边，这里只转发）。 */
-async routeAdminRedeemStats(
-  req: IncomingMessage,
-  res: ServerResponse,
-): Promise<void> {
-    return await routeAdminRedeemStats(this, req, res)
-  }
-
-  /** @internal 实现在 routes/admin_billing.ts（薄委派；注释与实现在那边，这里只转发）。 */
-async routeAdminBilling(
-  req: IncomingMessage,
-  res: ServerResponse,
-  parts: readonly string[],
-  url: URL,
-): Promise<void> {
-    return await routeAdminBilling(this, req, res, parts, url)
-  }
-
-  /** @internal 实现在 routes/admin_topup.ts（薄委派；注释与实现在那边，这里只转发）。 */
-async routeAdminTopupOrders(
-  req: IncomingMessage,
-  res: ServerResponse,
-  parts: readonly string[],
-  url: URL,
-): Promise<void> {
-    return await routeAdminTopupOrders(this, req, res, parts, url)
-  }
-
-  /** @internal 实现在 routes/admin_audit.ts（薄委派；注释与实现在那边，这里只转发）。 */
-async routeAdminAudit(
-  req: IncomingMessage,
-  res: ServerResponse,
-  url: URL,
-): Promise<void> {
-    return await routeAdminAudit(this, req, res, url)
-  }
-
-  /** @internal 实现在 routes/admin_content_audit.ts（薄委派；注释与实现在那边，这里只转发）。 */
-async routeAdminContentAudit(
-  req: IncomingMessage,
-  res: ServerResponse,
-  parts: readonly string[],
-): Promise<void> {
-    return await routeAdminContentAudit(this, req, res, parts)
-  }
-
-  /** @internal 实现在 routes/admin_observability.ts（薄委派；注释与实现在那边，这里只转发）。 */
-async routeAdminObservability(
-  req: IncomingMessage,
-  res: ServerResponse,
-): Promise<void> {
-    return await routeAdminObservability(this, req, res)
-  }
-
   /** @internal 实现在 routes/admin_usage.ts（薄委派；注释与实现在那边，这里只转发）。 */
 async routeAdminUsage(
   req: IncomingMessage,
@@ -644,16 +570,6 @@ adminRejectedView(
   offset: number
 } {
     return adminRejectedView(this, usage, url)
-  }
-
-  /** @internal 实现在 routes/admin_stats.ts（薄委派；注释与实现在那边，这里只转发）。 */
-async adminStats(req: IncomingMessage, res: ServerResponse): Promise<void> {
-    return await adminStats(this, req, res)
-  }
-
-  /** @internal 实现在 routes/admin_stats.ts（薄委派；注释与实现在那边，这里只转发）。 */
-async allUsers(): Promise<UserLike[]> {
-    return await allUsers(this)
   }
 
   /** @internal 实现在 routes/admin_users.ts（薄委派；注释与实现在那边，这里只转发）。 */
