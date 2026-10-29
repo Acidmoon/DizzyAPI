@@ -319,6 +319,10 @@ test('快照：只含 enabled 且用户可用的 key；只有哈希，没有明�
     keyHash: hashApiKey(kept.secret),
     profile: 'billed',
     name: 'kept',
+    // 三个执行面上限是纯增量字段：没配就是 null（Go 侧当「不限」）。
+    expiresAt: null,
+    spendingLimitMicros: null,
+    concurrencyLimit: null,
   })
 
   const payload = JSON.stringify(snapshot)

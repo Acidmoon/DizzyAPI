@@ -137,6 +137,12 @@ func (e *Engine) Run(ctx *contracts.Ctx) (decision contracts.Decision) {
 			decision = e.render(ctx, contracts.Errorf(http.StatusInternalServerError, "GATEWAY_INTERNAL", "网关内部错误"))
 		}
 		e.runPost(ctx)
+		// pre 相位的槽位（key 级 / 用户级并发）：没有转交给 HTTP 入口时必须在这里释放。
+		// 走得到 dispatch 的请求由 runAttempt 把它串进 ReleaseInFlight（响应含整个流
+		// 写完后释放），所以这里只在「没有产生响应」的出口兜底。release 本身幂等。
+		if ctx.ReleaseInFlight == nil && ctx.ReleasePreSlot != nil {
+			ctx.ReleasePreSlot()
+		}
 	}()
 
 	// 真实运行时状态（in-flight / 冷却）必须在打分前写进候选快照，
@@ -258,7 +264,16 @@ func (e *Engine) runAttempt(
 		})
 		if decision.Action == contracts.ActionRespond {
 			transferred = true
-			ctx.ReleaseInFlight = release
+			// 账号槽位与 pre 相位的槽位（key / 用户并发）必须一起活到响应写完：
+			// HTTP 入口只调这一个 release，所以这里把它们串起来（两个都幂等）。
+			accountRelease := release
+			preRelease := ctx.ReleasePreSlot
+			ctx.ReleaseInFlight = func() {
+				accountRelease()
+				if preRelease != nil {
+					preRelease()
+				}
+			}
 			return attemptResult{decision: normalize(decision)}
 		}
 	}

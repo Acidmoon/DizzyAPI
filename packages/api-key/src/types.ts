@@ -7,7 +7,13 @@
 
 export type ApiKeyAction = 'created' | 'updated' | 'rotated' | 'removed'
 
-/** 用户面看到的 key 记录。secret 可为 null（旧库历史行）。 */
+/**
+ * 用户面看到的 key 记录。secret 可为 null（旧库历史行）。
+ *
+ * 三个「执行面」字段（`expiresAt` / `spendingLimitMicros` / `concurrencyLimit`）
+ * 是 owner 第 6 条要求「真拦截」的三条上限：它们由 Go 的 key-gate 在 pre 相位执行，
+ * 本插件只负责存与出。
+ */
 export interface ApiKeyView {
   readonly id: string
   readonly userId: number
@@ -23,6 +29,12 @@ export interface ApiKeyView {
   readonly updatedAt: string
   readonly lastUsedAt: string | null
   readonly rotatedAt: string | null
+  /** 过期时间（ISO 8601）；null = 永不过期。 */
+  readonly expiresAt: string | null
+  /** 金额上限（整数微元，十进制字符串）；null = 不限。 */
+  readonly spendingLimitMicros: string | null
+  /** 并发上限（正整数）；null = 不限。 */
+  readonly concurrencyLimit: number | null
 }
 
 /** verify 的命中结果。它是 key-auth 在 TS 侧的最小身份视图。 */
@@ -43,12 +55,24 @@ export interface ApiKeySnapshot {
   readonly keys: readonly ApiKeySnapshotKey[]
 }
 
+/**
+ * 快照里的一条。三个上限是**纯增量**字段：旧 Go 二进制不认识它们（部署顺序是
+ * 先 Go 后 TS，所以不会出现「旧 Go 收到新字段」的窗口）。
+ *
+ * 金额一律十进制字符串（JSON number 会丢 >2^53 的精度），Go 解析失败即整份拒绝。
+ */
 export interface ApiKeySnapshotKey {
   readonly keyId: string
   readonly userId: number
   readonly keyHash: string
   readonly profile: string
   readonly name: string
+  /** 过期时间（ISO 8601）；缺省 / null = 永不过期。 */
+  readonly expiresAt?: string | null
+  /** 金额上限（整数微元，十进制字符串）；缺省 = 不限。 */
+  readonly spendingLimitMicros?: string | null
+  /** 并发上限；缺省 / 0 = 不限。 */
+  readonly concurrencyLimit?: number | null
 }
 
 /** `status()` 的运行期计数，没有任何秘密。 */

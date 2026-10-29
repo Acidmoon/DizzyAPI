@@ -44,6 +44,7 @@
     "@dizzyapi/plugin-credentials": "workspace:*",
     "@dizzyapi/plugin-deepseek-usage": "workspace:*",
     "@dizzyapi/plugin-font-smiley": "workspace:*",
+    "@dizzyapi/plugin-gate-feed": "workspace:*",
     "@dizzyapi/plugin-frontend": "workspace:*",
     "@dizzyapi/plugin-identity": "workspace:*",
     "@dizzyapi/plugin-kit": "workspace:*",

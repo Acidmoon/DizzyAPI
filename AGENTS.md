@@ -373,8 +373,8 @@ pnpm test:go
 
 - 新增插件必须有 `test/*.test.ts`；新增 Go 模块必须有单测。
 - 测试失败先修实现，不允许删断言或放宽断言来变绿。
-- 当前基线（2026-10-30 实测）：`pnpm test` 760 个用例（759 通过 / 1 跳过），`pnpm typecheck` 干净，
-  `go test ./...` **21 包**全 ok（含 `cmd/dizzy`），`gofmt -l .` 与 `go vet ./...` 无输出。
+- 当前基线（2026-10-30 实测）：`pnpm test` 782 个用例（781 通过 / 1 跳过），`pnpm typecheck` 干净，
+  `go test ./...` **26 包**全 ok，`gofmt -l .` 与 `go vet ./...` 无输出。
   这个数字会变，以实际输出为准。
 - **多 worktree 并行跑测试会互相抢端口**：`pnpm test` 里有多条**真进程用例**（`content-audit`
   的 `gateway-smoke`、`account-priority` 的子进程），它们用 `freePort()` 拿临时端口再 spawn
@@ -568,6 +568,15 @@ pnpm build:all        # 两个二进制一起编
   / `response.failed`；解码端兼容上游发来的 `[DONE]`，编码端不发。
 - **部署顺序**：`accounts.replace` 用 `DisallowUnknownFields`。TS 若先发带新字段的账号快照而 Go
   二进制还是旧的，**整份快照被拒 → 账号缓存清空 → 全部 503**。先重建 Go，再发 TS。
+- **`keys.replace` 同样走 `decodeParams` + `DisallowUnknownFields`，同样踩这条**：key 快照现在带
+  `expiresAt` / `spendingLimitMicros` / `concurrencyLimit`，而 `SnapshotVersion` 仍是 **1**（没 bump），
+  所以旧 Go 会先过版本检查、再因未知字段被整份拒绝 → **key 快照缓存清空 → 所有 API key 校验失败
+  → 全站 401**。上线这个版本必须**先换 `bin/gatewayd` 再重启 `dizzyapi`**，顺序反了就是全站 401。
+  将来再给这两个快照加字段时，考虑把 `SnapshotVersion` 一起 bump，让旧 Go 报「版本不支持」
+  而不是「参数不合法」——错误更好定位，失败同样是 fail-closed。
+- **闸门默认值**：`-pricing-gate` 默认 **false**（未定价模型放行，与上线前一致）；
+  key 级闸门**没有开关、总是注册**（上限全为零值时行为与引入前完全一致）。
+  严格模式一律等新 TS 跑过一轮再开。
 
 ### 模型路由
 
@@ -776,6 +785,50 @@ pnpm build:all        # 两个二进制一起编
   响应与改动前逐字节一致。
 - **anthropic 错误体加 `code` 是纯增量**：别把 `code` 放顶层，也别在空 code 时输出 `"code":""`；
   OpenAI 两个入口的错误体必须逐字节不变（有断言守着）。
+
+### key 级执行面与定价闸门（owner 第 6 / 8 / 10 条）
+
+- **两条闸门都是 pre 相位、都在 key-auth 之后**：`modules/keygate`（过期 / 金额上限 / key 并发 /
+  用户并发）与 `modules/pricinggate`（未定价模型）。它们只判定，不写存储、不碰余额。
+- **pre 相位的槽位用 `Ctx.ReleasePreSlot`，不要抢 `ReleaseInFlight`**：后者由 `engine.runAttempt`
+  在 dispatch 里写，pre 阶段也写就会被覆盖 → 槽位泄漏。engine 在「产生响应」时把两者串起来
+  （一起活到响应含整个流写完），走不到 dispatch 的出口（pre 拒绝 / 无可用账号 / panic）由
+  engine 的 defer 兜底释放。两个 release 都必须幂等。
+- **用户级并发上限是独立判定**：不能因为「key 自己没配上限」就跳过 keygate——否则只给用户设了
+  上限会静默失效（真进程用例抓过这个 bug）。
+- **金额上限靠 `keyspend.replace` 心跳快照**：花钱的事实只有 TS 知道（结算与算价都在 TS），
+  Go 只读、只比大小。消费快照不可用 / 快照里没有这个 key 时**放行 + 计数**（`spendingUnknown`）：
+  上限是运营保护，不是钱（钱由额度闸门 + 后付费结算兜底）。
+- **定价闸门默认关（`-pricing-gate`）**，且是 **fail-closed**：快照没收到 / 超过 TTL → 503
+  `PRICING_SNAPSHOT_UNAVAILABLE`，模型没价 → 403 `MODEL_NOT_PRICED`。与额度闸门 / 内容审核
+  相反（那两个是可用性优先），因为这是「准入」不是「保护」。
+- **`*` 兜底价两处必须同口径**：Go 的 `internal/pricing.Priced()` 与 TS 的
+  `billing.hasPrice()` 都是「精确命中 或 有 `*`」；两处不一致会出现「billing 认为有价、
+  闸门认为没价」的分裂。Go 侧与 TS 侧各有用例。
+- **价格快照同样必须心跳式**：内容不变也推（`revision` 相同、`generation` 递增）。定价闸门
+  是 fail-closed，「没变就跳过」会在 TTL 一到把全部请求打成 503（额度闸门 2026-10-29 同一类错误）。
+  推送方是新插件 `gate-feed`（服务名 `gateFeed`，`packages/gate-feed`）：它只读 pricing /
+  api-key / usage，自己不存数据；`apiKey` / `usage` 运行期解析（被禁用时只少一份快照）。
+- **跨层金额一律十进制字符串**：`spendingLimitMicros` / `spentMicros` 都是十进制微元字符串，
+  Go 解析失败即**整份拒绝**该快照（不按 0 处理）；`limit` 大小比较在 Go 侧用 int64。
+- **部署顺序「先 Go 后 TS」**：新桥命令（`pricing.replace` / `keyspend.replace`）在旧 Go 上返回
+  `BRIDGE_METHOD_NOT_FOUND`（TS 节流告警、LLM 请求不受影响）；反过来「新 Go + 旧 TS」=
+  从没收到快照 → 定价闸门 fail-closed 全 503。**打开 `-pricing-gate` 必须等新 TS 上线**。
+- **真进程用例是真证据**：`packages/api-key/test/gateway-gates.test.ts` 覆盖 401 / 402 / 429（key 与
+  用户两级）/ 403 / 503（无快照与超 TTL）/ `*` 兜底，并断言「被拒的请求上游 0 次」与
+  「请求结束后槽位归零」。改这两个阶段先 `pnpm build:go`。
+- **`gate-feed` 的消费聚合必须带缓存**：`usage.summary({ apiKeyId })` 是 **O(历史行数) 的全表聚合**
+  （内部两次 `foldAggregates`）。真实规模实测（40 万行 usage_records / 20 个设了上限的 key）：
+  **906ms / 轮**，按 5s 心跳折算 = 单核 18%，而且随行数线性增长。正确做法是拿
+  `usage.status()` 的本地游标（`epoch:lastSeq`）+ key 集合签名做缓存：**心跳照推、
+  内容复用**（`revision` 相同、`generation` 递增），游标前进或 key 集合变化才重算。
+  `gate-feed.status()` 的 `spendRecomputes` / `spendReuses` 就是这个护栏的观察口。
+  彻底修法是在 `usage` 插件加一个按 key 分组的一次性聚合（那是 `用量` 线的事）。
+- **上线纪律：`-pricing-gate` 打开后，禁用 `pricing` 插件 = 全站 503**。`gate-feed`
+  `inject` 了 `pricing`（价格唯一写者），它 PENDING 就不推快照；而定价闸门是 fail-closed。
+  所以：开闸门前必须确认 `pricing.status.ready === true && stale === false`，并且
+  `pricing.status` / `keyspend.status` 都**显式给出 `stale` 与 `ageMs` / `ttlMs`**
+  —— 线上 503 了必须能一条桥响应看出原因，不能只留在日志里。
 
 ### 前端
 

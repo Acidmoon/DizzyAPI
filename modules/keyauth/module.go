@@ -122,11 +122,14 @@ func (s *Stage) Authorize(headers http.Header) (*contracts.APIKey, error) {
 			profile = s.profile
 		}
 		return &contracts.APIKey{
-			ID:      record.KeyID,
-			KeyID:   record.KeyID,
-			UserID:  record.UserID,
-			Name:    record.Name,
-			Profile: profile,
+			ID:                  record.KeyID,
+			KeyID:               record.KeyID,
+			UserID:              record.UserID,
+			Name:                record.Name,
+			Profile:             profile,
+			ExpiresAt:           record.ExpiresAt,
+			SpendingLimitMicros: record.SpendingLimitMicros,
+			ConcurrencyLimit:    record.ConcurrencyLimit,
 		}, nil
 	}
 

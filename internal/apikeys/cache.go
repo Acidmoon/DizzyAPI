@@ -28,6 +28,8 @@ const (
 	MaxKeyIDBytes   = 128
 	MaxProfileBytes = 64
 	MaxNameBytes    = 256
+	// MaxConcurrencyLimit 是单个 key 的并发上限上界；超过它视为配置错误（整份快照拒绝）。
+	MaxConcurrencyLimit = 100_000
 )
 
 // 稳定错误码；桥会原样转发。
@@ -47,12 +49,29 @@ type Snapshot struct {
 }
 
 // Key 是快照里的一条记录。KeyHash 是完整 key 的 sha256 hex（64 字符）。
+//
+// 三个上限是**纯增量**字段（旧快照缺省 = 不限）：它们只用于 key-gate 的 pre 相位判定，
+// 不参与校验哈希，也不进任何日志。金额一律十进制微元字符串（JSON number 会丢精度）。
 type Key struct {
 	KeyID   string `json:"keyId"`
 	UserID  int64  `json:"userId"`
 	KeyHash string `json:"keyHash"`
 	Profile string `json:"profile"`
 	Name    string `json:"name"`
+
+	// ExpiresAt 是 RFC3339 时间；空 = 永不过期。
+	ExpiresAt string `json:"expiresAt,omitempty"`
+	// SpendingLimitMicros 是十进制整数微元；空 = 不限。
+	SpendingLimitMicros string `json:"spendingLimitMicros,omitempty"`
+	// ConcurrencyLimit 是并发上限；0 / 缺省 = 不限。
+	ConcurrencyLimit int `json:"concurrencyLimit,omitempty"`
+}
+
+// compiledKey 是校验并解析过的 key：热路径（Verify）不做字符串解析。
+type compiledKey struct {
+	Key
+	expiresAt           *time.Time
+	spendingLimitMicros *int64
 }
 
 // Result 是 Replace 的返回，不含任何哈希。
@@ -94,8 +113,8 @@ type cacheSnapshot struct {
 	// ready 表示是否已经收到过至少一份合法的 keys.replace 快照。
 	// 它与 len(keys) 分开：合法的空快照也是 ready，必须 fail-closed。
 	ready  bool
-	keys   []Key
-	byHash map[string]Key
+	keys   []compiledKey
+	byHash map[string]compiledKey
 }
 
 // New 创建一个尚未收到快照的空缓存。
@@ -105,8 +124,8 @@ func New() *Cache {
 		revision:  emptyRevision,
 		updatedAt: time.Now().UTC(),
 		ready:     false,
-		keys:      []Key{},
-		byHash:    map[string]Key{},
+		keys:      []compiledKey{},
+		byHash:    map[string]compiledKey{},
 	})
 	return cache
 }
@@ -188,10 +207,13 @@ func (c *Cache) Verify(presented string) (contracts.APIKeyRecord, bool) {
 	}
 
 	return contracts.APIKeyRecord{
-		KeyID:   key.KeyID,
-		UserID:  strconv.FormatInt(key.UserID, 10),
-		Name:    key.Name,
-		Profile: key.Profile,
+		KeyID:               key.KeyID,
+		UserID:              strconv.FormatInt(key.UserID, 10),
+		Name:                key.Name,
+		Profile:             key.Profile,
+		ExpiresAt:           key.expiresAt,
+		SpendingLimitMicros: key.spendingLimitMicros,
+		ConcurrencyLimit:    key.ConcurrencyLimit,
 	}, true
 }
 
@@ -214,8 +236,8 @@ func compile(snapshot Snapshot) (*cacheSnapshot, error) {
 		// 任何通过校验的快照（包括空快照）都算「已收到」，
 		// 从这一刻起 key-auth 只认快照，拒绝回退。
 		ready:  true,
-		keys:   make([]Key, 0, len(snapshot.Keys)),
-		byHash: make(map[string]Key, len(snapshot.Keys)),
+		keys:   make([]compiledKey, 0, len(snapshot.Keys)),
+		byHash: make(map[string]compiledKey, len(snapshot.Keys)),
 	}
 	ids := make(map[string]struct{}, len(snapshot.Keys))
 	for _, key := range snapshot.Keys {
@@ -237,44 +259,71 @@ func compile(snapshot Snapshot) (*cacheSnapshot, error) {
 	return compiled, nil
 }
 
-func validateKey(key Key) (Key, error) {
+func validateKey(key Key) (compiledKey, error) {
 	if strings.TrimSpace(key.KeyID) == "" {
-		return Key{}, newError(CodeInvalidKey, "key 必须有非空 keyId")
+		return compiledKey{}, newError(CodeInvalidKey, "key 必须有非空 keyId")
 	}
 	if len(key.KeyID) > MaxKeyIDBytes {
-		return Key{}, newError(CodeInvalidKey, "keyId 过长（上限 %d 字节）", MaxKeyIDBytes)
+		return compiledKey{}, newError(CodeInvalidKey, "keyId 过长（上限 %d 字节）", MaxKeyIDBytes)
 	}
 	if key.UserID <= 0 {
-		return Key{}, newError(CodeInvalidKey, "key %s 的 userId 必须是正整数", key.KeyID)
+		return compiledKey{}, newError(CodeInvalidKey, "key %s 的 userId 必须是正整数", key.KeyID)
 	}
 	if strings.TrimSpace(key.Profile) == "" {
-		return Key{}, newError(CodeInvalidKey, "key %s 缺少 profile", key.KeyID)
+		return compiledKey{}, newError(CodeInvalidKey, "key %s 缺少 profile", key.KeyID)
 	}
 	if len(key.Profile) > MaxProfileBytes {
-		return Key{}, newError(CodeInvalidKey, "key %s 的 profile 过长", key.KeyID)
+		return compiledKey{}, newError(CodeInvalidKey, "key %s 的 profile 过长", key.KeyID)
 	}
 	if len(key.Name) > MaxNameBytes {
-		return Key{}, newError(CodeInvalidKey, "key %s 的 name 过长", key.KeyID)
+		return compiledKey{}, newError(CodeInvalidKey, "key %s 的 name 过长", key.KeyID)
 	}
 
 	hash := strings.TrimSpace(key.KeyHash)
 	if len(hash) != hex.EncodedLen(sha256.Size) {
-		return Key{}, newError(CodeInvalidKey, "key %s 的 keyHash 必须是 64 位 hex", key.KeyID)
+		return compiledKey{}, newError(CodeInvalidKey, "key %s 的 keyHash 必须是 64 位 hex", key.KeyID)
 	}
 	if _, err := hex.DecodeString(hash); err != nil {
-		return Key{}, newError(CodeInvalidKey, "key %s 的 keyHash 不是合法 hex", key.KeyID)
+		return compiledKey{}, newError(CodeInvalidKey, "key %s 的 keyHash 不是合法 hex", key.KeyID)
 	}
 	key.KeyHash = strings.ToLower(hash)
-	return key, nil
+
+	compiled := compiledKey{Key: key}
+	if raw := strings.TrimSpace(key.ExpiresAt); raw != "" {
+		expiresAt, err := time.Parse(time.RFC3339, raw)
+		if err != nil {
+			return compiledKey{}, newError(CodeInvalidKey, "key %s 的 expiresAt 不是 RFC3339 时间：%q", key.KeyID, raw)
+		}
+		utc := expiresAt.UTC()
+		compiled.expiresAt = &utc
+	}
+	if raw := strings.TrimSpace(key.SpendingLimitMicros); raw != "" {
+		micros, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil || micros <= 0 {
+			// 金额绝不经过浮点；解析失败即整份快照被拒（fail-closed，不是「按不限处理」）。
+			return compiledKey{}, newError(CodeInvalidKey,
+				"key %s 的 spendingLimitMicros 必须是正十进制整数微元：%q", key.KeyID, raw)
+		}
+		compiled.spendingLimitMicros = &micros
+	}
+	if key.ConcurrencyLimit < 0 || key.ConcurrencyLimit > MaxConcurrencyLimit {
+		return compiledKey{}, newError(CodeInvalidKey,
+			"key %s 的 concurrencyLimit 必须在 0..%d 之间（0 = 不限）", key.KeyID, MaxConcurrencyLimit)
+	}
+	return compiled, nil
 }
 
 // revisionOf 对快照内容做哈希。只输出 revision，不输出任何 key 哈希。
-func revisionOf(generation int64, keys []Key) string {
+//
+// 三个上限也参与哈希：只改上限（不改哈希）时才推的新快照必须得到不同的 revision，
+// 否则 Go 侧会把「上限变了」当成同内容重推。
+func revisionOf(generation int64, keys []compiledKey) string {
 	hash := sha256.New()
 	fmt.Fprintf(hash, "v%d\x00%d\x00", SnapshotVersion, generation)
 	for _, key := range keys {
-		fmt.Fprintf(hash, "%s\x00%d\x00%s\x00%s\x00%s\x00",
-			key.KeyID, key.UserID, key.KeyHash, key.Profile, key.Name)
+		fmt.Fprintf(hash, "%s\x00%d\x00%s\x00%s\x00%s\x00%s\x00%s\x00%d\x00",
+			key.KeyID, key.UserID, key.KeyHash, key.Profile, key.Name,
+			key.ExpiresAt, key.SpendingLimitMicros, key.ConcurrencyLimit)
 	}
 	return hex.EncodeToString(hash.Sum(nil))[:16]
 }

@@ -31,7 +31,11 @@ const DEFAULT_WARN_THROTTLE_MS = 30_000
 /** 用户插件的只读视图：本插件不 import 它的实现。 */
 interface UserSeam {
   balanceSnapshot(): Promise<{
-    readonly entries: readonly { readonly userId: string; readonly balanceMicros: string }[]
+    readonly entries: readonly {
+      readonly userId: string
+      readonly balanceMicros: string
+      readonly concurrencyLimit?: number | null
+    }[]
   }>
 }
 
@@ -44,6 +48,13 @@ interface BridgeSeam {
 export interface QuotaSnapshotEntry {
   readonly userId: string
   readonly balanceMicros: string
+  /**
+   * 用户级并发上限（正整数）；`null` = 不限。
+   *
+   * 它跟余额一起走同一份心跳快照：Go 侧的用户级并发预留与余额闸门读同一个缓存，
+   * 分两条快照会造成「余额新、并发旧」的分裂窗口。
+   */
+  readonly concurrencyLimit: number | null
 }
 
 export interface QuotaSnapshotPayload {
@@ -305,7 +316,11 @@ export class QuotaService extends Service {
    * 坏数据绝不静默跳过——那会让 Go 用旧余额放行；宁可整份不推、记明确错误。
    */
   private normalizeEntries(
-    entries: readonly { readonly userId: string; readonly balanceMicros: string }[],
+    entries: readonly {
+      readonly userId: string
+      readonly balanceMicros: string
+      readonly concurrencyLimit?: number | null
+    }[],
   ): QuotaSnapshotEntry[] {
     const normalized: QuotaSnapshotEntry[] = []
     const seen = new Set<string>()
@@ -319,11 +334,12 @@ export class QuotaService extends Service {
           `userId=${entry.userId} 的余额不是整数最小单位：${entry.balanceMicros}`,
         )
       }
+      const concurrencyLimit = normalizeConcurrencyLimit(entry.userId, entry.concurrencyLimit)
       if (seen.has(entry.userId)) {
         throw new QuotaError('QUOTA_SNAPSHOT_INVALID', `userId 重复：${entry.userId}`)
       }
       seen.add(entry.userId)
-      normalized.push({ userId: entry.userId, balanceMicros: entry.balanceMicros })
+      normalized.push({ userId: entry.userId, balanceMicros: entry.balanceMicros, concurrencyLimit })
     }
     // 稳定排序：同样的余额集合必须得到同一个 revision。
     normalized.sort((left, right) => (BigInt(left.userId) < BigInt(right.userId) ? -1 : 1))
@@ -387,6 +403,22 @@ export class QuotaService extends Service {
 
 function hashEntries(entries: readonly QuotaSnapshotEntry[]): string {
   return createHash('sha256').update(JSON.stringify(entries)).digest('hex').slice(0, 32)
+}
+
+/**
+ * 用户级并发上限的校验：null / 缺省 = 不限；否则必须是正整数。
+ *
+ * 坏值绝不静默跳过（那会让 Go 用旧上限放行）：整份不推，记明确原因。
+ */
+function normalizeConcurrencyLimit(userId: string, value: unknown): number | null {
+  if (value === undefined || value === null) return null
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value <= 0) {
+    throw new QuotaError(
+      'QUOTA_SNAPSHOT_INVALID',
+      `userId=${userId} 的并发上限必须是正整数或 null：${String(value)}`,
+    )
+  }
+  return value
 }
 
 /**

@@ -43,7 +43,11 @@ CREATE TABLE IF NOT EXISTS api_keys (
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   last_used_at TEXT,
-  rotated_at TEXT
+  rotated_at TEXT,
+  /** 执行面上限：过期时间（ISO）/ 金额上限（整数微元）/ 并发上限。迁移只加列。 */
+  expires_at TEXT,
+  spending_limit INTEGER,
+  concurrency_limit INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_api_keys_user_id ON api_keys(user_id);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_api_keys_user_name ON api_keys(user_id, name);
@@ -68,6 +72,9 @@ const REQUIRED_COLUMNS = [
   'updated_at',
   'last_used_at',
   'rotated_at',
+  'expires_at',
+  'spending_limit',
+  'concurrency_limit',
 ] as const
 
 /** SQLite 原始行。列名与表定义一致。 */
@@ -85,6 +92,10 @@ export interface ApiKeyRow {
   readonly updated_at: string
   readonly last_used_at: string | null
   readonly rotated_at: string | null
+  readonly expires_at: string | null
+  /** 整数微元；读回来是 number（写入前已限制在安全整数内）或 bigint（旧库异常值）。 */
+  readonly spending_limit: number | bigint | null
+  readonly concurrency_limit: number | bigint | null
 }
 
 /** 打开数据库并做一次严格的完整性与表结构检查。 */
@@ -103,6 +114,7 @@ export function openApiKeyDatabase(path: string | undefined): DatabaseSync {
     db.exec('PRAGMA busy_timeout = 5000')
     db.exec(SCHEMA)
     ensureSecretColumn(db)
+    ensureGateColumns(db)
     verifySchema(db)
     verifyIntegrity(db)
     readGeneration(db)
@@ -229,7 +241,38 @@ export function toView(row: ApiKeyRow): ApiKeyView {
     updatedAt: row.updated_at,
     lastUsedAt: row.last_used_at,
     rotatedAt: row.rotated_at,
+    expiresAt: row.expires_at,
+    spendingLimitMicros: nullableMicrosString(row.spending_limit),
+    concurrencyLimit: nullablePositiveInt(row.concurrency_limit),
   }
+}
+
+/**
+ * 把 SQLite 的 INTEGER 读成「十进制微元字符串」。
+ *
+ * 金额跨层一律十进制字符串（JSON number 会丢 >2^53 的精度）。写入侧已经把值限制在
+ * 安全整数内（见 api-key 服务层的 normalizeSpendingLimit），所以这里不会真的丢精度；
+ * 旧库异常值（bigint 超范围）也让 BigInt 直接转字符串，绝不经过浮点。
+ */
+function nullableMicrosString(value: number | bigint | null | undefined): string | null {
+  if (value === null || value === undefined) return null
+  if (typeof value === 'bigint') return value.toString()
+  if (typeof value === 'number' && Number.isSafeInteger(value)) return String(value)
+  throw corrupt(`spending_limit 不是安全整数：${String(value)}`)
+}
+
+function nullablePositiveInt(value: number | bigint | null | undefined): number | null {
+  if (value === null || value === undefined) return null
+  if (typeof value === 'bigint') {
+    if (value <= 0n || value > BigInt(Number.MAX_SAFE_INTEGER)) {
+      throw corrupt(`concurrency_limit 超出安全范围：${value.toString()}`)
+    }
+    return Number(value)
+  }
+  if (!Number.isSafeInteger(value) || value <= 0) {
+    throw corrupt(`concurrency_limit 必须是正整数：${String(value)}`)
+  }
+  return value
 }
 
 export function asRow(value: Record<string, unknown> | undefined): ApiKeyRow | undefined {
@@ -238,15 +281,37 @@ export function asRow(value: Record<string, unknown> | undefined): ApiKeyRow | u
 
 /** 旧库升级：只加列，不改历史行。历史 key 的 secret 保持 NULL。 */
 function ensureSecretColumn(db: DatabaseSync): void {
+  ensureColumns(db, ['secret'])
+}
+
+/**
+ * 旧库升级：三个执行面上限列。**只加列、不改历史行**——历史 key 一律是
+ * 「不过期 / 不限金额 / 不限并发」，升级不能把旧 key 变成不可用（幂等：
+ * 列已存在就跳过，重复启动不会报错）。
+ */
+function ensureGateColumns(db: DatabaseSync): void {
+  ensureColumns(db, ['expires_at', 'spending_limit', 'concurrency_limit'])
+}
+
+function ensureColumns(db: DatabaseSync, wanted: readonly string[]): void {
   const columns = db.prepare('PRAGMA table_info(api_keys)').all()
   const names = new Set(
     columns
       .map((column) => column.name)
       .filter((name): name is string => typeof name === 'string'),
   )
-  if (!names.has('secret')) {
-    db.exec('ALTER TABLE api_keys ADD COLUMN secret TEXT')
+  for (const column of wanted) {
+    if (names.has(column)) continue
+    db.exec(`ALTER TABLE api_keys ADD COLUMN ${column} ${COLUMN_TYPES[column] ?? 'TEXT'}`)
   }
+}
+
+/** 新增列的声明类型。ALTER TABLE 的列定义必须与建表语句一致。 */
+const COLUMN_TYPES: Readonly<Record<string, string>> = {
+  secret: 'TEXT',
+  expires_at: 'TEXT',
+  spending_limit: 'INTEGER',
+  concurrency_limit: 'INTEGER',
 }
 
 function verifySchema(db: DatabaseSync): void {

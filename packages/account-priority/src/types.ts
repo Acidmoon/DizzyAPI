@@ -138,6 +138,13 @@ export interface RemoteStatus {
 export interface GatewayQuotaEntry {
   readonly userId: string
   readonly balanceMicros: string
+  /**
+   * 用户级并发上限（正整数）；`null` = 不限。
+   *
+   * 它与余额走同一份心跳快照：Go 侧的用户级并发预留与余额闸门读同一个缓存，
+   * 分两条快照会出现「余额新、并发旧」的分裂窗口。缺省 = 不限（旧 TS 兼容）。
+   */
+  readonly concurrencyLimit?: number | null
 }
 
 /** `user` 插件推给 Go 的只读余额快照。 */
@@ -441,4 +448,94 @@ export interface GatewayContentAuditStatus {
     readonly ruleHitTotal?: number
     readonly ruleHits?: Readonly<Record<string, number>>
   }
+}
+
+/**
+ * 价格快照（TS → Go，桥命令 `pricing.replace`，**心跳式**）。
+ *
+ * 供给 Go 的定价闸门判定「这个模型有没有价」；Go 不算钱（算钱只在 TS 的 billing）。
+ * 单价是「元 / 百万 token」的十进制字符串：JSON number 会丢精度，Go 解析失败即整份拒绝。
+ * `prices` 里出现模型名 `*` 表示兜底价——它与 billing 的 `hasPrice()` 同口径。
+ */
+export interface GatewayPriceEntry {
+  readonly model: string
+  readonly inputPerMillion: string
+  readonly outputPerMillion: string
+  readonly cacheReadPerMillion: string
+  readonly cacheWritePerMillion: string
+}
+
+export interface GatewayPricingSnapshot {
+  readonly version: 1
+  /** 单调递增的推送序号：Go 用它拒绝回退。 */
+  readonly generation: number
+  /** prices 的内容哈希，用于日志与幂等重推识别。 */
+  readonly revision: string
+  readonly prices: readonly GatewayPriceEntry[]
+}
+
+/** `pricing.replace` 的响应（不含价格明细）。 */
+export interface GatewayPricingResult {
+  readonly ready: boolean
+  readonly revision: string
+  readonly generation: number
+  readonly prices: number
+  readonly wildcard: boolean
+  readonly updatedAt: string
+}
+
+/** `pricing.status` 的响应：缓存健康度 + 定价闸门计数。 */
+export interface GatewayPricingStatus {
+  readonly ready: boolean
+  readonly revision?: string
+  readonly generation?: number
+  readonly size: number
+  readonly wildcard?: boolean
+  readonly updatedAt?: string
+  readonly ageMs: number
+  readonly ttlMs: number
+  readonly gate?: {
+    readonly blocked?: number
+    readonly strictBlocked?: number
+    readonly allowed?: number
+    readonly staleStreak?: number
+  }
+}
+
+/**
+ * 每个 API key 的累计消费快照（TS → Go，桥命令 `keyspend.replace`，心跳式）。
+ *
+ * 花钱的事实只有 TS 知道（结算与算价都在 TS），Go 的 key 级金额上限只能读它。
+ * 金额一律十进制微元字符串；`spentMicros` 非负。
+ */
+export interface GatewayKeySpendEntry {
+  readonly keyId: string
+  readonly spentMicros: string
+}
+
+export interface GatewayKeySpendSnapshot {
+  readonly version: 1
+  readonly generation: number
+  readonly revision: string
+  readonly entries: readonly GatewayKeySpendEntry[]
+}
+
+/** `keyspend.replace` 的响应（不含金额明细）。 */
+export interface GatewayKeySpendResult {
+  readonly ready: boolean
+  readonly revision: string
+  readonly generation: number
+  readonly entries: number
+  readonly updatedAt: string
+}
+
+/** `keyspend.status` 的响应：只给健康度。 */
+export interface GatewayKeySpendStatus {
+  readonly ready: boolean
+  readonly revision?: string
+  readonly generation?: number
+  readonly size: number
+  readonly updatedAt?: string
+  readonly ageMs: number
+  readonly ttlMs: number
 }

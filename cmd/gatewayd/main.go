@@ -9,20 +9,17 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
-	"io"
 	"log/slog"
 	"net"
 	"net/http"
 	"os"
 	"os/signal"
 	"runtime"
-	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -60,9 +57,12 @@ type handler struct {
 	// contentAudit / contentAuditGate 是内容审核的规则缓存与闸门（只读观察，桥命令用）。
 	contentAudit     *contentauditcache.Cache
 	contentAuditGate *contentaudit.Stage
-	logger           *slog.Logger
-	shutdown         chan struct{}
-	stopOnce         sync.Once
+	// gates 是闸门侧的全部装配（key-gate / 定价闸门 / 两份快照缓存）。
+	// 收在一个结构体里：组合根不再平铺七八个字段，闸门相关的代码也只碰这一个字段。
+	gates    *gateWiring
+	logger   *slog.Logger
+	shutdown chan struct{}
+	stopOnce sync.Once
 }
 
 // accountsStatus 是桥命令 accounts.status 的响应：accounts.State 原样保留，
@@ -138,7 +138,13 @@ func (h *handler) quotaStatus() quota.State {
 	return state
 }
 
+// keysStatus / pricingStatus / 闸门桥命令都在 gate_bridge.go（组合根不许再堆）。
+
 func (h *handler) Handle(_ context.Context, method string, params json.RawMessage) (any, error) {
+	// 闸门侧的命令（价格快照 / key 消费快照）先走专用文件，主 switch 只管其余方法。
+	if result, handled, err := h.handleGateBridge(method, params); handled {
+		return result, err
+	}
 	switch method {
 	case bridge.MethodStatus:
 		return h.service.Status(), nil
@@ -272,7 +278,7 @@ func (h *handler) Handle(_ context.Context, method string, params json.RawMessag
 		return result, nil
 
 	case bridge.MethodKeysStatus:
-		return h.keys.Status(), nil
+		return h.keysStatus(), nil
 
 	case contracts.BridgeMethodUsageSince:
 		var query struct {
@@ -315,54 +321,7 @@ func (h *handler) Handle(_ context.Context, method string, params json.RawMessag
 	}
 }
 
-func mapModuleError(err error) error {
-	var typed *accountpriority.Error
-	if errors.As(err, &typed) {
-		return bridge.Errorf(string(typed.Code), "%s", typed.Message)
-	}
-	return bridge.Errorf("ACCOUNT_PRIORITY_INTERNAL", "%v", err)
-}
-
-// newUsageRing 是容量配置的唯一装配点：非法值直接返回错误，让进程起不来，
-// 而不是静默回落到默认容量（那样「配置写错」会看起来像「配置生效」）。
-func newUsageRing(capacity int) (*usagelog.Ring, error) {
-	ring, err := usagelog.NewRing(capacity)
-	if err != nil {
-		return nil, fmt.Errorf("用量环形缓冲容量配置（-usage-ring-capacity）非法：%w", err)
-	}
-	return ring, nil
-}
-
-// maxAccountCooldownMs 是账号冷却时间的上限（10 分钟）：再长就等于把账号判死刑，
-// 那属于管理面停用，不是运行时冷却。
-const maxAccountCooldownMs = 600_000
-
-// parseAccountCooldown 校验账号冷却配置。0 = 关闭冷却；负数或超过上限明确失败。
-func parseAccountCooldown(ms int) (time.Duration, error) {
-	if ms == 0 {
-		return 0, nil
-	}
-	if ms < 0 || ms > maxAccountCooldownMs {
-		return 0, fmt.Errorf("账号冷却时间配置（-account-cooldown-ms）非法：必须在 0..%d ms 之间（0 = 关闭冷却），得到 %d",
-			maxAccountCooldownMs, ms)
-	}
-	return time.Duration(ms) * time.Millisecond, nil
-}
-
-func decodeParams(raw json.RawMessage, target any) error {
-	if len(bytes.TrimSpace(raw)) == 0 {
-		raw = []byte("{}")
-	}
-	decoder := json.NewDecoder(bytes.NewReader(raw))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(target); err != nil {
-		return err
-	}
-	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
-		return errors.New("参数末尾有多余内容")
-	}
-	return nil
-}
+// 配置校验、桥参数解码、日志与回环检查在 help.go。
 
 func main() {
 	if err := run(); err != nil {
@@ -408,6 +367,7 @@ func run() error {
 	contentAuditSnapshotTTLMs := flag.Int("content-audit-snapshot-ttl-ms", 15000,
 		fmt.Sprintf("内容审核规则快照有效期（毫秒），应 ≥ 3 × TS 的 pushIntervalMs；超出 %d..%d 直接启动失败",
 			minContentAuditSnapshotTTLMs, maxContentAuditSnapshotTTLMs))
+	gateFlags := registerGateFlags()
 	flag.Parse()
 
 	logger := newLogger(*logFormat)
@@ -471,6 +431,12 @@ func run() error {
 		Profile:  *profile,
 		Verifier: keyCache,
 	})
+	// 闸门侧装配：价格快照、key 消费快照、key-gate 阶段与定价闸门阶段。
+	// 位置必须紧跟 key-auth（key-gate 要读 key-auth 写进 ctx.Key 的上限）。
+	gates, err := newGateWiring(registry, quotaCache, gateFlags, logger)
+	if err != nil {
+		return err
+	}
 	// 内容审核（pre）：按用户输入文本查规则快照，命中 block 规则直接 403。
 	// 位置在 key-auth 之后、额度闸门之前：内容不合规就不该占用余额判断与选号。
 	contentAuditGate, err := contentaudit.Register(registry, contentaudit.Config{
@@ -594,8 +560,10 @@ func run() error {
 
 		contentAudit:     contentAuditCache,
 		contentAuditGate: contentAuditGate,
-		logger:           logger,
-		shutdown:         stop,
+
+		gates:    gates,
+		logger:   logger,
+		shutdown: stop,
 	}
 
 	status := service.Status()
@@ -637,6 +605,7 @@ func run() error {
 		"minBalanceMicros", *quotaMinBalance,
 		"requireSnapshot", *quotaRequireSnapshot,
 		"snapshotTtlMs", quotaTTL.Milliseconds())
+	gates.logPolicy(logger)
 
 	// cordis 用这一行拿到实际地址（TCP :0 时端口是系统分配的）。
 	ready, err := json.Marshal(map[string]any{
@@ -678,36 +647,4 @@ func run() error {
 	}
 	logger.Info("gatewayd 已退出")
 	return nil
-}
-
-// parseAPIKeys 从环境变量读取静态 key。逗号、分号、空白都算分隔符。
-// 它只进内存；日志、状态与 ready 行都不会包含这些值。
-func parseAPIKeys(raw string) []string {
-	return strings.FieldsFunc(raw, func(r rune) bool {
-		return r == ',' || r == ';' || r == '\n' || r == '\r' || r == '\t' || r == ' '
-	})
-}
-
-func requireLoopback(address string) error {
-	host, port, err := net.SplitHostPort(address)
-	if err != nil {
-		return fmt.Errorf("地址 %q 不合法：%w", address, err)
-	}
-	switch host {
-	case "127.0.0.1", "::1", "localhost":
-	default:
-		return fmt.Errorf("只允许回环地址，收到 %q", host)
-	}
-	if port == "" {
-		return errors.New("必须显式给出端口")
-	}
-	return nil
-}
-
-func newLogger(format string) *slog.Logger {
-	options := &slog.HandlerOptions{Level: slog.LevelInfo}
-	if format == "json" {
-		return slog.New(slog.NewJSONHandler(os.Stderr, options))
-	}
-	return slog.New(slog.NewTextHandler(os.Stderr, options))
 }

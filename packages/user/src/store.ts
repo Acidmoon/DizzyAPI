@@ -147,6 +147,18 @@ function decodeUser(value: unknown, index: number): User {
     throw corrupt(`${where}.avatar 必须是字符串或 null`)
   }
 
+  // 旧 JSON 快照没有并发上限：缺省 = 不限（升级不能把旧用户变成不可用）。
+  // 写侧放宽、读侧收紧会让重启后整份文件读不出来，所以这里的校验要与写侧同口径：
+  // 只接受 null 或正整数。
+  const concurrencyLimit =
+    raw.concurrency_limit === undefined || raw.concurrency_limit === null
+      ? null
+      : isPositiveInteger(raw.concurrency_limit)
+        ? raw.concurrency_limit
+        : (() => {
+            throw corrupt(`${where}.concurrency_limit 必须是正整数或 null`)
+          })()
+
   return {
     id: raw.id,
     name: raw.name,
@@ -155,6 +167,7 @@ function decodeUser(value: unknown, index: number): User {
     balance: decodeBalance(raw.balance, `${where}.balance`),
     balanceEnabled: raw.balance_enabled ?? false,
     avatar: raw.avatar ?? null,
+    concurrencyLimit,
     createdAt: raw.createdAt,
     updatedAt: raw.updatedAt,
   }
