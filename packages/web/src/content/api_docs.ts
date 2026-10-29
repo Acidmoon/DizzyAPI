@@ -90,6 +90,39 @@ export const API_ENTRIES: readonly ApiEntry[] = [
     ],
   },
   {
+    method: 'POST',
+    path: '/v1beta/models/{model}:generateContent',
+    protocol: 'gemini',
+    protocolLabel: 'Gemini generateContent',
+    summary:
+      'Google 官方的 Gemini 入口：**模型名在路径里**（`{model}` 段），请求体里没有 `model` 字段。',
+    request: [
+      '模型名在**路径**里：`/v1beta/models/<对外模型名>:generateContent`（模型名里不能带斜杠，带 `/` 的路径一律 404）',
+      '`contents` 是 `{role, parts}` 数组；`systemInstruction` 单独传系统提示',
+      '`generationConfig` 放采样参数（`temperature` / `maxOutputTokens` / `topP` 等）',
+      '`tools` / `toolConfig` 按 Gemini 形状解析，跨协议时工具 id 会被可逆改写',
+    ],
+    response: [
+      'Gemini 形状：`{candidates: [{content, finishReason}], usageMetadata, modelVersion}`',
+      '`usageMetadata` 里 `promptTokenCount` **含**缓存命中，网关按上游协议归一成四桶记账',
+    ],
+  },
+  {
+    method: 'POST',
+    path: '/v1beta/models/{model}:streamGenerateContent',
+    protocol: 'gemini',
+    protocolLabel: 'Gemini streamGenerateContent',
+    summary: 'Gemini 的流式方法：同一个模型名在路径里，**必须带 `?alt=sse`**。',
+    request: [
+      '路径同上，方法名换成 `:streamGenerateContent`，并带 `?alt=sse`（不带的话上游返回 JSON 数组而不是 SSE）',
+      '请求体与 `:generateContent` 完全一致',
+    ],
+    response: [
+      '每帧是 `data: {...}`，负载是**完整的** `GenerateContentResponse`（累计形态，不是增量文本）',
+      '**不发 `data: [DONE]`**：以最后一帧里 candidate 的 `finishReason` 为准',
+    ],
+  },
+  {
     method: 'GET',
     path: '/healthz',
     protocol: '',
@@ -108,6 +141,46 @@ export interface ApiErrorDoc {
   /** 出处（源码位置），给人看，也用来提醒「文档不是凭记忆写的」。 */
   readonly source: string
 }
+
+/**
+ * 错误体形状：**按客户端协议不同**。
+ *
+ * 出处：`contracts/protocol.go` 的 `RenderError`。三种形状都是「先不坏官方形状，
+ * 网关稳定码只做纯增量」：Anthropic 的 `code`、Gemini 的 `reason` 都是超集字段，
+ * 空码时整键不输出。
+ */
+export interface ApiErrorShape {
+  /** 适用协议（`''` = 默认 / OpenAI 形状）。 */
+  readonly protocols: readonly string[]
+  readonly shape: string
+  /** 错误体里出现的键（用来和源码核对，防止文档凭空写字段）。 */
+  readonly keys: readonly string[]
+  readonly note: string
+}
+
+export const ERROR_SHAPES: readonly ApiErrorShape[] = [
+  {
+    protocols: ['', 'openai-chat', 'openai-responses'],
+    shape: '`{"error": {"message", "type", "code"}}`',
+    keys: ['error', 'message', 'type', 'code'],
+    note: '`code` 是网关稳定码（如 `ALL_ACCOUNTS_SATURATED`）；`type` 按 HTTP 状态映射（`invalid_request_error` / `authentication_error` / `rate_limit_error` / `server_error`）。',
+  },
+  {
+    protocols: ['anthropic'],
+    shape: '`{"type": "error", "error": {"type", "message", "code"}}`',
+    keys: ['type', 'error', 'message', 'code'],
+    note: '官方 schema 只有 `type` / `message`；`code` 是**纯增量**（空码不输出该键），老客户端看到的形状不变。',
+  },
+  {
+    protocols: ['gemini'],
+    shape: '`{"error": {"code": 503, "message": "...", "status": "UNAVAILABLE", "reason": "..."}}`',
+    keys: ['error', 'code', 'message', 'status', 'reason'],
+    note:
+      '官方 schema：`code` 是**整数 HTTP 状态**（不是字符串码）、`status` 是 Google 枚举名' +
+      '（`INVALID_ARGUMENT` / `UNAUTHENTICATED` / `RESOURCE_EXHAUSTED` / `UNAVAILABLE` / `INTERNAL` 等）；' +
+      '网关稳定码放在**纯增量**的 `reason` 里（空码不输出该键）。',
+  },
+]
 
 /**
  * LLM 入口（Go gatewayd）的稳定错误码。
@@ -286,6 +359,12 @@ export const STREAM_NOTES: readonly { readonly protocol: string; readonly note: 
     protocol: 'anthropic',
     note: '每帧是 `event: <类型>` + `data: {...}` 两行；终止符是 `message_stop`，同样**不发 `[DONE]`**。',
   },
+  {
+    protocol: 'gemini',
+    note:
+      '流式端点必须带 `?alt=sse`；每帧只有 `data: {...}`（完整的 `GenerateContentResponse`，累计形态），' +
+      '**不发 `data: [DONE]`**，以最后一帧 candidate 的 `finishReason` 作为结束信号。',
+  },
 ]
 
 /** 最小可用示例（curl）。 */
@@ -321,6 +400,23 @@ export const CURL_EXAMPLES: readonly { readonly title: string; readonly command:
   }'`,
   },
   {
+    title: 'Gemini generateContent',
+    command: `curl https://<站点域名>/v1beta/models/gemini-2.0-flash:generateContent \\
+  -H "Authorization: Bearer $DIZZY_API_KEY" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "contents": [{"role": "user", "parts": [{"text": "你好"}]}],
+    "generationConfig": {"temperature": 0.7, "maxOutputTokens": 256}
+  }'`,
+  },
+  {
+    title: 'Gemini 流式（必须带 alt=sse）',
+    command: `curl -N "https://<站点域名>/v1beta/models/gemini-2.0-flash:streamGenerateContent?alt=sse" \\
+  -H "Authorization: Bearer $DIZZY_API_KEY" \\
+  -H "Content-Type: application/json" \\
+  -d '{"contents": [{"role": "user", "parts": [{"text": "你好"}]}]}'`,
+  },
+  {
     title: '列出模型',
     command: `curl https://<站点域名>/v1/models \\
   -H "Authorization: Bearer $DIZZY_API_KEY"`,
@@ -333,5 +429,7 @@ export const LOSSY_NOTES: readonly string[] = [
   '`cache_control` 在跨协议时会被丢弃。',
   'OpenAI 专有采样参数（如 `logit_bias`）转 Anthropic 时丢弃。',
   'Anthropic 的 `max_tokens` 必填：客户端没给时网关补默认值。',
+  'Gemini 的 `generationConfig.candidateCount > 1` 明确拒绝（网关只承载单候选）。',
+  'Gemini 的 `thoughtsTokenCount` 记入思考 token，**不重复**计入输出 token。',
   '模型映射只改**请求**里的模型名：响应里的 `model` 保持上游原名。',
 ]

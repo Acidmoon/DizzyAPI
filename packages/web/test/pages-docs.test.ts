@@ -17,6 +17,7 @@ import { apiDocsPage } from '../src/pages/api_docs.ts'
 import {
   API_ENTRIES,
   CURL_EXAMPLES,
+  ERROR_SHAPES,
   GATEWAY_ERRORS,
   LOSSY_NOTES,
   PRODUCT_ERRORS,
@@ -126,15 +127,37 @@ test('错误码：文档里的每个 code 都在源码里真实存在', () => {
 
 test('入口路径：文档覆盖 Go 侧注册的全部 LLM 入口', () => {
   const serverSource = readSource('internal/httpapi/server.go')
-  const registered = [...serverSource.matchAll(/mux\.HandleFunc\("(\/v1\/[^"]+|\/healthz)"/g)].map(
-    (match) => match[1],
-  )
-  assert.ok(registered.length >= 4, `Go 侧入口没解析出来：${registered.join(', ')}`)
+  const registered = [...serverSource.matchAll(/mux\.HandleFunc\("([^"]+)"/g)].map((match) => match[1])
+  assert.ok(registered.length >= 5, `Go 侧入口没解析出来：${registered.join(', ')}`)
 
   const documented = new Set(API_ENTRIES.map((entry) => entry.path))
+
+  // 精确路径：文档必须原样列出。
+  let exact = 0
   for (const path of registered) {
+    if (path.endsWith('/')) continue
+    exact += 1
     assert.ok(documented.has(path), `文档漏了入口 ${path}`)
   }
+  assert.ok(exact >= 5, `精确路径解析数量不对：${registered.join(', ')}`)
+
+  // 前缀路由：`/v1beta/models/` 是**前缀**注册，具体方法名在路径后缀里
+  // （Gemini 官方的 `:generateContent` / `:streamGenerateContent`）。
+  // 这里从 gemini.go 里读出两个方法名，要求文档把它们**都**列出来。
+  const prefixes = registered.filter((path) => path.endsWith('/'))
+  assert.deepEqual(prefixes, ['/v1beta/models/'], '前缀路由清单变了，文档要同步')
+  const geminiSource = readSource('internal/httpapi/gemini.go')
+  const methods = [
+    ...geminiSource.matchAll(/geminiMethod(?:Stream)?GenerateContent\s*=\s*"([A-Za-z]+)"/g),
+  ].map((match) => match[1])
+  assert.deepEqual(methods.sort(), ['generateContent', 'streamGenerateContent'])
+  for (const prefix of prefixes) {
+    for (const method of methods) {
+      const concrete = `${prefix}{model}:${method}`
+      assert.ok(documented.has(concrete), `文档漏了 ${concrete}`)
+    }
+  }
+
   // 每条入口都要有方法、协议标签、请求与响应要点。
   for (const entry of API_ENTRIES) {
     assert.ok(entry.method.length > 0, `${entry.path} 缺 HTTP 方法`)
@@ -157,10 +180,11 @@ test('入口协议：文档写的协议名与 contracts 里的常量一致', () 
   }
 })
 
-test('流式终止符：文档与 codec 源码一致（[DONE] / response.completed / message_stop）', () => {
+test('流式终止符：文档与 codec 源码一致（[DONE] / response.completed / message_stop / 无终止哨兵）', () => {
   const chatStream = readSource('modules/protoconv/codec_chat_stream.go')
   const responsesStream = readSource('modules/protoconv/codec_responses_stream.go')
   const anthropicStream = readSource('modules/protoconv/codec_anthropic_stream.go')
+  const geminiStream = readSource('modules/protoconv/codec_gemini_stream.go')
 
   const byProtocol = new Map(STREAM_NOTES.map((note) => [note.protocol, note.note]))
   assert.ok(chatStream.includes('[DONE]'), 'chat codec 应发 [DONE]')
@@ -171,14 +195,55 @@ test('流式终止符：文档与 codec 源码一致（[DONE] / response.complet
 
   assert.ok(anthropicStream.includes('message_stop'), 'anthropic codec 应发 message_stop')
   assert.match(byProtocol.get('anthropic') ?? '', /message_stop/)
+
+  // Gemini：编码器不发 [DONE]（源码里没有这个哨兵），靠 finishReason 收尾。
+  assert.ok(!geminiStream.includes('[DONE]'), 'gemini 流式不该发 [DONE]')
+  const geminiNote = byProtocol.get('gemini') ?? ''
+  assert.match(geminiNote, /\[DONE\]/, '文档要明说「不发 [DONE]」')
+  assert.match(geminiNote, /alt=sse/, 'Gemini 流式必须带 alt=sse')
+  assert.match(geminiNote, /finishReason/, '文档要说明靠 finishReason 收尾')
 })
 
-test('示例：curl 覆盖三种客户端协议与 /v1/models，且都用 Bearer 认证', () => {
+test('错误体形状：文档里的每个键都在 contracts/protocol.go 的 RenderError 里出现', () => {
+  const protocolSource = readSource('contracts/protocol.go')
+  for (const shape of ERROR_SHAPES) {
+    assert.ok(shape.protocols.length > 0, '错误体形状必须写明适用协议')
+    assert.ok(shape.note.length > 0, '错误体形状必须有说明')
+    for (const key of shape.keys) {
+      assert.ok(
+        protocolSource.includes(`"${key}"`),
+        `文档说错误体里有 ${key}，但 RenderError 里找不到`,
+      )
+      assert.ok(shape.shape.includes(key), `形状串里漏了键 ${key}`)
+    }
+  }
+
+  // Gemini 的 code 是**整数** HTTP 状态、status 是 Google 枚举名——这两条不能写反。
+  const geminiShape = ERROR_SHAPES.find((shape) => shape.protocols.includes('gemini'))
+  assert.ok(geminiShape !== undefined)
+  assert.match(geminiShape.note, /整数/)
+  assert.match(geminiShape.note, /reason/, '网关稳定码要写明放在 reason 里')
+  const statusSource = protocolSource.slice(protocolSource.indexOf('func geminiErrorStatus'))
+  for (const status of ['INVALID_ARGUMENT', 'UNAUTHENTICATED', 'RESOURCE_EXHAUSTED', 'UNAVAILABLE', 'INTERNAL']) {
+    assert.ok(statusSource.includes(status), `geminiErrorStatus 里没有 ${status}`)
+    assert.ok(geminiShape.note.includes(status), `文档漏了 Gemini 枚举名 ${status}`)
+  }
+})
+
+test('示例：curl 覆盖四种客户端协议（含 Gemini 两种方法）与 /v1/models，且都用 Bearer 认证', () => {
   const joined = CURL_EXAMPLES.map((example) => example.command).join('\n')
-  for (const path of ['/v1/chat/completions', '/v1/messages', '/v1/models']) {
+  for (const path of [
+    '/v1/chat/completions',
+    '/v1/messages',
+    '/v1/models',
+    '/v1beta/models/gemini-2.0-flash:generateContent',
+    '/v1beta/models/gemini-2.0-flash:streamGenerateContent?alt=sse',
+  ]) {
     assert.ok(joined.includes(path), `示例里缺 ${path}`)
   }
   assert.ok(joined.includes('Authorization: Bearer'), '示例必须展示认证头')
+  // 上游的 x-goog-api-key 是内部事，不能出现在对外文档里。
+  assert.ok(!joined.includes('x-goog-api-key'), '示例不该出现上游鉴权头')
   for (const example of CURL_EXAMPLES) assert.ok(example.title.length > 0)
   assert.ok(LOSSY_NOTES.length >= 3, '有损面至少列三条')
 })

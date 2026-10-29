@@ -9,6 +9,7 @@ import { pageHeader, renderConsoleShell, type PageModule } from '../layout.ts'
 import {
   API_ENTRIES,
   CURL_EXAMPLES,
+  ERROR_SHAPES,
   GATEWAY_ERRORS,
   LOSSY_NOTES,
   PRODUCT_ERRORS,
@@ -91,6 +92,17 @@ export const apiDocsPage: PageModule = {
 <li><code class="mono">/api/*</code> 是控制面接口，用登录会话（Cookie），与 LLM 入口的 key 鉴权是两套</li>
 </ul>`,
         entrySections.join('\n'),
+        t.renderSectionTitle('错误体形状（按客户端协议不同）'),
+        t.renderTable({
+          columns: [{ label: '适用协议' }, { label: '形状' }, { label: '说明' }],
+          rows: ERROR_SHAPES.map((shape) => [
+            `<code class="mono">${t.escapeText(
+              shape.protocols.map((item) => (item === '' ? '（默认 / OpenAI）' : item)).join(' / '),
+            )}</code>`,
+            `<code class="mono">${t.escapeText(shape.shape.replaceAll('`', ''))}</code>`,
+            t.escapeText(shape.note),
+          ]),
+        }),
         t.renderSectionTitle('错误码（LLM 入口）'),
         t.renderTable({
           columns: [{ label: 'code' }, { label: 'HTTP', align: 'right' }, { label: '含义' }],
