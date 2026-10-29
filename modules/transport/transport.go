@@ -59,8 +59,9 @@ const modelPlaceholder = "{model}"
 // 路径约定：baseUrl 自带版本前缀（openai 默认 https://api.openai.com/v1），
 // 这里的 Path 是版本之后的后缀（如 /chat/completions、/messages）。
 //
-// Path 里可以带 `{model}` 占位（Gemini 的模型名在路径里）：
-// 渲染时用请求的模型名替换它，并按路径段做转义。
+// Path 里可以带 `{model}` 占位（Gemini 的模型名在路径里）：渲染时换成
+// contracts.NormalizeGeminiModelName 归一后的**裸模型名**（`models/x` 与 `x`
+// 都归一成 `x`），资源段 `models/` 要写在模板自身里，所以上游路径永远只有一层。
 type Dialect struct {
 	Path         string
 	Auth         AuthStyle
@@ -252,12 +253,11 @@ func (s *Stage) Run(ctx *contracts.Ctx) (contracts.Decision, error) {
 		dialect = Dialect{Path: s.config.Path, Auth: AuthBearer}
 	}
 
-	target, err := joinURL(credential.BaseURL, dialectPath(dialect, upstreamModelOf(ctx)))
+	target, err := upstreamTarget(credential.BaseURL, dialect, upstreamModelOf(ctx), ctx.Meta.Stream)
 	if err != nil {
-		return contracts.Decision{}, contracts.Errorf(http.StatusBadGateway, "UPSTREAM_URL_INVALID", "上游地址不合法")
-	}
-	if ctx.Meta.Stream {
-		target = applyStreamTarget(target, dialect, upstreamModelOf(ctx))
+		return contracts.Decision{}, contracts.Errorf(
+			http.StatusBadGateway, "UPSTREAM_URL_INVALID", "上游地址不合法（模型名或 BaseURL）",
+		)
 	}
 
 	requestContext := ctx.Context
@@ -509,54 +509,60 @@ func upstreamModelOf(ctx *contracts.Ctx) string {
 	return ctx.Meta.Model
 }
 
-// dialectPath 渲染方言路径：把 `{model}` 占位换成请求的模型名。
-//
-// Gemini 的模型名在路径里（models/{model}:generateContent）。模型名来自客户端，
-// 所以必须转义（否则可能带 `/`、`:` 之类改变路径语义）；转义后仍保留 Gemini
-// 需要的字面冒号（`generateContent` 前的那个分隔冒号不是占位的一部分）。
-func dialectPath(dialect Dialect, model string) string {
-	path := dialect.Path
-	if !strings.Contains(path, modelPlaceholder) {
-		return path
+// upstreamTarget 拼出上游 URL：路径模板渲染 + 流式路径 / 查询串。
+func upstreamTarget(baseURL string, dialect Dialect, model string, stream bool) (string, error) {
+	template := dialect.Path
+	if stream && dialect.StreamPath != "" {
+		template = dialect.StreamPath
 	}
-	replaced := strings.ReplaceAll(path, modelPlaceholder, url.PathEscape(strings.TrimSpace(model)))
-	// PathEscape 会把字面冒号也转义掉（%3A）；Gemini 的方法分隔冒号必须是字面量。
-	replaced = strings.ReplaceAll(replaced, "%3A", ":")
-	return replaced
+	rendered, err := renderDialectPath(template, model)
+	if err != nil {
+		return "", err
+	}
+	target, err := joinURL(baseURL, rendered)
+	if err != nil {
+		return "", err
+	}
+	if stream && dialect.StreamQuery != "" {
+		target = appendQuery(target, dialect.StreamQuery)
+	}
+	return target, nil
 }
 
-// applyStreamTarget 把流式请求的 URL 换成方言的流式路径并补上查询串。
+// renderDialectPath 渲染路径模板：`{model}` 换成**归一后的裸模型名**。
 //
-// Gemini 的流式端点是另一个方法名（:streamGenerateContent），且必须带
-// alt=sse 才返回 SSE。其它协议的流式与非流式路径相同，查询串为空。
-func applyStreamTarget(target string, dialect Dialect, model string) string {
-	if dialect.StreamPath == "" && dialect.StreamQuery == "" {
-		return target
+// 模板自己带资源段（Gemini 的 `/models/{model}:generateContent`），占位只放裸名，
+// 所以客户端传 `models/x`、传 `x`、modelMap 映射出 `models/x`，渲染结果都只有
+// 一层 `models/`。模型名来自客户端 / 配置，归一失败明确报错，绝不静默拼出去。
+// 拼好的路径**不做**手工转义：joinURL 之后 url.URL.String() 会按路径规则编码一次。
+func renderDialectPath(template, model string) (string, error) {
+	if !strings.Contains(template, modelPlaceholder) {
+		return template, nil
 	}
+	normalized, err := contracts.NormalizeGeminiModelName(model)
+	if err != nil {
+		return "", err
+	}
+	return strings.ReplaceAll(template, modelPlaceholder, normalized), nil
+}
+
+// appendQuery 把方言里的固定查询串补进 URL（同名参数已存在时不覆盖）。
+func appendQuery(target, query string) string {
 	parsed, err := url.Parse(target)
 	if err != nil {
 		return target
 	}
-	if dialect.StreamPath != "" {
-		trimmed := strings.TrimRight(parsed.Path, "/")
-		// 去掉非流式的方法后缀（:generateContent），再接上流式方法名。
-		nonStream := dialectPath(Dialect{Path: dialect.Path}, model)
-		trimmed = strings.TrimSuffix(trimmed, nonStream)
-		parsed.Path = trimmed + dialectPath(Dialect{Path: dialect.StreamPath}, model)
-	}
-	if dialect.StreamQuery != "" {
-		query := parsed.Query()
-		for _, pair := range strings.Split(dialect.StreamQuery, "&") {
-			name, value, _ := strings.Cut(pair, "=")
-			if name == "" {
-				continue
-			}
-			if query.Get(name) == "" {
-				query.Set(name, value)
-			}
+	values := parsed.Query()
+	for _, pair := range strings.Split(query, "&") {
+		name, value, _ := strings.Cut(pair, "=")
+		if name == "" {
+			continue
 		}
-		parsed.RawQuery = query.Encode()
+		if values.Get(name) == "" {
+			values.Set(name, value)
+		}
 	}
+	parsed.RawQuery = values.Encode()
 	return parsed.String()
 }
 

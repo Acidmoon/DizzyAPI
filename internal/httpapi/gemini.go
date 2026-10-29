@@ -19,8 +19,11 @@ import (
 //     会被当成非法通配段），因此不能直接用 mux 的模式路由；
 //   - 这里在 `/v1beta/models/` 前缀下自行切分「模型名 / 方法」。
 //
-// 路径里的模型名会被解码（客户端可能用 %2F 之类编码），并做长度与字符校验：
-// 它会进入上游 URL，所以必须转义后再拼，不能让客户端把路径语义改掉。
+// 路径里的模型名会被解码（客户端可能用 %2F 之类编码），再交给
+// contracts.NormalizeGeminiModelName 归一：Google 官方形状允许 `models/` 前缀
+// （官方 SDK 默认就拼 `models/gemini-2.0-flash`），这里**只剥一层**，
+// 内部统一用裸模型名；剥完仍含 `/ \ ? #` 或 NUL 的一律拒绝，
+// 因为它会进入上游 URL，不能让客户端改掉路径语义。
 
 // geminiPathPrefix 是 Gemini 入口的路径前缀（官方版本前缀）。
 const geminiPathPrefix = "/v1beta/models/"
@@ -31,11 +34,9 @@ const geminiMethodGenerateContent = "generateContent"
 // geminiMethodStreamGenerateContent 是 Gemini 的流式方法名。
 const geminiMethodStreamGenerateContent = "streamGenerateContent"
 
-// geminiMaxModelLength 是模型名长度上限（防超长路径）。
-const geminiMaxModelLength = 256
-
 // geminiModelPath 是从 Gemini 路径里解析出来的模型名与方法。
 type geminiModelPath struct {
+	// model 是**归一后**的裸模型名（不带 `models/` 前缀）。
 	model string
 	// stream 为真表示这是流式方法（:streamGenerateContent）。
 	stream bool
@@ -43,7 +44,8 @@ type geminiModelPath struct {
 
 // parseGeminiModelPath 解析 Gemini 的请求路径。
 //
-// 形状：{prefix}{model}:{method}。模型名可能含百分号编码（先解码再校验）。
+// 形状：{prefix}{model}:{method}。模型名可能含百分号编码（先解码再归一、校验），
+// 也可能带一层 `models/` 前缀（官方 REST 形状 `{model=models/*}`）。
 func parseGeminiModelPath(escapedPath string) (geminiModelPath, bool) {
 	if !strings.HasPrefix(escapedPath, geminiPathPrefix) {
 		return geminiModelPath{}, false
@@ -60,13 +62,12 @@ func parseGeminiModelPath(escapedPath string) (geminiModelPath, bool) {
 	default:
 		return geminiModelPath{}, false
 	}
-	model, err := url.PathUnescape(rawModel)
-	if err != nil || model == "" || len(model) > geminiMaxModelLength {
+	decoded, err := url.PathUnescape(rawModel)
+	if err != nil {
 		return geminiModelPath{}, false
 	}
-	// 模型名只允许字母 / 数字 / 点 / 横线 / 下划线 / 冒号（Gemini 的
-	// "models/gemini-2.0-flash" 这类形状；带斜杠的路径穿越一律拒绝）。
-	if strings.ContainsAny(model, "/\\?#\x00") {
+	model, err := contracts.NormalizeGeminiModelName(decoded)
+	if err != nil {
 		return geminiModelPath{}, false
 	}
 	return geminiModelPath{model: model, stream: method == geminiMethodStreamGenerateContent}, true

@@ -18,7 +18,8 @@ const (
 	ProtocolOpenAIChat      Protocol = "openai-chat"
 	ProtocolOpenAIResponses Protocol = "openai-responses"
 	ProtocolAnthropic       Protocol = "anthropic"
-	// ProtocolGemini 是预留值：v1 不注册 codec，也不接受它作为上游协议。
+	// ProtocolGemini 是 Google Gemini（generateContent / streamGenerateContent）。
+	// 模型名在 URL 路径里，请求体里没有 model 字段。
 	ProtocolGemini Protocol = "gemini"
 )
 

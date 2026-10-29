@@ -26,13 +26,25 @@ func TestParseGeminiModelPath(t *testing.T) {
 		{"/v1beta/models/gemini-2.0-flash:generateContent", "gemini-2.0-flash", false, true},
 		{"/v1beta/models/gemini-2.0-flash:streamGenerateContent", "gemini-2.0-flash", true, true},
 		{"/v1beta/models/gemini-2.0-flash%3Afoo:generateContent", "gemini-2.0-flash:foo", false, true},
+		// 官方 REST 形状 `{model=models/*}`：带一层 models/ 前缀也接受，归一成裸名。
+		{"/v1beta/models/models/gemini-2.0-flash:generateContent", "gemini-2.0-flash", false, true},
+		{"/v1beta/models/models/gemini-2.0-flash:streamGenerateContent", "gemini-2.0-flash", true, true},
+		{"/v1beta/models/models%2Fgemini-2.0-flash:generateContent", "gemini-2.0-flash", false, true},
 		// 不是 Gemini 形状的路径一律拒绝。
 		{"/v1beta/models/gemini-2.0-flash", "", false, false},
 		{"/v1beta/models/:generateContent", "", false, false},
 		{"/v1beta/models/gemini:unknownMethod", "", false, false},
 		{"/v1/chat/completions", "", false, false},
+		// 只剥一层 models/：剥完仍带斜杠的继续拒绝。
+		{"/v1beta/models/models/models/gemini:generateContent", "", false, false},
+		{"/v1beta/models/models/a/b:generateContent", "", false, false},
+		{"/v1beta/models/models/:generateContent", "", false, false},
 		// 路径穿越必须被拒绝。
 		{"/v1beta/models/a%2F..%2Fb:generateContent", "", false, false},
+		{"/v1beta/models/models%2F..%2Fetc:generateContent", "", false, false},
+		{"/v1beta/models/a%5Cb:generateContent", "", false, false},
+		{"/v1beta/models/a%3Fb:generateContent", "", false, false},
+		{"/v1beta/models/a%23b:generateContent", "", false, false},
 	}
 	for _, tc := range cases {
 		parsed, ok := parseGeminiModelPath(tc.path)

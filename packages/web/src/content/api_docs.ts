@@ -97,7 +97,7 @@ export const API_ENTRIES: readonly ApiEntry[] = [
     summary:
       'Google 官方的 Gemini 入口：**模型名在路径里**（`{model}` 段），请求体里没有 `model` 字段。',
     request: [
-      '模型名在**路径**里：`/v1beta/models/<对外模型名>:generateContent`（模型名里不能带斜杠，带 `/` 的路径一律 404）',
+      '模型名在**路径**里：`/v1beta/models/<对外模型名>:generateContent`。模型名可带或不带 `models/` 前缀，两种都接受（`/v1beta/models/models/gemini-2.0-flash:generateContent` 与 `/v1beta/models/gemini-2.0-flash:generateContent` 等价）；带**多层**前缀或其它斜杠的路径一律 404',
       '`contents` 是 `{role, parts}` 数组；`systemInstruction` 单独传系统提示',
       '`generationConfig` 放采样参数（`temperature` / `maxOutputTokens` / `topP` 等）',
       '`tools` / `toolConfig` 按 Gemini 形状解析，跨协议时工具 id 会被可逆改写',
