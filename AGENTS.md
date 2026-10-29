@@ -291,14 +291,13 @@ export default FooService
   网关稳定码放纯增量的 `reason`。账号可声明 `protocol: gemini`，三个既有客户端入口都能路由过去
 - **模型广场与 API 文档**：`/api/models` 给 `available` / `unavailable`（带原因与人话细节）+
   汇总；`/console/models` 展示四档价格、可用性、覆盖账号数与上游模型名，支持搜索与筛选；
-  `/console/api-docs` 是自证文档——**内容源是真 markdown 文件 `docs/api/*.md`**（不是硬编码
-  TS 常量），服务端用 markdown-it（MIT，`html: false`）渲染成 HTML；另有两条机器友好副本
-  `GET /console/api-docs.md`（纯 markdown）与 `GET /llms.txt`（站点索引），HTML 里用
-  `<link rel="alternate" type="text/markdown">` 与 `rel="describedby"` 指向它们，页面上的
-  「复制整页 Markdown」按钮复制的就是那份 markdown（方便直接投喂 agent）。
-  用例会**从 `.md` 源解析事实**再读源码断言「文档里的错误码真实存在」「入口路径覆盖
-  全部 `mux.HandleFunc` 注册」「错误体键与 `RenderError` 一致」「协议名在 `contracts/ir.go` 里」
-  「错误码的出处文件真的存在且真的有这个码」
+  `/console/api-docs` 是自证文档，**内容 = 人写的叙述（`docs/api/*.md`）+ 从代码派生的事实表**
+  （入口表 / 错误码表由 `packages/web/src/content/api_facts.ts` 渲染时实时读代码生成，插进
+  `.md` 的占位符里——手写清单会腐烂，详见 §7「前端」）；服务端用 markdown-it（MIT，`html: false`）
+  渲染成 HTML；另有两条机器友好副本 `GET /console/api-docs.md`（纯 markdown）与
+  `GET /llms.txt`（站点索引），HTML 里用 `<link rel="alternate" type="text/markdown">` 与
+  `rel="describedby"` 指向它们，页面上的「复制整页 Markdown」按钮复制的就是那份 markdown
+  （方便直接投喂 agent）
 - **管理员操作审计（`audit`）**：高危写操作（用户/余额/角色、账号增删改启停与批量、价格、设置、
   兑换码批次与核查、充值确认/取消、隔离区忽略/重放）在**成功后**记一条审计；actor 形如
   `user:<id>:<role>`，面板写设置记 `operator:panel`。落库前两道脱敏（键名命中 + 值形状命中），
@@ -688,23 +687,50 @@ pnpm build:go         # 产出 bin/gatewayd(.exe)
 - 预览用 `pnpm preview:console`；它没有 `/api/*`，真实进程用 `pnpm dev`。
 - 静态资源的 `<base>` 已带尾斜杠，不要重复补 `/`。
 - CSP `img-src` 放行 `data:` 与 `https:`；`http://` 头像能存但会被拦。
-- **API 文档的内容源是 `docs/api/*.md`**（`01-overview` / `02-endpoints` / `03-errors` /
-  `04-examples`，顺序由 `packages/web/src/content/api_docs.ts` 的 `DOC_FILES` 定）。
-  改文档 = 改 `.md`，不要回去改 TS 常量；`packages/web/test/pages-docs.test.ts` 会从 `.md`
-  解析事实并核对代码（错误码 / 入口路径 / 协议名 / 错误体键 / 流式终止符 / 出处文件）。
-  新增一个 `.md` 文件必须同时加进 `DOC_FILES`，否则用例报「清单与磁盘不一致」。
+- **API 文档 = 叙述（`docs/api/*.md`）+ 派生事实（`api_facts.ts`）**，两者分工不能混：
+  - `docs/api/` 下四个文件（`01-overview` / `02-endpoints` / `03-errors` / `04-examples`，顺序由
+    `packages/web/src/content/api_docs.ts` 的 `DOC_FILES` 定）**只写人话**：认证、每个入口的
+    请求 / 响应要点、错误体形状、流式差异、curl 示例、有损面。改文档就是改 `.md`。
+  - **事实性清单（入口表 / Go 错误码表 / 产品错误码表）一律不写进 `.md`**，由
+    `packages/web/src/content/api_facts.ts` 渲染时**从代码实时读**：`internal/httpapi/server.go`
+    的 `mux.HandleFunc`（方法看 handler 体、协议读 `contracts.ProtocolXxx`、Gemini 前缀路由用
+    `gemini.go` 的方法名展开）、三种 Go 错误构造（`contracts.Errorf` / `writeErrorFor` /
+    `&contracts.StageError{}`）、`packages/api/src/errors.ts` 的 `ApiErrorCode` 联合 +
+    `EXPLICIT_STATUS` + `statusOfCode()` 后缀规则 + 各插件 `new ApiError(...)` 字面量、
+    `contracts/ir.go` 的协议常量。
+  - 装配方式是 `.md` 里的三个占位符：`<!-- facts:entries -->` / `<!-- facts:gateway-errors -->` /
+    `<!-- facts:product-errors -->`，**每个必须恰好出现一次**，否则渲染明确报错（不静默漏表）。
+  - **为什么这么分**：手写清单会腐烂——代码加了入口，文档不知道，测试只能红成「文档没更新」。
+    派生之后代码一改页面自动跟上，`.md` 只负责讲人话。
+    `pages-docs.test.ts` 里那条「反模式护栏」就是守这个：`.md` 里出现入口表行 / 错误码表行直接失败。
+  - 新增一个 `.md` 文件必须同时加进 `DOC_FILES`，否则用例报「清单与磁盘不一致」。
+  - 用例还守：页面必须带上**派生出的每一条**入口与错误码（漏一条就是装配断了）、每个真实入口
+    都要有详情小节且详情里的路径必须真实（代码删了入口，那节就是过时的 → 报错）、派生出的
+    出处文件真的存在且真有这个码、错误体键在 `RenderError` 里、终止符与 codec 一致、
+    协议名在 `contracts/ir.go` 里。
 - **markdown 渲染器是 vendor 的 `markdown-it` 14.1.0（MIT）**，在
-  `packages/web/src/vendor/markdown-it/`（`markdown-it.js` + `LICENSE`），用
-  `createRequire` 加载 UMD 单文件。**故意不用 npm 依赖**：服务器部署走
-  `pnpm install --offline` 复用已有 store，新增依赖会让线上部署断掉。
-  升级时替换这两个文件并在这里记版本。
+  `packages/web/src/vendor/markdown-it.min.cjs`（123 618 字节，UMD，自包含：0 处
+  `require(` / `import` / `window.` / `document.`）+ 相邻的手写声明
+  `markdown-it.min.d.cts` + `packages/web/src/vendor/LICENSE`。导入写法是普通的
+  `import MarkdownIt from '../vendor/markdown-it.min.cjs'`。
+  **故意不用 npm 依赖**：服务器部署走 `pnpm install --offline` 复用已有 store，新增依赖会让
+  线上部署断掉（store 里没有任何 `*markdown*`，`pnpm-lock.yaml` 也没有）。
+  **扩展名必须是 `.cjs`**：仓库根 `package.json` 有 `"type": "module"`，`.js` 会被当 ESM 解析，
+  而 UMD 包装头是 `typeof exports === "object" && typeof module !== "undefined" ? …` ——
+  在 ESM 语境下两个都不存在，`require()` 只拿到空对象（`typeof object`、`Object.keys` 为空、
+  `new` 报 not a constructor）。**同一份字节改成 `.cjs` 就能正常 render**，与库本身无关。
+  声明必须用**相邻同名 `.d.cts`**，不要用 `declare module '*.cjs'` 通配（那会把所有 `.cjs`
+  都当成 markdown-it）。升级时替换 `.cjs` + `LICENSE` 并在这里记版本。
 - **markdown 渲染不得写内联样式**：CSP 是 `style-src 'self'`，`style="…"` 会被浏览器
   静默丢弃（浮层直接跑位）。渲染器把结构映射到模板已有 class（`.panel` / `.table` /
   `.mono` / `.code` / `.section-title` / `.page-title`），有用例守着「渲染结果里没有 `style=`」。
 - **`/llms.txt` 与 `/console/api-docs.md` 不是 `/api/*`**：生产 nginx 只把 `/api/*` 反代到
-  api 的 7791，其余（含这两条）都打到 web 的 7792，所以它们必须由 **web** 插件发，
-  放 `packages/api/src/http.ts` 在线上 404。判定逻辑是
-  `content/api_docs.ts` 的 `apiDocsResource(path)`（纯函数，返回 `{status, contentType, body}`）。
+  api 的 7791，其余（含这两条）都打到 web 的 7792，所以它们**必须由 web 插件发**
+  （`packages/web/src/service.ts` 的 `dispatch` 里调 `content/api_docs.ts` 的
+  `apiDocsResource(path)`，纯函数，返回 `{status, contentType, body}`）。
+  放 `packages/api/src/http.ts` 在线上必 404。
+  **这两条不要求登录**：它们就是给 agent 抓的（owner 明确要「方便投喂 agent」），内容里
+  没有秘密；页面本体 `/console/api-docs` 仍然要登录。
 - **部署必须带上仓库根的 `docs/api/`**：文档内容在运行时从
   `packages/web/src/content/` 往上四级（`../../../../docs/api/`）读；只拷 `packages/`
   会让这一页报「文档源缺失」（只影响这一页，不会拖垮整站，见下条）。

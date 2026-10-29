@@ -1,18 +1,13 @@
 ## 入口一览
 
-| 方法 | 路径 | 协议 | 协议名 | 说明 |
-| --- | --- | --- | --- | --- |
-| POST | `/v1/chat/completions` | `openai-chat` | OpenAI Chat Completions | 最通用的入口：绝大多数 OpenAI SDK / 客户端默认打这里。 |
-| POST | `/v1/responses` | `openai-responses` | OpenAI Responses API | OpenAI 新的 Responses 形状入口（Codex 等客户端使用）。 |
-| POST | `/v1/messages` | `anthropic` | Anthropic Messages | Anthropic 官方形状入口：Claude SDK / Claude Code 直接可用。 |
-| GET | `/v1/models` |  | 模型列表 | OpenAI 形状的模型列表：当前**可用**对外模型名的并集（由 Go 侧账号快照算）。 |
-| POST | `/v1beta/models/{model}:generateContent` | `gemini` | Gemini generateContent | Google 官方的 Gemini 入口：**模型名在路径里**，请求体里没有 `model` 字段。 |
-| POST | `/v1beta/models/{model}:streamGenerateContent` | `gemini` | Gemini streamGenerateContent | Gemini 的流式方法：同一个模型名在路径里，**必须带 `?alt=sse`**。 |
-| POST | `/v1/embeddings` | `openai-chat` | OpenAI Embeddings | OpenAI 兼容的向量化入口：与 chat 同协议、同鉴权，但只有 OpenAI 兼容账号能处理。 |
-| GET | `/healthz` |  | 运行期探针 | 网关存活探针，不分协议、不鉴权、不泄漏任何账号信息。 |
-| GET | `/metrics` |  | 运行期指标 | Prometheus 文本格式指标：只在 gatewayd 的回环监听上暴露（nginx 不反代）。 |
+下面这张表**是从代码读出来的**（`internal/httpapi/server.go` 的 `mux.HandleFunc` 注册处；
+方法看 handler 体里的 `http.MethodPost` / `http.MethodGet`，协议看 `contracts.ProtocolXxx`）：
+
+<!-- facts:entries -->
 
 ## 入口详情
+
+每一节的路径必须与上面表里的真实入口对应；代码删了入口，这一节的说明会被判定为「过时」而报错。
 
 ### POST /v1/chat/completions
 
@@ -54,17 +49,18 @@
 - Anthropic 形状：`{id, type: "message", role, content[], usage}`
 - 流式：`event: <类型>` + `data: {...}` 成对出现，终止符是 `message_stop`
 
-### GET /v1/models
+### POST /v1/embeddings
 
 **请求**
 
-- 无请求体
-- 鉴权与 LLM 入口一致：`Authorization: Bearer <API key>`
+- `model` 必填；`input` 是字符串或字符串数组（最多 2048 条、总计 1048576 字符）
+- `encoding_format` / `dimensions` / `user` 原样转发给上游
+- **不支持流式**：`stream: true` 直接 400
 
 **响应**
 
-- `{object: "list", data: [{id, object: "model", created, owned_by}]}`
-- 只给名字：**不含**价格与覆盖度（那是产品面的 `/api/models`）
+- OpenAI 形状：`{object: "list", data: [{object: "embedding", index, embedding[]}], model, usage}`
+- `usage` 只有 `prompt_tokens` / `total_tokens`（输出与缓存桶恒 0）
 
 ### POST /v1beta/models/{model}:generateContent
 
@@ -92,18 +88,17 @@
 - 每帧是 `data: {...}`，负载是**完整的** `GenerateContentResponse`（累计形态，不是增量文本）
 - **不发 `data: [DONE]`**：以最后一帧里 candidate 的 `finishReason` 为准
 
-### POST /v1/embeddings
+### GET /v1/models
 
 **请求**
 
-- `model` 必填；`input` 是字符串或字符串数组（最多 2048 条、总计 1048576 字符）
-- `encoding_format` / `dimensions` / `user` 原样转发给上游
-- **不支持流式**：`stream: true` 直接 400
+- 无请求体
+- 鉴权与 LLM 入口一致：`Authorization: Bearer <API key>`
 
 **响应**
 
-- OpenAI 形状：`{object: "list", data: [{object: "embedding", index, embedding[]}], model, usage}`
-- `usage` 只有 `prompt_tokens` / `total_tokens`（输出与缓存桶恒 0）
+- `{object: "list", data: [{id, object: "model", created, owned_by}]}`
+- 只给名字：**不含**价格与覆盖度（那是产品面的 `/api/models`）
 
 ### GET /healthz
 
