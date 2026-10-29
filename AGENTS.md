@@ -129,7 +129,7 @@ export default FooService
 
 ## 4. 现状地图
 
-### 4.1 TS 插件（25 个包；`console` 是已禁用的 SPA，`kit` 是共用底座）
+### 4.1 TS 插件（27 个包；`console` 是已禁用的 SPA，`kit` 是共用底座）
 
 | 包 | 服务 | 职责 |
 |---|---|---|
@@ -146,6 +146,8 @@ export default FooService
 | `@dizzyapi/plugin-billing` | `billing` | 真实扣费的唯一执行者：`usage` 每轮拉到用量后调 `settle`，按 `req_id` 幂等（CAS `pending → settling → settled`）、用 `pricing` 复算整数微元、只经 `user.adjustBalance` 扣款（余额允许为负 = 后付费，记 `overdrawn` + 扣后余额）；SQLite `data/billing.db`；**不预扣、无支付通道** |
 | `@dizzyapi/plugin-topup` | `topup` | 充值订单唯一写者：`manual` 人工到账（下单 / 我的订单 / 取消 / 管理面确认到账与统计），`pending → paid / canceled / expired` 条件更新，到账只经 `user.adjustBalance`；SQLite `data/topup.db`；**支付通道只留 `PaymentProvider` seam，不接真实渠道、不挂回调路由** |
 | `@dizzyapi/plugin-quota` | `quota` | 余额只读快照推送：把 `user` 的全量余额周期（默认 5s）+ 变更后 debounce（1s）推给 Go 的额度闸门（桥命令 `quota.replace`）；**不存数据、不写余额、不做判断**，也不拥有控制桥（桥在 `account-priority`） |
+| `@dizzyapi/plugin-modelhub` | `modelhub` | 模型广场聚合（**只读、不落盘**）：把 `pricing` 的价格 + 账号声明的 `models`/`modelMap` + `protocol`/`health`/凭据状态合成模型目录，区分 `available` / `unavailable`（带原因）；`/api/models` 与 `/console/models` 的数据源；账号 id / label / baseUrl 一律不出 |
+| `@dizzyapi/plugin-audit` | `audit` | 审计日志唯一写者：`data/audit.db`；`record`（不限）/`list`/`stats`（要 actor 在 `adminPlugins`）；高危管理员写操作在**成功后**接线留痕（actor / action / target / 结果 / 脱敏 metadata），每日按 `retentionDays`（默认 180）分批清理；**不 inject**，审计失败不影响业务 |
 | `@dizzyapi/plugin-catalog` | `catalog` | 插件能力目录（只读，反射 + 声明） |
 | `@dizzyapi/plugin-frontend` | `frontend` | SPA 静态资源版本 / 清单 / 回滚（**已禁用**，由 `web` 取代） |
 | `@dizzyapi/plugin-api` | `api` | 产品 HTTP 入口：SPA + `/api/*`，进程内调用控制面服务 |
@@ -163,12 +165,12 @@ export default FooService
 
 | 路径 | 职责 |
 |---|---|
-| `contracts/` | 唯一共享契约；`Ctx` / `Stage` / `Decision` / `Registry` / DTO；规范化 IR 与 `Codec` 接口（`ir.go` / `protocol.go`）；用量记录与桥事件（`usage.go`）；只依赖标准库 |
+| `contracts/` | 唯一共享契约；`Ctx` / `Stage` / `Decision` / `Registry` / DTO；规范化 IR 与 `Codec` 接口（`ir.go` / `protocol.go`，含 `ProtocolGemini`）；用量记录与桥事件（`usage.go`）；Gemini 模型名归一（`gemini.go`，入口与上游共用）；只依赖标准库 |
 | `modules/accountpriority/` | 账号打分、排序、选择；候选全被闸门挡住时区分 `ALL_ACCOUNTS_SATURATED` / `ALL_ACCOUNTS_COOLING`（都是 503、不可重试） |
 | `modules/quotagate/` | pre 相位额度闸门：按 `ctx.Key.UserID` 查余额只读快照，余额 ≤ 阈值（默认 0）返回 402 `INSUFFICIENT_BALANCE`（不可重试、不转发上游）；快照未就绪 / 过期默认放行 + 告警，`-quota-require-snapshot` 打开严格模式则 503 `QUOTA_SNAPSHOT_UNAVAILABLE` |
 | `modules/modelroute/` | 模型路由（pre 相位按账号 `models` 过滤候选）+ 模型映射（dispatch 相位按账号 `modelMap` 改写 body 顶层 `model`） |
-| `modules/protoconv/` | 协议转换中间件：dispatch 相位阶段（请求方向）+ 响应转换器；Chat / Responses / Anthropic 三个 codec |
-| `modules/transport/` | 按选中账号发上游请求，透传普通响应与 SSE；按协议的方言表决定路径与鉴权头；429 / 额度耗尽（`insufficient_quota` 等）记账号冷却并回可重试错误 |
+| `modules/protoconv/` | 协议转换中间件：dispatch 相位阶段（请求方向）+ 响应转换器；Chat / Responses / Anthropic / **Gemini（含流式）** 四个 codec |
+| `modules/transport/` | 按选中账号发上游请求，透传普通响应与 SSE；按协议的方言表决定路径、鉴权头、流式路径与查询串（Gemini：`/models/{model}:generateContent`、`x-goog-api-key`、流式 `:streamGenerateContent?alt=sse`，`{model}` 只放 `contracts.NormalizeGeminiModelName` 归一后的裸名）；429 / 额度耗尽记账号冷却并回可重试错误 |
 | `modules/keyauth/` | 动态 API key 哈希快照校验 |
 | `internal/bridge/` | 控制桥：长度前缀 JSON、UDS / 回环 TCP、优雅关闭 |
 | `internal/engine/` | pre → dispatch → post 调度；失败转移；统一错误渲染；**并发闸门**（dispatch 前按 `concurrency` 原子预留，预留失败换下一个账号、全饱和直接 503 不排队） |
@@ -178,7 +180,7 @@ export default FooService
 | `internal/quota/` | 余额只读快照缓存：`Ready()` / `Lookup()` / `Age()` / `Stale()` / `State()`；金额是十进制 bigint 字符串，整份校验、任一条不合法整份拒绝；`generation` 回退明确拒绝（不覆盖旧快照） |
 | `internal/usagelog/` | 用量环形缓冲（容量可配，默认 32768，边界 1..1048576，非法值启动失败；满了丢最旧并计数 `dropped`，其中「没被任何 reader 取走就被覆盖」单独记 `gap`）；`Seq` + `Epoch`，经 `usage.since` 给 TS 轮询，`usage.stats` 给 TS 告警 |
 | `internal/usageprobe/` | 用 codec 从**发回客户端**的响应字节里提取 usage（流式只观察不改字节）；按上游协议归一化四桶 |
-| `internal/httpapi/` | `POST /v1/chat/completions`、`POST /v1/responses`、`POST /v1/messages`、`GET /v1/models`、`GET /healthz`；请求结束写用量记录；响应（**含整个流**）写完后释放并发槽位 |
+| `internal/httpapi/` | `POST /v1/chat/completions`、`POST /v1/responses`、`POST /v1/messages`、**`POST /v1beta/models/{model}:generateContent` 与 `:streamGenerateContent`（Gemini，模型名在路径里，自己解析、拒绝路径穿越）**、`GET /v1/models`、`GET /healthz`；请求结束写用量记录；响应（**含整个流**）写完后释放并发槽位 |
 | `cmd/gatewayd/` | 组合根：注册模块、启动 HTTP 入口与控制桥 |
 
 ### 4.3 数据与端口
@@ -186,7 +188,7 @@ export default FooService
 - 数据：`data/users.db`、`data/auth.db`、`data/api-keys.db`、`data/accounts.json`、
   `data/credentials.json`、`data/settings.json`、`data/account-priority.json`、
   `data/pricing.json`、`data/usage.db`、`data/redeem.db`、`data/billing.db`、`data/topup.db`、
-  `data/frontend/`。
+  `data/audit.db`、`data/frontend/`。
 - 用量只有 `usage` 插件写 `usage.db`（含 `usage_rejected` 隔离表）；结算账本只有 `billing`
   插件写 `billing.db`；充值订单只有 `topup` 插件写 `topup.db`（加余额只经 `user`）；
   价格只有 `pricing` 插件写 `pricing.json`；
@@ -268,6 +270,22 @@ export default FooService
   过期三重保险：60s 清扫 + 列表/统计/确认前 `expireDue()` + `claimPaid` 的 WHERE。
   **支付通道只留 seam**：`PaymentProvider` 接口 + 注册表，本批只实现 `manual`（`online: false`），
   **不挂任何未验签的回调路由**；配置里出现未知 provider 直接装载失败，不回落 manual
+- **Gemini 协议（客户端入口 + 上游协议）**：`POST /v1beta/models/{model}:generateContent`
+  与 `:streamGenerateContent`（流式要 `alt=sse`）。请求/响应/流式三向编解码，覆盖
+  `contents` / `systemInstruction` / `tools.functionDeclarations` / `toolConfig` /
+  `generationConfig` / `functionCall` / `functionResponse` / `inlineData` / `thought`；
+  OpenAI 专有参数记 `LossyNote`。模型名接受 `models/x` 与裸名 `x` 两种写法（官方 SDK 默认带前缀），
+  归一后拼上游只补一层 `models/`。错误体保持官方 schema（`code` 整数 + `status` 枚举名），
+  网关稳定码放纯增量的 `reason`。账号可声明 `protocol: gemini`，三个既有客户端入口都能路由过去
+- **模型广场与 API 文档**：`/api/models` 给 `available` / `unavailable`（带原因与人话细节）+
+  汇总；`/console/models` 展示四档价格、可用性、覆盖账号数与上游模型名，支持搜索与筛选；
+  `/console/api-docs` 是自证文档——用例会读源码断言「文档里的错误码真实存在」「入口路径覆盖
+  全部 `mux.HandleFunc` 注册」「错误体键与 `RenderError` 一致」「协议名在 `contracts/ir.go` 里」
+- **管理员操作审计（`audit`）**：高危写操作（用户/余额/角色、账号增删改启停与批量、价格、设置、
+  兑换码批次与核查、充值确认/取消、隔离区忽略/重放）在**成功后**记一条审计；actor 形如
+  `user:<id>:<role>`，面板写设置记 `operator:panel`。落库前两道脱敏（键名命中 + 值形状命中），
+  摘要与 metadata 都过；`/admin/audit` + `/api/admin/audit` 可查（要 actor 在白名单）。
+  **审计不是业务前置依赖**：服务运行期解析，失败只记警告
 - 用量投递健康度：`usage.stats` 桥命令给 TS 报 `capacity/size/dropped/gap/epoch/lastSeq`，
   `gap` 只统计「真丢」的部分；轮询默认 1s，落库失败不吞错、游标只推进到实际落库的最大 seq
 - **账号并发闸门与短期冷却（Go 侧，纯进程内）**：每个 attempt 按账号 `concurrency` 原子预留槽位，
@@ -321,7 +339,7 @@ pnpm test:go
 
 - 新增插件必须有 `test/*.test.ts`；新增 Go 模块必须有单测。
 - 测试失败先修实现，不允许删断言或放宽断言来变绿。
-- 当前基线（2026-10-29 实测）：`pnpm test` 617 个用例（616 通过 / 1 跳过），`pnpm typecheck` 干净，
+- 当前基线（2026-10-29 实测）：`pnpm test` 679 个用例（678 通过 / 1 跳过），`pnpm typecheck` 干净，
   `go test ./...` 17 包全 ok，`gofmt -l .` 与 `go vet ./...` 无输出。
   这个数字会变，以实际输出为准。
 
@@ -359,7 +377,7 @@ pnpm build:go         # 产出 bin/gatewayd(.exe)
 ### 6.2 部署
 
 - 生产服务器 `<生产服务器>` / `<SERVER_IP>`（root），代码 `/opt/dizzyapi`，systemd `dizzyapi.service`；
-  公网入口 `https://<站点域名>`：宝塔 nginx 把 `/v1/*` 与 `/healthz` 反代 gatewayd
+  公网入口 `https://<站点域名>`：宝塔 nginx 把 `/v1/*`、**`/v1beta/*`** 与 `/healthz` 反代 gatewayd
   `18080`、`/api/*` 反代 `api` 的 `7791`、其余反代 `web` 的 `7792`；后两者的 `Host` 都要改写成
   对应回环地址（`/` 还要把 `Origin` 改写成 `https://127.0.0.1:7792`）。
 - 服务器上 `pnpm` 走网络会卡住；部署依赖统一用
@@ -514,6 +532,37 @@ pnpm build:go         # 产出 bin/gatewayd(.exe)
 - **TTL 与推送间隔耦合**：调大 TS 的 `pollIntervalMs` 必须同步把 `-quota-snapshot-ttl-ms`
   提到 ≥ 3 倍，否则严格模式下会周期性 503。
 
+### Gemini 协议
+
+- **模型名在两个地方出现**：客户端路径 `/v1beta/models/{model}:…` 与上游路径模板
+  `/models/{model}:…`。归一函数只放 `contracts/gemini.go`（`NormalizeGeminiModelName`），
+  入口解析与 transport 共用——放任一模块都会逼另一个跨模块 import。
+- **只剥一层 `models/`**：官方 SDK 默认拼 `models/gemini-2.0-flash`，但很多客户端传裸名。
+  剥完仍含 `/`、`\`、`?`、`#`、NUL 的一律明确失败（入口 404 / 上游 502），
+  **不许手工 `PathEscape`**（会被 `url.URL` 二次编码，带 `%` 的模型名会被发成 `%25`）。
+- **资源段写在方言模板里**，`{model}` 只放裸名，所以上游路径永远只有一层 `models/`；
+  客户端带前缀、不带前缀、`modelMap` 映射出带前缀，三条路结果必须一致（有用例断言上游完整路径）。
+- **流式 URL 要按模板重新渲染**：Gemini 的流式是另一个方法名（`:streamGenerateContent`）+ `alt=sse`。
+  早期用「去掉非流式后缀再接流式方法」的写法，路径形态一变就静默失效。
+- **请求体里没有 `model`**：Gemini 的模型在 URL 里，跨协议时 `IR.Model` 要由映射名/客户端模型名回填；
+  `modelroute` 对 Gemini 只写 `ctx.UpstreamModel`，**绝不往 body 注入 `model`**（上游会 400）。
+- **用量键是 `usageMetadata` 不是 `usage`**：`promptTokenCount` 含缓存（与 OpenAI 同口径，
+  要减去 `cachedContentTokenCount`），`thoughtsTokenCount` 记 Reasoning 但不重复相加。
+  漏认这个键 = 用量整条不落库 = 白用上游。
+- **部署要加 nginx `/v1beta/*` 反代**，否则公网到不了这个入口。
+
+### 安全与审计
+
+- **审计不是业务前置依赖**：其他插件**不 inject** `audit`，运行期解析；`record` 失败只记警告，
+  写操作必须照常成功。禁用 `audit` 时业务写操作照常、只是不再留痕。
+- **脱敏两道闸**：键名命中（password / secret / token / credentials / authorization / cookie /
+  apiKey / redeemCode…）整棵子树替换；值形状命中（`sk-…`、`Bearer …`、`ghp_…`、`AKIA…`）替换片段。
+  摘要也过一遍。**调用方自己也要守**：凭据 payload、兑换码明文、设置值根本不传。
+- **读白名单、写不设限**：`list` / `stats` 要 actor 在 `adminPlugins`（空名单谁都读不到），
+  `record` 不限——审计里是「谁对谁做了什么」，限制读才是关键。
+- **未审计的动作要照实写进报告**：定时器自动动作（`account-health` 自动停用/恢复）、
+  identity 令牌刷新、用量轮询与自动结算都不在审计里，不要假装全覆盖。
+
 ### 并发闸门与冷却
 
 - **槽位的生命周期是「预留 → 转交 → 释放」**：engine 预留成功才把它交给 `ctx.ReleaseInFlight`，
@@ -577,8 +626,10 @@ pnpm build:go         # 产出 bin/gatewayd(.exe)
 - 自动禁用只按「连续失败 3 次」（可配）；**不做响应时间阈值**，也不做冷却 / 过载 / 临时不可调度
   三时钟（缺 Go 的失败回报数据源）。
 - `account-state`（限流、额度、并发等运行时状态）、粘性会话
-- Gemini 协议（`contracts.ProtocolGemini` 已预留，未注册 codec；请求它会被
-  `PROTOCOL_CODEC_UNAVAILABLE` fail-closed 拒绝）
+- **多模态入口**：只有文本生成类入口（chat / responses / messages / Gemini generateContent）；
+  `embeddings` / `images` / `audio` / `batch` / `files` 都还没有
+- **请求级可观测**：没有 metrics 端点、没有请求日志落库（排障仍靠 stderr 与 `usage` 明细）；
+  `account-health` 的自动停用/恢复等系统动作**不进审计**
 - 跨协议转换的**有损面**：`thinking.signature` 不回传、`cache_control` 丢弃、OpenAI 专有采样
   参数丢弃——都记 `LossyNote` 日志，但不保证语义等价
 - 模型映射只改**请求**里的模型名：响应里的 `model` 保持上游原名，不映射回对外名。
