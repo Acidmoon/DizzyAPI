@@ -185,7 +185,7 @@ export default FooService
 | `internal/usagelog/` | 用量环形缓冲（容量可配，默认 32768，边界 1..1048576，非法值启动失败；满了丢最旧并计数 `dropped`，其中「没被任何 reader 取走就被覆盖」单独记 `gap`）；`Seq` + `Epoch`，经 `usage.since` 给 TS 轮询，`usage.stats` 给 TS 告警 |
 | `internal/usageprobe/` | 用 codec 从**发回客户端**的响应字节里提取 usage（流式只观察不改字节）；按上游协议归一化四桶 |
 | `internal/metrics/` | Prometheus 文本指标（只在回环监听、`-metrics` 默认开）：请求数与耗时、四桶 token、上游尝试/失败（按固定错误码枚举）、in-flight、冷却账号数、用量缓冲 dropped/gap、额度快照 age；热路径只有 `atomic.Uint64` 加法，标签只用编译期常量 |
-| `internal/httpapi/` | `POST /v1/chat/completions`、`POST /v1/responses`、`POST /v1/messages`、**`POST /v1beta/models/{model}:generateContent` 与 `:streamGenerateContent`（Gemini，模型名在路径里，自己解析、拒绝路径穿越）**、`POST /v1/embeddings`、`GET /v1/models`、`GET /healthz`、`GET /metrics`；请求结束写用量记录；响应（**含整个流**）写完后释放并发槽位 |
+| `internal/httpapi/` | `POST /v1/chat/completions`、`POST /v1/responses`、`POST /v1/messages`、**`POST /v1beta/models/{model}:generateContent` 与 `:streamGenerateContent`（Gemini，模型名在路径里，自己解析、拒绝路径穿越）**、`POST /v1/embeddings`、`GET /v1/models`、`GET /healthz`、`GET /metrics`；请求结束写用量记录；响应（**含整个流**）写完后释放并发槽位；回写 `X-Request-Id` 响应头（只在有真实 requestID、即会产生用量记录时才发） |
 | `cmd/gatewayd/` | 组合根：注册模块、启动 HTTP 入口与控制桥 |
 
 ### 4.3 数据与端口
@@ -409,9 +409,53 @@ pnpm typecheck
 pnpm test
 pnpm test:go
 pnpm build:go         # 产出 bin/gatewayd(.exe)
+pnpm build:cli        # 产出 bin/dizzy(.exe)（命令行客户端，见 §6.2）
+pnpm build:all        # 两个二进制一起编
 ```
 
-### 6.2 部署
+### 6.2 命令行客户端 `dizzy`（`cmd/dizzy`）
+
+`dizzy` 是**客户端**：静态 Go 二进制，零环境依赖，只通过 HTTP 访问网关，
+**绝不直连 SQLite / JSON 数据文件**。完整用法见 `docs/cli.md`。
+
+- **两条鉴权路径严格分开**：`/v1/*` 走 `Authorization: Bearer <API key>`
+  （`--key` 或 `DIZZYAPI_KEY`，**不落盘**）；`/api/*` 走 HttpOnly 会话 cookie，
+  且**每个**请求都必须带 `X-Requested-With: dizzyapi`（登录前也要 —— 它与会话是
+  两个独立开关，绑在会话上会 403）。
+- **配置**：`~/.dizzy/config.json`（0644，`base` / `llmBase` / `apiBase`）、
+  `~/.dizzy/credentials.json`（0600，**只存会话 token**）。本地开发时 gatewayd 与
+  api 是两个端口，要用 `llmBase` / `apiBase` 分开指；生产一个域名指 `base` 就够。
+- **没有默认 `base`**：既没配 `base` 也没给 `--base` 时，**需要发请求**的命令退 2 并打印
+  两条可抄命令（`dizzy config set base <url>` / `dizzy --base <url> models`）；`dizzy config`
+  与 `--help` 不碰入口地址，照样能跑。这是刻意的：默认指向某个地址（尤其生产）意味着
+  「忘了配」会静默打到线上，而写操作不可撤销。`Config.Validate()` 因此允许 `base` 为空，
+  只在**构造客户端**时拦（`newLLMClient` / `newAPIClient` / `newAPIAnonClient`）。
+- **费用只有一个权威来源 = `/api/usage` 的 `costMicros`**：客户端看到的
+  `prompt_tokens` **含**缓存命中，而网关记账的四桶里 `input` **不含**缓存
+  （`internal/usageprobe.Normalize`），跨协议时这个关系还不成立。所以 `dizzy chat`
+  自己**不算钱**，登录状态下回查 `/api/usage`；没有会话就只打 token。
+- **秘密纪律**：完整 API key 默认**掩码打印**，要完整值必须显式 `--show`；
+  `--verbose` 只打方法与路径，不打 Authorization / cookie。
+- **退出码**：0 成功、1 通用失败、2 用法、3 未登录、4 认证(401)、5 权限(403)、
+  6 不存在、7 余额不足(402)、8 限流(429)、9 上游/网关(5xx)。agent 按它分支。
+  **7（402）只在 `/v1/*`**（Go 额度闸门 `modules/quotagate`），`/api/*` 没有 402；
+  **8（429）以 `/v1/*` 为主**（上游限流 / 账号冷却），但 `/api/*` 的认证限流
+  （`AUTH_RATE_LIMITED` / `AUTH_CODE_ATTEMPTS_EXCEEDED`，`packages/api/src/errors.ts:91`）
+  也回 429 —— 同码不同因，要分清看错误体的 `code`。所有 5xx 都归 9。
+- **请求 id**：Go 侧在 `internal/httpapi/server.go` 回写响应头 `X-Request-Id`
+  （与用量记录的 `RequestID` 同源，只加头、不改任何响应体字节）。`chat` 打印它
+  （`--json` 里同名字段），并**按它**精确回查 `GET /api/usage/<reqId>` 拿费用；
+  没有这个头就明说「未取到 reqId」，**不**退化成「模型 + 时间窗 + 最大 id」的猜测。
+- **写操作先报目标**：`keys` 的写与 `admin` 下的写会在 stderr 先打一行「动作 → 目标地址」。
+  没有默认 `base`，但配过一次就一直在，本地栈测试时用 `--base` 临时覆盖更安全。
+- **`usage show <reqId>`** 打单条详情（`GET /api/usage/:reqId`）；`ttftMs` 为 `null`
+  显示「—（未采集）」，不是 0 ms。`usage --by key` 是**本地聚合**，输出会标明覆盖范围。
+- **实测夹具**（不进 `pnpm test`，要真进程）：
+  - `cmd/dizzy/testdata/e2e`：假上游 + 真 gatewayd，验 Bearer 路径与坏 key 拒绝；
+  - `cmd/dizzy/testdata/e2e-full/run.mjs`：整套栈 + 会话路径，**断言 `dizzy chat`
+    的 `costMicros` 与 `/api/usage` 逐条相等**。跑前先确保 7791/7792/8080 空闲。
+
+### 6.3 部署
 
 - 生产服务器 `<生产服务器>` / `<SERVER_IP>`（root），代码 `/opt/dizzyapi`，systemd `dizzyapi.service`；
   公网入口 `https://<站点域名>`：宝塔 nginx 把 `/v1/*`、**`/v1beta/*`** 与 `/healthz` 反代 gatewayd
@@ -557,6 +601,14 @@ pnpm build:go         # 产出 bin/gatewayd(.exe)
 - **管理面看首字延迟走 `/admin/usage`**：页面新增「最近请求」表（`usage.list` 最近 20 条全站
   明细），列里带「首字延迟」，null 显示「—」；纯用现有表格渲染，不依赖 `page-template` 的
   新控件（那是设计线的地盘）。
+- **`X-Request-Id` 只在「查得到」时才发**：`internal/httpapi` 在 `requestID :=
+  s.nextRequestID()` 之后、任何写响应之前写这个头，值与用量记录的 `RequestID` 同源；
+  只加头、不改体（错误体逐字节不变有断言守着）。**早期拒绝**（方法不对 / 请求体读失败 /
+  JSON 非法 / 缺 model）与 `/v1/models`、`/healthz` **都不发**：它们的 id 不进日志、
+  不进用量库，发出去就是「看着能用、`usage show` 必然 404」的死值，比不给更差
+  （曾用 aux 计数器发过，被否掉——「没有死值」这条有反向断言钉着）。真要全覆盖，
+  先把 id 打进日志，再回头加头，两步一起做。客户端据此精确对账，不要再用
+  「模型 + 时间窗 + 最大 id」猜。
 
 ### 充值与支付
 
