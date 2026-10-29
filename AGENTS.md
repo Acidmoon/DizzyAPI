@@ -368,7 +368,7 @@ pnpm test:go
 
 - 新增插件必须有 `test/*.test.ts`；新增 Go 模块必须有单测。
 - 测试失败先修实现，不允许删断言或放宽断言来变绿。
-- 当前基线（2026-10-29 实测）：`pnpm test` 744 个用例（743 通过 / 1 跳过），`pnpm typecheck` 干净，
+- 当前基线（2026-10-29 实测）：`pnpm test` 745 个用例（744 通过 / 1 跳过），`pnpm typecheck` 干净，
   `go test ./...` **20 包**全 ok，`gofmt -l .` 与 `go vet ./...` 无输出。
   这个数字会变，以实际输出为准。
 - **多 worktree 并行跑测试会互相抢端口**：`pnpm test` 里有多条**真进程用例**（`content-audit`
