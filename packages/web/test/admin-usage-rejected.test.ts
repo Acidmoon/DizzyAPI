@@ -97,8 +97,20 @@ class FakeUsage extends Service {
     return { totals: totals(), daily: [], models: [] }
   }
 
-  list() {
-    return { items: [], nextCursor: null }
+  /** 「最近请求」表的数据；隔离区用例不填，保持空表。 */
+  rows: {
+    startedAt: string
+    model: string
+    apiKeyName: string
+    totalTokens: number
+    costMicros: string
+    durationMs: number
+    ttftMs: number | null
+    status: number
+  }[] = []
+
+  list(query: { limit?: number } = {}) {
+    return { items: this.rows.slice(0, query.limit ?? 20), nextCursor: null }
   }
 
   exportRows() {
@@ -251,4 +263,60 @@ test('隔离页：usage 服务缺失时说人话，不白屏', async (t) => {
   const html = await response.text()
   assert.match(html, /用量服务未运行/)
   assert.ok(!html.includes('坏记录隔离区'))
+})
+
+test('全站用量页：最近请求表带首字延迟列，非流式 / 历史记录显示「—」而不是 0', async (t) => {
+  const app = await boot(t)
+  app.usage?.rows.push(
+    {
+      startedAt: '2026-10-28T10:00:00.000Z',
+      model: 'gpt-test',
+      apiKeyName: 'ci',
+      totalTokens: 120,
+      costMicros: '1000',
+      durationMs: 2_500,
+      ttftMs: 321,
+      status: 200,
+    },
+    {
+      startedAt: '2026-10-28T09:00:00.000Z',
+      model: 'gpt-test',
+      apiKeyName: 'ci',
+      totalTokens: 20,
+      costMicros: '0',
+      durationMs: 40,
+      ttftMs: null,
+      status: 200,
+    },
+    {
+      startedAt: '2026-10-28T08:00:00.000Z',
+      model: 'gpt-test',
+      apiKeyName: 'ci',
+      totalTokens: 20,
+      costMicros: '0',
+      durationMs: 40,
+      ttftMs: null,
+      status: 500,
+    },
+  )
+
+  const response = await get(app, '/admin/usage')
+  assert.equal(response.status, 200)
+  const html = await response.text()
+
+  // 表头有「首字延迟」列，且说明写清 null 的含义（不让人以为 0 = 没测到）。
+  assert.match(html, /最近请求/)
+  assert.match(html, /首字延迟/)
+  assert.match(html, /TTFT/)
+  assert.match(html, /只有流式请求才有/)
+
+  // 流式记录：321ms / 总耗时 2.5s。
+  assert.match(html, />321 ms</)
+  assert.match(html, />2\.5 s</)
+  // 非流式 / 历史记录：必须是「—」，不能是 0 ms。
+  assert.match(html, />—</)
+  assert.ok(!html.includes('>0 ms<'), '没有采集到的首字延迟不能显示成 0 ms')
+
+  // 非 200 的状态用错误徽标，不混在正常状态里。
+  assert.match(html, /500/)
 })

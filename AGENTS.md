@@ -548,6 +548,15 @@ pnpm build:go         # 产出 bin/gatewayd(.exe)
   （不泄露某个 reqId 是否存在）。响应比列表多 `reasoningTokens` / `usagePresent` /
   `usageComplete` / `ttftMs`，但**仍然不给** profile / accountId / attempts（用户面拿不到
   上游账号拓扑）。
+- **给 `UsagePort` 加方法必须同批改 `packages/api/src/service.ts` 的方法清单**：
+  `usage: () => this.optionalService<UsagePort>('usage', [...])` 里的数组是**整个 usage 端口**
+  的可用性闸门——清单里列了 `get` 而 usage 插件没有它时，不是「只有新接口 503」，而是
+  `/api/usage`、导出、详情**全部 503**（fail-closed，故意的：那说明版本错配）。
+  所以加方法 = 改三处（`packages/usage` 的实现、`api/src/types.ts` 的 `UsagePort`、
+  `api/src/service.ts` 的清单），漏了第三处会连带打挂旧接口。
+- **管理面看首字延迟走 `/admin/usage`**：页面新增「最近请求」表（`usage.list` 最近 20 条全站
+  明细），列里带「首字延迟」，null 显示「—」；纯用现有表格渲染，不依赖 `page-template` 的
+  新控件（那是设计线的地盘）。
 
 ### 充值与支付
 
