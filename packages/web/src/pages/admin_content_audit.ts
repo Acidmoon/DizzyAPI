@@ -142,10 +142,15 @@ export const adminContentAuditPage: PageModule = {
 <form class="form form--wide" method="post" action="/admin/content-audit?action=edit">
 <input type="hidden" name="ruleId" value="${t.escapeAttr(rule.id)}">
 <input type="text" name="pattern" value="${t.escapeAttr(rule.pattern)}" maxlength="200" required>
-<select name="action">
-<option value="block"${rule.action === 'block' ? ' selected' : ''}>命中即拒绝</option>
-<option value="log"${rule.action === 'log' ? ' selected' : ''}>命中只记日志</option>
-</select>
+${t.renderSelect({
+  name: 'action',
+  ariaLabel: '命中处理',
+  allowEmpty: false,
+  options: [
+    { value: 'block', label: '命中即拒绝', selected: rule.action === 'block' },
+    { value: 'log', label: '命中只记日志', selected: rule.action === 'log' },
+  ],
+})}
 <input type="text" name="category" value="${t.escapeAttr(rule.category ?? '')}" placeholder="分类（可选）" maxlength="64">
 <input type="text" name="note" value="${t.escapeAttr(rule.note ?? '')}" placeholder="备注（可选）" maxlength="200">
 <button class="btn small" type="submit">保存</button>
@@ -165,10 +170,15 @@ export const adminContentAuditPage: PageModule = {
 
     const createForm = `<form class="form form--wide" method="post" action="/admin/content-audit?action=create">
 <input type="text" name="pattern" placeholder="关键词（大小写不敏感的子串匹配）" maxlength="200" required>
-<select name="action">
-<option value="block">命中即拒绝（403）</option>
-<option value="log">命中只记日志（放行）</option>
-</select>
+${t.renderSelect({
+  name: 'action',
+  ariaLabel: '命中处理',
+  allowEmpty: false,
+  options: [
+    { value: 'block', label: '命中即拒绝（403）', selected: true },
+    { value: 'log', label: '命中只记日志（放行）' },
+  ],
+})}
 <input type="text" name="category" placeholder="分类（可选）" maxlength="64">
 <input type="text" name="note" placeholder="备注（可选）" maxlength="200">
 <button class="btn" type="submit">新增规则</button>

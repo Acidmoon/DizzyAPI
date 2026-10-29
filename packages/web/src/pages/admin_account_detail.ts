@@ -6,6 +6,7 @@
  * 默认只展开基本信息——控件多起来之后平铺一页不可用。
  */
 import { pageHeader, renderAdminShell, type ActionContext, type PageContext, type PageModule } from '../layout.ts'
+import { renderSelectShell } from '@dizzyapi/plugin-page-template'
 import { requiredString, WebError } from '../forms.ts'
 import { WEB_ACTOR, type AccountUpdatePatch, type AccountView } from '../runtime.ts'
 import { auditedAction } from '../audit.ts'
@@ -370,7 +371,7 @@ function selectField(
     .join('')
   return `<div class="field">
 <label for="f-${escapeAttr(name)}">${escapeText(label)}</label>
-<select class="input" id="f-${escapeAttr(name)}" name="${escapeAttr(name)}">${body}</select>
+${renderSelectShell({ name, id: `f-${name}`, optionsHtml: body })}
 </div>`
 }
 

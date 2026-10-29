@@ -803,6 +803,35 @@ pnpm build:all        # 两个二进制一起编
   而 import map 只能是内联 `<script>`，CSP 一样拦。**用 `core.umd.min.js` + `dom.umd.min.js`
   两个经典脚本**（core 自包含，dom 读全局 `FloatingUICore`），顺序不能反。
 
+### 控件（第 3 / 11 条）
+
+- **控件一律「原生元素的语义 + 自绘的浮层」**，也就是**渐进增强**：服务端输出的是一个
+  真能用的 `<select>` / `<input type="date">` / `<form>`，只多一个 `data-*` 钩子；
+  `app.js` 把钩子升级成 Tom Select / flatpickr / 自绘确认框。JS 没跑（被拦 / 加载失败 /
+  还没解析到）时浏览器原生控件照常可用、表单照常提交。**这是刻意选的形状，不要改成
+  「只输出组件的 div」**——那会把「JS 挂掉就整页不能填表」变成新的失败面。
+- **页面源码里不许出现原生控件与内联样式**，四条护栏在 `packages/web/test/pages-guards.test.ts`
+  逐条守着（任一不过就是有人退回去了）：
+  `style="…"`（CSP 会静默丢弃）、`<select`、`type="date"`、`window.confirm`。
+  新写页面要控件时用 `pageTemplate` 的 `renderSelect` / `renderSelectShell` /
+  `renderDatePicker` / `renderConfirmDialog`，不要自己拼标签。
+- **两个下拉入口的区别**：`renderSelect({ options: [{value,label,selected}] })` 适合普通场景；
+  `renderSelectShell({ optionsHtml })` 用于选项 HTML 已经在别处拼好（例如审计页的动作列表、
+  账号页的批量动作）——它**原样透传** `optionsHtml`，所以调用方自己负责那段 HTML 的转义。
+  `allowEmpty` 默认为真：筛选器的「全部」就是那条 `value=""` 的空首项，且**只在没有任何
+  选项被选中时才占 `selected`**（两个 `selected` 会让浏览器取错）。
+- **升级脚本必须幂等**：`CLIENT_JS` 的 `upgradeControls()` 用 `.tomselect` / `._flatpickr`
+  两个属性判断「这个控件已经升级过」，命中就 `continue`。重复初始化会把已升级的控件
+  炸回空白下拉。`htmx:afterSwap` 之后会再跑一次（第 4 条局部刷新靠这条），所以幂等是硬要求。
+- **单个控件失败不许中断整页脚本**：两个升级各自 `try / catch` + `console.warn`。
+  一个下拉初始化失败不能顺带把确认框、htmx 配置、后面的控件一起停掉。
+- **模态弹窗用原生 `<dialog>`**（`showModal()`）：焦点陷阱、ESC 关闭、`::backdrop` 交给浏览器，
+  外观全自绘（`.dialog*` 在 `layout-classes.ts`）。**不要自己实现焦点陷阱**——
+  手写的版本在 Safari / 移动端都会被 tab 键绕出去。
+- **控件渲染有单测**：`packages/page-template/test/controls.test.ts`（11 条）断言「无 JS 可用」
+  （原生元素在、`name` / `value` / `selected` 对、转义到位）和「有 JS 能升级」（钩子、
+  幂等守卫、`try/catch`、`htmx:afterSwap` 重跑）。
+
 ### 字号与图表几何
 
 - **字号只有一个源**：`packages/page-template/src/tokens.ts` 的 `FONT_ROLES`（9 档 × `size` +

@@ -51,7 +51,7 @@ test('护栏：模板 CSS 里不许有硬编码 px 字号 / 行高', () => {
 
 // ─────────────────────── 原生控件 ───────────────────────
 
-test('护栏：页面里不许再出现原生 <select>', { todo: '第 3 条：6 处原生 select 待换成 Tom Select' }, () => {
+test('护栏：页面里不许再出现原生下拉控件', () => {
   // 原生 <select> 的下拉浮层由浏览器绘制，CSS 碰不到，样式完全不可控。
   // 第 3 条要求换成 Tom Select。2026-10-29 实测全站原有 6 处 / 4 个文件。
   const offenders: string[] = []
@@ -61,7 +61,7 @@ test('护栏：页面里不许再出现原生 <select>', { todo: '第 3 条：6 
   assert.deepEqual(offenders, [], `这些文件还有原生 select：${offenders.join('、')}`)
 })
 
-test('护栏：页面里不许再出现原生 <input type="date">', { todo: '第 3 条：2 处原生 date 待换成 flatpickr' }, () => {
+test('护栏：页面里不许再出现原生日期输入', () => {
   // 同理：日期选择器的日历浮层由浏览器绘制，CSS 碰不到。
   const offenders: string[] = []
   for (const { name, text } of pageFiles()) {

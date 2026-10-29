@@ -18,6 +18,8 @@ import {
 } from './charts.ts'
 import { escapeAttr, escapeText } from './escape.ts'
 import { renderConfirmDialog, type ConfirmDialogOptions } from './confirm.ts'
+import { renderSelect, renderSelectShell, type SelectOptions, type SelectShellOptions } from './select.ts'
+import { renderDatePicker, type DatePickerOptions } from './date-picker.ts'
 import {
   VENDOR_ASSET_PREFIX,
   VENDOR_SCRIPT_ORDER,
@@ -268,6 +270,26 @@ export class PageTemplateService extends Service {
   /** 确认框的 `<dialog>` 壳（`renderDocument` 已自动带上，这里给需要定制文案时用）。 */
   renderConfirmDialog(options?: ConfirmDialogOptions): string {
     return renderConfirmDialog(options)
+  }
+
+  // ── 控件（渐进增强）──────────────────────────────────────────────
+  // 输出的是**可用的原生元素** + `data-*` 钩子；有 JS 时升级成自绘浮层，
+  // 无 JS 时原生控件照常可用。原生控件的浮层由浏览器绘制、CSS 碰不到，
+  // 所以下拉与日历只能这样换（owner 第 3 条）。
+
+  /** 下拉：`<select data-tom-select>`（选项给数组）。 */
+  renderSelect(options: SelectOptions): string {
+    return renderSelect(options)
+  }
+
+  /** 下拉：`<select data-tom-select>`（选项已是 HTML，用于动态拼接的场景）。 */
+  renderSelectShell(options: SelectShellOptions): string {
+    return renderSelectShell(options)
+  }
+
+  /** 日期：`<input type="date" data-flatpickr>`。 */
+  renderDatePicker(options: DatePickerOptions): string {
+    return renderDatePicker(options)
   }
 }
 

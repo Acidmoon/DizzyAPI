@@ -47,6 +47,15 @@ export {
 } from './confirm.ts'
 
 export {
+  renderSelect,
+  renderSelectShell,
+  type SelectOption,
+  type SelectOptions,
+  type SelectShellOptions,
+} from './select.ts'
+export { renderDatePicker, type DatePickerOptions } from './date-picker.ts'
+
+export {
   VENDOR_ASSET_PREFIX,
   VENDOR_CSS_ORDER,
   VENDOR_SCRIPT_ORDER,

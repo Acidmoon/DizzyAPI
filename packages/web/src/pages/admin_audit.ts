@@ -115,12 +115,15 @@ export const adminAuditPage: PageModule = {
       )
       .join('')
 
+    // 第 11 条：筛选区的原生下拉与原生日期输入全部换成自研控件。
+    // 原生控件的浮层由浏览器绘制、CSS 碰不到，所以下拉与日历必须换成
+    // Tom Select / flatpickr（渲染成带 data-* 钩子的原生元素，无 JS 时仍可用）。
     const filterHtml = `<form class="form form--wide inline-form" method="get" action="/admin/audit">
 <input type="text" name="actor" placeholder="操作者（user:1:admin）" value="${t.escapeAttr(actor)}">
-<select name="action"><option value="">全部动作</option>${actionOptions}</select>
-<select name="targetType"><option value="">全部目标</option>${targetOptions}</select>
-<input type="date" name="from" value="${t.escapeAttr(fromDate)}">
-<input type="date" name="to" value="${t.escapeAttr(toDate)}">
+${t.renderSelectShell({ name: 'action', optionsHtml: `<option value="">全部动作</option>${actionOptions}`, ariaLabel: '动作' })}
+${t.renderSelectShell({ name: 'targetType', optionsHtml: `<option value="">全部目标</option>${targetOptions}`, ariaLabel: '目标类型' })}
+${t.renderDatePicker({ name: 'from', value: fromDate, ariaLabel: '起始日期' })}
+${t.renderDatePicker({ name: 'to', value: toDate, ariaLabel: '结束日期' })}
 <button class="btn small" type="submit">筛选</button>
 <a class="btn small" href="/admin/audit">清空</a>
 </form>`

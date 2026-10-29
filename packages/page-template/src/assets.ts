@@ -400,5 +400,45 @@ export const CLIENT_JS = `
     pendingAction = function () { trigger.click(); };
     confirmDialog.showModal();
   }, true);
+  // ── 控件升级（渐进增强）──────────────────────────────────────────────
+  // 服务端输出的是**可用的原生控件**（select / input[type=date]），
+  // 这里把它们升级成自绘浮层的版本。JS 没跑时原生控件照样能用，功能不丢。
+  function upgradeControls() {
+    if (window.TomSelect) {
+      var selects = document.querySelectorAll('select[data-tom-select]');
+      for (var i = 0; i < selects.length; i++) {
+        // 已经升级过的跳过（htmx 局部刷新后可能重复调用）
+        if (selects[i].tomselect) continue;
+        try {
+          new window.TomSelect(selects[i], {
+            // 浮层定位交给 Tom Select（它用 CSSOM 赋值，不受 CSP 限制）
+            create: false,
+            allowEmptyOption: true,
+          });
+        } catch (error) {
+          // 单个控件失败不能让整页脚本停掉——原生 select 还在，用户能用
+          if (window.console && console.warn) console.warn('TomSelect 初始化失败', selects[i], error);
+        }
+      }
+    }
+    if (window.flatpickr) {
+      var dates = document.querySelectorAll('input[data-flatpickr]');
+      for (var j = 0; j < dates.length; j++) {
+        if (dates[j]._flatpickr) continue;
+        try {
+          window.flatpickr(dates[j], { dateFormat: 'Y-m-d', allowInput: true });
+        } catch (error) {
+          if (window.console && console.warn) console.warn('flatpickr 初始化失败', dates[j], error);
+        }
+      }
+    }
+  }
+
+  // 首次加载：DOM 已解析到本脚本处，直接升级。
+  upgradeControls();
+  // htmx 局部刷新换入的内容也要升级（第 4 批做局部刷新时靠这一条）。
+  if (window.htmx) {
+    document.body.addEventListener('htmx:afterSwap', upgradeControls);
+  }
 })();
 `

@@ -230,11 +230,16 @@ function renderBulkForm(t: import('@dizzyapi/plugin-page-template').PageTemplate
   return `<form class="form" id="${BULK_FORM_ID}" method="post" action="/admin/accounts?action=bulk">
 <p class="hint">先在上表勾选账号（共 ${total} 个），再选择动作。勾选「启用 / 停用」时下面的字段不生效。</p>
 <div class="row">
-<div class="field"><label for="f-op">动作</label><select class="input" id="f-op" name="op">
-<option value="update">改字段（勾选下面的字段）</option>
-<option value="enable">启用</option>
-<option value="disable">停用</option>
-</select></div>
+<div class="field"><label for="f-op">动作</label>${t.renderSelect({
+  name: 'op',
+  id: 'f-op',
+  allowEmpty: false,
+  options: [
+    { value: 'update', label: '改字段（勾选下面的字段）', selected: true },
+    { value: 'enable', label: '启用' },
+    { value: 'disable', label: '停用' },
+  ],
+})}</div>
 </div>
 <div class="row">
 <label class="hint"><input type="checkbox" name="useLabels" value="1"> 标签</label>
