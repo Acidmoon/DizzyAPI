@@ -74,17 +74,25 @@ type Dialect struct {
 	// StreamQuery 是流式请求追加的查询串（不含 ?）。Gemini 用 alt=sse 决定
 	// 返回 SSE 还是 JSON 数组。
 	StreamQuery string
+	// EmbeddingsPath 是同一协议族里 embeddings 端点的路径（空 = 该协议不支持
+	// embeddings）。OpenAI 兼容族是 `/embeddings`；anthropic / gemini 没有这个端点。
+	//
+	// 它按**请求级操作类型**（contracts.Ctx.Operation）选，不是按协议：
+	// 为 embeddings 新造一个 Protocol 会污染协议语义与 codec 注册表。
+	EmbeddingsPath string
 }
 
 // DefaultDialects 是内置方言表。调用方可在 Config.Dialects 覆盖单个协议。
 var DefaultDialects = map[contracts.Protocol]Dialect{
 	contracts.ProtocolOpenAIChat: {
-		Path: "/chat/completions",
-		Auth: AuthBearer,
+		Path:           "/chat/completions",
+		EmbeddingsPath: "/embeddings",
+		Auth:           AuthBearer,
 	},
 	contracts.ProtocolOpenAIResponses: {
-		Path: "/responses",
-		Auth: AuthBearer,
+		Path:           "/responses",
+		EmbeddingsPath: "/embeddings",
+		Auth:           AuthBearer,
 	},
 	contracts.ProtocolAnthropic: {
 		Path: "/messages",
@@ -249,11 +257,24 @@ func (s *Stage) Run(ctx *contracts.Ctx) (contracts.Decision, error) {
 		upstreamProtocol = ctx.Upstream.Protocol
 	}
 	dialect, known := s.config.Dialects[upstreamProtocol]
+	if !known && ctx.Operation.IsEmbeddings() {
+		// 旧快照没声明协议 = OpenAI 兼容（与 protoconv 的直通口径一致），
+		// 所以 embeddings 走 chat 方言的 embeddings 路径。
+		dialect, known = s.config.Dialects[contracts.ProtocolOpenAIChat]
+	}
 	if !known {
 		dialect = Dialect{Path: s.config.Path, Auth: AuthBearer}
 	}
+	// embeddings 只在 OpenAI 兼容族里有：anthropic / gemini 的方言没有这个端点。
+	// 明确拒绝（不可重试），绝不把 embeddings 请求发到 chat 端点上。
+	if ctx.Operation.IsEmbeddings() && dialect.EmbeddingsPath == "" {
+		return contracts.Decision{}, contracts.Errorf(
+			http.StatusBadRequest, "MODEL_NOT_SUPPORTED",
+			"选中账号不支持 embeddings：只有 OpenAI 兼容账号能处理这个请求",
+		)
+	}
 
-	target, err := upstreamTarget(credential.BaseURL, dialect, upstreamModelOf(ctx), ctx.Meta.Stream)
+	target, err := upstreamTarget(credential.BaseURL, dialect, upstreamModelOf(ctx), ctx.Meta.Stream, ctx.Operation)
 	if err != nil {
 		return contracts.Decision{}, contracts.Errorf(
 			http.StatusBadGateway, "UPSTREAM_URL_INVALID", "上游地址不合法（模型名或 BaseURL）",
@@ -510,8 +531,20 @@ func upstreamModelOf(ctx *contracts.Ctx) string {
 }
 
 // upstreamTarget 拼出上游 URL：路径模板渲染 + 流式路径 / 查询串。
-func upstreamTarget(baseURL string, dialect Dialect, model string, stream bool) (string, error) {
+//
+// 路径按**请求级操作类型**选：embeddings 用方言的 EmbeddingsPath，其余用 Path；
+// 流式再换成 StreamPath（Gemini 的 :streamGenerateContent）。
+func upstreamTarget(
+	baseURL string,
+	dialect Dialect,
+	model string,
+	stream bool,
+	operation contracts.Operation,
+) (string, error) {
 	template := dialect.Path
+	if operation.IsEmbeddings() {
+		template = dialect.EmbeddingsPath
+	}
 	if stream && dialect.StreamPath != "" {
 		template = dialect.StreamPath
 	}

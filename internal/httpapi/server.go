@@ -52,6 +52,17 @@ type UsageProbe interface {
 	Watch(protocol contracts.Protocol, r io.Reader) (io.Reader, func() (contracts.Usage, bool, string))
 }
 
+// MetricsSink 收集请求级指标并渲染 Prometheus 文本。
+//
+// 它由 internal/metrics 实现；在这里声明是为了让 httpapi 不依赖具体实现
+// （与 Authorizer / UsageProbe 同构），测试也能塞假实现。
+type MetricsSink interface {
+	ObserveRequest(protocol contracts.Protocol, status int, duration time.Duration)
+	ObserveUsage(usage contracts.Usage)
+	ObserveAttempts(attempts []contracts.AccountAttempt)
+	Render() []byte
+}
+
 // Config 是 HTTP 入口的运行参数。
 type Config struct {
 	MaxBodyBytes int64
@@ -68,6 +79,10 @@ type Config struct {
 	// TrustedProxyHops 是 X-Forwarded-For 从右往左的第几跳可信代理；
 	// <=0 按 1 处理。
 	TrustedProxyHops int
+	// Metrics 收集请求级指标；为空时不收集（不影响请求本身）。
+	Metrics MetricsSink
+	// MetricsEnabled 为 false 时 GET /metrics 返回 404（默认关闭 = 默认 404）。
+	MetricsEnabled bool
 }
 
 // Server 持有 HTTP handler 的依赖。构造后只读，可被并发使用。
@@ -79,6 +94,7 @@ type Server struct {
 	authorizer Authorizer
 	usageSink  contracts.UsageSink
 	usageProbe UsageProbe
+	metrics    MetricsSink
 	started    time.Time
 	requests   atomic.Uint64
 }
@@ -105,6 +121,7 @@ func New(eng *engine.Engine, cache *accounts.Cache, logger *slog.Logger, cfg Con
 		authorizer: cfg.Authorizer,
 		usageSink:  cfg.UsageSink,
 		usageProbe: cfg.UsageProbe,
+		metrics:    cfg.Metrics,
 		started:    time.Now().UTC(),
 	}, nil
 }
@@ -120,9 +137,18 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/v1/chat/completions", s.llmHandler(contracts.ProtocolOpenAIChat, "/v1/chat/completions"))
 	mux.HandleFunc("/v1/responses", s.llmHandler(contracts.ProtocolOpenAIResponses, "/v1/responses"))
 	mux.HandleFunc("/v1/messages", s.llmHandler(contracts.ProtocolAnthropic, "/v1/messages"))
+	// embeddings 与 chat 同属 OpenAI 兼容族、路径不同：用请求级操作类型区分，
+	// 不为它新造协议（那会污染协议语义与 codec 注册表）。
+	mux.HandleFunc("/v1/embeddings", s.llmRouteHandler(llmRoute{
+		protocol:  contracts.ProtocolOpenAIChat,
+		path:      "/v1/embeddings",
+		operation: contracts.OperationEmbeddings,
+	}))
 	// Gemini 的模型名在路径里（/v1beta/models/{model}:generateContent），
 	// ServeMux 的通配符不支持「通配 + 字面后缀」，所以这一段自己解析路径。
 	mux.HandleFunc("/v1beta/models/", s.handleGemini)
+	// Prometheus 文本格式；只在 gatewayd 的回环监听上暴露（nginx 不反代）。
+	mux.HandleFunc("/metrics", s.handleMetrics)
 	return s.recover(mux)
 }
 
@@ -199,6 +225,29 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// handleMetrics 输出 Prometheus 文本格式的指标。
+//
+// 只在 gatewayd 的回环监听上暴露（nginx 不反代它）；关闭时返回 404，
+// 让 scrape 直接看到「端点不存在」而不是一片 0。
+func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		writeErrorFor(w, contracts.Protocol(""), http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "只支持 GET /metrics")
+		return
+	}
+	if !s.config.MetricsEnabled || s.metrics == nil {
+		http.NotFound(w, r)
+		return
+	}
+	payload := s.metrics.Render()
+	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+	w.Header().Set("Content-Length", strconv.Itoa(len(payload)))
+	w.WriteHeader(http.StatusOK)
+	if r.Method == http.MethodHead {
+		return
+	}
+	_, _ = w.Write(payload)
+}
+
 // llmHandler 构造某个客户端协议的路由处理器。三个协议共用同一套
 // 「读体 → 探针 → 构造 Ctx → 交给 engine → 写响应 → 记录用量」流程，只是协议不同。
 func (s *Server) llmHandler(protocol contracts.Protocol, path string) http.HandlerFunc {
@@ -216,6 +265,8 @@ type llmRoute struct {
 	// streamFromPath 为真时是否流式由路径后缀决定（Gemini 的
 	// :streamGenerateContent）。
 	streamFromPath bool
+	// operation 是请求级操作类型（零值 = chat）。embeddings 用它选上游路径。
+	operation contracts.Operation
 }
 
 // llmRouteHandler 是四个协议共用的入口处理流程。
@@ -258,6 +309,25 @@ func (s *Server) llmRouteHandler(route llmRoute) http.HandlerFunc {
 			writeErrorFor(w, protocol, http.StatusBadRequest, "INVALID_REQUEST", "缺少 model")
 			return
 		}
+		// embeddings 的请求形状（input 类型 / 非空 / 大小上限 / 不支持流式）在这里校验。
+		if route.operation.IsEmbeddings() {
+			if apiErr := validateEmbeddings(body, stream); apiErr != nil {
+				writeErrorFor(w, protocol, apiErr.status, apiErr.code, apiErr.message)
+				return
+			}
+		}
+		// embeddings 只有 OpenAI 兼容账号能处理：先把候选收敛掉，避免选中
+		// anthropic / gemini 账号后才在 transport 里失败（fail-closed 但不友好）。
+		candidates := s.accounts.Candidates()
+		if route.operation.IsEmbeddings() {
+			filtered := s.embeddingCandidates(candidates)
+			if len(filtered) == 0 && len(candidates) > 0 {
+				writeErrorFor(w, protocol, http.StatusBadRequest, "MODEL_NOT_SUPPORTED",
+					"账号池里没有 OpenAI 兼容账号，无法处理 embeddings 请求")
+				return
+			}
+			candidates = filtered
+		}
 		// openai-chat 流式请求默认不带 usage。只有显式开启时才改写请求体：
 		// 关闭时 body 必须与客户端发来的字节逐字节相同（回归约束）。
 		if s.config.RecordStreamUsage && protocol == contracts.ProtocolOpenAIChat && stream {
@@ -275,9 +345,10 @@ func (s *Server) llmRouteHandler(route llmRoute) http.HandlerFunc {
 			},
 			Headers:           r.Header.Clone(),
 			Body:              contracts.BytesBody(body),
-			AccountCandidates: s.accounts.Candidates(),
+			AccountCandidates: candidates,
 			ClientProtocol:    protocol,
 			ClientIP:          s.clientIP(r),
+			Operation:         route.operation,
 		}
 
 		// 并发槽位必须等响应（含整个流）真正写完才释放；engine 在失败转移 / panic
@@ -294,6 +365,7 @@ func (s *Server) llmRouteHandler(route llmRoute) http.HandlerFunc {
 			// 客户端已经断开；不再写响应，但仍要留下一条「未完成」的用量记录。
 			s.closeStream(decision)
 			s.recordUsage(ctx, decision, started, usageSample{})
+			s.observeMetrics(ctx, protocol, decision.Status, started, usageSample{})
 			return
 		}
 		status := decision.Status
@@ -329,6 +401,7 @@ func (s *Server) llmRouteHandler(route llmRoute) http.HandlerFunc {
 			}
 		}
 		tokens := s.recordUsage(ctx, decision, started, sample)
+		s.observeMetrics(ctx, protocol, status, started, sample)
 
 		s.logger.Info("LLM 请求完成",
 			"reqId", requestID,
@@ -431,6 +504,28 @@ func (s *Server) recordUsage(ctx *contracts.Ctx, decision contracts.Decision, st
 	}
 	s.usageSink.Append(record)
 	return record.TotalTokens
+}
+
+// observeMetrics 把一次已完成的请求记进指标。
+//
+// 与用量记录同口径：token 四桶按**上游协议**归一化；失败码取自本轮的上游尝试。
+// 热路径上只有原子加法，不做字符串拼接（渲染发生在 scrape 时）。
+func (s *Server) observeMetrics(
+	ctx *contracts.Ctx,
+	protocol contracts.Protocol,
+	status int,
+	started time.Time,
+	sample usageSample,
+) {
+	if s.metrics == nil || ctx == nil {
+		return
+	}
+	if status == 0 {
+		status = http.StatusOK
+	}
+	s.metrics.ObserveRequest(protocol, status, time.Since(started))
+	s.metrics.ObserveUsage(usageprobe.Normalize(sample.usage, s.upstreamProtocol(ctx)))
+	s.metrics.ObserveAttempts(ctx.Attempts)
 }
 
 // attemptedAccounts 数的是「被试过的账号数」，不是 dispatch 阶段的执行次数。
@@ -670,7 +765,7 @@ func protocolForPath(path string) contracts.Protocol {
 		return contracts.ProtocolOpenAIResponses
 	case "/v1/messages":
 		return contracts.ProtocolAnthropic
-	case "/v1/chat/completions":
+	case "/v1/chat/completions", "/v1/embeddings":
 		return contracts.ProtocolOpenAIChat
 	default:
 		if strings.HasPrefix(path, geminiPathPrefix) {
