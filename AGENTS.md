@@ -373,7 +373,7 @@ pnpm test:go
 
 - 新增插件必须有 `test/*.test.ts`；新增 Go 模块必须有单测。
 - 测试失败先修实现，不允许删断言或放宽断言来变绿。
-- 当前基线（2026-10-30 实测）：`pnpm test` 782 个用例（781 通过 / 1 跳过），`pnpm typecheck` 干净，
+- 当前基线（2026-10-30 实测）：`pnpm test` 820 个用例（819 通过 / 1 跳过），`pnpm typecheck` 干净，
   `go test ./...` **26 包**全 ok，`gofmt -l .` 与 `go vet ./...` 无输出。
   这个数字会变，以实际输出为准。
 - **验收任何分支前先 `pnpm build:go`**（不只是改过 Go 的分支）：`pnpm test` 里有真进程用例会
@@ -405,11 +405,28 @@ pnpm test:go
   改 `all` 才换正文。web 负责把 `@font-face` 追加进 `/assets/app.css` 并发送 woff2 字节。
 - 用量页时间维度只有 **今天 / 昨天 / 近 7 天**：单日（今天、昨天）的柱状图看最近 7 个小时
   （小时桶，标签 `HH:00`），近 7 天按天绘制；图表固定 7 根柱、7 个标签。
+- **静态资源一律带内容哈希，`immutable` 才成立**（2026-10-30）：`/assets/app.css?v=…`、
+  `/assets/app.js?v=…`、`/assets/vendor/<name>?v=…` 的 `?v=` 是**正文的 sha256 前 8 位**，
+  装配点只有 `packages/web/src/asset-version.ts`（`APP_CSS_BODY` / `APP_JS_BODY`）与
+  `page-template/src/vendor.ts`（`vendorHref()`）。页面里**不许手拼** `/assets/vendor/...`。
+  这些字节发的是 `Cache-Control: public, max-age=31536000, immutable`（一年、不重新验证），
+  没有版本串就等于「改了样式用户看不到」。
+- **已知债：`app.css` 的哈希不含 `font-smiley` 追加的 `@font-face` 块**。那一块要运行时才有
+  （服务端渲染 `<link>` 时 font 插件还没注入），所以改字体 `scope` 或换字体版本时，
+  `app.css` 的 URL 哈希不变 → 回访浏览器一年内还在用旧 CSS。
+  `/assets/fonts/*.woff2` 本身也是固定路径 + `immutable`。**两者要一起修**（把 href 改成
+  由 `web` 在拿到 `fontCss()` 之后惰性算，或让 `font-smiley` 给自己的字体 URL 带版本串），
+  别只修一半。
 
 ### 5.6 文件粒度与耦合（owner 2026-10-29 追加）
 
 **要求原话：不要一个文件写那么大，尽量低耦合。** 这条是硬要求，不是风格偏好。
 
+- **行数怎么数（统一口径，别再拿两种数吵）**：一律数**文件总行数、含空行**，
+  等价 `wc -l` 或 PowerShell `(Get-Content f).Count`。
+  **不要用 `Measure-Object -Line`**——它会跳过空行，同一个文件能少报 90 行
+  （2026-10-30 实测：`api/src/http.ts` 含空行 **872** 行，`Measure-Object -Line` 只给 782，
+  我照后者报了「你数错了」，其实错的是我）。
 - **新文件软上限 400 行**（含注释，不含测试数据）。400～500 行要在 PR 说明里写清为什么
   不能再拆；**超过 500 行不接受提交**，先拆再交。
 - **测试文件软上限 500 行**。测试按主题拆成多个 `test/*.test.ts`，不要一个文件塞完所有场景。
@@ -418,14 +435,18 @@ pnpm test:go
   都塞进 `service.ts`。
 - **一个文件里不出现两个服务 / 两个模块**。同目录的文件之间保持单向依赖：
   `service → db / types / errors`，反向 import 一律不允许。
-- **已有超限文件只许缩短，不许加长**（大文件债，按需拆，不搞一次性大重构）：
-  `packages/usage/src/service.ts` 1326、`packages/api/src/types.ts` 949、
-  `packages/account-admin/src/service.ts` 1319、`packages/account-priority/src/service.ts` 1094、
-  `packages/identity/src/service.ts` 1036、`modules/protoconv/codec_*.go` 约 900、
-  `packages/web/src/runtime.ts` 892、`packages/api/src/http.ts` 782、
-  `internal/httpapi/server.go` 790。
+- **已有超限文件只许缩短，不许加长**（大文件债，按需拆，不搞一次性大重构；
+  数字按上面的统一口径，2026-10-30 实测）：
+  `packages/account-admin/src/service.ts` 1445、`packages/usage/src/service.ts` 1432、
+  `packages/account-priority/src/service.ts` 1238、`packages/identity/src/service.ts` 1132、
+  `packages/api/src/types.ts` 1054、`modules/protoconv/codec_anthropic.go` 1034、
+  `packages/web/src/runtime.ts` 977、`modules/protoconv/codec_responses.go` 974、
+  `packages/api/src/http.ts` 872、`internal/httpapi/server.go` 843、
+  `modules/protoconv/codec_gemini.go` 705、`modules/protoconv/codec_chat.go` 697；
+  400～500 的次级面：`packages/web/src/pages/admin_account_detail.ts` 440、
+  `packages/web/src/service.ts` 449、`packages/page-template/src/shell.ts` 447。
   往这些文件里加东西时，**顺手把同一职责搬进新的小文件**，让净增行数尽量小。
-- **`packages/api/src` 的路由布局（2026-10-30 拆完，4241 → 782）**：新增 `/api/*` 路由**一律**
+- **`packages/api/src` 的路由布局（2026-10-30 拆完，4241 → 872）**：新增 `/api/*` 路由**一律**
   写进 `routes/<前缀>.ts`，不再进 `http.ts`：
   - `routes/*.ts`：一前缀一个文件（`keys` / `usage` / `admin_usage` / `admin_accounts` …），
     导出一个 `routeXxx(host, req, res, parts, url)`；每个管理面文件**自己先调
