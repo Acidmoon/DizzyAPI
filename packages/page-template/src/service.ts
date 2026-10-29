@@ -45,7 +45,6 @@ import {
   renderAuthPage,
   renderBadge,
   renderChartCard,
-  renderDocument,
   renderEmpty,
   renderExportButton,
   renderField,
@@ -61,7 +60,6 @@ import {
   renderTable,
   type BrandOptions,
   type ChartCardOptions,
-  type DocumentOptions,
   type FilterPill,
   type FilterPillItem,
   type ModelBlock,
@@ -74,6 +72,7 @@ import {
   type TableColumn,
   type UserOptions,
 } from './shell.ts'
+import { renderDocument, type DocumentOptions } from './document.ts'
 
 export class PageTemplateService extends Service {
   static inject: readonly string[] = []

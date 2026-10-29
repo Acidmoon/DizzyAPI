@@ -84,7 +84,6 @@ export {
 
 export {
   renderChartCard,
-  renderDocument,
   renderEmpty,
   renderExportButton,
   renderField,
@@ -102,7 +101,6 @@ export {
   renderTable,
   type BrandOptions,
   type ChartCardOptions,
-  type DocumentOptions,
   type FilterPill,
   type FilterPillItem,
   type ModelBlock,
@@ -115,3 +113,4 @@ export {
   type TableColumn,
   type UserOptions,
 } from './shell.ts'
+export { renderDocument, type DocumentOptions } from './document.ts'

@@ -4,6 +4,12 @@ import { Service, type Context } from 'cordis'
 import { UserDatabase } from './db.ts'
 import { UserError } from './errors.ts'
 import {
+  normalizeUiPreferencesPatch,
+  parseUiPreferences,
+  serializeUiPreferences,
+  type UiPreferences,
+} from './uiprefs.ts'
+import {
   BALANCE_MINOR_UNITS_PER_YUAN,
   USER_AVATAR_DATA_MAX_BYTES,
   USER_AVATAR_URL_MAX_LENGTH,
@@ -338,6 +344,37 @@ export class UserService extends Service {
       )
       this.emitChanged(userId, 'updated', fields)
       return user
+    })
+  }
+
+  // ───────────────────────────── 界面偏好（用户自助）─────────────────────────────
+
+  /**
+   * 读界面偏好。**永不失败**：老库没这一列、手改库塞了垃圾，都回落默认值。
+   *
+   * 为什么不让它抛：这两个值只影响字号 / 字距，坏了最坏是「不像他选的那样」；
+   * 抛错会让页面直接打不开，代价完全不成比例。
+   */
+  async getUiPreferences(id: UserId): Promise<UiPreferences> {
+    const userId = normalizeId(id)
+    return this.exclusive(async () => parseUiPreferences(this.db.getUiPreferences(userId)))
+  }
+
+  /**
+   * 改界面偏好（部分更新：只给 fontScale 就只动它）。
+   *
+   * 与 updateProfile 同口径：**不做 actor 白名单**，HTTP 层已用会话确认身份，
+   * 参数里也没有 userId，调用方只能改「当前登录用户」。未知字段直接拒绝。
+   */
+  async setUiPreferences(id: UserId, patch: unknown): Promise<UiPreferences> {
+    const userId = normalizeId(id)
+    return this.exclusive(async () => {
+      this.requireUser(userId)
+      const current = parseUiPreferences(this.db.getUiPreferences(userId))
+      const next = normalizeUiPreferencesPatch(current, patch)
+      if (typeof next === 'string') throw new UserError('USER_UI_PREFERENCES_INVALID', next)
+      this.db.setUiPreferences(userId, serializeUiPreferences(next), new Date().toISOString())
+      return next
     })
   }
 
