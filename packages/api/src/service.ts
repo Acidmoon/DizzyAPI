@@ -36,6 +36,7 @@ import type {
   CatalogPort,
   FrontendPort,
   ModelHubPort,
+  ObservabilityPort,
   PricingPort,
   RedeemPort,
   SettingsPort,
@@ -168,6 +169,7 @@ export class ApiService extends Service {
           'stats',
         ]),
       audit: () => this.optionalService<AuditPort>('audit', ['record', 'list', 'stats']),
+      observability: () => this.optionalService<ObservabilityPort>('observability', ['observe']),
       now: () => new Date(),
       uptimeSec: () => Math.round(process.uptime()),
       log: (level, message) => {

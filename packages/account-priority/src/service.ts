@@ -32,7 +32,7 @@ import {
 } from './store.ts'
 import { GatewayProcess } from './supervisor.ts'
 import type { BridgeClient } from './bridge.ts'
-import { DEFAULT_STRATEGY } from './types.ts'
+import { DEFAULT_STRATEGY, type AccountsRuntimeSummary } from './types.ts'
 import type {
   AccountPriorityHealth,
   AccountPriorityStatus,
@@ -328,6 +328,30 @@ export class AccountPriorityService extends Service {
       {},
       this.config.requestTimeoutMs,
     )
+  }
+
+  /**
+   * Go 侧账号运行时的**全站聚合**计数（`accounts.status` 的只增字段 `runtime`）。
+   *
+   * 这是只读的运维观察口：只有 `active` / `cooling` 两个整数，没有账号级明细、没有秘密。
+   * 旧版 Go 没有注入运行时跟踪器时该字段不存在 → 返回 `undefined`（调用方标「不可用」，
+   * 不要当成 0/0，那会把「没有数据」说成「一切正常」）。
+   *
+   * 桥没连上时抛 `ACCOUNT_PRIORITY_NOT_READY`，与 `usageStats` / `quotaStatus` 同口径。
+   */
+  async accountsRuntime(): Promise<AccountsRuntimeSummary | undefined> {
+    const status = await this.requireBridge().request<{ readonly runtime?: unknown }>(
+      'accounts.status',
+      {},
+      this.config.requestTimeoutMs,
+    )
+    const runtime = status?.runtime
+    if (runtime === null || typeof runtime !== 'object') return undefined
+    const record = runtime as { readonly active?: unknown; readonly cooling?: unknown }
+    return {
+      active: countOf(record.active),
+      cooling: countOf(record.cooling),
+    }
   }
 
   /** 策略组的权威副本（TS 是唯一写者）。 */
@@ -1102,6 +1126,19 @@ function chooseDefault(
     if (target !== undefined && target.enabled !== false) return preferred
   }
   return firstEnabled
+}
+
+/**
+ * 把桥响应里的未知值收成非负整数：Go 只回两个小整数，这里只是防御
+ * 「字段缺失 / 类型不对」时不要炸掉整个状态查询。
+ */
+function countOf(value: unknown): number {
+  if (typeof value === 'number' && Number.isFinite(value)) return Math.max(0, Math.trunc(value))
+  if (typeof value === 'string') {
+    const parsed = Number(value)
+    return Number.isFinite(parsed) ? Math.max(0, Math.trunc(parsed)) : 0
+  }
+  return 0
 }
 
 /**

@@ -47,6 +47,7 @@ const EMPTY_SERVICES: WebRuntime = {
   modelhub: undefined,
   fontSmiley: undefined,
   audit: undefined,
+  observability: undefined,
 }
 
 function pageContext(

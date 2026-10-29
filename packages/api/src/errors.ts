@@ -36,6 +36,7 @@ export type ApiErrorCode =
   | 'TOPUP_NOT_IMPLEMENTED'
   | 'MODELHUB_UNAVAILABLE'
   | 'AUDIT_UNAVAILABLE'
+  | 'OBSERVABILITY_UNAVAILABLE'
 
 export class ApiError extends Error {
   readonly code: string
@@ -169,6 +170,9 @@ const EXPLICIT_STATUS: Readonly<Record<string, number>> = {
   AUDIT_NOT_READY: 503,
   AUDIT_STORE_CORRUPT: 500,
   AUDIT_STORE_FAILED: 500,
+  // 运维总览：只有聚合插件缺席时 503；单块数据源缺失由报告标 degraded，不是错误。
+  OBSERVABILITY_CONFIG_INVALID: 500,
+  OBSERVABILITY_NOT_READY: 503,
 }
 
 export function statusOfCode(code: string): number {
