@@ -19,14 +19,14 @@ declare module 'cordis' {
   }
 }
 
+export { GateFeedService } from './service.ts'
 export {
-  GateFeedService,
   type GateFeedStatus,
   type KeySpendEntryPayload,
   type KeySpendSnapshotPayload,
   type PriceEntryPayload,
   type PricingSnapshotPayload,
-} from './service.ts'
+} from './types.ts'
 export { GateFeedError, isGateFeedError, type GateFeedErrorCode } from './errors.ts'
 export {
   GATE_FEED_CONFIG_SCHEMA,
