@@ -36,6 +36,13 @@ const (
 	DefaultStrategy = ""
 )
 
+// requestIDHeaderName 是回写给客户端的请求 id 响应头。
+//
+// 用途只有一个：让客户端（`cmd/dizzy`）把一次 LLM 请求与 `/api/usage` 里
+// **那一条**记录精确对上，而不是靠「模型 + 时间窗 + 最大 id」猜。
+// 它只加响应头，**不改任何响应体字节**（错误体形状的既有断言守着）。
+const requestIDHeaderName = "X-Request-Id"
+
 // Authorizer 校验 LLM 入口的 Bearer key。它由 keyauth 实现，复用与 LLM 请求
 // 完全一致的判定（动态快照 / 静态 key / 占位 / 空快照 fail-closed）。
 //
@@ -97,6 +104,11 @@ type Server struct {
 	metrics    MetricsSink
 	started    time.Time
 	requests   atomic.Uint64
+	// auxRequests 只给不产生用量记录的端点（/v1/models、/healthz）发请求 id。
+	//
+	// 它**独立于 requests**：后者是 /healthz 里报的「LLM 请求数」，
+	// 让健康检查自己给自己加数会把监控读数弄脏。
+	auxRequests atomic.Uint64
 }
 
 // New 构造 HTTP handler。
@@ -157,6 +169,8 @@ func (s *Server) Handler() http.Handler {
 // 鉴权与 LLM 入口完全一致（复用 Authorizer，即 keyauth 的同一套判定）。
 // 只暴露模型名，绝不泄漏账号 id、baseUrl、令牌或账号数量。
 func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
+	// 这个端点不产生用量记录，所以用一个独立的 id（不动 requests 计数）。
+	setRequestIDHeader(w, s.nextAuxRequestID())
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		writeErrorFor(w, contracts.Protocol(""), http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "只支持 GET /v1/models")
 		return
@@ -210,6 +224,7 @@ func writeAuthorizeError(w http.ResponseWriter, err error) {
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
+	setRequestIDHeader(w, s.nextAuxRequestID())
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		writeErrorFor(w, contracts.Protocol(""), http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "只支持 GET /healthz")
 		return
@@ -274,6 +289,11 @@ func (s *Server) llmRouteHandler(route llmRoute) http.HandlerFunc {
 	protocol := route.protocol
 	path := route.path
 	return func(w http.ResponseWriter, r *http.Request) {
+		// 早期拒绝（方法不对 / 请求体读失败 / JSON 非法 / 缺 model）发生在拿到
+		// requestID 之前。先放一个可引用的 id 让这类响应也能被追查；真正拿到
+		// 请求 id 之后会覆盖它。这类请求不产生用量记录，所以 aux id 不需要与
+		// 任何记录对应。
+		setRequestIDHeader(w, s.nextAuxRequestID())
 		if r.Method != http.MethodPost {
 			writeErrorFor(w, protocol, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "只支持 POST "+path)
 			return
@@ -335,6 +355,8 @@ func (s *Server) llmRouteHandler(route llmRoute) http.HandlerFunc {
 		}
 
 		requestID := s.nextRequestID()
+		// 覆盖掉前面那个 aux id：这个才是用量记录里的 RequestID，客户端据此精确对账。
+		setRequestIDHeader(w, requestID)
 		ctx := &contracts.Ctx{
 			Context: r.Context(),
 			ReqID:   requestID,
@@ -762,6 +784,22 @@ func (s *Server) closeStream(decision contracts.Decision) {
 
 func (s *Server) nextRequestID() string {
 	return fmt.Sprintf("req-%d-%d", time.Now().UnixNano(), s.requests.Add(1))
+}
+
+// nextAuxRequestID 给不产生用量记录的端点发请求 id（独立计数器，不动 requests）。
+func (s *Server) nextAuxRequestID() string {
+	return fmt.Sprintf("req-%d-%d", time.Now().UnixNano(), s.auxRequests.Add(1))
+}
+
+// setRequestIDHeader 把请求 id 写进响应头。
+//
+// 必须在 WriteHeader 之前调用（头已经发出去就改不动了）；空 id 不写，
+// 避免回一个没有意义的值。
+func setRequestIDHeader(w http.ResponseWriter, id string) {
+	if id == "" {
+		return
+	}
+	w.Header().Set(requestIDHeaderName, id)
 }
 
 func (s *Server) recover(next http.Handler) http.Handler {
