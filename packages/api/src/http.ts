@@ -343,19 +343,19 @@ export class ApiServer {
       return
     }
     if (parts[0] === 'pricing') {
-      await this.routePricing(req, res, parts)
+      await routePricing(this, req, res, parts)
       return
     }
     if (parts.length === 1 && parts[0] === 'models') {
-      await this.routeModels(req, res, url)
+      await routeModels(this, req, res, url)
       return
     }
     if (parts[0] === 'topup') {
-      await this.routeTopup(req, res, parts, url)
+      await routeTopup(this, req, res, parts, url)
       return
     }
     if (parts[0] === 'redeem') {
-      await this.routeRedeem(req, res, parts, url)
+      await routeRedeem(this, req, res, parts, url)
       return
     }
 
@@ -413,11 +413,11 @@ export class ApiServer {
       if (!this.allowRead(req, res)) return
       await this.requireAdmin(req)
       const catalog = this.requireCatalog()
-      this.sendJson(req, res, 200, await this.catalogModules(catalog))
+      sendJson(this, req, res, 200, await catalogModules(this, catalog))
       return
     }
     if (parts[0] === 'settings') {
-      await this.routeSettings(req, res, parts)
+      await routeSettings(this, req, res, parts)
       return
     }
 
@@ -522,40 +522,6 @@ export class ApiServer {
     }
     return contentAudit
   }
-  /** @internal 实现在 routes/pricing.ts（薄委派；注释与实现在那边，这里只转发）。 */
-async routePricing(
-  req: IncomingMessage,
-  res: ServerResponse,
-  parts: readonly string[],
-): Promise<void> {
-    return await routePricing(this, req, res, parts)
-  }
-
-  /** @internal 实现在 routes/models.ts（薄委派；注释与实现在那边，这里只转发）。 */
-async routeModels(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
-    return await routeModels(this, req, res, url)
-  }
-
-  /** @internal 实现在 routes/topup.ts（薄委派；注释与实现在那边，这里只转发）。 */
-async routeTopup(
-  req: IncomingMessage,
-  res: ServerResponse,
-  parts: readonly string[],
-  url: URL,
-): Promise<void> {
-    return await routeTopup(this, req, res, parts, url)
-  }
-
-  /** @internal 实现在 routes/redeem.ts（薄委派；注释与实现在那边，这里只转发）。 */
-async routeRedeem(
-  req: IncomingMessage,
-  res: ServerResponse,
-  parts: readonly string[],
-  url: URL,
-): Promise<void> {
-    return await routeRedeem(this, req, res, parts, url)
-  }
-
   /** @internal 实现在 routes/admin_redeem.ts（薄委派；注释与实现在那边，这里只转发）。 */
 async routeAdminRedeemCodes(
   req: IncomingMessage,
@@ -698,18 +664,6 @@ async routeUsers(req: IncomingMessage, res: ServerResponse, parts: readonly stri
   /** @internal 实现在 routes/admin_accounts.ts（薄委派；注释与实现在那边，这里只转发）。 */
 async routeAccounts(req: IncomingMessage, res: ServerResponse, parts: readonly string[]): Promise<void> {
     return await routeAccounts(this, req, res, parts)
-  }
-
-  /** @internal 实现在 routes/settings.ts（薄委派；注释与实现在那边，这里只转发）。 */
-async routeSettings(req: IncomingMessage, res: ServerResponse, parts: readonly string[]): Promise<void> {
-    return await routeSettings(this, req, res, parts)
-  }
-
-  /** @internal 实现在 routes/settings.ts（薄委派；注释与实现在那边，这里只转发）。 */
-async catalogModules(
-  catalog: CatalogPort,
-): Promise<{ generatedAt: string; modules: readonly CatalogModuleView[] }> {
-    return await catalogModules(this, catalog)
   }
 
   /** @internal 实现在 http_static.ts（薄委派；注释与实现在那边，这里只转发）。 */
