@@ -352,7 +352,12 @@ test('标签映射：源码里出现的每个审计动作码都有中文标签�
   const pages = readdirSync(`${root}packages/web/src/pages`)
     .filter((name) => name.endsWith('.ts'))
     .map((name) => `packages/web/src/pages/${name}`)
-  const files = ['packages/api/src/http.ts', 'packages/admin/src/service.ts', ...pages]
+  // `/api/*` 的路由处理已按前缀拆到 `packages/api/src/routes/*.ts`，审计动作码跟着搬过去了；
+  // 这里必须把 routes 一起扫，否则「标签表里有没接线的码」会对着旧位置误报。
+  const apiRoutes = readdirSync(`${root}packages/api/src/routes`)
+    .filter((name) => name.endsWith('.ts'))
+    .map((name) => `packages/api/src/routes/${name}`)
+  const files = ['packages/api/src/http.ts', 'packages/admin/src/service.ts', ...apiRoutes, ...pages]
 
   const used = new Set<string>()
   for (const file of files) {

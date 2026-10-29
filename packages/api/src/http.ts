@@ -95,15 +95,29 @@ import { contentAuditInputOf, contentAuditPatchOf, contentAuditRuleMetadata, con
 import { ADMIN_USAGE_EXPORT_LIMIT, API_ACTOR, API_REQUEST_HEADER, API_VERSION, CONTENT_SECURITY_POLICY, IMMUTABLE, NO_STORE, STATS_USER_MAX_PAGES, STATS_USER_PAGE, USAGE_RANGE_DAYS, UsageRange } from './constants.ts'
 
 export { API_ACTOR, API_REQUEST_HEADER, API_VERSION } from './constants.ts'
+import { health } from './routes/health.ts'
+import { routeAuth } from './routes/auth.ts'
+import { routeProfile } from './routes/profile.ts'
+import { routeKeys } from './routes/keys.ts'
+import { usage, usageExport, usageDetail } from './routes/usage.ts'
+import { routePricing } from './routes/pricing.ts'
+import { routeModels } from './routes/models.ts'
+import { routeTopup } from './routes/topup.ts'
+import { routeRedeem } from './routes/redeem.ts'
+import { routeSettings, catalogModules } from './routes/settings.ts'
 
 /**
  * HTTP 服务器。它只依赖 `ApiRuntime` 这组端口，不 import 任何具体插件类；
  * 测试可以直接构造运行时，不需要拉起 cordis。
- */export class ApiServer {
-  private readonly runtime: ApiRuntime
-  private readonly config: ResolvedApiConfig
+ */
+export class ApiServer {
+  readonly runtime: ApiRuntime
+  // 供 routes/* 经 host 读取（TS 没有包级可见性），行为不变。
+  readonly config: ResolvedApiConfig
+  // 供 routes/* 经 host 读取（TS 没有包级可见性），行为不变。
   private server: Server | undefined
-  private port = 0
+  port = 0
+  // 供 routes/* 经 host 读取（TS 没有包级可见性），行为不变。
   private stopTask: Promise<void> | undefined
 
   constructor(runtime: ApiRuntime) {
@@ -489,529 +503,6 @@ export { API_ACTOR, API_REQUEST_HEADER, API_VERSION } from './constants.ts'
     throw notFound('没有这个接口')
   }
 
-  private async routeAuth(req: IncomingMessage, res: ServerResponse, parts: readonly string[]): Promise<void> {
-    const action = parts.slice(1).join('/')
-    switch (action) {
-      case 'register/request': {
-        if (!this.allowMethod(req, res, ['POST'])) return
-        const body = await this.jsonBody(req)
-        const email = requiredString(body, 'email')
-        const password = requiredString(body, 'password')
-        const name = optionalString(body, 'name')
-        const ticket = await this.runtime.auth.requestRegistration({
-          email,
-          password,
-          ...(name === undefined ? {} : { name }),
-        })
-        this.sendJson(req, res, 200, ticket)
-        return
-      }
-      case 'register/confirm': {
-        if (!this.allowMethod(req, res, ['POST'])) return
-        const body = await this.jsonBody(req)
-        const email = requiredString(body, 'email')
-        const code = requiredString(body, 'code')
-        const result = await this.runtime.auth.confirmRegistration({ email, code })
-        this.setSessionCookie(req, res, result.token, result.expiresAt)
-        this.sendJson(req, res, 200, this.loginResponse(result))
-        return
-      }
-      case 'login': {
-        if (!this.allowMethod(req, res, ['POST'])) return
-        const body = await this.jsonBody(req)
-        const email = requiredString(body, 'email')
-        const password = requiredString(body, 'password')
-        const result = await this.runtime.auth.login({
-          email,
-          password,
-          meta: deviceMeta(req),
-        })
-        this.setSessionCookie(req, res, result.token, result.expiresAt)
-        this.sendJson(req, res, 200, this.loginResponse(result))
-        return
-      }
-      case 'logout': {
-        if (!this.allowMethod(req, res, ['POST'])) return
-        const token = readCookie(req, this.config.sessionCookieName)
-        if (token !== undefined) {
-          try {
-            await this.runtime.auth.logout(token)
-          } catch {
-            // 登出幂等：令牌无效 / 已过期都算成功。
-          }
-        }
-        this.clearSessionCookie(req, res)
-        this.sendJson(req, res, 200, { ok: true })
-        return
-      }
-      case 'password/reset/request': {
-        if (!this.allowMethod(req, res, ['POST'])) return
-        const body = await this.jsonBody(req)
-        const email = requiredString(body, 'email')
-        this.sendJson(req, res, 200, await this.runtime.auth.requestPasswordReset(email))
-        return
-      }
-      case 'password/reset/confirm': {
-        if (!this.allowMethod(req, res, ['POST'])) return
-        const body = await this.jsonBody(req)
-        const email = requiredString(body, 'email')
-        const code = requiredString(body, 'code')
-        const password = requiredString(body, 'password')
-        this.sendJson(req, res, 200, await this.runtime.auth.confirmPasswordReset({ email, code, password }))
-        return
-      }
-      default:
-        throw notFound('没有这个鉴权接口')
-    }
-  }
-
-  private async routeProfile(req: IncomingMessage, res: ServerResponse, parts: readonly string[]): Promise<void> {
-    if (parts.length === 1) {
-      if (!this.allowMethod(req, res, ['PATCH'])) return
-      const view = await this.requireSession(req)
-      const body = await this.jsonBody(req)
-      assertOnlyKeys(body, ['name', 'avatar'])
-      const patch: { name?: string; avatar?: string | null } = {}
-      if (Object.hasOwn(body, 'name')) patch.name = requiredString(body, 'name')
-      if (Object.hasOwn(body, 'avatar')) {
-        patch.avatar = optionalAvatar(body.avatar)
-      }
-      if (Object.keys(patch).length === 0) throw badRequest('没有可修改的字段')
-
-      const update = this.runtime.user.updateProfile
-      if (typeof update !== 'function') {
-        throw new ApiError(
-          'API_PROFILE_UNAVAILABLE',
-          503,
-          '用户插件没有提供 updateProfile 接口',
-        )
-      }
-      await update.call(this.runtime.user, view.userId, patch)
-      const user = await this.runtime.user.get(view.userId)
-      if (user === undefined) throw unauthorized('账号已不存在，请重新登录')
-      this.sendJson(req, res, 200, sessionUserOf(user))
-      return
-    }
-
-    if (parts.length === 2 && parts[1] === 'password') {
-      if (!this.allowMethod(req, res, ['POST'])) return
-      const view = await this.requireSession(req)
-      const token = this.sessionToken(req)
-      const body = await this.jsonBody(req)
-      const currentPassword = requiredString(body, 'currentPassword')
-      const newPassword = requiredString(body, 'newPassword')
-      this.sendJson(req, res, 200, await this.runtime.auth.changePassword(token, currentPassword, newPassword))
-      return
-    }
-
-    throw notFound('没有这个资料接口')
-  }
-
-  private async routeKeys(req: IncomingMessage, res: ServerResponse, parts: readonly string[]): Promise<void> {
-    const view = await this.requireSession(req)
-
-    if (parts.length === 1) {
-      if (req.method === 'GET' || req.method === 'HEAD') {
-        const apiKey = this.requireApiKey()
-        this.sendJson(req, res, 200, { items: normalizeKeyList(await apiKey.list(view.userId)) })
-        return
-      }
-      if (req.method === 'POST') {
-        const apiKey = this.requireApiKey()
-        const body = await this.jsonBody(req)
-        const name = requiredString(body, 'name')
-        this.sendJson(req, res, 200, normalizeCreatedKey(await apiKey.create(view.userId, { name })))
-        return
-      }
-      this.sendMethodNotAllowed(req, res, ['GET', 'HEAD', 'POST'])
-      return
-    }
-
-    if (parts.length === 2) {
-      const id = parts[1] as string
-      if (req.method === 'PATCH') {
-        const apiKey = this.requireApiKey()
-        const body = await this.jsonBody(req)
-        assertOnlyKeys(body, [
-          'name',
-          'enabled',
-          'expiresAt',
-          'spendingLimitMicros',
-          'concurrencyLimit',
-        ])
-        const patch: {
-          name?: string
-          enabled?: boolean
-          expiresAt?: string | null
-          spendingLimitMicros?: string | null
-          concurrencyLimit?: number | null
-        } = {}
-        if (Object.hasOwn(body, 'name')) patch.name = requiredString(body, 'name')
-        if (Object.hasOwn(body, 'enabled')) patch.enabled = requiredBoolean(body, 'enabled')
-        // 三个执行面上限：null = 不限 / 永不过期。金额只收十进制字符串
-        // （JSON number 会丢 >2^53 的精度），形状校验在 api-key 插件里做。
-        if (Object.hasOwn(body, 'expiresAt')) {
-          patch.expiresAt = body.expiresAt === null ? null : requiredString(body, 'expiresAt')
-        }
-        if (Object.hasOwn(body, 'spendingLimitMicros')) {
-          patch.spendingLimitMicros =
-            body.spendingLimitMicros === null ? null : requiredString(body, 'spendingLimitMicros')
-        }
-        if (Object.hasOwn(body, 'concurrencyLimit')) {
-          patch.concurrencyLimit = body.concurrencyLimit === null ? null : requiredInteger(body, 'concurrencyLimit')
-        }
-        if (Object.keys(patch).length === 0) throw badRequest('没有可修改的字段')
-        this.sendJson(req, res, 200, normalizeKeySummary(await apiKey.update(view.userId, id, patch)))
-        return
-      }
-      if (req.method === 'DELETE') {
-        const apiKey = this.requireApiKey()
-        await apiKey.remove(view.userId, id)
-        this.sendJson(req, res, 200, { removed: true })
-        return
-      }
-      this.sendMethodNotAllowed(req, res, ['PATCH', 'DELETE'])
-      return
-    }
-
-    if (parts.length === 3 && parts[2] === 'rotate') {
-      if (!this.allowMethod(req, res, ['POST'])) return
-      const apiKey = this.requireApiKey()
-      this.sendJson(req, res, 200, normalizeCreatedKey(await apiKey.rotate(view.userId, parts[1] as string)))
-      return
-    }
-
-    throw notFound('没有这个 API key 接口')
-  }
-
-  private async usage(req: IncomingMessage, url: URL): Promise<unknown> {
-    const view = await this.requireSession(req)
-    const usage = this.runtime.usage()
-    if (usage === undefined) {
-      throw new ApiError('API_USAGE_UNAVAILABLE', 503, '用量插件不在运行，暂时无法查询用量')
-    }
-
-    const range = url.searchParams.get('range') ?? '30d'
-    const days = USAGE_RANGE_DAYS[range]
-    if (days === undefined) throw badRequest(`range 只能是 ${Object.keys(USAGE_RANGE_DAYS).join(' / ')}`)
-
-    const now = this.runtime.now()
-    const todayStart = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate())
-    const fromMs = todayStart - (days - 1) * 86_400_000
-    const toMs = todayStart + 86_400_000
-
-    const user = await this.runtime.user.get(view.userId)
-    if (user === undefined) throw unauthorized('账号已不存在，请重新登录')
-
-    // 普通用户只能看自己的；管理员可以用 userId 指定别人（不传 = 全部）。
-    const userIdParam = url.searchParams.get('userId')
-    let userId: number | undefined
-    if (roleOf(view.user) === 'admin') {
-      if (userIdParam !== null && userIdParam !== '') userId = parseUserId(userIdParam)
-    } else {
-      userId = view.userId
-    }
-
-    const apiKeyParam = url.searchParams.get('apiKeyId')
-    const apiKeyId = apiKeyParam === null || apiKeyParam === '' ? undefined : apiKeyParam
-    const modelParam = url.searchParams.get('model')
-    const model = modelParam === null || modelParam === '' ? undefined : modelParam
-    const cursorParam = url.searchParams.get('cursor')
-    const cursor =
-      cursorParam === null || cursorParam === ''
-        ? undefined
-        : parseIntegerParam(cursorParam, 'cursor', 1, 1, Number.MAX_SAFE_INTEGER)
-    const limit = parseIntegerParam(url.searchParams.get('limit'), 'limit', 20, 1, 200) ?? 20
-
-    const query: UsageQueryLike = {
-      fromMs,
-      toMs,
-      ...(userId === undefined ? {} : { userId }),
-      ...(apiKeyId === undefined ? {} : { apiKeyId }),
-      ...(model === undefined ? {} : { model }),
-    }
-    const summary = usage.summary(query)
-    const page = usage.list({ ...query, ...(cursor === undefined ? {} : { cursor }), limit })
-
-    return {
-      range,
-      from: dateOf(new Date(fromMs)),
-      to: dateOf(new Date(toMs - 86_400_000)),
-      apiKeyId: apiKeyId ?? null,
-      // 余额只按当前用户余额换算；历史消费由用量明细体现，不在这里伪造。
-      balances: {
-        paidCents: centsOf(user.balance),
-        grantedCents: 0,
-        spentCents: 0,
-      },
-      totals: usageTotalsOf(summary.totals),
-      daily: summary.daily.map((point) => ({ date: point.date, ...usageTotalsOf(point) })),
-      models: summary.models.map((item) => ({ model: item.model, ...usageTotalsOf(item) })),
-      records: { items: page.items.map(usageRowOf), nextCursor: page.nextCursor },
-      pricingAvailable: this.runtime.pricing() !== undefined,
-      generatedAt: now.toISOString(),
-    }
-  }
-
-  /**
-   * `GET /api/usage/export`：把当前筛选条件下的明细导出成 CSV。
-   *
-   * 响应是 JSON `{ filename, content }`，由浏览器自己生成 Blob 下载；
-   * 这样不用在 HTTP 层区分下载 / 错误信封，也不会把 CSV 当 JSON 解析。
-   */
-  private async usageExport(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
-    const view = await this.requireSession(req)
-    const usage = this.runtime.usage()
-    if (usage === undefined) {
-      throw new ApiError('API_USAGE_UNAVAILABLE', 503, '用量插件不在运行，暂时无法导出用量')
-    }
-
-    const format = url.searchParams.get('format') ?? 'csv'
-    if (format !== 'csv') throw badRequest('format 只支持 csv')
-
-    const range = url.searchParams.get('range') ?? '30d'
-    const days = USAGE_RANGE_DAYS[range]
-    if (days === undefined) throw badRequest(`range 只能是 ${Object.keys(USAGE_RANGE_DAYS).join(' / ')}`)
-
-    const now = this.runtime.now()
-    const todayStart = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate())
-    const fromMs = todayStart - (days - 1) * 86_400_000
-    const toMs = todayStart + 86_400_000
-
-    const userIdParam = url.searchParams.get('userId')
-    let userId: number | undefined
-    if (roleOf(view.user) === 'admin') {
-      if (userIdParam !== null && userIdParam !== '') userId = parseUserId(userIdParam)
-    } else {
-      userId = view.userId
-    }
-
-    const apiKeyParam = url.searchParams.get('apiKeyId')
-    const apiKeyId = apiKeyParam === null || apiKeyParam === '' ? undefined : apiKeyParam
-    const modelParam = url.searchParams.get('model')
-    const model = modelParam === null || modelParam === '' ? undefined : modelParam
-
-    const rows = usage.exportRows({
-      fromMs,
-      toMs,
-      ...(userId === undefined ? {} : { userId }),
-      ...(apiKeyId === undefined ? {} : { apiKeyId }),
-      ...(model === undefined ? {} : { model }),
-    })
-    const from = dateOf(new Date(fromMs)).replaceAll('-', '')
-    const to = dateOf(new Date(toMs - 86_400_000)).replaceAll('-', '')
-    this.sendJson(req, res, 200, {
-      filename: `usage-${from}-${to}.csv`,
-      content: usageCsv(rows),
-    })
-  }
-
-  /**
-   * `GET /api/usage/:reqId`：单条用量详情。
-   *
-   * 权限与列表同口径：普通用户只能看自己的记录，管理员可以查全部。
-   * **查不到与「不是自己的」返回同一个 404**——不向外泄露某个 reqId 是否存在
-   * （与充值订单的「用户面不泄露存在性」同一条纪律）。
-   *
-   * 比列表多给四个字段：`reasoningTokens` / `usagePresent` / `usageComplete`
-   * （库里一直有、列表接口没出）与 `ttftMs`（首字延迟，旧记录是 null）。
-   */
-  private async usageDetail(req: IncomingMessage, res: ServerResponse, reqId: string): Promise<void> {
-    const view = await this.requireSession(req)
-    const usage = this.runtime.usage()
-    if (usage === undefined) {
-      throw new ApiError('API_USAGE_UNAVAILABLE', 503, '用量插件不在运行，暂时无法查询用量')
-    }
-    if (reqId === '') throw notFound('没有这条用量记录')
-
-    const row = usage.get(reqId)
-    if (row === null || (roleOf(view.user) !== 'admin' && row.userId !== view.userId)) {
-      throw new ApiError('USAGE_RECORD_NOT_FOUND', 404, '没有这条用量记录')
-    }
-    this.sendJson(req, res, 200, { record: usageDetailOf(row) })
-  }
-
-  /**
-   * `/api/pricing`：读价格表（会话）与改价格（管理员）。
-   *
-   * - `GET /api/pricing` → `{ items }`；
-   * - `GET /api/pricing/:model` → 单个价格，没有就 404；
-   * - `PUT /api/pricing/:model` → 写入并返回新价格；
-   * - `DELETE /api/pricing/:model` → `{ removed }`。
-   *
-   * 模型名可能含 `/`，由 `encodeURIComponent` 编成 `%2F` 留在同一路径段里。
-   */
-  private async routePricing(
-    req: IncomingMessage,
-    res: ServerResponse,
-    parts: readonly string[],
-  ): Promise<void> {
-    const requirePricing = (): PricingPort => {
-      const pricing = this.runtime.pricing()
-      if (pricing === undefined) {
-        throw new ApiError('API_PRICING_UNAVAILABLE', 503, '价格表插件不在运行')
-      }
-      return pricing
-    }
-    const viewOf = (price: ModelPriceLike) => ({
-      model: price.model,
-      inputPerMillion: price.inputPerMillion,
-      outputPerMillion: price.outputPerMillion,
-      cacheReadPerMillion: price.cacheReadPerMillion,
-      cacheWritePerMillion: price.cacheWritePerMillion,
-      currency: 'CNY' as const,
-      updatedAt: price.updatedAt,
-    })
-    /** 价格字段只接受字符串或数字；其余在 HTTP 层就拒绝，不把脏值交给服务。 */
-    const priceField = (
-      body: Record<string, unknown>,
-      key: keyof ModelPriceInputLike,
-      required: boolean,
-    ): string | number | undefined => {
-      const value = body[key]
-      if (value === undefined) {
-        if (!required) return undefined
-        throw new ApiError('PRICING_PRICE_INVALID', 400, `${key} 必须是字符串或数字`)
-      }
-      if (typeof value !== 'string' && typeof value !== 'number') {
-        throw new ApiError('PRICING_PRICE_INVALID', 400, `${key} 必须是字符串或数字`)
-      }
-      return value
-    }
-
-    if (parts.length === 1) {
-      if (!this.allowRead(req, res)) return
-      await this.requireSession(req)
-      const pricing = requirePricing()
-      this.sendJson(req, res, 200, { items: pricing.list().map(viewOf) })
-      return
-    }
-    if (parts.length > 2) throw notFound('没有这个价格接口')
-
-    const model = parts[1] as string
-
-    if (req.method === 'GET' || req.method === 'HEAD') {
-      await this.requireSession(req)
-      const pricing = requirePricing()
-      const price = pricing.get(model)
-      if (price === null) throw new ApiError('PRICING_NOT_FOUND', 404, `没有模型 ${model} 的价格`)
-      this.sendJson(req, res, 200, viewOf(price))
-      return
-    }
-
-    if (req.method === 'PUT') {
-      const { view } = await this.requireAdmin(req)
-      const pricing = requirePricing()
-      const body = await this.jsonBody(req)
-      assertOnlyKeys(body, [
-        'inputPerMillion',
-        'outputPerMillion',
-        'cacheReadPerMillion',
-        'cacheWritePerMillion',
-      ])
-      const cacheRead = priceField(body, 'cacheReadPerMillion', false)
-      const cacheWrite = priceField(body, 'cacheWritePerMillion', false)
-      const input: ModelPriceInputLike = {
-        inputPerMillion: priceField(body, 'inputPerMillion', true) as string | number,
-        outputPerMillion: priceField(body, 'outputPerMillion', true) as string | number,
-        ...(cacheRead === undefined ? {} : { cacheReadPerMillion: cacheRead }),
-        ...(cacheWrite === undefined ? {} : { cacheWritePerMillion: cacheWrite }),
-      }
-      const written = await audited(
-        this.runtime,
-        { actor: auditActorOf(view), actorPlugin: API_ACTOR },
-        {
-          action: 'pricing.write',
-          targetType: 'pricing',
-          targetId: model,
-          summary: `写入模型 ${model} 的价格`,
-          metadata: {
-            inputPerMillion: String(input.inputPerMillion),
-            outputPerMillion: String(input.outputPerMillion),
-          },
-        },
-        () => pricing.set(API_ACTOR, model, input),
-      )
-      this.sendJson(req, res, 200, viewOf(written))
-      return
-    }
-
-    if (req.method === 'DELETE') {
-      const { view } = await this.requireAdmin(req)
-      const pricing = requirePricing()
-      const removed = await audited(
-        this.runtime,
-        { actor: auditActorOf(view), actorPlugin: API_ACTOR },
-        {
-          action: 'pricing.remove',
-          targetType: 'pricing',
-          targetId: model,
-          summary: `删除模型 ${model} 的价格`,
-          metadataOf: (result) => ({ removed: result }),
-        },
-        () => pricing.remove(API_ACTOR, model),
-      )
-      this.sendJson(req, res, 200, { removed })
-      return
-    }
-
-    this.sendMethodNotAllowed(req, res, ['GET', 'HEAD', 'PUT', 'DELETE'])
-  }
-
-  /**
-   * `/api/models`：模型广场（只读目录）。
-   *
-   * 与 `GET /v1/models` 的区别：后者是 LLM 入口、只给名字并集、由 Go 服务；
-   * 这里是**产品面**的目录，给价格、可用性与覆盖度，**不改动 `/v1/models` 的任何字节**
-   * （那条路由归 Go，契约由 `internal/httpapi` 的用例守着）。
-   *
-   * 查询参数：
-   * - `search`：按模型名子串过滤（不区分大小写）；
-   * - `availability`：`all` / `available` / `unavailable`（默认 all）；
-   * - `priced`：`all` / `priced` / `unpriced`（默认 all）。
-   *
-   * 金额一律十进制字符串（元 / 百万 token），响应里不出现裸 bigint 或浮点。
-   */
-  private async routeModels(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
-    if (!this.allowRead(req, res)) return
-    await this.requireSession(req)
-    const modelhub = this.runtime.modelhub()
-    if (modelhub === undefined) {
-      throw new ApiError('MODELHUB_UNAVAILABLE', 503, '模型广场服务不在运行：暂时不能查询模型目录')
-    }
-
-    const query: {
-      search?: string
-      availability?: 'all' | 'available' | 'unavailable'
-      priced?: 'all' | 'priced' | 'unpriced'
-    } = {}
-    const search = queryStringOf(url, 'search')
-    if (search !== undefined) query.search = search
-    const availability = queryStringOf(url, 'availability')
-    if (availability !== undefined) {
-      if (availability !== 'all' && availability !== 'available' && availability !== 'unavailable') {
-        throw badRequest('availability 只能是 all / available / unavailable')
-      }
-      query.availability = availability
-    }
-    const priced = queryStringOf(url, 'priced')
-    if (priced !== undefined) {
-      if (priced !== 'all' && priced !== 'priced' && priced !== 'unpriced') {
-        throw badRequest('priced 只能是 all / priced / unpriced')
-      }
-      query.priced = priced
-    }
-
-    this.sendJson(req, res, 200, modelCatalogOf(modelhub.catalog(query)))
-  }
-
-  /**
-   * `/api/admin/usage`：管理员口径的用量明细与导出。
-   *
-   * 查询窗口与用户侧 `/api/usage` 同口径：[from 当天 00:00 UTC, 明天 00:00 UTC)。
-   * `records.items` 比用户侧多 `userName` / `accountId` / `attempts`；
-   * `userName` 在同一次请求内按 userId 缓存，查不到就是 null。
-   */
   private async routeAdminUsage(
     req: IncomingMessage,
     res: ServerResponse,
@@ -1350,83 +841,6 @@ export { API_ACTOR, API_REQUEST_HEADER, API_VERSION } from './constants.ts'
     }
   }
 
-  /**
-   * 用户面：`GET /api/topup/options`、`GET/POST /api/topup/orders`、
-   * `GET /api/topup/orders/<orderNo>`、`POST /api/topup/orders/<orderNo>/cancel`。
-   *
-   * 订单金额只接受「元」的十进制字符串（服务层换整数微元）；响应里金额一律十进制字符串。
-   * 本批没有在线支付：订单创建后返回 `instructions`（人工确认说明），不会自动到账。
-   */
-  private async routeTopup(
-    req: IncomingMessage,
-    res: ServerResponse,
-    parts: readonly string[],
-    url: URL,
-  ): Promise<void> {
-    const view = await this.requireSession(req)
-    const topup = this.requireTopup()
-
-    if (parts.length === 2 && parts[1] === 'options') {
-      if (!this.allowRead(req, res)) return
-      this.sendJson(req, res, 200, topupOptionsOf(topup.options()))
-      return
-    }
-
-    if (parts.length === 2 && parts[1] === 'orders') {
-      if (req.method === 'GET' || req.method === 'HEAD') {
-        const limit = parseIntegerParam(url.searchParams.get('limit'), 'limit', 20, 1, 100)
-        const page = topup.listMine(view.userId, limit)
-        this.sendJson(req, res, 200, {
-          items: page.items.map(topupOrderOf),
-          total: page.total,
-        })
-        return
-      }
-      if (req.method === 'POST') {
-        const body = await this.jsonBody(req)
-        assertOnlyKeys(body, ['amountYuan', 'provider', 'note'])
-        const amountYuan = requiredString(body, 'amountYuan')
-        const provider = optionalString(body, 'provider')
-        const note = Object.hasOwn(body, 'note') ? nullableString(body, 'note') : undefined
-        const created = await topup.createOrder({
-          userId: view.userId,
-          amountYuan,
-          ...(provider === undefined ? {} : { provider }),
-          ...(note === undefined ? {} : { note }),
-        })
-        this.sendJson(req, res, 200, {
-          order: topupOrderOf(created.order),
-          instructions: created.order.instructions,
-        })
-        return
-      }
-      this.sendMethodNotAllowed(req, res, ['GET', 'HEAD', 'POST'])
-      return
-    }
-
-    if (parts.length === 3 && parts[1] === 'orders') {
-      if (!this.allowRead(req, res)) return
-      this.sendJson(req, res, 200, topupOrderOf(topup.getMine(view.userId, parts[2] as string)))
-      return
-    }
-
-    if (parts.length === 4 && parts[1] === 'orders' && parts[3] === 'cancel') {
-      if (!this.allowMethod(req, res, ['POST'])) return
-      const canceled = topup.cancelMine(view.userId, parts[2] as string)
-      this.sendJson(req, res, 200, topupOrderOf(canceled))
-      return
-    }
-
-    throw notFound('没有这个充值接口')
-  }
-
-  /**
-   * 管理面：`GET /api/admin/topup-orders`（列表 + 筛选）、`.../stats`、
-   * `POST .../<orderNo>/confirm`（人工确认到账）、`POST .../<orderNo>/cancel`。
-   *
-   * 确认到账会**真的加余额**（走 user.adjustBalance，幂等）：重复确认只回 `credited: false`，
-   * 不会重复加钱。本批没有支付回调路由——没有验签的回调一律不挂。
-   */
   private async routeAdminTopupOrders(
     req: IncomingMessage,
     res: ServerResponse,
@@ -1524,44 +938,6 @@ export { API_ACTOR, API_REQUEST_HEADER, API_VERSION } from './constants.ts'
 
   // ───────────────────────────────── 兑换码 ─────────────────────────────────
 
-  /**
-   * 用户面：`POST /api/redeem` 兑换，`GET /api/redeem` 我的兑换记录。
-   *
-   * 兑换失败一律走稳定 code（未知 / 已用 / 停用 / 过期 / 兑换中），消息里不含码本身；
-   * 成功只回金额、余额与批次名。
-   */
-  private async routeRedeem(
-    req: IncomingMessage,
-    res: ServerResponse,
-    parts: readonly string[],
-    url: URL,
-  ): Promise<void> {
-    const view = await this.requireSession(req)
-    if (parts.length !== 1) throw notFound('没有这个兑换接口')
-    const redeem = this.requireRedeem()
-
-    if (req.method === 'GET' || req.method === 'HEAD') {
-      const limit = parseIntegerParam(url.searchParams.get('limit'), 'limit', 20, 1, 100)
-      const items = await redeem.listMyRedemptions(view.userId, limit)
-      this.sendJson(req, res, 200, { items: items.map(redemptionOf) })
-      return
-    }
-    if (req.method === 'POST') {
-      const body = await this.jsonBody(req)
-      assertOnlyKeys(body, ['code'])
-      const code = requiredString(body, 'code')
-      const result = await redeem.redeemCode({ userId: view.userId, code })
-      this.sendJson(req, res, 200, redeemResultOf(result))
-      return
-    }
-    this.sendMethodNotAllowed(req, res, ['GET', 'HEAD', 'POST'])
-  }
-
-  /**
-   * 管理面：兑换码列表 / 生成批次 / 单码启停 / 人工核查 / 批量删除。
-   *
-   * 生成是唯一会返回明文的接口，而且**只在这一次响应里**；列表永远只有掩码。
-   */
   private async routeAdminRedeemCodes(
     req: IncomingMessage,
     res: ServerResponse,
@@ -2561,108 +1937,8 @@ export { API_ACTOR, API_REQUEST_HEADER, API_VERSION } from './constants.ts'
 
   // ───────────────────────────────── 管理员：目录与设置 ─────────────────────────────────
 
-  private async catalogModules(
-    catalog: CatalogPort,
-  ): Promise<{ generatedAt: string; modules: readonly CatalogModuleView[] }> {
-    // 禁用模块也要列出来（便于排障）；它们是 disabled，不会被当成 available。
-    const result = await catalog.query({ includeUnavailable: true })
-    let pages: readonly FrontendPageLike[] = []
-    try {
-      pages = this.runtime.frontend()?.pages() ?? []
-    } catch {
-      pages = []
-    }
-    const modules = result.plugins.map((plugin) => {
-      const manifest = plugin.manifest as { description?: unknown } | undefined
-      const capabilities = Array.isArray(plugin.capabilities) ? plugin.capabilities : []
-      return {
-        id: plugin.id,
-        package: plugin.package,
-        kind: plugin.kind,
-        state: catalogState(plugin.disabled ? 'disabled' : plugin.state),
-        version: null,
-        description: typeof manifest?.description === 'string' ? manifest.description : null,
-        provides: [...capabilities],
-        pages: pages
-          .filter((page) => page.owner === plugin.id || page.owner === plugin.package)
-          .map((page) => page.path),
-      }
-    })
-    return { generatedAt: result.generatedAt, modules }
-  }
-
-  private async routeSettings(req: IncomingMessage, res: ServerResponse, parts: readonly string[]): Promise<void> {
-    const { view: adminView } = await this.requireAdmin(req)
-    const identity = { actor: auditActorOf(adminView), actorPlugin: API_ACTOR }
-
-    if (parts.length === 1) {
-      if (!this.allowRead(req, res)) return
-      const settings = this.requireSettings()
-      const described = await settings.describe()
-      // 新 settings 直接返回 `{ namespaces }`；旧实现返回数组。两种都接住。
-      const namespaces = Array.isArray(described)
-        ? described
-        : isPlainObject(described) && Array.isArray(described.namespaces)
-          ? described.namespaces
-          : null
-      if (namespaces === null) {
-        throw new ApiError('API_RESPONSE_INVALID', 502, '设置服务返回了无法识别的描述')
-      }
-      this.sendJson(req, res, 200, { namespaces })
-      return
-    }
-
-    const ns = parts[1] as string
-    if (parts.length === 2) {
-      if (req.method === 'POST') {
-        const settings = this.requireSettings()
-        const body = await this.jsonBody(req)
-        assertOnlyKeys(body, ['patch', 'expectedRevision'])
-        if (!isPlainObject(body.patch)) throw badRequest('patch 必须是对象')
-        const expectedRevision = optionalString(body, 'expectedRevision')
-        const patch = body.patch as Record<string, unknown>
-        const updated = await audited(
-          this.runtime,
-          identity,
-          {
-            action: 'settings.write',
-            targetType: 'settings',
-            targetId: ns,
-            summary: `修改设置 ${ns}：${Object.keys(patch).join(' / ')}`,
-            // 只记字段名：设置里可能有 pass / 授权码之类，值不进审计。
-            metadata: { fields: Object.keys(patch), expectedRevision: expectedRevision ?? null },
-          },
-          () => settings.update(API_ACTOR, ns, patch, expectedRevision),
-        )
-        this.sendJson(req, res, 200, updated)
-        return
-      }
-      if (req.method === 'DELETE') {
-        const settings = this.requireSettings()
-        const reset = await audited(
-          this.runtime,
-          identity,
-          {
-            action: 'settings.reset',
-            targetType: 'settings',
-            targetId: ns,
-            summary: `把设置 ${ns} 重置为 app.yml 的基线`,
-          },
-          () => settings.reset(API_ACTOR, ns),
-        )
-        this.sendJson(req, res, 200, reset)
-        return
-      }
-      this.sendMethodNotAllowed(req, res, ['POST', 'DELETE'])
-      return
-    }
-
-    throw notFound('没有这个设置接口')
-  }
-
-  // ───────────────────────────────── 会话 ─────────────────────────────────
-
-  private sessionToken(req: IncomingMessage): string {
+  sessionToken(req: IncomingMessage): string {
+  // 供 routes/* 经 host 读取（TS 没有包级可见性），行为不变。
     const token = readCookie(req, this.config.sessionCookieName)
     if (token === undefined || token === '') throw unauthorized('会话 cookie 不存在，请重新登录')
     return token
@@ -2672,7 +1948,8 @@ export { API_ACTOR, API_REQUEST_HEADER, API_VERSION } from './constants.ts'
    * 会话校验。auth 的原始错误细节不往外带：只保留稳定 code，消息统一成通用文案。
    * banned 是 403，其余会话问题统一 401。
    */
-  private async requireSession(req: IncomingMessage): Promise<SessionViewLike> {
+  async requireSession(req: IncomingMessage): Promise<SessionViewLike> {
+  // ↑ 供 routes/* 经 host 调用（TS 没有包级可见性），行为不变。
     const token = this.sessionToken(req)
     try {
       return await this.runtime.auth.verifySession(token)
@@ -2693,7 +1970,8 @@ export { API_ACTOR, API_REQUEST_HEADER, API_VERSION } from './constants.ts'
     }
   }
 
-  private async requireAdmin(req: IncomingMessage): Promise<{ view: SessionViewLike; role: SessionRole }> {
+  async requireAdmin(req: IncomingMessage): Promise<{ view: SessionViewLike; role: SessionRole }> {
+  // ↑ 供 routes/* 经 host 调用（TS 没有包级可见性），行为不变。
     const view = await this.requireSession(req)
     const role = roleOf(view.user)
     if (role !== 'admin') throw forbidden()
@@ -2711,7 +1989,8 @@ export { API_ACTOR, API_REQUEST_HEADER, API_VERSION } from './constants.ts'
     }
   }
 
-  private loginResponse(result: LoginResultLike): unknown {
+  loginResponse(result: LoginResultLike): unknown {
+  // 供 routes/* 经 host 读取（TS 没有包级可见性），行为不变。
     const now = this.runtime.now().toISOString()
     return {
       user: sessionUserOf(result.user),
@@ -2735,7 +2014,8 @@ export { API_ACTOR, API_REQUEST_HEADER, API_VERSION } from './constants.ts'
     }
   }
 
-  private setSessionCookie(
+  setSessionCookie(
+  // 供 routes/* 经 host 读取（TS 没有包级可见性），行为不变。
     req: IncomingMessage,
     res: ServerResponse,
     token: string,
@@ -2751,7 +2031,8 @@ export { API_ACTOR, API_REQUEST_HEADER, API_VERSION } from './constants.ts'
     )
   }
 
-  private clearSessionCookie(req: IncomingMessage, res: ServerResponse): void {
+  clearSessionCookie(req: IncomingMessage, res: ServerResponse): void {
+  // 供 routes/* 经 host 读取（TS 没有包级可见性），行为不变。
     res.setHeader(
       'Set-Cookie',
       `${this.config.sessionCookieName}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0${this.secureCookie(req)}`,
@@ -2771,98 +2052,6 @@ export { API_ACTOR, API_REQUEST_HEADER, API_VERSION } from './constants.ts'
   }
 
   // ───────────────────────────────── 健康 ─────────────────────────────────
-
-  private async health(): Promise<GatewayHealthView> {
-    const components: GatewayComponentHealth[] = [
-      { name: 'api', state: 'ok', detail: `listen 127.0.0.1:${this.port}` },
-      { name: 'auth', state: 'ok' },
-    ]
-
-    try {
-      await this.runtime.user.list({ limit: 1 })
-      components.push({ name: 'user', state: 'ok' })
-    } catch {
-      components.push({ name: 'user', state: 'down', detail: '读取用户表失败' })
-    }
-
-    const frontend = this.runtime.frontend()
-    if (frontend === undefined) {
-      // 只有确认「新前端 web 在跑」时，旧 SPA 未启用才算正常；否则仍是缺失。
-      const web = this.runtime.web()
-      components.push(web === undefined
-        ? { name: 'frontend', state: 'degraded', detail: '服务不在运行' }
-        : { name: 'frontend', state: 'ok', detail: '旧 SPA 未启用（由 web 接管）' })
-    } else {
-      try {
-        const current = await frontend.current()
-        components.push({
-          name: 'frontend',
-          state: current === null ? 'degraded' : 'ok',
-          ...(current === null ? { detail: '没有安装前端资源' } : { detail: `asset ${current.version}` }),
-        })
-      } catch {
-        components.push({ name: 'frontend', state: 'down', detail: '前端宿主不可用' })
-      }
-    }
-
-    const catalog = this.runtime.catalog()
-    if (catalog === undefined) {
-      components.push({ name: 'catalog', state: 'degraded', detail: '服务不在运行' })
-    } else {
-      try {
-        const snapshot = await catalog.query({ includeUnavailable: false })
-        components.push({ name: 'catalog', state: 'ok', detail: `${snapshot.plugins.length} 个活动插件` })
-      } catch {
-        components.push({ name: 'catalog', state: 'down', detail: '能力目录不可用' })
-      }
-    }
-
-    components.push(
-      this.runtime.accountAdmin() === undefined
-        ? { name: 'account-admin', state: 'degraded', detail: '服务不在运行' }
-        : { name: 'account-admin', state: 'ok' },
-    )
-
-    let bridge: GatewayHealthView['bridge'] = { connected: false, transport: null, address: null }
-    const priority = this.runtime.accountPriority()
-    if (priority === undefined) {
-      components.push({ name: 'account-priority', state: 'degraded', detail: '服务不在运行' })
-    } else {
-      try {
-        const status = await priority.status()
-        bridge = {
-          connected: status.bridgeConnected === true,
-          transport: status.transport ?? null,
-          address: status.address ?? null,
-        }
-        components.push({
-          name: 'account-priority',
-          state: priorityState(status.state),
-          detail: `state=${status.state} revision=${status.revision ?? '—'} accounts=${status.accounts}`,
-        })
-      } catch {
-        components.push({ name: 'account-priority', state: 'down', detail: '状态查询失败' })
-      }
-    }
-
-    const state: GatewayHealthState = components.some((component) => component.state === 'down')
-      ? 'down'
-      : components.some((component) => component.state === 'degraded')
-        ? 'degraded'
-        : 'ok'
-
-    return {
-      state,
-      at: this.runtime.now().toISOString(),
-      version: API_VERSION,
-      uptimeSec: this.runtime.uptimeSec(),
-      descriptorRevision: null,
-      bridge,
-      components,
-    }
-  }
-
-  // ───────────────────────────────── 内部工具 ─────────────────────────────────
 
   private requireFrontend(): FrontendPort {
     const frontend = this.runtime.frontend()
@@ -2888,7 +2077,8 @@ export { API_ACTOR, API_REQUEST_HEADER, API_VERSION } from './constants.ts'
     return accountAdmin
   }
 
-  private requireApiKey(): ApiKeyPort {
+  requireApiKey(): ApiKeyPort {
+  // 供 routes/* 经 host 读取（TS 没有包级可见性），行为不变。
     const apiKey = this.runtime.apiKey()
     if (apiKey === undefined) {
       throw new ApiError('API_KEY_UNAVAILABLE', 503, 'API key 服务不在运行')
@@ -2904,7 +2094,8 @@ export { API_ACTOR, API_REQUEST_HEADER, API_VERSION } from './constants.ts'
     return usage
   }
 
-  private requireSettings(): SettingsPort {
+  requireSettings(): SettingsPort {
+  // 供 routes/* 经 host 读取（TS 没有包级可见性），行为不变。
     const settings = this.runtime.settings()
     if (settings === undefined) {
       throw new ApiError('API_SETTINGS_UNAVAILABLE', 503, '设置插件不在运行')
@@ -2912,7 +2103,8 @@ export { API_ACTOR, API_REQUEST_HEADER, API_VERSION } from './constants.ts'
     return settings
   }
 
-  private requireRedeem(): RedeemPort {
+  requireRedeem(): RedeemPort {
+  // 供 routes/* 经 host 读取（TS 没有包级可见性），行为不变。
     const redeem = this.runtime.redeem()
     if (redeem === undefined) {
       throw new ApiError('REDEEM_UNAVAILABLE', 503, '兑换码服务不在运行')
@@ -2932,7 +2124,8 @@ export { API_ACTOR, API_REQUEST_HEADER, API_VERSION } from './constants.ts'
     return billing
   }
 
-  private requireTopup(): TopupPort {
+  requireTopup(): TopupPort {
+  // 供 routes/* 经 host 读取（TS 没有包级可见性），行为不变。
     const topup = this.runtime.topup()
     if (topup === undefined) {
       throw new ApiError('TOPUP_UNAVAILABLE', 503, '充值订单服务不在运行：暂时不能下单或确认到账')
@@ -2952,19 +2145,22 @@ export { API_ACTOR, API_REQUEST_HEADER, API_VERSION } from './constants.ts'
     return contentAudit
   }
 
-  private allowRead(req: IncomingMessage, res: ServerResponse): boolean {
+  allowRead(req: IncomingMessage, res: ServerResponse): boolean {
+  // 供 routes/* 经 host 读取（TS 没有包级可见性），行为不变。
     if (req.method === 'GET' || req.method === 'HEAD') return true
     this.sendMethodNotAllowed(req, res, ['GET', 'HEAD'])
     return false
   }
 
-  private allowMethod(req: IncomingMessage, res: ServerResponse, allowed: readonly string[]): boolean {
+  allowMethod(req: IncomingMessage, res: ServerResponse, allowed: readonly string[]): boolean {
+  // 供 routes/* 经 host 读取（TS 没有包级可见性），行为不变。
     if (req.method !== undefined && allowed.includes(req.method)) return true
     this.sendMethodNotAllowed(req, res, allowed)
     return false
   }
 
-  private async jsonBody(req: IncomingMessage): Promise<Record<string, unknown>> {
+  async jsonBody(req: IncomingMessage): Promise<Record<string, unknown>> {
+  // ↑ 供 routes/* 经 host 调用（TS 没有包级可见性），行为不变。
     const body = await readBody(req, this.config.bodyLimitBytes)
     if (body.length === 0) return {}
     let parsed: unknown
@@ -2977,7 +2173,8 @@ export { API_ACTOR, API_REQUEST_HEADER, API_VERSION } from './constants.ts'
     return parsed
   }
 
-  private sendJson(
+  sendJson(
+  // 供 routes/* 经 host 读取（TS 没有包级可见性），行为不变。
     req: IncomingMessage,
     res: ServerResponse,
     status: number,
@@ -3013,7 +2210,8 @@ export { API_ACTOR, API_REQUEST_HEADER, API_VERSION } from './constants.ts'
     else res.end(body)
   }
 
-  private sendMethodNotAllowed(req: IncomingMessage, res: ServerResponse, allowed: readonly string[]): void {
+  sendMethodNotAllowed(req: IncomingMessage, res: ServerResponse, allowed: readonly string[]): void {
+  // 供 routes/* 经 host 读取（TS 没有包级可见性），行为不变。
     res.setHeader('Allow', allowed.join(', '))
     this.sendJson(req, res, 405, {
       error: {
@@ -3048,4 +2246,138 @@ export { API_ACTOR, API_REQUEST_HEADER, API_VERSION } from './constants.ts'
       res.end()
     }
   }
+  /** @internal 实现在 routes/health.ts（薄委派，调用点不变）。 */
+async health(): Promise<GatewayHealthView> {
+    return await health(this)
+  }
+
+  /** @internal 实现在 routes/auth.ts（薄委派，调用点不变）。 */
+async routeAuth(req: IncomingMessage, res: ServerResponse, parts: readonly string[]): Promise<void> {
+    return await routeAuth(this, req, res, parts)
+  }
+
+  /** @internal 实现在 routes/profile.ts（薄委派，调用点不变）。 */
+async routeProfile(req: IncomingMessage, res: ServerResponse, parts: readonly string[]): Promise<void> {
+    return await routeProfile(this, req, res, parts)
+  }
+
+  /** @internal 实现在 routes/keys.ts（薄委派，调用点不变）。 */
+async routeKeys(req: IncomingMessage, res: ServerResponse, parts: readonly string[]): Promise<void> {
+    return await routeKeys(this, req, res, parts)
+  }
+
+  /** @internal 实现在 routes/usage.ts（薄委派，调用点不变）。 */
+async usage(req: IncomingMessage, url: URL): Promise<unknown> {
+    return await usage(this, req, url)
+  }
+
+  /**
+   * `GET /api/usage/export`：把当前筛选条件下的明细导出成 CSV。
+   *
+   * 响应是 JSON `{ filename, content }`，由浏览器自己生成 Blob 下载；
+   * 这样不用在 HTTP 层区分下载 / 错误信封，也不会把 CSV 当 JSON 解析。
+   */
+  /** @internal 实现在 routes/usage.ts（薄委派，调用点不变）。 */
+async usageExport(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
+    return await usageExport(this, req, res, url)
+  }
+
+  /**
+   * `GET /api/usage/:reqId`：单条用量详情。
+   *
+   * 权限与列表同口径：普通用户只能看自己的记录，管理员可以查全部。
+   * **查不到与「不是自己的」返回同一个 404**——不向外泄露某个 reqId 是否存在
+   * （与充值订单的「用户面不泄露存在性」同一条纪律）。
+   *
+   * 比列表多给四个字段：`reasoningTokens` / `usagePresent` / `usageComplete`
+   * （库里一直有、列表接口没出）与 `ttftMs`（首字延迟，旧记录是 null）。
+   */
+  /** @internal 实现在 routes/usage.ts（薄委派，调用点不变）。 */
+async usageDetail(req: IncomingMessage, res: ServerResponse, reqId: string): Promise<void> {
+    return await usageDetail(this, req, res, reqId)
+  }
+
+  /**
+   * `/api/pricing`：读价格表（会话）与改价格（管理员）。
+   *
+   * - `GET /api/pricing` → `{ items }`；
+   * - `GET /api/pricing/:model` → 单个价格，没有就 404；
+   * - `PUT /api/pricing/:model` → 写入并返回新价格；
+   * - `DELETE /api/pricing/:model` → `{ removed }`。
+   *
+   * 模型名可能含 `/`，由 `encodeURIComponent` 编成 `%2F` 留在同一路径段里。
+   */
+  /** @internal 实现在 routes/pricing.ts（薄委派，调用点不变）。 */
+async routePricing(
+  req: IncomingMessage,
+  res: ServerResponse,
+  parts: readonly string[],
+): Promise<void> {
+    return await routePricing(this, req, res, parts)
+  }
+
+  /**
+   * `/api/models`：模型广场（只读目录）。
+   *
+   * 与 `GET /v1/models` 的区别：后者是 LLM 入口、只给名字并集、由 Go 服务；
+   * 这里是**产品面**的目录，给价格、可用性与覆盖度，**不改动 `/v1/models` 的任何字节**
+   * （那条路由归 Go，契约由 `internal/httpapi` 的用例守着）。
+   *
+   * 查询参数：
+   * - `search`：按模型名子串过滤（不区分大小写）；
+   * - `availability`：`all` / `available` / `unavailable`（默认 all）；
+   * - `priced`：`all` / `priced` / `unpriced`（默认 all）。
+   *
+   * 金额一律十进制字符串（元 / 百万 token），响应里不出现裸 bigint 或浮点。
+   */
+  /** @internal 实现在 routes/models.ts（薄委派，调用点不变）。 */
+async routeModels(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
+    return await routeModels(this, req, res, url)
+  }
+
+  /**
+   * 用户面：`GET /api/topup/options`、`GET/POST /api/topup/orders`、
+   * `GET /api/topup/orders/<orderNo>`、`POST /api/topup/orders/<orderNo>/cancel`。
+   *
+   * 订单金额只接受「元」的十进制字符串（服务层换整数微元）；响应里金额一律十进制字符串。
+   * 本批没有在线支付：订单创建后返回 `instructions`（人工确认说明），不会自动到账。
+   */
+  /** @internal 实现在 routes/topup.ts（薄委派，调用点不变）。 */
+async routeTopup(
+  req: IncomingMessage,
+  res: ServerResponse,
+  parts: readonly string[],
+  url: URL,
+): Promise<void> {
+    return await routeTopup(this, req, res, parts, url)
+  }
+
+  /**
+   * 用户面：`POST /api/redeem` 兑换，`GET /api/redeem` 我的兑换记录。
+   *
+   * 兑换失败一律走稳定 code（未知 / 已用 / 停用 / 过期 / 兑换中），消息里不含码本身；
+   * 成功只回金额、余额与批次名。
+   */
+  /** @internal 实现在 routes/redeem.ts（薄委派，调用点不变）。 */
+async routeRedeem(
+  req: IncomingMessage,
+  res: ServerResponse,
+  parts: readonly string[],
+  url: URL,
+): Promise<void> {
+    return await routeRedeem(this, req, res, parts, url)
+  }
+
+  /** @internal 实现在 routes/settings.ts（薄委派，调用点不变）。 */
+async routeSettings(req: IncomingMessage, res: ServerResponse, parts: readonly string[]): Promise<void> {
+    return await routeSettings(this, req, res, parts)
+  }
+
+  /** @internal 实现在 routes/settings.ts（薄委派，调用点不变）。 */
+async catalogModules(
+  catalog: CatalogPort,
+): Promise<{ generatedAt: string; modules: readonly CatalogModuleView[] }> {
+    return await catalogModules(this, catalog)
+  }
+
 }
