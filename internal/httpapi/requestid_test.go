@@ -1,7 +1,6 @@
 package httpapi
 
 import (
-	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -86,10 +85,10 @@ func TestRequestIDHeaderOnStream(t *testing.T) {
 	}
 }
 
-// TestRequestIDHeaderDoesNotChangeErrorBody 断言错误体逐字节不变、且照样带头。
+// TestRequestIDHeaderDoesNotChangeErrorBody 断言早期拒绝的错误体逐字节不变。
 //
-// 早期拒绝（JSON 非法）在拿到真实 requestID 之前就返回了，所以头里是 aux id；
-// 关键约束是「响应体一个字节都不变」。
+// 早期拒绝（JSON 非法）在拿到真实 requestID 之前就返回了，所以它**不带**头
+// （见 TestRequestIDHeaderOnlyWhenQueryable）；这里只钉「响应体一个字节都没变」。
 func TestRequestIDHeaderDoesNotChangeErrorBody(t *testing.T) {
 	world, sink := newUsageGateway(t, keyauth.Config{}, nil)
 	recorder := postChat(t, world.handler, `{not json`)
@@ -100,7 +99,9 @@ func TestRequestIDHeaderDoesNotChangeErrorBody(t *testing.T) {
 	if recorder.Body.String() != want {
 		t.Fatalf("错误体变了：\n得到 %s\n期望 %s", recorder.Body.String(), want)
 	}
-	requestIDHeader(t, recorder)
+	if value := recorder.Header().Get(requestIDHeaderName); value != "" {
+		t.Fatalf("早期拒绝不该带 %s（那是个查不到的死值），得到 %q", requestIDHeaderName, value)
+	}
 	if records := sink.all(t); len(records) != 0 {
 		t.Fatalf("被拒请求不该产生用量记录，得到 %d 条", len(records))
 	}
@@ -131,39 +132,54 @@ func TestRequestIDHeaderOnEngineError(t *testing.T) {
 	requestIDHeader(t, recorder)
 }
 
-// TestRequestIDHeaderOnModelsAndHealth 断言 /v1/models 与 /healthz 也带头，
-// 并且健康检查不会把 /healthz 里的 LLM 请求计数弄脏。
-func TestRequestIDHeaderOnModelsAndHealth(t *testing.T) {
-	world, _ := newUsageGateway(t, keyauth.Config{}, nil)
+// TestRequestIDHeaderOnlyWhenQueryable 断言「不发死值」：不产生用量记录的响应
+// （早期拒绝、`/v1/models`、`/healthz`）**不带** `X-Request-Id`。
+//
+// 理由：那些 id 不进日志、不进用量库，用户拿它跑 `dizzy usage show <id>` 必然 404 ——
+// 给一个看着能用、实际查不到的值，比不给更差。将来要全覆盖，先把 id 打进日志再加头。
+func TestRequestIDHeaderOnlyWhenQueryable(t *testing.T) {
+	world, sink := newUsageGateway(t, keyauth.Config{}, nil)
 
+	noHeader := func(what string, recorder *httptest.ResponseRecorder) {
+		t.Helper()
+		if value := recorder.Header().Get(requestIDHeaderName); value != "" {
+			t.Fatalf("%s 不该带 %s（那会是个查不到的死值），得到 %q", what, requestIDHeaderName, value)
+		}
+	}
+
+	// 405：方法不对，在拿 requestID 之前就返回了。
+	getChat := httptest.NewRecorder()
+	world.handler.ServeHTTP(getChat, httptest.NewRequest(http.MethodGet, "/v1/chat/completions", nil))
+	if getChat.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("期望 405，得到 %d", getChat.Code)
+	}
+	noHeader("405", getChat)
+
+	// 400：JSON 非法。
+	badJSON := postChat(t, world.handler, `{not json`)
+	if badJSON.Code != http.StatusBadRequest {
+		t.Fatalf("期望 400，得到 %d", badJSON.Code)
+	}
+	noHeader("JSON 非法", badJSON)
+
+	// /v1/models 与 /healthz 不产生用量记录，也不带头。
 	models := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
-	request.Header.Set("Authorization", "Bearer gateway-key")
-	world.handler.ServeHTTP(models, request)
+	modelsRequest := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	modelsRequest.Header.Set("Authorization", "Bearer gateway-key")
+	world.handler.ServeHTTP(models, modelsRequest)
 	if models.Code != http.StatusOK {
 		t.Fatalf("期望 200，得到 %d：%s", models.Code, models.Body.String())
 	}
-	requestIDHeader(t, models)
+	noHeader("/v1/models", models)
 
-	healthBody := func() map[string]any {
-		recorder := httptest.NewRecorder()
-		world.handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/healthz", nil))
-		if recorder.Code != http.StatusOK {
-			t.Fatalf("期望 200，得到 %d", recorder.Code)
-		}
-		requestIDHeader(t, recorder)
-		var payload map[string]any
-		if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {
-			t.Fatalf("解析 /healthz 响应失败：%v", err)
-		}
-		return payload
+	health := httptest.NewRecorder()
+	world.handler.ServeHTTP(health, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	if health.Code != http.StatusOK {
+		t.Fatalf("期望 200，得到 %d", health.Code)
 	}
+	noHeader("/healthz", health)
 
-	before := healthBody()
-	healthBody()
-	healthBody()
-	after := healthBody()
-	if before["requests"] != after["requests"] {
-		t.Fatalf("健康检查把自己的请求算进了 LLM 请求数：%v → %v", before["requests"], after["requests"])
+	if records := sink.all(t); len(records) != 0 {
+		t.Fatalf("这些请求都不该产生用量记录，得到 %d 条", len(records))
 	}
 }

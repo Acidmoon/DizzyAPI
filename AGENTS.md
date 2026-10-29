@@ -185,7 +185,7 @@ export default FooService
 | `internal/usagelog/` | 用量环形缓冲（容量可配，默认 32768，边界 1..1048576，非法值启动失败；满了丢最旧并计数 `dropped`，其中「没被任何 reader 取走就被覆盖」单独记 `gap`）；`Seq` + `Epoch`，经 `usage.since` 给 TS 轮询，`usage.stats` 给 TS 告警 |
 | `internal/usageprobe/` | 用 codec 从**发回客户端**的响应字节里提取 usage（流式只观察不改字节）；按上游协议归一化四桶 |
 | `internal/metrics/` | Prometheus 文本指标（只在回环监听、`-metrics` 默认开）：请求数与耗时、四桶 token、上游尝试/失败（按固定错误码枚举）、in-flight、冷却账号数、用量缓冲 dropped/gap、额度快照 age；热路径只有 `atomic.Uint64` 加法，标签只用编译期常量 |
-| `internal/httpapi/` | `POST /v1/chat/completions`、`POST /v1/responses`、`POST /v1/messages`、**`POST /v1beta/models/{model}:generateContent` 与 `:streamGenerateContent`（Gemini，模型名在路径里，自己解析、拒绝路径穿越）**、`POST /v1/embeddings`、`GET /v1/models`、`GET /healthz`、`GET /metrics`；请求结束写用量记录；响应（**含整个流**）写完后释放并发槽位；回写 `X-Request-Id` 响应头（与用量记录同源，只加头不改体） |
+| `internal/httpapi/` | `POST /v1/chat/completions`、`POST /v1/responses`、`POST /v1/messages`、**`POST /v1beta/models/{model}:generateContent` 与 `:streamGenerateContent`（Gemini，模型名在路径里，自己解析、拒绝路径穿越）**、`POST /v1/embeddings`、`GET /v1/models`、`GET /healthz`、`GET /metrics`；请求结束写用量记录；响应（**含整个流**）写完后释放并发槽位；回写 `X-Request-Id` 响应头（只在有真实 requestID、即会产生用量记录时才发） |
 | `cmd/gatewayd/` | 组合根：注册模块、启动 HTTP 入口与控制桥 |
 
 ### 4.3 数据与端口
@@ -587,13 +587,14 @@ pnpm build:all        # 两个二进制一起编
   （不泄露某个 reqId 是否存在）。响应比列表多 `reasoningTokens` / `usagePresent` /
   `usageComplete` / `ttftMs`，但**仍然不给** profile / accountId / attempts（用户面拿不到
   上游账号拓扑）。
-- **`X-Request-Id` 是「这次请求」的唯一凭据**：`internal/httpapi` 在 `requestID :=
-  s.nextRequestID()` 之后、任何写响应之前把它写进响应头，值与用量记录的 `RequestID` 同源；
+- **`X-Request-Id` 只在「查得到」时才发**：`internal/httpapi` 在 `requestID :=
+  s.nextRequestID()` 之后、任何写响应之前写这个头，值与用量记录的 `RequestID` 同源；
   只加头、不改体（错误体逐字节不变有断言守着）。**早期拒绝**（方法不对 / 请求体读失败 /
-  JSON 非法 / 缺 model）在拿到真实 requestID 之前就返回了，它们用独立计数器发的 aux id ——
-  这类请求不产生用量记录，所以 aux id 不需要与任何记录对应。`/v1/models` 与 `/healthz`
-  也用 aux 计数器，**不能**用 `nextRequestID`：那会把自己的请求算进 `/healthz` 报的
-  「LLM 请求数」。客户端据此精确对账，不要再用「模型 + 时间窗 + 最大 id」猜。
+  JSON 非法 / 缺 model）与 `/v1/models`、`/healthz` **都不发**：它们的 id 不进日志、
+  不进用量库，发出去就是「看着能用、`usage show` 必然 404」的死值，比不给更差
+  （曾用 aux 计数器发过，被否掉——「没有死值」这条有反向断言钉着）。真要全覆盖，
+  先把 id 打进日志，再回头加头，两步一起做。客户端据此精确对账，不要再用
+  「模型 + 时间窗 + 最大 id」猜。
 
 ### 充值与支付
 
