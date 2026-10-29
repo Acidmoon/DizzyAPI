@@ -248,7 +248,7 @@ export default FooService
   状态 / 客户端 IP」，经控制桥 `usage.since` 由 TS 轮询落 SQLite；`/api/usage`（用户）与
   `/api/admin/usage`（全站）提供明细、汇总、按天/按模型/按用户聚合与 CSV 导出；
   `GET /api/usage/:reqId` 是**单条详情**（详情弹窗用，普通用户只能查自己的、管理员查全部，
-  查不到与「不是自己的」统一 404）；`/console/usage` 只加明细表，`/admin/usage` 是独立页面
+  查不到与「不是自己的」统一 404）；用户侧页面分**概览** `/console/usage`（指标卡 + 恒定 7 个时间点的图 + 最近 10 条）与**明细** `/console/usage/detail`（完整列表 + 分页 + 筛选 + 详情弹窗），`/admin/usage` 是独立的管理页
 - 模型价格：`/api/pricing` 读、`/api/pricing/:model` 读写（写需管理员），`/admin/pricing` 页面；
   用量费用在**读取时**按价格表计算（整数微元，1 元 = 1_000_000 微元）
 - **真实扣费（`billing`，后付费）**：`usage` 每轮 `usage.since` 拉到用量后，按
@@ -403,8 +403,22 @@ pnpm test:go
 - 站点字体是 `font-smiley` 插件：自托管 Smiley Sans（得意黑）v2.0.1（OFL-1.1），
   字体与 LICENSE 在 `packages/font-smiley/assets/`；`scope` 默认 `headings`（只换标题与品牌），
   改 `all` 才换正文。web 负责把 `@font-face` 追加进 `/assets/app.css` 并发送 woff2 字节。
-- 用量页时间维度只有 **今天 / 昨天 / 近 7 天**：单日（今天、昨天）的柱状图看最近 7 个小时
-  （小时桶，标签 `HH:00`），近 7 天按天绘制；图表固定 7 根柱、7 个标签。
+- **用量页分两页**：`/console/usage` 是**概览**（指标卡 + 恒定 7 个时间点的消费图 + 按模型 + 最近
+  10 条请求），`/console/usage/detail` 是**明细**（完整列表 + keyset 分页 + 筛选 + 每行详情）。
+  时间维度是**显式下拉**（今天 / 昨天 / 近 7 天 / 近 30 天，`renderSelect`），查看维度是图卡里的
+  分段控件（总量 / 按模型 / 按 API key）。单日（今天、昨天）的图看最近 7 个整点小时（`HH:00`），
+  多日按天边界把窗口均分成 7 段——**恒定 7 个时间点，空桶补 0**，与库里有多少天数据无关。
+  注意图表实现（`charts.ts`）对**全零的桶不画柱子**，所以「7 根柱」在视觉上是有数据才出柱，
+  恒 7 的是**时间点（X 轴标签）**；用例断言的是 7 个居中轴标签。
+- **详情弹窗是服务端预渲染的**（`usage-view.ts` 的 `detailModal`）：每行一个 `<dialog>`，数据直接取
+  当前行（与表格逐字段一致），不需要客户端 fetch、也不依赖任何脚本；「详情」按钮同时带
+  `data-dialog-open` 与指向明细页 `?reqId=` 的普通链接——**没有 JS 时退化成整页详情**，这是
+  `renderModal` 要求的「别把唯一入口放进弹窗」的落地方式。明细页的 `?reqId=` **必须在页面层判
+  归属**（`record.userId === ctx.user.userId`），服务层 `usage.get` 不判权限。
+- **已知缺口（第 3 批没做）**：明细页的「导出 CSV」按钮没接。`renderExportButton` 输出的
+  `data-export` 钩子**在 `CLIENT_JS` 里没有处理器**（没有 fetch→Blob），而 `/api/usage/export`
+  只返回 JSON `{filename, content}`；要让浏览器真的下载，要么在设计线的 `client-extras.ts`
+  加 ~15 行并用 `asset-version.ts` 拼进 `app.js`，要么把导出接口改成 `text/csv` 契约。
 - **静态资源一律带内容哈希，`immutable` 才成立**（2026-10-30）：`/assets/app.css?v=…`、
   `/assets/app.js?v=…`、`/assets/vendor/<name>?v=…` 的 `?v=` 是**正文的 sha256 前 8 位**，
   装配点只有 `packages/web/src/asset-version.ts`（`APP_CSS_BODY` / `APP_JS_BODY`）与

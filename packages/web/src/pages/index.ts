@@ -3,6 +3,7 @@ import type { PageModule } from '../layout.ts'
 import { loginPage } from './login.ts'
 import { registerPage } from './register.ts'
 import { usagePage } from './usage.ts'
+import { usageDetailPage } from './usage_detail.ts'
 import { keysPage } from './keys.ts'
 import { modelsPage } from './models.ts'
 import { apiDocsPage } from './api_docs.ts'
@@ -28,6 +29,7 @@ export const PAGES: readonly PageModule[] = [
   loginPage,
   registerPage,
   usagePage,
+  usageDetailPage,
   keysPage,
   modelsPage,
   apiDocsPage,

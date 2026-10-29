@@ -89,100 +89,23 @@ export interface ApiKeyLike {
   remove(userId: UserId, id: string): Promise<unknown>
 }
 
-export interface UsageQuery {
-  readonly fromMs: number
-  readonly toMs: number
-  readonly userId?: number
-  readonly apiKeyId?: string
-}
+import type { UsageLike } from './usage-types.ts'
 
-export interface UsageTotals {
-  readonly inputTokens: number
-  readonly outputTokens: number
-  readonly cacheReadTokens: number
-  readonly cacheWriteTokens: number
-  readonly totalTokens: number
-  readonly requests: number
-  readonly costMicros: string
-}
-
-export interface UsageDailyPoint {
-  readonly date: string
-  readonly inputTokens: number
-  readonly outputTokens: number
-  readonly cacheReadTokens: number
-  readonly cacheWriteTokens: number
-  readonly totalTokens: number
-  readonly requests: number
-  readonly costMicros: string
-}
-
-export interface UsageSummary {
-  readonly totals: UsageTotals
-  readonly daily: readonly UsageDailyPoint[]
-  readonly models: readonly { readonly model: string; readonly requests: number; readonly totalTokens: number; readonly costMicros: string }[]
-}
-
-export interface UsageRow {
-  readonly startedAt: string
-  readonly model: string
-  readonly apiKeyName: string
-  readonly totalTokens: number
-  readonly costMicros: string
-  readonly durationMs: number
-  /** 首字延迟（毫秒）；null = 没采集到（非流式请求 / 历史记录），页面显示「—」。 */
-  readonly ttftMs: number | null
-  readonly status: number
-}
-
-export interface UsageListPage {
-  readonly items: readonly UsageRow[]
-  readonly nextCursor: number | null
-}
-
-export interface UsageStats {
-  readonly today: UsageTotals
-  readonly total: UsageTotals
-  readonly models: readonly { readonly model: string; readonly requests: number; readonly totalTokens: number; readonly costMicros: string }[]
-}
-
-export interface UsageLike {
-  summary(query: UsageQuery): UsageSummary
-  list(query: UsageQuery & { cursor?: number; limit?: number }): UsageListPage
-  exportRows(query: UsageQuery, limit?: number): readonly UsageRow[]
-  stats(nowMs?: number): UsageStats
-  /** 坏记录隔离区（分页 + 计数）；这些记录没有进明细、也不会结算。 */
-  listRejected(query?: UsageRejectedQuery): UsageRejectedPage
-  /** 把 pending 的隔离记录标记为 ignored（= 明确放弃这笔未结算用量）。 */
-  ignoreRejected(reqId: string): void
-  /** 按 req_id 重放隔离记录；重复重放不会重复插入。 */
-  replayRejected(reqId: string): Promise<{ readonly status: string; readonly inserted: boolean }>
-}
-
-export interface UsageRejectedRow {
-  readonly reqId: string
-  readonly epoch: string
-  readonly seq: number
-  readonly payload: string
-  readonly error: string
-  readonly failures: number
-  readonly status: string
-  readonly firstFailedAt: string
-  readonly updatedAt: string
-}
-
-export interface UsageRejectedQuery {
-  readonly status?: string
-  readonly limit?: number
-  readonly offset?: number
-}
-
-export interface UsageRejectedPage {
-  readonly items: readonly UsageRejectedRow[]
-  readonly total: number
-  readonly pending: number
-}
-
+// 用量相关类型搬到了 `usage-types.ts`（`runtime.ts` 只许净减，见 AGENTS.md §5.6）；
+// 这里**原样再导出**，既有 `from '../runtime.ts'` 的导入不受影响。
+export type {
+  UsageDailyPoint,
+  UsageLike,
+  UsageListPage,
+  UsageQuery,
+  UsageRejectedPage,
+  UsageRejectedQuery,
+  UsageRejectedRow,
+  UsageRow,
+  UsageStats,
+  UsageSummary,
+  UsageTotals,
+} from './usage-types.ts'
 export interface ModelPrice {
   readonly model: string
   readonly inputPerMillion: string
