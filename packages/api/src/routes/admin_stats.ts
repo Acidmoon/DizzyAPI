@@ -99,8 +99,6 @@ export async function adminStats(host: ApiServer, req: IncomingMessage, res: Ser
 }
 
 /** 分页读完用户表（角色 / 状态拆分要用）；`count()` 只给总数。 */
-
-/** 分页读完用户表（角色 / 状态拆分要用）；`count()` 只给总数。 */
 export async function allUsers(host: ApiServer, ): Promise<UserLike[]> {
   const users: UserLike[] = []
   for (let page = 0; page < STATS_USER_MAX_PAGES; page++) {
@@ -110,7 +108,3 @@ export async function allUsers(host: ApiServer, ): Promise<UserLike[]> {
   }
   return users
 }
-
-/**
- * 管理员用量的筛选与时间窗口。`range` 与用户侧一致；`status` 是精确匹配的 HTTP 状态码。
- */

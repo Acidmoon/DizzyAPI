@@ -12,16 +12,13 @@ import { ApiError, forbidden, isApiError, unauthorized } from './errors.ts'
 import { type IncomingMessage, type ServerResponse } from 'node:http'
 import type { LoginResultLike, SessionInfoView, SessionRole, SessionViewLike } from './types.ts'
 
+// ───────────────────────────────── 会话 ─────────────────────────────────
+
 export function sessionToken(host: ApiServer, req: IncomingMessage): string {
   const token = readCookie(req, host.config.sessionCookieName)
   if (token === undefined || token === '') throw unauthorized('会话 cookie 不存在，请重新登录')
   return token
 }
-
-/**
- * 会话校验。auth 的原始错误细节不往外带：只保留稳定 code，消息统一成通用文案。
- * banned 是 403，其余会话问题统一 401。
- */
 
 /**
  * 会话校验。auth 的原始错误细节不往外带：只保留稳定 code，消息统一成通用文案。
@@ -119,17 +116,9 @@ export function clearSessionCookie(host: ApiServer, req: IncomingMessage, res: S
  * `X-Forwarded-Proto: https`。只有确认请求是 HTTPS 才加 `Secure`，这样本机
  * `http://127.0.0.1` 的开发预览仍然能收到 cookie。
  */
-
-/**
- * 反向代理终止 TLS 时，`req.socket.encrypted` 在 Node 侧是 false，但 Caddy 会带
- * `X-Forwarded-Proto: https`。只有确认请求是 HTTPS 才加 `Secure`，这样本机
- * `http://127.0.0.1` 的开发预览仍然能收到 cookie。
- */
 export function secureCookie(host: ApiServer, req: IncomingMessage): string {
   const socket = req.socket as { encrypted?: boolean }
   const forwarded = req.headers['x-forwarded-proto']
   const proto = (Array.isArray(forwarded) ? forwarded[0] : forwarded)?.split(',')[0]?.trim()
   return socket.encrypted === true || proto === 'https' ? '; Secure' : ''
 }
-
-// ───────────────────────────────── 健康 ─────────────────────────────────

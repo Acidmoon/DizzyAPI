@@ -139,18 +139,3 @@ parts: readonly string[],
 
   host.sendMethodNotAllowed(req, res, ['GET', 'HEAD', 'PUT', 'DELETE'])
 }
-
-/**
- * `/api/models`：模型广场（只读目录）。
- *
- * 与 `GET /v1/models` 的区别：后者是 LLM 入口、只给名字并集、由 Go 服务；
- * 这里是**产品面**的目录，给价格、可用性与覆盖度，**不改动 `/v1/models` 的任何字节**
- * （那条路由归 Go，契约由 `internal/httpapi` 的用例守着）。
- *
- * 查询参数：
- * - `search`：按模型名子串过滤（不区分大小写）；
- * - `availability`：`all` / `available` / `unavailable`（默认 all）；
- * - `priced`：`all` / `priced` / `unpriced`（默认 all）。
- *
- * 金额一律十进制字符串（元 / 百万 token），响应里不出现裸 bigint 或浮点。
- */

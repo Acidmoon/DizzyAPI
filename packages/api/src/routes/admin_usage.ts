@@ -81,16 +81,6 @@ url: URL,
 }
 
 /**
- * `/api/admin/usage/rejected`：坏记录隔离区（只读列表 + 两个管理动作）。
- *
- * - `GET` → `{ items, total, pending, limit, offset }`（`status` 可筛 pending / ignored / replayed）
- * - `POST .../ignore` `{reqId}` → 标记 ignored（幂等）
- * - `POST .../replay` `{reqId}` → 按 req_id 重放，成功则 pending → replayed（幂等，不重复插入）
- *
- * 这些记录**没有**进用量明细，也不会被结算；管理面必须能看见，否则就是静默免单。
- */
-
-/**
  * 管理员用量的筛选与时间窗口。`range` 与用户侧一致；`status` 是精确匹配的 HTTP 状态码。
  */
 export function adminUsageQuery(host: ApiServer, url: URL): {
@@ -154,11 +144,6 @@ readonly query: UsageQueryLike
  * 同一次请求内复用的 userId → name 解析器。用户服务不可用或用户已删除时记 null，
  * 不让一行缺失把整个列表打成 500。
  */
-
-/**
- * 同一次请求内复用的 userId → name 解析器。用户服务不可用或用户已删除时记 null，
- * 不让一行缺失把整个列表打成 500。
- */
 export function userNameResolver(host: ApiServer, ): (userId: number) => Promise<string | null> {
   const cache = new Map<number, string | null>()
   return async (userId: number) => {
@@ -174,11 +159,3 @@ export function userNameResolver(host: ApiServer, ): (userId: number) => Promise
     return name
   }
 }
-
-/**
- * 用户面：`GET /api/topup/options`、`GET/POST /api/topup/orders`、
- * `GET /api/topup/orders/<orderNo>`、`POST /api/topup/orders/<orderNo>/cancel`。
- *
- * 订单金额只接受「元」的十进制字符串（服务层换整数微元）；响应里金额一律十进制字符串。
- * 本批没有在线支付：订单创建后返回 `instructions`（人工确认说明），不会自动到账。
- */
