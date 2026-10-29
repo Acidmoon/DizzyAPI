@@ -37,6 +37,8 @@ import type {
   GatewayHealthState,
   GatewayHealthView,
   LoginResultLike,
+  ModelCatalogLike,
+  ModelEntryLike,
   ModelPriceInputLike,
   ModelPriceLike,
   PricingPort,
@@ -424,6 +426,10 @@ export class ApiServer {
     }
     if (parts[0] === 'pricing') {
       await this.routePricing(req, res, parts)
+      return
+    }
+    if (parts.length === 1 && parts[0] === 'models') {
+      await this.routeModels(req, res, url)
       return
     }
     if (parts[0] === 'topup') {
@@ -879,6 +885,53 @@ export class ApiServer {
     }
 
     this.sendMethodNotAllowed(req, res, ['GET', 'HEAD', 'PUT', 'DELETE'])
+  }
+
+  /**
+   * `/api/models`：模型广场（只读目录）。
+   *
+   * 与 `GET /v1/models` 的区别：后者是 LLM 入口、只给名字并集、由 Go 服务；
+   * 这里是**产品面**的目录，给价格、可用性与覆盖度，**不改动 `/v1/models` 的任何字节**
+   * （那条路由归 Go，契约由 `internal/httpapi` 的用例守着）。
+   *
+   * 查询参数：
+   * - `search`：按模型名子串过滤（不区分大小写）；
+   * - `availability`：`all` / `available` / `unavailable`（默认 all）；
+   * - `priced`：`all` / `priced` / `unpriced`（默认 all）。
+   *
+   * 金额一律十进制字符串（元 / 百万 token），响应里不出现裸 bigint 或浮点。
+   */
+  private async routeModels(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
+    if (!this.allowRead(req, res)) return
+    await this.requireSession(req)
+    const modelhub = this.runtime.modelhub()
+    if (modelhub === undefined) {
+      throw new ApiError('MODELHUB_UNAVAILABLE', 503, '模型广场服务不在运行：暂时不能查询模型目录')
+    }
+
+    const query: {
+      search?: string
+      availability?: 'all' | 'available' | 'unavailable'
+      priced?: 'all' | 'priced' | 'unpriced'
+    } = {}
+    const search = queryStringOf(url, 'search')
+    if (search !== undefined) query.search = search
+    const availability = queryStringOf(url, 'availability')
+    if (availability !== undefined) {
+      if (availability !== 'all' && availability !== 'available' && availability !== 'unavailable') {
+        throw badRequest('availability 只能是 all / available / unavailable')
+      }
+      query.availability = availability
+    }
+    const priced = queryStringOf(url, 'priced')
+    if (priced !== undefined) {
+      if (priced !== 'all' && priced !== 'priced' && priced !== 'unpriced') {
+        throw badRequest('priced 只能是 all / priced / unpriced')
+      }
+      query.priced = priced
+    }
+
+    this.sendJson(req, res, 200, modelCatalogOf(modelhub.catalog(query)))
   }
 
   /**
@@ -3052,6 +3105,53 @@ function redeemStatsOf(stats: RedeemStatsLike): Record<string, unknown> {
     used: stats.used,
     expired: stats.expired,
     redeemedAmountMicro: stats.redeemedAmountMicro.toString(),
+  }
+}
+
+// ───────────────────────────────── 模型广场 ─────────────────────────────────
+
+function modelCatalogOf(catalog: ModelCatalogLike): Record<string, unknown> {
+  return {
+    available: catalog.available.map(modelEntryOf),
+    unavailable: catalog.unavailable.map((entry) => ({
+      model: entry.model,
+      reason: entry.reason,
+      detail: entry.detail,
+      accountCount: entry.accountCount,
+      priced: entry.priced,
+      price: entry.price === null ? null : modelPriceViewOf(entry.price),
+    })),
+    summary: {
+      total: catalog.summary.total,
+      availableCount: catalog.summary.availableCount,
+      unavailableCount: catalog.summary.unavailableCount,
+      pricedCount: catalog.summary.pricedCount,
+      accountCount: catalog.summary.accountCount,
+    },
+  }
+}
+
+function modelEntryOf(entry: ModelEntryLike): Record<string, unknown> {
+  return {
+    model: entry.model,
+    priced: entry.priced,
+    price: entry.price === null ? null : modelPriceViewOf(entry.price),
+    accountCount: entry.accountCount,
+    healthyAccountCount: entry.healthyAccountCount,
+    protocols: entry.protocols,
+    upstreamModels: entry.upstreamModels,
+    mapped: entry.mapped,
+  }
+}
+
+function modelPriceViewOf(price: ModelPriceLike): Record<string, unknown> {
+  return {
+    inputPerMillion: price.inputPerMillion,
+    outputPerMillion: price.outputPerMillion,
+    cacheReadPerMillion: price.cacheReadPerMillion,
+    cacheWritePerMillion: price.cacheWritePerMillion,
+    currency: price.currency,
+    updatedAt: price.updatedAt,
   }
 }
 

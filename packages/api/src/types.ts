@@ -402,6 +402,51 @@ export interface PricingPort {
   remove(actor: string, model: string): Promise<boolean>
 }
 
+// ───────────────────────────── 模型广场 ─────────────────────────────
+
+export interface ModelEntryLike {
+  readonly model: string
+  readonly priced: boolean
+  readonly price: ModelPriceLike | null
+  readonly accountCount: number
+  readonly healthyAccountCount: number
+  readonly protocols: readonly string[]
+  readonly upstreamModels: readonly string[]
+  readonly mapped: boolean
+}
+
+export interface ModelUnavailableEntryLike {
+  readonly model: string
+  readonly reason: string
+  readonly detail: string
+  readonly accountCount: number
+  readonly price: ModelPriceLike | null
+  readonly priced: boolean
+}
+
+export interface ModelCatalogSummaryLike {
+  readonly total: number
+  readonly availableCount: number
+  readonly unavailableCount: number
+  readonly pricedCount: number
+  readonly accountCount: number
+}
+
+export interface ModelCatalogLike {
+  readonly available: readonly ModelEntryLike[]
+  readonly unavailable: readonly ModelUnavailableEntryLike[]
+  readonly summary: ModelCatalogSummaryLike
+}
+
+/** 模型广场服务（只读聚合）：`/api/models` 与 `/console/models` 共用一份事实。 */
+export interface ModelHubPort {
+  catalog(query?: {
+    readonly search?: string
+    readonly availability?: 'all' | 'available' | 'unavailable'
+    readonly priced?: 'all' | 'priced' | 'unpriced'
+  }): ModelCatalogLike
+}
+
 // ───────────────────────────── 设置与 API key ─────────────────────────────
 
 /** 设置插件的读/写面。只有运行中的 settings 服务才提供。 */
@@ -791,6 +836,8 @@ export interface ApiRuntime {
   accountPriority(): AccountPriorityPort | undefined
   usage(): UsagePort | undefined
   pricing(): PricingPort | undefined
+  /** 模型广场（只读聚合）；不在运行时只有 /api/models 503。 */
+  modelhub(): ModelHubPort | undefined
   /** 兑换码服务；不在运行时只有兑换相关路由 503（入口本身不受影响）。 */
   redeem(): RedeemPort | undefined
   /** 结算服务；不在运行时只有 /api/admin/billing 503（扣费暂停，用量照常落库）。 */

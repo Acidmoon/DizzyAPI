@@ -41,6 +41,7 @@ const EMPTY_SERVICES: WebRuntime = {
   redeem: undefined,
   billing: undefined,
   topup: undefined,
+  modelhub: undefined,
   fontSmiley: undefined,
 }
 

@@ -83,6 +83,9 @@ importers:
       '@dizzyapi/plugin-mailer':
         specifier: workspace:*
         version: link:packages/mailer
+      '@dizzyapi/plugin-modelhub':
+        specifier: workspace:*
+        version: link:packages/modelhub
       '@dizzyapi/plugin-page-template':
         specifier: workspace:*
         version: link:packages/page-template
@@ -294,6 +297,15 @@ importers:
       '@dizzyapi/plugin-credentials':
         specifier: workspace:*
         version: link:../credentials
+
+  packages/modelhub:
+    dependencies:
+      '@dizzyapi/plugin-kit':
+        specifier: workspace:*
+        version: link:../kit
+      cordis:
+        specifier: ^4.0.0-rc.11
+        version: 4.0.0-rc.11(@cordisjs/plugin-include@1.1.1)(@cordisjs/plugin-loader@1.0.0-rc.8)
 
   packages/page-template:
     dependencies:

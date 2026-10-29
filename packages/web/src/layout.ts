@@ -45,6 +45,8 @@ export interface PageModule {
 
 const CONSOLE_NAV: readonly { label: string; path: string; icon: NavItem['icon'] }[] = [
   { label: '用量信息', path: '/console/usage', icon: 'bars' },
+  { label: '模型广场', path: '/console/models', icon: 'tag' },
+  { label: 'API 文档', path: '/console/api-docs', icon: 'doc' },
   { label: 'API keys', path: '/console/api-keys', icon: 'search' },
   { label: '充值', path: '/console/top-up', icon: 'card' },
   { label: '兑换', path: '/console/redeem', icon: 'receipt' },

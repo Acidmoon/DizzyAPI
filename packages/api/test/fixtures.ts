@@ -25,6 +25,8 @@ import type {
   FrontendPort,
   LoginResultLike,
   ModelPriceLike,
+  ModelCatalogLike,
+  ModelHubPort,
   PricingPort,
   RedeemBatchLike,
   RedeemCodeLike,
@@ -1294,6 +1296,62 @@ export class FakeTopup implements TopupPort {
   }
 }
 
+/** 模型广场服务的假实现：只覆盖 HTTP 层要观察的行为。 */
+export class FakeModelHub implements ModelHubPort {
+  readonly calls: { readonly query?: unknown }[] = []
+  /** 设置后 catalog 抛出带这个 code 的 DomainError。 */
+  failCode: string | undefined
+
+  catalog(query?: {
+    readonly search?: string
+    readonly availability?: 'all' | 'available' | 'unavailable'
+    readonly priced?: 'all' | 'priced' | 'unpriced'
+  }): ModelCatalogLike {
+    this.calls.push({ query })
+    if (this.failCode !== undefined) throw new DomainError(this.failCode, '测试拒绝：目录查询失败')
+    const price = {
+      model: 'deepseek-chat',
+      inputPerMillion: '2',
+      outputPerMillion: '8',
+      cacheReadPerMillion: '0.5',
+      cacheWritePerMillion: '0',
+      currency: 'CNY',
+      updatedAt: '2026-10-19T00:00:00.000Z',
+    }
+    return {
+      available: [
+        {
+          model: 'deepseek-chat',
+          priced: true,
+          price,
+          accountCount: 3,
+          healthyAccountCount: 2,
+          protocols: ['openai-chat'],
+          upstreamModels: ['deepseek-chat-2026'],
+          mapped: true,
+        },
+      ],
+      unavailable: [
+        {
+          model: 'deepseek-reasoner',
+          reason: 'no_healthy_account',
+          detail: '提供这个模型的账号当前都不可用（停用、凭据缺失或健康检查未通过）',
+          accountCount: 1,
+          price: null,
+          priced: false,
+        },
+      ],
+      summary: {
+        total: 2,
+        availableCount: 1,
+        unavailableCount: 1,
+        pricedCount: 1,
+        accountCount: 4,
+      },
+    }
+  }
+}
+
 export interface Fixture {
   readonly runtime: ApiRuntime
   readonly user: FakeUser
@@ -1309,6 +1367,7 @@ export interface Fixture {
   readonly redeem: FakeRedeem
   readonly billing: FakeBilling
   readonly topup: FakeTopup
+  readonly modelhub: FakeModelHub
   readonly cleanup: () => Promise<void>
 }
 
@@ -1327,6 +1386,7 @@ export interface FixtureOptions {
   readonly withoutRedeem?: boolean
   readonly withoutBilling?: boolean
   readonly withoutTopup?: boolean
+  readonly withoutModelHub?: boolean
   readonly pages?: FrontendPageLike[]
 }
 
@@ -1344,6 +1404,7 @@ export async function createFixture(options: FixtureOptions = {}): Promise<Fixtu
   const redeem = new FakeRedeem()
   const billing = new FakeBilling()
   const topup = new FakeTopup()
+  const modelhub = new FakeModelHub()
 
   const runtime: ApiRuntime = {
     config: resolvedConfig(options.config),
@@ -1361,6 +1422,7 @@ export async function createFixture(options: FixtureOptions = {}): Promise<Fixtu
     redeem: () => (options.withoutRedeem === true ? undefined : redeem),
     billing: () => (options.withoutBilling === true ? undefined : billing),
     topup: () => (options.withoutTopup === true ? undefined : topup),
+    modelhub: () => (options.withoutModelHub === true ? undefined : modelhub),
     now: () => new Date('2026-10-19T12:00:00.000Z'),
     uptimeSec: () => 42,
     log: () => undefined,
@@ -1381,6 +1443,7 @@ export async function createFixture(options: FixtureOptions = {}): Promise<Fixtu
     redeem,
     billing,
     topup,
+    modelhub,
     async cleanup() {
       await rm(frontend.root, { recursive: true, force: true })
     },

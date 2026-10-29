@@ -200,6 +200,58 @@ export interface PricingLike {
   remove(actor: string, model: string): Promise<boolean>
 }
 
+// ───────────────────────────── 模型广场 ─────────────────────────────
+
+export interface ModelPriceView {
+  readonly inputPerMillion: string
+  readonly outputPerMillion: string
+  readonly cacheReadPerMillion: string
+  readonly cacheWritePerMillion: string
+  readonly currency: string
+  readonly updatedAt: string
+}
+
+export interface ModelEntryView {
+  readonly model: string
+  readonly priced: boolean
+  readonly price: ModelPriceView | null
+  readonly accountCount: number
+  readonly healthyAccountCount: number
+  readonly protocols: readonly string[]
+  readonly upstreamModels: readonly string[]
+  readonly mapped: boolean
+}
+
+export interface ModelUnavailableView {
+  readonly model: string
+  readonly reason: string
+  readonly detail: string
+  readonly accountCount: number
+  readonly price: ModelPriceView | null
+  readonly priced: boolean
+}
+
+export interface ModelCatalogView {
+  readonly available: readonly ModelEntryView[]
+  readonly unavailable: readonly ModelUnavailableView[]
+  readonly summary: {
+    readonly total: number
+    readonly availableCount: number
+    readonly unavailableCount: number
+    readonly pricedCount: number
+    readonly accountCount: number
+  }
+}
+
+/** 模型广场服务（只读聚合）：页面不 import 插件实现。 */
+export interface ModelHubLike {
+  catalog(query?: {
+    readonly search?: string
+    readonly availability?: 'all' | 'available' | 'unavailable'
+    readonly priced?: 'all' | 'priced' | 'unpriced'
+  }): ModelCatalogView
+}
+
 // ───────────────────────────── 兑换码 ─────────────────────────────
 
 export interface RedeemResultView {
@@ -621,6 +673,7 @@ export interface WebRuntime {
   readonly apiKey: ApiKeyLike | undefined
   readonly usage: UsageLike | undefined
   readonly pricing: PricingLike | undefined
+  readonly modelhub: ModelHubLike | undefined
   readonly settings: SettingsLike | undefined
   readonly catalog: CatalogLike | undefined
   readonly accountAdmin: AccountAdminLike | undefined

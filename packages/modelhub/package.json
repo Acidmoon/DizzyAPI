@@ -1,0 +1,21 @@
+{
+  "name": "@dizzyapi/plugin-modelhub",
+  "version": "0.1.0",
+  "private": true,
+  "description": "DizzyAPI · 模型广场插件：只读聚合（价格表 + 账号声明的模型与协议），不落盘、不写数据",
+  "type": "module",
+  "license": "MIT",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./package.json": "./package.json"
+  },
+  "scripts": {
+    "test": "node --import tsx --test \"test/*.test.ts\""
+  },
+  "dependencies": {
+    "@dizzyapi/plugin-kit": "workspace:*",
+    "cordis": "^4.0.0-rc.11"
+  }
+}

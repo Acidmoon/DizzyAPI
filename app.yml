@@ -242,6 +242,20 @@
       - '@dizzyapi/plugin-api'
       - '@dizzyapi/plugin-web'
 
+# 模型广场：**纯只读聚合**，不落盘、不写任何数据。
+# 它把「价格表（pricing）」+「账号声明的 models / modelMap（accountAdmin 门面）」
+# + 「账号的协议 / 健康度 / 凭据状态」拼成一份「我们卖什么」：
+#   - /api/models 给前端与脚本（available / unavailable + 不可用原因）；
+#   - /console/models 是用户可见的模型广场页。
+# 不 inject 任何服务：pricing / accountAdmin 都在运行期解析，它们被禁用时目录降级
+# （没有价格 / 没有覆盖度），而不是整个插件 PENDING（D5）。
+# **不暴露任何秘密**：只输出对外模型名、计数与协议名；账号 id / label / baseUrl 都不出。
+- id: modelhub
+  name: '@dizzyapi/plugin-modelhub'
+  config:
+    # 没有精确价格的模型也列出来（用户想知道自己能调什么）。
+    includeUnpriced: true
+
 # 用量明细：接收 Go 经控制桥送来的请求用量（轮询 `usage.since`），落 SQLite。
 # 只存 token 事实，不存费用；费用由读取方按 pricing 的当前价格表计算。
 # 一轮的顺序是「拉取 → 落库 → 结算（billing）→ 推进游标」；结算失败不推进游标。

@@ -4,6 +4,8 @@ import { loginPage } from './login.ts'
 import { registerPage } from './register.ts'
 import { usagePage } from './usage.ts'
 import { keysPage } from './keys.ts'
+import { modelsPage } from './models.ts'
+import { apiDocsPage } from './api_docs.ts'
 import { topUpPage } from './top_up.ts'
 import { redeemPage } from './redeem.ts'
 import { transactionsPage } from './transactions.ts'
@@ -24,6 +26,8 @@ export const PAGES: readonly PageModule[] = [
   registerPage,
   usagePage,
   keysPage,
+  modelsPage,
+  apiDocsPage,
   topUpPage,
   redeemPage,
   transactionsPage,
