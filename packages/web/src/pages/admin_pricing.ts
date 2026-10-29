@@ -2,6 +2,7 @@
 import { pageHeader, renderAdminShell, type PageModule } from '../layout.ts'
 import { requiredString, WebError } from '../forms.ts'
 import { WEB_ACTOR } from '../runtime.ts'
+import { auditedAction } from '../audit.ts'
 
 export const adminPricingPage: PageModule = {
   path: '/admin/pricing',
@@ -62,12 +63,23 @@ ${t.renderField({ label: '缓存写价', name: 'cacheWritePerMillion', placehold
       const outputPerMillion = requiredString(ctx.form, 'outputPerMillion', '输出价')
       const cacheReadPerMillion = ctx.form.get('cacheReadPerMillion')?.trim() || undefined
       const cacheWritePerMillion = ctx.form.get('cacheWritePerMillion')?.trim() || undefined
-      await pricing.set(WEB_ACTOR, model, {
-        inputPerMillion,
-        outputPerMillion,
-        ...(cacheReadPerMillion === undefined ? {} : { cacheReadPerMillion }),
-        ...(cacheWritePerMillion === undefined ? {} : { cacheWritePerMillion }),
-      })
+      await auditedAction(
+        ctx,
+        {
+          action: 'pricing.write',
+          targetType: 'pricing',
+          targetId: model,
+          summary: `写入模型 ${model} 的价格`,
+          metadata: { inputPerMillion, outputPerMillion },
+        },
+        () =>
+          pricing.set(WEB_ACTOR, model, {
+            inputPerMillion,
+            outputPerMillion,
+            ...(cacheReadPerMillion === undefined ? {} : { cacheReadPerMillion }),
+            ...(cacheWritePerMillion === undefined ? {} : { cacheWritePerMillion }),
+          }),
+      )
       return '/admin/pricing?ok=' + encodeURIComponent('价格已保存')
     },
   },

@@ -64,6 +64,7 @@ const EMPTY_SERVICES: WebRuntime = {
   billing: undefined,
   topup: undefined,
   fontSmiley: undefined,
+  audit: undefined,
 }
 
 async function renderDocs(query = ''): Promise<string> {

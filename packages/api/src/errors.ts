@@ -35,6 +35,7 @@ export type ApiErrorCode =
   | 'TOPUP_UNAVAILABLE'
   | 'TOPUP_NOT_IMPLEMENTED'
   | 'MODELHUB_UNAVAILABLE'
+  | 'AUDIT_UNAVAILABLE'
 
 export class ApiError extends Error {
   readonly code: string
@@ -160,6 +161,14 @@ const EXPLICIT_STATUS: Readonly<Record<string, number>> = {
   // 模型广场：查询条件不合法是用户输入问题 → 400；服务缺席 → 503（入口本身不受影响）。
   MODELHUB_QUERY_INVALID: 400,
   MODELHUB_CONFIG_INVALID: 500,
+  // 审计：读白名单 / 参数 / 记录形状都在服务层判，这里只把码映射成状态码。
+  AUDIT_ACTOR_FORBIDDEN: 403,
+  AUDIT_ACTOR_REQUIRED: 400,
+  AUDIT_ENTRY_INVALID: 400,
+  AUDIT_QUERY_INVALID: 400,
+  AUDIT_NOT_READY: 503,
+  AUDIT_STORE_CORRUPT: 500,
+  AUDIT_STORE_FAILED: 500,
 }
 
 export function statusOfCode(code: string): number {

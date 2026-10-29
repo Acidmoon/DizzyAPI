@@ -43,6 +43,7 @@ const EMPTY_SERVICES: WebRuntime = {
   topup: undefined,
   modelhub: undefined,
   fontSmiley: undefined,
+  audit: undefined,
 }
 
 function pageContext(services: WebRuntime): PageContext {

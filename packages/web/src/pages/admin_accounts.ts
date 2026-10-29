@@ -2,6 +2,7 @@
 import { pageHeader, renderAdminShell, type PageModule } from '../layout.ts'
 import { requiredString, WebError } from '../forms.ts'
 import { WEB_ACTOR, type AccountListItem, type AccountUpdatePatch, type WebRuntime } from '../runtime.ts'
+import { auditedAction } from '../audit.ts'
 import {
   errorText,
   formatNumber,
@@ -110,27 +111,57 @@ export const adminAccountsPage: PageModule = {
     async enable(ctx) {
       const admin = requireAdmin(ctx)
       const id = requiredString(ctx.form, 'id', '账号')
-      await admin.enable(WEB_ACTOR, id)
+      await auditedAction(
+        ctx,
+        {
+          action: 'account.enable',
+          targetType: 'account',
+          targetId: id,
+          summary: `启用上游账号 ${id}`,
+          metadata: { enabled: true },
+        },
+        () => admin.enable(WEB_ACTOR, id),
+      )
       return '/admin/accounts?ok=' + encodeURIComponent('账号已启用')
     },
 
     async disable(ctx) {
       const admin = requireAdmin(ctx)
       const id = requiredString(ctx.form, 'id', '账号')
-      await admin.disable(WEB_ACTOR, id)
+      await auditedAction(
+        ctx,
+        {
+          action: 'account.disable',
+          targetType: 'account',
+          targetId: id,
+          summary: `停用上游账号 ${id}`,
+          metadata: { enabled: false },
+        },
+        () => admin.disable(WEB_ACTOR, id),
+      )
       return '/admin/accounts?ok=' + encodeURIComponent('账号已停用')
     },
 
     async remove(ctx) {
       const admin = requireAdmin(ctx)
       const id = requiredString(ctx.form, 'id', '账号')
-      await admin.remove(WEB_ACTOR, id)
+      await auditedAction(
+        ctx,
+        {
+          action: 'account.remove',
+          targetType: 'account',
+          targetId: id,
+          summary: `删除上游账号 ${id}`,
+        },
+        () => admin.remove(WEB_ACTOR, id),
+      )
       return '/admin/accounts?ok=' + encodeURIComponent('账号已删除')
     },
 
     async test(ctx) {
       const admin = requireAdmin(ctx)
       const id = requiredString(ctx.form, 'id', '账号')
+      // 连通性测试不改状态，不记审计。
       const result = await admin.testConnection(id)
       const message = result.ok ? `连接成功（${result.latencyMs}ms）` : `连接失败：${result.error ?? '未知错误'}`
       return `/admin/accounts?${result.ok ? 'ok' : 'err'}=${encodeURIComponent(message)}`
@@ -142,13 +173,33 @@ export const adminAccountsPage: PageModule = {
       const op = ctx.form.get('op') ?? 'update'
 
       if (op === 'enable' || op === 'disable') {
-        const result = op === 'enable' ? await admin.bulkEnable(WEB_ACTOR, ids) : await admin.bulkDisable(WEB_ACTOR, ids)
+        const result = await auditedAction(
+          ctx,
+          {
+            action: op === 'enable' ? 'account.bulk_enable' : 'account.bulk_disable',
+            targetType: 'account',
+            summary: `批量${op === 'enable' ? '启用' : '停用'} ${ids.length} 个上游账号`,
+            metadata: { ids },
+            metadataOf: (out) => ({ succeeded: out.succeeded, failed: out.failed }),
+          },
+          () => (op === 'enable' ? admin.bulkEnable(WEB_ACTOR, ids) : admin.bulkDisable(WEB_ACTOR, ids)),
+        )
         return '/admin/accounts?' + bulkNotice(op === 'enable' ? '启用' : '停用', result)
       }
       if (op !== 'update') throw new WebError('WEB_ACCOUNT_BULK_OP', '不认识的批量操作')
 
       const patch = bulkPatch(ctx.form)
-      const result = await admin.bulkUpdate(WEB_ACTOR, ids, patch)
+      const result = await auditedAction(
+        ctx,
+        {
+          action: 'account.bulk_update',
+          targetType: 'account',
+          summary: `批量修改 ${ids.length} 个上游账号的字段：${Object.keys(patch).join(' / ')}`,
+          metadata: { ids, fields: Object.keys(patch) },
+          metadataOf: (out) => ({ succeeded: out.succeeded, failed: out.failed }),
+        },
+        () => admin.bulkUpdate(WEB_ACTOR, ids, patch),
+      )
       return '/admin/accounts?' + bulkNotice('改字段', result)
     },
   },

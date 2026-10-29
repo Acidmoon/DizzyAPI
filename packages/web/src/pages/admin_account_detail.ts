@@ -8,6 +8,7 @@
 import { pageHeader, renderAdminShell, type ActionContext, type PageContext, type PageModule } from '../layout.ts'
 import { requiredString, WebError } from '../forms.ts'
 import { WEB_ACTOR, type AccountUpdatePatch, type AccountView } from '../runtime.ts'
+import { auditedAction } from '../audit.ts'
 import {
   errorText,
   formatNumber,
@@ -186,7 +187,17 @@ ${renderKeyValueTable(t, [
       const modelMap = parseModelMap(ctx.form.get('modelMap') ?? '')
       patch.models = models.length === 0 ? null : models
       patch.modelMap = Object.keys(modelMap).length === 0 ? null : modelMap
-      await admin.update(WEB_ACTOR, id, patch as AccountUpdatePatch)
+      await auditedAction(
+        ctx,
+        {
+          action: 'account.update',
+          targetType: 'account',
+          targetId: id,
+          summary: `修改上游账号 ${id} 的基本信息`,
+          metadata: { fields: Object.keys(patch) },
+        },
+        () => admin.update(WEB_ACTOR, id, patch as AccountUpdatePatch),
+      )
       return `${PATH}?id=${encodeURIComponent(id)}&ok=${encodeURIComponent('基本信息已保存')}`
     },
 
@@ -207,7 +218,20 @@ ${renderKeyValueTable(t, [
           Number.isInteger(value) && value >= 0 && value <= 1_000,
         ),
       }
-      await admin.update(WEB_ACTOR, id, patch)
+      await auditedAction(
+        ctx,
+        {
+          action: 'account.scheduling',
+          targetType: 'account',
+          targetId: id,
+          summary: `修改上游账号 ${id} 的调度参数（标签 / 权重 / 并发 / 优先级）`,
+          metadata: {
+            labels: patch.labels ?? [],
+            priority: patch.priority ?? 0,
+          },
+        },
+        () => admin.update(WEB_ACTOR, id, patch),
+      )
       return `${PATH}?id=${encodeURIComponent(id)}&ok=${encodeURIComponent('调度参数已保存')}`
     },
 
@@ -215,7 +239,17 @@ ${renderKeyValueTable(t, [
       const admin = requireAdmin(ctx)
       const id = requireAccountId(ctx)
       const health = requiredString(ctx.form, 'health', '健康状态')
-      await admin.setHealth(WEB_ACTOR, id, health)
+      await auditedAction(
+        ctx,
+        {
+          action: 'account.health.set',
+          targetType: 'account',
+          targetId: id,
+          summary: `把上游账号 ${id} 的健康状态改为 ${health}`,
+          metadata: { health },
+        },
+        () => admin.setHealth(WEB_ACTOR, id, health),
+      )
       return `${PATH}?id=${encodeURIComponent(id)}&ok=${encodeURIComponent('健康状态已保存')}`
     },
 
@@ -223,27 +257,56 @@ ${renderKeyValueTable(t, [
       const admin = requireAdmin(ctx)
       const id = requireAccountId(ctx)
       const reason = requiredString(ctx.form, 'reason', '原因')
-      await admin.autoDisable(WEB_ACTOR, id, reason)
+      await auditedAction(
+        ctx,
+        {
+          action: 'account.auto_disable',
+          targetType: 'account',
+          targetId: id,
+          summary: `把上游账号 ${id} 标记为自动停用：${reason}`,
+          metadata: { reason },
+        },
+        () => admin.autoDisable(WEB_ACTOR, id, reason),
+      )
       return `${PATH}?id=${encodeURIComponent(id)}&ok=${encodeURIComponent('已标记为自动停用')}`
     },
 
     async recover(ctx) {
       const admin = requireAdmin(ctx)
       const id = requireAccountId(ctx)
-      await admin.autoEnable(WEB_ACTOR, id)
+      await auditedAction(
+        ctx,
+        {
+          action: 'account.auto_enable',
+          targetType: 'account',
+          targetId: id,
+          summary: `解除上游账号 ${id} 的自动停用`,
+        },
+        () => admin.autoEnable(WEB_ACTOR, id),
+      )
       return `${PATH}?id=${encodeURIComponent(id)}&ok=${encodeURIComponent('已解除自动停用')}`
     },
 
     async refresh(ctx) {
       const admin = requireAdmin(ctx)
       const id = requireAccountId(ctx)
-      await admin.refresh(WEB_ACTOR, id)
+      await auditedAction(
+        ctx,
+        {
+          action: 'account.refresh',
+          targetType: 'account',
+          targetId: id,
+          summary: `刷新上游账号 ${id} 的令牌`,
+        },
+        () => admin.refresh(WEB_ACTOR, id),
+      )
       return `${PATH}?id=${encodeURIComponent(id)}&ok=${encodeURIComponent('令牌已刷新')}`
     },
 
     async test(ctx) {
       const admin = requireAdmin(ctx)
       const id = requireAccountId(ctx)
+      // 连通性测试不改状态，不记审计。
       const result = await admin.testConnection(id)
       const message = result.ok ? `连接成功（${result.latencyMs}ms）` : `连接失败：${result.error ?? '未知错误'}`
       return `${PATH}?id=${encodeURIComponent(id)}&${result.ok ? 'ok' : 'err'}=${encodeURIComponent(message)}`
@@ -252,7 +315,16 @@ ${renderKeyValueTable(t, [
     async remove(ctx) {
       const admin = requireAdmin(ctx)
       const id = requireAccountId(ctx)
-      await admin.remove(WEB_ACTOR, id)
+      await auditedAction(
+        ctx,
+        {
+          action: 'account.remove',
+          targetType: 'account',
+          targetId: id,
+          summary: `删除上游账号 ${id}`,
+        },
+        () => admin.remove(WEB_ACTOR, id),
+      )
       return '/admin/accounts?ok=' + encodeURIComponent('账号已删除')
     },
   },

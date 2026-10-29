@@ -447,6 +447,83 @@ export interface ModelHubPort {
   }): ModelCatalogLike
 }
 
+// ───────────────────────────── 管理员审计 ─────────────────────────────
+
+/** 一次操作的结果（审计侧同一套取值）。 */
+export type AuditResultLike = 'ok' | 'failed'
+
+/** 写一条审计记录的形状（api 只往 `record` 里塞这些字段）。 */
+export interface AuditEntryLike {
+  readonly actor: string
+  readonly actorPlugin: string
+  readonly action: string
+  readonly targetType?: string
+  readonly targetId?: string
+  readonly summary: string
+  readonly metadata?: Readonly<Record<string, unknown>>
+  readonly result?: AuditResultLike
+  readonly errorCode?: string | null
+  readonly atMs?: number
+}
+
+/** 落库后的一条审计记录（响应里原样给出，元数据已脱敏）。 */
+export interface AuditRecordLike {
+  readonly id: number
+  readonly at: string
+  readonly atMs: number
+  readonly actor: string
+  readonly actorPlugin: string
+  readonly action: string
+  readonly targetType: string
+  readonly targetId: string
+  readonly summary: string
+  readonly metadata: Readonly<Record<string, unknown>> | null
+  readonly result: AuditResultLike
+  readonly errorCode: string | null
+}
+
+/** `/api/admin/audit` 的查询条件。 */
+export interface AuditQueryLike {
+  readonly actor?: string
+  readonly actorPlugin?: string
+  readonly action?: string
+  readonly targetType?: string
+  readonly targetId?: string
+  readonly fromMs?: number
+  readonly toMs?: number
+  readonly limit?: number
+  readonly offset?: number
+}
+
+export interface AuditPageLike {
+  readonly items: readonly AuditRecordLike[]
+  readonly total: number
+  readonly offset: number
+  readonly limit: number
+}
+
+export interface AuditStatsLike {
+  readonly total: number
+  readonly today: number
+  readonly last24h: number
+  readonly failed: number
+  readonly lastAt: string | null
+  readonly byAction: readonly { readonly action: string; readonly count: number }[]
+  readonly byActor: readonly { readonly actor: string; readonly count: number }[]
+}
+
+/**
+ * 审计服务端口。
+ *
+ * `record` 用来写（不设限），`list` / `stats` 是**读**，要求 actor 在审计插件的
+ * `adminPlugins` 白名单里（默认拒绝）。
+ */
+export interface AuditPort {
+  record(entry: AuditEntryLike): unknown
+  list(actor: string, query?: AuditQueryLike): AuditPageLike
+  stats(actor: string): AuditStatsLike
+}
+
 // ───────────────────────────── 设置与 API key ─────────────────────────────
 
 /** 设置插件的读/写面。只有运行中的 settings 服务才提供。 */
@@ -844,6 +921,8 @@ export interface ApiRuntime {
   billing(): BillingPort | undefined
   /** 充值订单服务；不在运行时只有充值相关路由 503（页面本身仍可打开）。 */
   topup(): TopupPort | undefined
+  /** 审计服务；不在运行时只有 /api/admin/audit 503，写操作照常成功（审计是旁路）。 */
+  audit(): AuditPort | undefined
   now(): Date
   uptimeSec(): number
   log(level: 'info' | 'warn' | 'error', message: string): void

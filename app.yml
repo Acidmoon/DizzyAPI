@@ -350,6 +350,22 @@
       - '@dizzyapi/plugin-api'
       - '@dizzyapi/plugin-web'
 
+# 审计插件：管理员高危写操作的**唯一记录者**（服务名 audit，存储 data/audit.db）。
+# 记的是「谁（人类管理员 / 系统）、经哪个插件、对谁、做了什么、结果如何」，落库前统一脱敏
+# （键名 + 值形状两道闸）；**秘密不进审计表**。它是旁路：业务写操作在自己成功后调
+# audit.record(...)，审计挂了只记警告，绝不影响业务（不 inject、不当前置依赖）。
+# 保留期默认 180 天，每日分批清理；时间线：/api/admin/audit 与 /admin/audit。
+# adminPlugins 是**读**白名单（默认拒绝）；写（record）不设限——限制读才是关键。
+- id: audit
+  name: '@dizzyapi/plugin-audit'
+  config:
+    dataPath: ./data/audit.db
+    retentionDays: 180
+    adminPlugins:
+      - '@dizzyapi/plugin-admin'
+      - '@dizzyapi/plugin-api'
+      - '@dizzyapi/plugin-web'
+
 # 开发者控制面板：看插件与服务的依赖图、看运行期概览、改设置、重启单个插件、退出整个进程。
 # 只绑 127.0.0.1；启动日志里会打印一条带一次性 token 的地址，打开后换成 HttpOnly cookie。
 # 必须排在 settings 之后——它要在运行期解析 settings 服务（但不 inject 它，

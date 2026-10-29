@@ -7,6 +7,7 @@
 import { pageHeader, renderAdminShell, type PageModule } from '../layout.ts'
 import { formatYuan, requiredString, WebError } from '../forms.ts'
 import { WEB_ACTOR } from '../runtime.ts'
+import { auditedAction } from '../audit.ts'
 
 const PAGE_SIZE = 20
 
@@ -169,7 +170,21 @@ export const adminTopupOrdersPage: PageModule = {
       const topup = ctx.services.topup
       if (topup === undefined) throw new WebError('WEB_NO_TOPUP', '充值订单服务未运行')
       const orderNo = requiredString(ctx.form, 'orderNo', '订单号')
-      const result = await topup.confirmPaid(WEB_ACTOR, orderNo)
+      const result = await auditedAction(
+        ctx,
+        {
+          action: 'topup.order.confirm',
+          targetType: 'topup-order',
+          targetId: orderNo,
+          summary: `确认充值订单 ${orderNo} 到账`,
+          metadataOf: (out) => ({
+            credited: out.credited,
+            userId: out.order.userId,
+            amountMicros: out.order.amountMicro.toString(),
+          }),
+        },
+        () => topup.confirmPaid(WEB_ACTOR, orderNo),
+      )
       const text = result.credited
         ? `订单 ${orderNo} 已确认到账：用户 #${result.order.userId} 余额已增加 ${formatYuan(result.order.amountMicro)}`
         : `订单 ${orderNo} 此前已到账，本次没有重复加钱`
@@ -180,7 +195,17 @@ export const adminTopupOrdersPage: PageModule = {
       const topup = ctx.services.topup
       if (topup === undefined) throw new WebError('WEB_NO_TOPUP', '充值订单服务未运行')
       const orderNo = requiredString(ctx.form, 'orderNo', '订单号')
-      topup.cancel(WEB_ACTOR, orderNo)
+      await auditedAction(
+        ctx,
+        {
+          action: 'topup.order.cancel',
+          targetType: 'topup-order',
+          targetId: orderNo,
+          summary: `取消充值订单 ${orderNo}`,
+          metadataOf: (order) => ({ userId: order.userId, status: order.status }),
+        },
+        () => topup.cancel(WEB_ACTOR, orderNo),
+      )
       return `/admin/topup-orders?ok=${encodeURIComponent(`订单 ${orderNo} 已取消`)}`
     },
   },

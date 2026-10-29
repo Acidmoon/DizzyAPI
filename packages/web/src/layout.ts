@@ -64,6 +64,7 @@ const ADMIN_NAV: readonly { label: string; path: string; icon: NavItem['icon'] }
   { label: '结算', path: '/admin/billing', icon: 'card' },
   { label: '充值订单', path: '/admin/topup-orders', icon: 'card' },
   { label: '兑换码', path: '/admin/redeem-codes', icon: 'receipt' },
+  { label: '操作审计', path: '/admin/audit', icon: 'doc' },
 ]
 
 function navFor(area: 'console' | 'admin', current: string, isAdmin: boolean): NavItem[] {

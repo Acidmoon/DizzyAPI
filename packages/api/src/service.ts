@@ -30,6 +30,7 @@ import type {
   AccountPriorityPort,
   ApiKeyPort,
   ApiRuntime,
+  AuditPort,
   AuthPort,
   BillingPort,
   CatalogPort,
@@ -166,6 +167,7 @@ export class ApiService extends Service {
           'cancel',
           'stats',
         ]),
+      audit: () => this.optionalService<AuditPort>('audit', ['record', 'list', 'stats']),
       now: () => new Date(),
       uptimeSec: () => Math.round(process.uptime()),
       log: (level, message) => {

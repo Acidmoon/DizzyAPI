@@ -46,6 +46,7 @@ const EMPTY_SERVICES: WebRuntime = {
   billing: undefined,
   topup: undefined,
   fontSmiley: undefined,
+  audit: undefined,
 }
 
 function pageContext(services: WebRuntime, query = '', template: PageTemplateService): PageContext {

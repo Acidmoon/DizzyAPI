@@ -15,6 +15,7 @@ import { readNotice, type ActionContext, type PageContext, type PageModule } fro
 import type {
   AccountAdminLike,
   ApiKeyLike,
+  AuditLike,
   AuthLike,
   BillingLike,
   CatalogLike,
@@ -163,6 +164,7 @@ export class WebService extends Service {
       redeem: get<RedeemLike>('redeem'),
       billing: get<BillingLike>('billing'),
       topup: get<TopupLike>('topup'),
+      audit: get<AuditLike>('audit'),
       fontSmiley: get<FontLike>('fontSmiley'),
     }
   }
