@@ -7,13 +7,13 @@
 import { randomUUID } from 'node:crypto'
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import { Service, type Context } from 'cordis'
-import { CLIENT_JS, COMPONENT_CSS, LAYOUT_CSS, MODAL_CSS, PAGE_CSS, VENDOR_ASSET_PREFIX, VENDOR_THEME_CSS, type PageTemplateService } from '@dizzyapi/plugin-page-template'
+import { VENDOR_ASSET_PREFIX, type PageTemplateService } from '@dizzyapi/plugin-page-template'
+import { APP_CSS_BODY, APP_JS_BODY } from './asset-version.ts'
 import { validateWebConfig, type ResolvedWebConfig, type WebConfig } from './config.ts'
 import { apiDocsResource } from './content/api_docs.ts'
 import { assertSameOrigin, readForm, WebError } from './forms.ts'
 import { clearSessionCookie, isSecureRequest, readCookie, sessionCookie } from './session.ts'
-import { readNotice, type ActionContext, type PageContext, type PageModule } from './layout.ts'
-import { DOCUMENT_ASSETS } from './layout.ts'
+import { DOCUMENT_ASSETS, readNotice, type ActionContext, type PageContext, type PageModule } from './layout.ts'
 import type {
   AccountAdminLike,
   ApiKeyLike,
@@ -43,30 +43,6 @@ const SECURITY_HEADERS: Readonly<Record<string, string>> = {
     "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: https:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'",
   'X-Frame-Options': 'DENY',
 }
-
-const CONFIRM_JS = `
-// 注：原先这里用 window.confirm 做「删除前确认」。原生 confirm 是浏览器画的
-// 模态框——样式完全不可控（CSS 碰不到），也阻塞整个页面。
-// 现在改由 page-template 的自绘确认框承担（原生 <dialog> + 自绘外观），
-// 行为在 CLIENT_JS 里：表单带 data-confirm 时，提交前弹确认框。
-// 见 packages/page-template/src/confirm.ts。
-
-document.addEventListener('click', function (event) {
-  var target = event.target;
-  if (!target || !target.closest) return;
-  var button = target.closest('[data-copy]');
-  if (!button) return;
-  var value = button.getAttribute('data-copy');
-  if (!value) return;
-  if (navigator.clipboard && navigator.clipboard.writeText) {
-    navigator.clipboard.writeText(value).then(function () {
-      var original = button.textContent;
-      button.textContent = '已复制';
-      setTimeout(function () { button.textContent = original; }, 1500);
-    });
-  }
-});
-`
 
 /** 一次性 secret：只给创建后的第一次渲染。 */
 interface SecretEntry {
@@ -187,12 +163,11 @@ export class WebService extends Service {
       if (path === '/assets/app.css') {
         const font = this.runtime().fontSmiley
         const fontCss = font === undefined ? '' : font.css()
-        // vendor 的两个 CSS（Tom Select / flatpickr）拼进来：全站仍然只有一个 CSS 文件，
-        // 不需要多写 <link>，也不用改 CSP。
-        // 用 this.template 而不是 runtime()：pageTemplate 是 static inject，必然已装载。
-        const vendorCss = this.template.vendorCss()
-        // 顺序是契约：vendor 主题覆盖必须排在 vendorCss **之后**，否则被浅色主题盖回去。
-        this.send(res, 200, 'text/css; charset=utf-8', `${PAGE_CSS}${COMPONENT_CSS}${LAYOUT_CSS}${MODAL_CSS}\n${vendorCss}\n${VENDOR_THEME_CSS}\n${fontCss}`, true)
+        // 正文由 `asset-version.ts` 装配：那份正文的哈希就是页面里 `<link>` 的 `?v=`
+        // （逐字节同源的唯一办法——两边各拼一次迟早会漂）。
+        // 字体 CSS 要运行时才有（font-smiley 可能没装载），所以不进哈希；它自己的
+        // URL 版本问题见 AGENTS.md 的「静态资源缓存」。
+        this.send(res, 200, 'text/css; charset=utf-8', `${APP_CSS_BODY}${fontCss}`, true)
         return
       }
       if (path.startsWith(VENDOR_ASSET_PREFIX)) {
@@ -226,7 +201,7 @@ export class WebService extends Service {
         }
       }
       if (path === '/assets/app.js') {
-        this.send(res, 200, 'text/javascript; charset=utf-8', `${CLIENT_JS}\n${CONFIRM_JS}`, true)
+        this.send(res, 200, 'text/javascript; charset=utf-8', APP_JS_BODY, true)
         return
       }
       if (path === '/favicon.ico') {

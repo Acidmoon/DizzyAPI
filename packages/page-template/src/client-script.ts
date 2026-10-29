@@ -242,7 +242,6 @@ export const CLIENT_JS = `
                 cal.style.position = 'absolute';
                 cal.style.left = Math.round(left) + 'px';
                 cal.style.top = Math.round(top - hostBox.top) + 'px';
-                document.documentElement.setAttribute('data-cal-fixed', '1');
               });
             };
             input.addEventListener('focus', fixInDialog);

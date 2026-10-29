@@ -121,6 +121,20 @@ test('HTTP：登录页 200，未登录访问控制台 302 到 /login', async () 
     assert.ok(html.includes('登录 DizzyAPI'))
     assert.ok(html.includes('name="email"'))
     assert.ok(html.includes('/assets/app.css'))
+    // 资源地址必须带内容哈希：这些字节是 immutable 长缓存，路径固定就会被缓存一年。
+    assert.match(html, /\/assets\/app\.css\?v=[0-9a-f]{8}/)
+    assert.match(html, /\/assets\/app\.js\?v=[0-9a-f]{8}/)
+    // 死代码护栏：没在用的库（htmx / floating-ui）不许挂在页面上。
+    assert.ok(!html.includes('htmx.min.js'), 'htmx 还没人用，不该出现在页面里')
+    assert.ok(!html.includes('floating-ui'), 'floating-ui 还没人用，不该出现在页面里')
+    // 真正在用的两个必须都在，且按契约顺序（tom-select 先于 flatpickr，app.js 最后）
+    const tsIdx = html.indexOf('tom-select.complete.min.js')
+    const fpIdx = html.indexOf('flatpickr.min.js')
+    const appIdx = html.indexOf('/assets/app.js')
+    assert.ok(tsIdx > 0 && fpIdx > tsIdx, '脚本顺序：tom-select 必须在 flatpickr 之前')
+    assert.ok(appIdx > fpIdx, 'app.js 必须最后加载')
+    // vendor 的 URL 同样带哈希
+    assert.match(html, /vendor\/tom-select\/tom-select\.complete\.min\.js\?v=[0-9a-f]{8}/)
 
     const usage = await fetch(`${app.base}/console/usage`, { redirect: 'manual' })
     assert.equal(usage.status, 302)

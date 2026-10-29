@@ -2,7 +2,8 @@
  * 布局：侧栏导航 + 主列外壳。页面只负责主列内容。
  */
 import type { PageTemplateService, NavItem } from '@dizzyapi/plugin-page-template'
-import { VENDOR_ASSET_PREFIX, VENDOR_SCRIPT_ORDER } from '@dizzyapi/plugin-page-template'
+import { VENDOR_SCRIPT_ORDER, vendorHref } from '@dizzyapi/plugin-page-template'
+import { APP_CSS_HREF, APP_JS_HREF } from './asset-version.ts'
 import type { SessionView, WebRuntime } from './runtime.ts'
 import { formatYuan } from './forms.ts'
 
@@ -86,18 +87,24 @@ function userLine(t: PageTemplateService, user: SessionView): string {
   return `${name}${balance}`
 }
 
-/** 样式与脚本走外链，CSP 保持 `'self'`（不放开 inline）。 */
-export const ASSET_CSS = '/assets/app.css'
-export const ASSET_JS = '/assets/app.js'
+/**
+ * 样式与脚本走外链，CSP 保持 `'self'`（不放开 inline）。
+ *
+ * **地址一律带内容哈希**（见 `asset-version.ts`）：这些字节用 `immutable` 发出去，
+ * 路径固定就会被浏览器缓存一年，改完样式等于没改。
+ */
+export const ASSET_CSS = APP_CSS_HREF
+export const ASSET_JS = APP_JS_HREF
 
 /**
  * 脚本顺序**是契约**（见 `DocumentOptions.assets.jsHrefs` 的注释）：
- * 1. vendor 库按 `VENDOR_SCRIPT_ORDER`（htmx → tom-select → flatpickr → floating-ui.core → floating-ui.dom）；
+ * 1. vendor 库按 `VENDOR_SCRIPT_ORDER`（当前只有 tom-select → flatpickr，
+ *    只放「现在真的有代码在调」的库；htmx 与 floating-ui 在对应批次落地时加回来）；
  * 2. `/assets/app.js` **必须最后**：它初始化控件，并在 htmx 已加载的前提下把
  *    `htmx.config.includeIndicatorStyles` 关掉。顺序反过来 htmx 会注入内联 `<style>`（被 CSP 拦）。
  */
 const DOC_SCRIPTS: readonly string[] = [
-  ...VENDOR_SCRIPT_ORDER.map((name) => `${VENDOR_ASSET_PREFIX}${name}`),
+  ...VENDOR_SCRIPT_ORDER.map((name) => vendorHref(name)),
   ASSET_JS,
 ]
 

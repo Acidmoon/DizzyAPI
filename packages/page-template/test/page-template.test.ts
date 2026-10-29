@@ -23,7 +23,10 @@ import {
   PAGE_CSS,
   PageTemplateService,
   VENDOR_CSS_ORDER,
+  VENDOR_ASSET_PREFIX,
   VENDOR_SCRIPT_ORDER,
+  vendorHash,
+  vendorHref,
   axisPaddingLeft,
   estimateAxisLabelWidth,
   formatAxisDate,
@@ -138,24 +141,51 @@ test('vendor：脚本顺序是契约，app.js 必须最后', () => {
   // 1. floating-ui.dom 的 UMD 读全局 FloatingUICore，必须在 core 之后；
   // 2. /assets/app.js 要初始化控件、并在 htmx 已加载后改 htmx.config。
   // 顺序错了的后果是实测过的：htmx 会用默认配置注入内联 <style>（被 CSP 拦）。
+  //
+  // **这张表 = 现在真的有代码在调的库**，不是「白名单里有的库」：
+  // 曾经把 htmx(52 KB) + floating-ui(22 KB) 挂在每一页，而全站 `hx-*` 与
+  // `FloatingUIDOM` 调用各 0 处——74 KB 死代码连登录页都在下载。
   assert.deepEqual(
     [...VENDOR_SCRIPT_ORDER],
-    [
-      'htmx/htmx.min.js',
-      'tom-select/tom-select.complete.min.js',
-      'flatpickr/flatpickr.min.js',
-      'floating-ui/floating-ui.core.umd.min.js',
-      'floating-ui/floating-ui.dom.umd.min.js',
-    ],
+    ['tom-select/tom-select.complete.min.js', 'flatpickr/flatpickr.min.js'],
   )
-  // htmx 必须第一个：它的 config 要被 app.js 在它之后改
-  assert.equal(VENDOR_SCRIPT_ORDER[0], 'htmx/htmx.min.js')
-  // floating-ui.core 必须在 dom 之前
+
+  // 还没用上的库不许留在引用列表里（白名单里保留字节与 LICENSE，要用时加回来）
+  for (const unused of ['htmx/htmx.min.js', 'floating-ui/floating-ui.core.umd.min.js', 'floating-ui/floating-ui.dom.umd.min.js']) {
+    assert.equal(VENDOR_SCRIPT_ORDER.includes(unused as never), false, `${unused} 现在没人用，不该加载`)
+    // 但字节必须还在：加回来时不用重新 vendor
+    assert.ok(readVendorFile(unused) !== undefined, `${unused} 的白名单字节丢了`)
+  }
+
+  // floating-ui 一旦被加回来，core 必须排在 dom 之前（这条守卫在加回来后立刻生效）
   const coreIdx = VENDOR_SCRIPT_ORDER.indexOf('floating-ui/floating-ui.core.umd.min.js')
   const domIdx = VENDOR_SCRIPT_ORDER.indexOf('floating-ui/floating-ui.dom.umd.min.js')
-  assert.ok(coreIdx >= 0 && domIdx > coreIdx, 'floating-ui.core 必须排在 floating-ui.dom 之前')
+  if (coreIdx >= 0 || domIdx >= 0) {
+    assert.ok(coreIdx >= 0 && domIdx > coreIdx, 'floating-ui.core 必须排在 floating-ui.dom 之前')
+  }
+  // htmx 一旦被加回来，必须在第一个（app.js 要在它之后改 config）
+  const htmxIdx = VENDOR_SCRIPT_ORDER.indexOf('htmx/htmx.min.js')
+  if (htmxIdx >= 0) assert.equal(htmxIdx, 0)
+
   // app.js 不在 vendor 列表里——它由调用方接在最后，不能混进来
   assert.equal(VENDOR_SCRIPT_ORDER.includes('/assets/app.js' as never), false)
+})
+
+test('vendor：URL 必须带内容哈希（否则 immutable 缓存永远发不出新版本）', () => {
+  for (const name of [...VENDOR_SCRIPT_ORDER, ...VENDOR_CSS_ORDER]) {
+    const href = vendorHref(name)
+    assert.equal(href, `${VENDOR_ASSET_PREFIX}${name}?v=${vendorHash(name)}`)
+    // 8 位十六进制
+    assert.match(href, /\?v=[0-9a-f]{8}$/)
+    // 稳定：同一份字节算两次必须一样（否则每次渲染都换 URL，缓存全失效）
+    assert.equal(vendorHref(name), href)
+  }
+  // 不同文件的哈希必须不同（防「哈希其实算的是名字」）
+  const [a, b] = [...VENDOR_SCRIPT_ORDER]
+  assert.notEqual(vendorHash(a), vendorHash(b))
+  // 白名单之外没有哈希，也没有 URL
+  assert.equal(vendorHash('nope.js'), undefined)
+  assert.throws(() => vendorHref('nope.js' as never), /不在白名单/)
 })
 
 test('vendor：只认白名单，未知名字不发字节（无路径穿越面）', () => {

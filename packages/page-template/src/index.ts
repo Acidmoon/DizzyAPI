@@ -61,6 +61,8 @@ export {
   VENDOR_ASSET_PREFIX,
   VENDOR_CSS_ORDER,
   VENDOR_SCRIPT_ORDER,
+  vendorHash,
+  vendorHref,
   readVendorFile,
   vendorContentType,
   vendorCss,

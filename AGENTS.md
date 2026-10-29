@@ -855,12 +855,28 @@ pnpm build:all        # 两个二进制一起编
   都行），设 `htmx.config.…` 一定赶在 htmx 初始化之前。反过来把 `app.js` 挪到 htmx **之前**
   （比如放 `<head>`），那时 `window.htmx` 还是 `undefined`，配置设不进去，htmx 就按默认值注入
   ——**实测只有这种写法出违规**。
-- **`jsHrefs` 的顺序是契约**：`[htmx, tom-select, flatpickr, floating-ui.core,
-  floating-ui.dom, /assets/app.js]`。`floating-ui.dom` 的 UMD 读全局 `FloatingUICore`，
-  必须排在 core 之后；`app.js` 必须最后。`page-template/test/page-template.test.ts`
-  有用例钉住这个顺序。
+- **`jsHrefs` 的顺序是契约**：当前是 `[tom-select, flatpickr, /assets/app.js]`
+  （`app.js` 必须最后）。将来把 htmx / floating-ui 加回来时，`floating-ui.dom` 的 UMD 读全局
+  `FloatingUICore`，必须排在 core 之后；htmx 要排在 `app.js` 之前（`app.js` 要改它的 config）。
+  `page-template/test/page-template.test.ts` 有用例钉住顺序，且**没被用到的库一旦出现在
+  引用列表里就会红**。
 - **vendor 的库照白名单发字节**（`page-template/src/vendor.ts`）：查表而非拼路径，
   名字不在表里就 404。加库只改那张表，`VENDOR_SCRIPT_ORDER` / `vendorCss()` 都从它派生。
+- **`VENDOR_SCRIPT_ORDER` 只放「现在真的有代码在调」的库**，不是「白名单里有的库」。
+  2026-10-30 实测事故：htmx（52 KB）+ floating-ui（22 KB）挂在**每一个**页面上（连
+  `/login`、`/register` 都下），而全站 `hx-*` 属性与 `FloatingUIDOM` 调用各 0 处 —— 74 KB
+  死代码。摘掉时**保留**白名单条目、字节、LICENSE、`client-script.ts` 里的 `htmx.config`
+  护栏与 `htmx:afterSwap` 监听（`window.htmx` 是 undefined 时它们空转，无副作用）。
+  htmx 在第 4 批（侧栏局部刷新）加回来，floating-ui 在 tooltip 加回来。
+- **静态资源的 URL 一律带内容哈希**（`web/src/asset-version.ts`，2026-10-30 加）：
+  `/assets/app.css?v=<8 位内容哈希>`、`/assets/app.js?v=…`、`/assets/vendor/<name>?v=…`
+  （`vendorHref()`）。因为这些字节用 `public, max-age=31536000, immutable` 发出去，而
+  **`immutable` 只有在 URL 随内容变化时才成立**——路径固定就等于「升级了带安全修复的库、
+  回访浏览器一年不换」。页面里的地址必须来自 `APP_CSS_HREF` / `APP_JS_HREF` / `vendorHref()`，
+  **不许手拼 `VENDOR_ASSET_PREFIX + name`**（有单测钉着）。
+  `app.css` 的正文只有一处来源（`APP_CSS_BODY`），路由直接发它——两边各拼一次必然漂。
+  **已知债**：`/assets/fonts/*.woff2` 仍是固定路径 + `immutable`（字体 URL 由 `font-smiley`
+  的 CSS 生成，要版本化得改那个插件）；字体极少变，暂时记债。
 - **不在 GitHub 上找 CDN**：CSP 是 `'self'`，第三方库一律 vendor 到
   `packages/page-template/assets/vendor/`，每个库带自己的 LICENSE（Apache-2.0 还要保留
   版权声明）。现有四个：htmx 2.0.11（Zero-Clause BSD）、Tom Select 2.4.3（Apache-2.0）、
