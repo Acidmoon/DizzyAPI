@@ -87,6 +87,12 @@ type State struct {
 	UpdatedAt  *time.Time `json:"updatedAt,omitempty"`
 	AgeMs      int64      `json:"ageMs"`
 	TtlMs      int64      `json:"ttlMs"`
+	// Stale 是**显式**的过期判定（没收到快照也算过期）。
+	//
+	// 它必须显式给出来，而不是让调用方拿 ageMs 与 ttlMs 自己比：定价闸门是 fail-closed，
+	// `-pricing-gate` 打开后快照一过期就是全站 503，运维必须能在一条桥响应里看到
+	// 「闸门开着，但快照是旧的 / 根本没有」。
+	Stale bool `json:"stale"`
 	// Gate 是定价闸门的只增计数（omitempty：没有注入闸门时不出现）。
 	Gate *GateState `json:"gate,omitempty"`
 }
@@ -328,7 +334,7 @@ func (c *Cache) State() State {
 	}
 	snapshot := c.snap.Load()
 	if snapshot == nil {
-		return State{Ready: false, Size: 0, AgeMs: 0, TtlMs: c.ttl.Milliseconds()}
+		return State{Ready: false, Size: 0, AgeMs: 0, TtlMs: c.ttl.Milliseconds(), Stale: true}
 	}
 	updatedAt := snapshot.updatedAt
 	return State{
@@ -340,5 +346,6 @@ func (c *Cache) State() State {
 		UpdatedAt:  &updatedAt,
 		AgeMs:      c.Age().Milliseconds(),
 		TtlMs:      c.ttl.Milliseconds(),
+		Stale:      c.Stale(),
 	}
 }

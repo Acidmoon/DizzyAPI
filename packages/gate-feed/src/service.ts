@@ -45,13 +45,29 @@ interface ApiKeySeam {
   listAll(): Promise<readonly { readonly id: string; readonly spendingLimitMicros: string | null }[]>
 }
 
-/** 用量服务的结构面：按 key 汇总费用（读取时按当前价格表算）。 */
+/**
+ * 用量服务的结构面：按 key 汇总费用（读取时按当前价格表算）。
+ *
+ * `status` 是**本地**服务调用（不过桥），只用来拿「用量游标」：游标没变就说明
+ * 没有新记录，消费总额也不必重算。这是 gate-feed 的成本护栏——
+ * `summary()` 每次都是全历史聚合（N 个 key × 2 次扫描），在 40 万行量级上实测
+ * 906ms / 轮；心跳必须 5s 一轮（Go 按 TTL 判新鲜度），不能每轮都这么算。
+ */
 interface UsageSeam {
   summary(query: {
     readonly fromMs: number
     readonly toMs: number
     readonly apiKeyId?: string
   }): { readonly totals: { readonly costMicros: string } }
+  status?(): { readonly epoch: string | null; readonly lastSeq: number }
+}
+
+/** Go 侧一份快照的健康度（pricing.status / keyspend.status 的最小子集）。 */
+interface GoSnapshotState {
+  readonly ready: boolean
+  readonly stale: boolean
+  readonly ageMs: number
+  readonly ttlMs: number
 }
 
 /** 控制桥的持有者（account-priority）暴露给本插件的那一小块。 */
@@ -111,6 +127,15 @@ export interface GateFeedStatus {
   readonly goTtlMs: number | null
   /** Go 侧 TTL 是否盖不住两个推送周期（配置耦合错误，心跳救不了）。 */
   readonly heartbeatTooSlow: boolean
+  /**
+   * Go 侧两份快照的健康度。**闸门开着但快照 stale 就是全站 503**，
+   * 所以这两个字段必须在管理面能看到，不能只留在日志里。
+   */
+  readonly goPricing: GoSnapshotState | null
+  readonly goSpend: GoSnapshotState | null
+  /** 消费快照的重算 / 复用次数（心跳成本护栏的观察口）。 */
+  readonly spendRecomputes: number
+  readonly spendReuses: number
 }
 
 export class GateFeedService extends Service {
@@ -173,6 +198,15 @@ export class GateFeedService extends Service {
   private failures = 0
   private failureStreak = 0
   private goTtlMs: number | null = null
+  /** Go 侧两份快照的健康度（每轮读一次；读不到是 null，不影响推送）。 */
+  private goPricing: GoSnapshotState | null = null
+  private goSpend: GoSnapshotState | null = null
+  /** 上一轮算出的消费快照缓存：key 集合与用量游标都没变时直接复用。 */
+  private spendCache:
+    | { cursor: string; signature: string; entries: KeySpendEntryPayload[]; revision: string }
+    | undefined
+  private spendRecomputes = 0
+  private spendReuses = 0
   private inFlight = false
   private disposed = false
   private debounceTimer: NodeJS.Timeout | undefined
@@ -235,6 +269,10 @@ export class GateFeedService extends Service {
       goTtlMs: this.goTtlMs,
       heartbeatTooSlow:
         this.goTtlMs !== null && this.goTtlMs < this.config.pollIntervalMs * 2,
+      goPricing: this.goPricing,
+      goSpend: this.goSpend,
+      spendRecomputes: this.spendRecomputes,
+      spendReuses: this.spendReuses,
     }
   }
 
@@ -291,14 +329,15 @@ export class GateFeedService extends Service {
       this.lastPriceRevision = prices.revision
       this.prices = prices.prices.length
 
-      if (this.goTtlMs === null) void this.inspectGoTtl()
-
       // 消费快照：只有「配了金额上限」的 key 需要算（其余 key 的 Go 侧判定根本不做）。
       const spend = await this.buildKeySpendSnapshot()
       if (this.disposed) return
       await bridge.replaceKeySpend(spend)
       this.lastSpendRevision = spend.revision
       this.limitedKeys = spend.entries.length
+
+      // 推完之后读一次 Go 的健康度：闸门是 fail-closed，stale 必须能在管理面看到。
+      await this.inspectGoState()
 
       this.lastPushAt = new Date().toISOString()
       this.lastSuccessAt = this.lastPushAt
@@ -372,13 +411,43 @@ export class GateFeedService extends Service {
    * Go 侧把它当「没有这个 key 的消费记录」，按未知放行（可用性优先）。
    */
   private async buildKeySpendSnapshot(): Promise<KeySpendSnapshotPayload> {
-    const entries: KeySpendEntryPayload[] = []
     const apiKey = this.apiKeySeam()
     const usage = this.usageSeam()
+
+    // 只有「配了金额上限」的 key 需要算（其余 key Go 侧根本不判金额）。
+    let limited: readonly { readonly id: string }[] = []
     if (apiKey !== undefined && usage !== undefined) {
-      const keys = await apiKey.listAll()
-      for (const key of keys) {
-        if (key.spendingLimitMicros === null) continue
+      limited = (await apiKey.listAll()).filter((key) => key.spendingLimitMicros !== null)
+    }
+    const signature = limited
+      .map((key) => key.id)
+      .sort()
+      .join(',')
+    const cursor = usage?.status === undefined || usage === undefined ? null : cursorOf(usage.status())
+
+    // 缓存命中：key 集合与用量游标都没变 → 直接复用上一轮算出来的消费总额。
+    //
+    // 心跳内容必须每轮都推（generation 递增，Go 按 TTL 判新鲜度），但**内容可以复用**：
+    // 判「有没有超上限」只需要一个总数，而 `usage.summary()` 是 O(历史行数) 的全表聚合。
+    const cached = this.spendCache
+    if (
+      cached !== undefined &&
+      cursor !== null &&
+      cached.cursor === cursor &&
+      cached.signature === signature
+    ) {
+      this.spendReuses += 1
+      return {
+        version: 1,
+        generation: this.nextGeneration(),
+        revision: cached.revision,
+        entries: cached.entries,
+      }
+    }
+
+    const entries: KeySpendEntryPayload[] = []
+    if (usage !== undefined) {
+      for (const key of limited) {
         const summary = usage.summary({
           fromMs: 0,
           toMs: Number.MAX_SAFE_INTEGER,
@@ -395,10 +464,15 @@ export class GateFeedService extends Service {
       }
     }
     entries.sort((left, right) => left.keyId.localeCompare(right.keyId))
+    const revision = hashOf(entries)
+    this.spendRecomputes += 1
+    if (cursor !== null) {
+      this.spendCache = { cursor, signature, entries, revision }
+    }
     return {
       version: 1,
       generation: this.nextGeneration(),
-      revision: hashOf(entries),
+      revision,
       entries,
     }
   }
@@ -427,22 +501,33 @@ export class GateFeedService extends Service {
   }
 
   /**
-   * 读一次 Go 侧价格快照的 TTL，暴露到 status()，并在心跳跟不上 TTL 时明确告警。
+   * 读一次 Go 侧两份快照的健康度，暴露到 status()。
    *
-   * 这是配置耦合的护栏（TTL 必须 ≥ 3 × pollIntervalMs）。读不到（旧 Go / 桥断）
-   * 就静默跳过——它只是观测，不能影响推送本身。
+   * 为什么必须有：`-pricing-gate` 是 **fail-closed**，快照 stale 就是全站 503。
+   * 只把这件事写进日志等于「线上 503 了没人知道为什么」，所以 `ready` / `stale` /
+   * `ageMs` / `ttlMs` 必须在 status() 里能看到。读不到（旧 Go / 桥断）就静默跳过——
+   * 它只是观测，不能影响推送本身。
    */
-  private async inspectGoTtl(): Promise<void> {
+  private async inspectGoState(): Promise<void> {
     try {
-      const state = (await this.bridgeSeam().pricingStatus()) as { ttlMs?: unknown }
-      const ttlMs = typeof state.ttlMs === 'number' && state.ttlMs > 0 ? state.ttlMs : null
-      if (ttlMs === null) return
-      this.goTtlMs = ttlMs
-      if (ttlMs < this.config.pollIntervalMs * 2) {
-        this.logger.warn(
-          `Go 侧价格快照 TTL=${String(ttlMs)}ms 小于 2 × 推送间隔 ${String(this.config.pollIntervalMs)}ms：` +
-            '心跳可能来不及刷新，请把 -pricing-snapshot-ttl-ms 提到 ≥ 3 倍推送间隔',
-        )
+      const bridge = this.bridgeSeam()
+      const pricing = (await bridge.pricingStatus()) as Record<string, unknown>
+      const spend = (await bridge.keySpendStatus()) as Record<string, unknown>
+      this.goPricing = goStateOf(pricing)
+      this.goSpend = goStateOf(spend)
+      if (this.goPricing.ttlMs > 0) {
+        this.goTtlMs = this.goPricing.ttlMs
+        if (this.goPricing.ttlMs < this.config.pollIntervalMs * 2) {
+          this.logger.warn(
+            `Go 侧价格快照 TTL=${String(this.goPricing.ttlMs)}ms 小于 2 × 推送间隔 ` +
+              `${String(this.config.pollIntervalMs)}ms：心跳可能来不及刷新，` +
+              '请把 -pricing-snapshot-ttl-ms 提到 ≥ 3 倍推送间隔',
+          )
+        }
+      }
+      if (this.goPricing.stale) {
+        // 刚推完还是 stale：要么 TTL 比心跳还短，要么两次推送之间的空窗太长。
+        this.logger.warn('刚推送完价格快照，Go 侧仍判定 stale：定价闸门会 fail-closed（503）')
       }
     } catch {
       // 观测失败不影响推送。
@@ -476,6 +561,21 @@ export class GateFeedService extends Service {
 
 function hashOf(entries: readonly unknown[]): string {
   return createHash('sha256').update(JSON.stringify(entries)).digest('hex').slice(0, 32)
+}
+
+/** 用量游标：epoch 变了（gatewayd 重启）也算变，靠它判「有没有新用量」。 */
+function cursorOf(status: { readonly epoch: string | null; readonly lastSeq: number }): string {
+  return `${status.epoch ?? ''}:${String(status.lastSeq)}`
+}
+
+/** 把 Go 的 pricing.status / keyspend.status 归一成一小块健康度（缺字段按「不可用」）。 */
+function goStateOf(raw: Record<string, unknown>): GoSnapshotState {
+  return {
+    ready: raw.ready === true,
+    stale: raw.stale === true,
+    ageMs: typeof raw.ageMs === 'number' ? raw.ageMs : 0,
+    ttlMs: typeof raw.ttlMs === 'number' ? raw.ttlMs : 0,
+  }
 }
 
 export type { GateFeedConfig }

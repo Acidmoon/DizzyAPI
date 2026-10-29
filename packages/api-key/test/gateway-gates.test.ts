@@ -398,6 +398,25 @@ function chat(): unknown {
   return { model: MODEL, messages: [{ role: 'user', content: 'hello' }] }
 }
 
+/**
+ * 等 Go 侧**真的**有一个并发槽位被占住（`keys.status` 的 `gate` 计数）。
+ *
+ * 用轮询代替 sleep 魔法值：并发闸门用例要「第一个请求占住槽位后再发第二个」，
+ * 机器负载高时（多个 worktree 同时 spawn 真 gatewayd）sleep 会让第二个请求赶在
+ * 第一个占位之前发出 → 假失败。轮询是确定性的。
+ */
+async function waitForActive(
+  gateway: Gateway,
+  field: 'activeKeys' | 'activeUsers',
+): Promise<void> {
+  for (let index = 0; index < 150; index += 1) {
+    const status = await gateway.status('keys.status')
+    if ((status.gate?.[field] ?? 0) > 0) return
+    await sleep(20)
+  }
+  throw new Error(`等待 ${field} 占位超时：keys.status 始终没有活跃槽位`)
+}
+
 test('真进程：过期 key → 401 API_KEY_EXPIRED，上游 0 次', { skip: SKIP }, async (t) => {
   const upstream = await startUpstream(t)
   const gateway = await startGateway(t)
@@ -441,9 +460,11 @@ test('真进程：key 并发满 → 429 API_KEY_CONCURRENCY_LIMIT，请求结束
   await pushAccounts(gateway, upstream.port)
   await pushKeys(gateway, { concurrencyLimit: 1 })
 
-  // 第一个请求占住唯一槽位（上游 400ms 才回）。
+  // 第一个请求占住唯一槽位（上游 400ms 才回）。等它**真的**占住再发第二个：
+  // 用 keys.status 的 activeKeys 轮询，而不是 sleep 一个魔法值——机器负载高时
+  // sleep 会假失败（多个 worktree 同时在跑真进程用例）。
   const first = post(gateway.httpPort, chat(), AUTH)
-  await sleep(120)
+  await waitForActive(gateway, 'activeKeys')
   const second = await post(gateway.httpPort, chat(), AUTH)
   assert.equal(second.status, 429, second.text)
   assert.equal(second.json.error.code, 'API_KEY_CONCURRENCY_LIMIT')
@@ -484,7 +505,7 @@ test('真进程：用户并发满 → 429 USER_CONCURRENCY_LIMIT（与 key 级�
   await pushQuota(gateway, 1)
 
   const first = post(gateway.httpPort, chat(), AUTH)
-  await sleep(120)
+  await waitForActive(gateway, 'activeUsers')
   const second = await post(
     gateway.httpPort,
     chat(),
@@ -541,7 +562,9 @@ test('真进程：定价闸门开 + 没有价格快照 → 503（fail-closed）'
 
 test('真进程：价格快照超过 TTL 不再推 → 503（心跳失败的后果）', { skip: SKIP }, async (t) => {
   const upstream = await startUpstream(t)
-  const gateway = await startGateway(t, { pricingGate: true, pricingTtlMs: 1_000 })
+  // TTL 用 2s：机器负载高时（多个 worktree 同时跑真进程用例）1s 窗口会把
+  // 「刚推完就要被判过期」变成假失败；断言本身不变（过期必须 503）。
+  const gateway = await startGateway(t, { pricingGate: true, pricingTtlMs: 2_000 })
   await pushAccounts(gateway, upstream.port)
   await pushKeys(gateway)
   await pushPrices(gateway, [MODEL])
@@ -550,7 +573,7 @@ test('真进程：价格快照超过 TTL 不再推 → 503（心跳失败的后�
   assert.equal(fresh.status, 200, fresh.text)
 
   // 不再推任何快照，等过 TTL：闸门必须 fail-closed 而不是静默放行。
-  await sleep(1_400)
+  await sleep(2_600)
   const stale = await post(gateway.httpPort, chat(), AUTH)
   assert.equal(stale.status, 503, `超时后必须 503：${stale.text}`)
   assert.equal(stale.json.error.code, 'PRICING_SNAPSHOT_UNAVAILABLE')

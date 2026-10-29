@@ -690,6 +690,18 @@ pnpm build:go         # 产出 bin/gatewayd(.exe)
 - **真进程用例是真证据**：`packages/api-key/test/gateway-gates.test.ts` 覆盖 401 / 402 / 429（key 与
   用户两级）/ 403 / 503（无快照与超 TTL）/ `*` 兜底，并断言「被拒的请求上游 0 次」与
   「请求结束后槽位归零」。改这两个阶段先 `pnpm build:go`。
+- **`gate-feed` 的消费聚合必须带缓存**：`usage.summary({ apiKeyId })` 是 **O(历史行数) 的全表聚合**
+  （内部两次 `foldAggregates`）。真实规模实测（40 万行 usage_records / 20 个设了上限的 key）：
+  **906ms / 轮**，按 5s 心跳折算 = 单核 18%，而且随行数线性增长。正确做法是拿
+  `usage.status()` 的本地游标（`epoch:lastSeq`）+ key 集合签名做缓存：**心跳照推、
+  内容复用**（`revision` 相同、`generation` 递增），游标前进或 key 集合变化才重算。
+  `gate-feed.status()` 的 `spendRecomputes` / `spendReuses` 就是这个护栏的观察口。
+  彻底修法是在 `usage` 插件加一个按 key 分组的一次性聚合（那是 `用量` 线的事）。
+- **上线纪律：`-pricing-gate` 打开后，禁用 `pricing` 插件 = 全站 503**。`gate-feed`
+  `inject` 了 `pricing`（价格唯一写者），它 PENDING 就不推快照；而定价闸门是 fail-closed。
+  所以：开闸门前必须确认 `pricing.status.ready === true && stale === false`，并且
+  `pricing.status` / `keyspend.status` 都**显式给出 `stale` 与 `ageMs` / `ttlMs`**
+  —— 线上 503 了必须能一条桥响应看出原因，不能只留在日志里。
 
 ### 前端
 

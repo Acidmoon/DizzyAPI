@@ -69,6 +69,9 @@ type State struct {
 	UpdatedAt  *time.Time `json:"updatedAt,omitempty"`
 	AgeMs      int64      `json:"ageMs"`
 	TtlMs      int64      `json:"ttlMs"`
+	// Stale 是显式过期判定（没收到快照也算过期）。消费快照过期时 key 级的金额上限
+	// 判定会按「未知」放行并计数（spendingUnknown），运维要能一眼看出是这个原因。
+	Stale bool `json:"stale"`
 }
 
 // Error 是带稳定码的领域错误。
@@ -271,7 +274,7 @@ func (c *Cache) State() State {
 	}
 	snapshot := c.snap.Load()
 	if snapshot == nil {
-		return State{Ready: false, Size: 0, AgeMs: 0, TtlMs: c.ttl.Milliseconds()}
+		return State{Ready: false, Size: 0, AgeMs: 0, TtlMs: c.ttl.Milliseconds(), Stale: true}
 	}
 	updatedAt := snapshot.updatedAt
 	return State{
@@ -282,5 +285,6 @@ func (c *Cache) State() State {
 		UpdatedAt:  &updatedAt,
 		AgeMs:      c.Age().Milliseconds(),
 		TtlMs:      c.ttl.Milliseconds(),
+		Stale:      c.Stale(),
 	}
 }

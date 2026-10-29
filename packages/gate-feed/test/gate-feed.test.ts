@@ -42,6 +42,9 @@ class FakeGateway extends Service {
   pricingPushes: PricingSnapshotPayload[] = []
   spendPushes: KeySpendSnapshotPayload[] = []
   failures = 0
+  pricingStale = false
+  spendStale = false
+  goTtlMs = 200_000
 
   constructor(ctx: Context) {
     super(ctx, 'accountPriority')
@@ -64,7 +67,13 @@ class FakeGateway extends Service {
   }
 
   async pricingStatus() {
-    return { ready: true, size: 0, ageMs: 0, ttlMs: 200_000 }
+    return {
+      ready: !this.pricingStale,
+      stale: this.pricingStale,
+      size: 0,
+      ageMs: this.pricingStale ? 60_000 : 0,
+      ttlMs: this.goTtlMs,
+    }
   }
 
   async replaceKeySpend(snapshot: KeySpendSnapshotPayload) {
@@ -79,7 +88,13 @@ class FakeGateway extends Service {
   }
 
   async keySpendStatus() {
-    return { ready: true, size: 0, ageMs: 0, ttlMs: 200_000 }
+    return {
+      ready: !this.spendStale,
+      stale: this.spendStale,
+      size: 0,
+      ageMs: this.spendStale ? 60_000 : 0,
+      ttlMs: this.goTtlMs,
+    }
   }
 }
 
@@ -96,17 +111,26 @@ class FakeApiKey extends Service {
   }
 }
 
-/** 用量汇总：读取时按价格表算费用，这里直接给固定值。 */
+/** 用量汇总：读取时按价格表算费用，这里直接给固定值，并数被调了几次。 */
 class FakeUsage extends Service {
   costs = new Map<string, string>()
+  /** 每次 summary 被调用就 +1：用来证明「用量没变时没有重复做全历史聚合」。 */
+  summaryCalls = 0
+  epoch: string | null = 'epoch-1'
+  lastSeq = 1
 
   constructor(ctx: Context) {
     super(ctx, 'usage')
   }
 
   summary(query: { apiKeyId?: string }) {
+    this.summaryCalls += 1
     const costMicros = this.costs.get(query.apiKeyId ?? '') ?? '0'
     return { totals: { requests: 1, costMicros } }
+  }
+
+  status() {
+    return { epoch: this.epoch, lastSeq: this.lastSeq }
   }
 }
 
@@ -236,4 +260,77 @@ test('api-key / usage 缺席时仍推价格快照，消费快照是空的', asyn
 
   assert.equal(world.gateway.pricingPushes.length, 1, '价格快照与 apiKey 无关，必须照推')
   assert.deepEqual(world.gateway.spendPushes.at(-1)!.entries, [])
+})
+
+test('用量没变时不重复做全历史聚合：内容复用、心跳照推', async (t) => {
+  const world = await boot(t, { pollIntervalMs: 60_000 })
+  world.pricing.prices = [price('deepseek-flash')]
+  world.apiKey.keys = [{ id: 'key-limited', spendingLimitMicros: '1000' }]
+  world.usage.costs.set('key-limited', '42')
+
+  await world.feed.pushNow()
+  const callsAfterFirst = world.usage.summaryCalls
+  const baseRecomputes = world.feed.status().spendRecomputes
+  const firstSpend = world.gateway.spendPushes.at(-1)!
+
+  // 用量游标没动（没有新记录）→ 再推两轮都只复用缓存。
+  await world.feed.pushNow()
+  await world.feed.pushNow()
+
+  assert.equal(world.usage.summaryCalls, callsAfterFirst, '用量没变就不该再跑 summary 聚合')
+  const status = world.feed.status()
+  assert.equal(status.spendRecomputes, baseRecomputes, '两轮复用不该触发重算')
+  assert.equal(status.spendReuses, 2)
+
+  // 但心跳本身不能省：每轮都要推、generation 递增、revision 相同（内容没变）。
+  const lastSpend = world.gateway.spendPushes.at(-1)!
+  assert.equal(world.gateway.spendPushes.length, 3, '每轮都必须推（Go 按 TTL 判新鲜度）')
+  assert.equal(lastSpend.revision, firstSpend.revision)
+  assert.ok(lastSpend.generation > firstSpend.generation)
+  assert.deepEqual(lastSpend.entries, [{ keyId: 'key-limited', spentMicros: '42' }])
+})
+
+test('用量游标前进后重算；key 集合变化也重算', async (t) => {
+  const world = await boot(t, { pollIntervalMs: 60_000 })
+  world.pricing.prices = [price('deepseek-flash')]
+  world.apiKey.keys = [{ id: 'key-limited', spendingLimitMicros: '1000' }]
+  world.usage.costs.set('key-limited', '42')
+
+  await world.feed.pushNow()
+  const base = world.feed.status().spendRecomputes
+  assert.equal(base >= 1, true)
+
+  // 有新用量：游标前进 → 必须重算（金额上限判的是钱，不能拿旧总数糊弄）。
+  world.usage.lastSeq = 2
+  world.usage.costs.set('key-limited', '99')
+  await world.feed.pushNow()
+  assert.equal(world.feed.status().spendRecomputes, base + 1)
+  assert.deepEqual(world.gateway.spendPushes.at(-1)!.entries, [
+    { keyId: 'key-limited', spentMicros: '99' },
+  ])
+
+  // key 集合变了（多了一个带上限的 key）→ 也要重算。
+  world.apiKey.keys = [
+    { id: 'key-limited', spendingLimitMicros: '1000' },
+    { id: 'key-second', spendingLimitMicros: '5000' },
+  ]
+  await world.feed.pushNow()
+  assert.equal(world.feed.status().spendRecomputes, base + 2)
+  assert.equal(world.gateway.spendPushes.at(-1)!.entries.length, 2)
+})
+
+test('Go 侧 stale / ageMs 暴露到 status()（闸门开着但快照旧 = 全站 503）', async (t) => {
+  const world = await boot(t, { pollIntervalMs: 60_000 })
+  world.pricing.prices = [price('deepseek-flash')]
+  world.gateway.pricingStale = true
+  world.gateway.spendStale = true
+  world.gateway.goTtlMs = 15_000
+
+  await world.feed.pushNow()
+
+  const status = world.feed.status()
+  assert.equal(status.goPricing?.stale, true)
+  assert.equal(status.goPricing?.ttlMs, 15_000)
+  assert.equal(status.goSpend?.stale, true)
+  assert.equal(status.goTtlMs, 15_000)
 })

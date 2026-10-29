@@ -83,8 +83,22 @@ func TestStaleAfterTTL(t *testing.T) {
 	if cache.Stale() {
 		t.Fatalf("刚写完不该过期")
 	}
+	if cache.State().Stale {
+		t.Fatalf("State().Stale 必须与 Stale() 同口径（管理面靠它看「闸门开着但快照旧」）")
+	}
 	now = now.Add(3 * time.Second)
 	if !cache.Stale() {
 		t.Fatalf("超过 TTL 必须判定过期")
+	}
+	if !cache.State().Stale {
+		t.Fatalf("超过 TTL 后 State().Stale 必须是 true")
+	}
+}
+
+func TestStateStaleWithoutSnapshot(t *testing.T) {
+	cache := New()
+	state := cache.State()
+	if !state.Stale || state.Ready {
+		t.Fatalf("没收到快照时必须是 ready=false / stale=true：%+v", state)
 	}
 }

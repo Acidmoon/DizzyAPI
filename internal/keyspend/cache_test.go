@@ -70,8 +70,14 @@ func TestStaleAfterTTL(t *testing.T) {
 	if cache.Stale() {
 		t.Fatalf("刚写完不该过期")
 	}
+	if cache.State().Stale {
+		t.Fatalf("State().Stale 必须与 Stale() 同口径")
+	}
 	now = now.Add(3 * time.Second)
 	if !cache.Stale() {
 		t.Fatalf("超过 TTL 必须判定过期")
+	}
+	if !cache.State().Stale {
+		t.Fatalf("超过 TTL 后 State().Stale 必须是 true")
 	}
 }
