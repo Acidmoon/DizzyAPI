@@ -882,15 +882,25 @@ pnpm build:all        # 两个二进制一起编
   死代码。摘掉时**保留**白名单条目、字节、LICENSE、`client-script.ts` 里的 `htmx.config`
   护栏与 `htmx:afterSwap` 监听（`window.htmx` 是 undefined 时它们空转，无副作用）。
   htmx 在第 4 批（侧栏局部刷新）加回来，floating-ui 在 tooltip 加回来。
-- **静态资源的 URL 一律带内容哈希**（`web/src/asset-version.ts`，2026-10-30 加）：
-  `/assets/app.css?v=<8 位内容哈希>`、`/assets/app.js?v=…`、`/assets/vendor/<name>?v=…`
-  （`vendorHref()`）。因为这些字节用 `public, max-age=31536000, immutable` 发出去，而
-  **`immutable` 只有在 URL 随内容变化时才成立**——路径固定就等于「升级了带安全修复的库、
-  回访浏览器一年不换」。页面里的地址必须来自 `APP_CSS_HREF` / `APP_JS_HREF` / `vendorHref()`，
-  **不许手拼 `VENDOR_ASSET_PREFIX + name`**（有单测钉着）。
-  `app.css` 的正文只有一处来源（`APP_CSS_BODY`），路由直接发它——两边各拼一次必然漂。
-  **已知债**：`/assets/fonts/*.woff2` 仍是固定路径 + `immutable`（字体 URL 由 `font-smiley`
-  的 CSS 生成，要版本化得改那个插件）；字体极少变，暂时记债。
+- **静态资源的 URL 一律带内容哈希**（`web/src/asset-version.ts` + `page-template/src/vendor.ts`）：
+  `/assets/app.css?v=…`、`/assets/app.js?v=…`、`/assets/vendor/<name>?v=…`、
+  `/assets/fonts/<name>.woff2?v=…` 的 `?v=` 都是**那一份字节**的 sha256 前 8 位。
+  这些字节用 `public, max-age=31536000, immutable` 发出去，而 **`immutable` 只有在 URL
+  随内容变化时才成立**——路径固定就等于「升级了带安全修复的库、回访浏览器一年不换」。
+  页面里的地址必须来自 `documentAssets()` / `appCssHref()` / `APP_JS_HREF` / `vendorHref()`，
+  **不许手拼** `/assets/...`（有单测钉着）。
+  `app.css` / `app.js` 的正文各只有一处来源（`APP_CSS_BODY` / `APP_JS_BODY`），路由直接发它
+  ——两边各拼一次必然漂。
+- **`app.css` 的地址必须按运行时的字体 CSS 惰性算**（`appCssHref(fontCss)`）：
+  `/assets/app.css` 实际发出去的正文是 `APP_CSS_BODY + fontSmiley.css()`，字体块要运行时才有
+  （插件可能没装载、`scope` 也可能被配置改）。**只哈希 `APP_CSS_BODY` 是个真洞**：改字体
+  scope / 换字体版本时 URL 不变，回访浏览器一年内还在用旧 CSS（2026-10-30 修掉）。
+  所以页面渲染一律走 `documentAssets(fontCss)` / `fontCssOf(ctx)`，
+  **不要再引入任何「CSS 地址常量」**。`web.test.ts` 有一条端到端用例：
+  抓页面里的 `<link>` 地址 → 拉那份正文 → 复算哈希必须相等，漏算字体立刻红。
+- **字体 URL 的版本串由 `font-smiley` 自己带**（`FontSmileyService.version()`）：
+  字体字节是它自己的资源，哈希放它那儿最合适；`css()` 因此也随版本变化，
+  正好是上一条 `appCssHref` 要吃的输入。
 - **不在 GitHub 上找 CDN**：CSP 是 `'self'`，第三方库一律 vendor 到
   `packages/page-template/assets/vendor/`，每个库带自己的 LICENSE（Apache-2.0 还要保留
   版权声明）。现有四个：htmx 2.0.11（Zero-Clause BSD）、Tom Select 2.4.3（Apache-2.0）、

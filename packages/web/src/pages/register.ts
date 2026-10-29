@@ -1,5 +1,5 @@
 /** 注册页：先申请验证码，再确认。两步共用一个文件。 */
-import { renderAuthShell, type PageModule } from '../layout.ts'
+import { fontCssOf, renderAuthShell, type PageModule } from '../layout.ts'
 import { requiredString, WebError } from '../forms.ts'
 import { sessionCookie } from '../session.ts'
 
@@ -16,6 +16,7 @@ export const registerPage: PageModule = {
 
     if (confirm) {
       return renderAuthShell(t, {
+      fontCss: fontCssOf(ctx),
         title: '输入验证码',
         subtitle: `验证码已发往 ${email || '你的邮箱'}，10 分钟内有效。`,
         content: `<form class="form" method="post" action="/register?action=confirm">
@@ -28,6 +29,7 @@ ${t.renderField({ label: '验证码', name: 'code', required: true, autocomplete
     }
 
     return renderAuthShell(t, {
+      fontCss: fontCssOf(ctx),
       title: '注册 DizzyAPI',
       subtitle: '验证码会发到邮箱；首个注册用户自动成为管理员。',
       content: `<form class="form" method="post" action="/register?action=request">

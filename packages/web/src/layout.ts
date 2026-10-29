@@ -3,7 +3,7 @@
  */
 import type { PageTemplateService, NavItem } from '@dizzyapi/plugin-page-template'
 import { VENDOR_SCRIPT_ORDER, vendorHref } from '@dizzyapi/plugin-page-template'
-import { APP_CSS_HREF, APP_JS_HREF } from './asset-version.ts'
+import { APP_JS_HREF, appCssHref } from './asset-version.ts'
 import type { SessionView, WebRuntime } from './runtime.ts'
 import { formatYuan } from './forms.ts'
 
@@ -93,7 +93,6 @@ function userLine(t: PageTemplateService, user: SessionView): string {
  * **地址一律带内容哈希**（见 `asset-version.ts`）：这些字节用 `immutable` 发出去，
  * 路径固定就会被浏览器缓存一年，改完样式等于没改。
  */
-export const ASSET_CSS = APP_CSS_HREF
 export const ASSET_JS = APP_JS_HREF
 
 /**
@@ -108,17 +107,29 @@ const DOC_SCRIPTS: readonly string[] = [
   ASSET_JS,
 ]
 
-const DOC_ASSETS = { cssHref: ASSET_CSS, jsHrefs: DOC_SCRIPTS }
+/**
+ * 页面文档级的 assets（**导出版**：`web` 渲染 404 时没有 `PageContext`，自己算字体 CSS）。
+ *
+ * `cssHref` 必须**按当前字体 CSS 惰性算**：`/assets/app.css` 的正文末尾会追加
+ * `fontSmiley.css()`，字体块一变（改 `scope` / 换字体字节）地址就得变，否则 `immutable`
+ * 缓存会让回访浏览器一直用旧 CSS。脚本地址是常量（正文不含运行时内容）。
+ */
+export function documentAssets(fontCss: string): { cssHref: string; jsHrefs: readonly string[] } {
+  return { cssHref: appCssHref(fontCss), jsHrefs: DOC_SCRIPTS }
+}
 
-/** 文档级 assets（404 等直接渲染文档的地方复用同一份，保证脚本顺序一致）。 */
-export const DOCUMENT_ASSETS = DOC_ASSETS
+/** 当前页面该用的字体 CSS（没装载 font-smiley 时为空串）。 */
+export function fontCssOf(ctx: PageContext): string {
+  const font = ctx.services.fontSmiley
+  return font === undefined ? '' : font.css()
+}
 
 /** 用户站外壳。 */
 export function renderConsoleShell(ctx: PageContext, content: string): string {
   const isAdmin = ctx.user.user.role === 'admin'
   return ctx.t.renderDocument({
     title: `${ctx.title} · DizzyAPI`,
-    assets: DOC_ASSETS,
+    assets: documentAssets(fontCssOf(ctx)),
     body: ctx.t.renderShell({
       brand: { word: 'Dizzy', badge: 'API', href: '/console/usage' },
       nav: navFor('console', ctx.path, isAdmin),
@@ -136,7 +147,7 @@ export function renderConsoleShell(ctx: PageContext, content: string): string {
 export function renderAdminShell(ctx: PageContext, content: string): string {
   return ctx.t.renderDocument({
     title: `管理台 · DizzyAPI`,
-    assets: DOC_ASSETS,
+    assets: documentAssets(fontCssOf(ctx)),
     body: ctx.t.renderShell({
       brand: { word: 'Dizzy', badge: '管理台', href: '/admin/users' },
       nav: navFor('admin', ctx.path, true),
@@ -156,10 +167,12 @@ export function renderAuthShell(t: PageTemplateService, options: {
   readonly subtitle?: string
   readonly content: string
   readonly footer?: string
+  /** 当前字体 CSS；**必须传**，否则这一页的 `app.css` 地址会与发出去的正文对不上。 */
+  readonly fontCss: string
 }): string {
   return t.renderDocument({
     title: `${options.title} · DizzyAPI`,
-    assets: DOC_ASSETS,
+    assets: documentAssets(options.fontCss),
     body: t.renderAuthPage(options),
   })
 }

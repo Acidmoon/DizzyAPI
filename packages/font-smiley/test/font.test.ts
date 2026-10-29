@@ -19,18 +19,19 @@ test('配置：默认只作用于标题，非法值被拒', () => {
   assert.ok(Array.isArray(validateFontSmileyConfig({ nope: 1 })))
 })
 
-test('CSS：@font-face 指向自托管文件，headings 不换正文', () => {
-  const css = renderFontCss('headings')
+test('CSS：@font-face 指向自托管文件（带版本串），headings 不换正文', () => {
+  const css = renderFontCss('headings', 'abcd1234')
   assert.ok(css.includes(`@font-face`))
   assert.ok(css.includes(`font-family: '${FONT_FAMILY}'`))
-  assert.ok(css.includes(`url('${FONT_URL}') format('woff2')`))
+  // 版本串必须有：字体走 immutable 一年缓存，路径固定的话换了字体回访浏览器拿不到新版。
+  assert.ok(css.includes(`url('${FONT_URL}?v=abcd1234') format('woff2')`))
   assert.ok(css.includes('font-display: swap'))
   assert.ok(css.includes('h1, h2'))
   assert.ok(!css.startsWith('body {'))
 })
 
 test('CSS：scope=all 时正文一起换，但模型名保留原字体', () => {
-  const css = renderFontCss('all')
+  const css = renderFontCss('all', 'abcd1234')
   assert.ok(css.includes('body { font-family:'))
   assert.ok(css.includes('.model-name { font-family: Inter'))
   // 标题不再单独列规则（body 已覆盖）
