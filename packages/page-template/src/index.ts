@@ -38,6 +38,17 @@ export {
 export { PAGE_CSS, THEME_VARS, CLIENT_JS } from './assets.ts'
 export { COMPONENT_CSS } from './extra-styles.ts'
 
+export {
+  VENDOR_ASSET_PREFIX,
+  VENDOR_CSS_ORDER,
+  VENDOR_SCRIPT_ORDER,
+  readVendorFile,
+  vendorContentType,
+  vendorCss,
+  type VendorFile,
+  type VendorFileName,
+} from './vendor.ts'
+
 export { escapeAttr, escapeText } from './escape.ts'
 
 export {

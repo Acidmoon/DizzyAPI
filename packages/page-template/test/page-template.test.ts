@@ -12,6 +12,7 @@ import {
   AXIS_PADDING_MAX,
   AXIS_PADDING_MIN,
   CLIENT_JS,
+  COMPONENT_CSS,
   COST_KEY_COLORS,
   COST_THEME,
   DARK_TOKENS,
@@ -21,12 +22,15 @@ import {
   METRICS,
   PAGE_CSS,
   PageTemplateService,
+  VENDOR_CSS_ORDER,
+  VENDOR_SCRIPT_ORDER,
   axisPaddingLeft,
   estimateAxisLabelWidth,
   formatAxisDate,
   formatCents,
   formatCompact,
   formatThousands,
+  readVendorFile,
   renderAreaLineChart,
   renderChartCard,
   renderDocument,
@@ -36,6 +40,7 @@ import {
   renderShell,
   renderStackedBarChart,
   renderStatCards,
+  vendorCss,
 } from '../src/index.ts'
 
 // ───────────────────────────── token ─────────────────────────────
@@ -126,6 +131,93 @@ test('CSS 与客户端脚本完整带过来', () => {
   assert.ok(CLIENT_JS.includes("querySelectorAll('.pill[aria-expanded=\"true\"]')"))
 })
 
+// ─────────────────────────── vendor 库 ───────────────────────────
+
+test('vendor：脚本顺序是契约，app.js 必须最后', () => {
+  // 顺序为什么是契约：
+  // 1. floating-ui.dom 的 UMD 读全局 FloatingUICore，必须在 core 之后；
+  // 2. /assets/app.js 要初始化控件、并在 htmx 已加载后改 htmx.config。
+  // 顺序错了的后果是实测过的：htmx 会用默认配置注入内联 <style>（被 CSP 拦）。
+  assert.deepEqual(
+    [...VENDOR_SCRIPT_ORDER],
+    [
+      'htmx/htmx.min.js',
+      'tom-select/tom-select.complete.min.js',
+      'flatpickr/flatpickr.min.js',
+      'floating-ui/floating-ui.core.umd.min.js',
+      'floating-ui/floating-ui.dom.umd.min.js',
+    ],
+  )
+  // htmx 必须第一个：它的 config 要被 app.js 在它之后改
+  assert.equal(VENDOR_SCRIPT_ORDER[0], 'htmx/htmx.min.js')
+  // floating-ui.core 必须在 dom 之前
+  const coreIdx = VENDOR_SCRIPT_ORDER.indexOf('floating-ui/floating-ui.core.umd.min.js')
+  const domIdx = VENDOR_SCRIPT_ORDER.indexOf('floating-ui/floating-ui.dom.umd.min.js')
+  assert.ok(coreIdx >= 0 && domIdx > coreIdx, 'floating-ui.core 必须排在 floating-ui.dom 之前')
+  // app.js 不在 vendor 列表里——它由调用方接在最后，不能混进来
+  assert.equal(VENDOR_SCRIPT_ORDER.includes('/assets/app.js' as never), false)
+})
+
+test('vendor：只认白名单，未知名字不发字节（无路径穿越面）', () => {
+  const js = readVendorFile('htmx/htmx.min.js')
+  assert.ok(js !== undefined)
+  assert.equal(js?.contentType, 'text/javascript; charset=utf-8')
+  assert.ok((js?.body.length ?? 0) > 10_000, 'htmx.min.js 应该是个真文件')
+  assert.ok(js?.body.toString('utf8').includes('htmx'), '内容确实像 htmx')
+
+  // 白名单之外一律 undefined：这些都不是「拼路径再过滤」，而是查表
+  for (const bad of [
+    'nope.js',
+    '../package.json',
+    'htmx/../../../../package.json',
+    'htmx/',
+    '',
+    'LICENSE',
+  ]) {
+    assert.equal(readVendorFile(bad), undefined, `${bad} 不该被发出`)
+  }
+
+  // 每个白名单文件都真的存在且非空（防「登记了却没 vendor」）
+  for (const name of VENDOR_SCRIPT_ORDER) {
+    const file = readVendorFile(name)
+    assert.ok(file !== undefined, `${name} 登记了但读不到`)
+    assert.ok((file?.body.length ?? 0) > 0, `${name} 是空文件`)
+  }
+  for (const name of VENDOR_CSS_ORDER) {
+    const file = readVendorFile(name)
+    assert.ok(file !== undefined, `${name} 登记了但读不到`)
+    assert.equal(file?.contentType, 'text/css; charset=utf-8')
+  }
+})
+
+test('vendor：CSS 合并进 app.css，htmx indicator 样式走服务端', () => {
+  const css = vendorCss()
+  assert.ok(css.includes('tom-select'), 'vendorCss 应含 Tom Select 样式')
+  assert.ok(css.includes('flatpickr'), 'vendorCss 应含 flatpickr 样式')
+
+  // htmx 默认会自己注入这段内联 <style>，被 CSP 拦；所以必须由**服务端 CSS**提供，
+  // 而不是等 app.js 补（否则首屏第一次请求 indicator 会裸奔）。
+  assert.ok(COMPONENT_CSS.includes('.htmx-indicator'), 'COMPONENT_CSS 必须自带 indicator 样式')
+  assert.ok(COMPONENT_CSS.includes('.htmx-request'))
+  // app.js 负责关掉 htmx 的注入
+  assert.ok(
+    CLIENT_JS.includes('includeIndicatorStyles = false'),
+    'app.js 必须在 htmx 之后关掉 indicator 样式注入',
+  )
+})
+
+test('文档：jsHrefs 按给定顺序输出 <script src>', () => {
+  const html = renderDocument({
+    title: 't',
+    body: '',
+    assets: { cssHref: '/assets/app.css', jsHrefs: ['/a.js', '/b.js', '/assets/app.js'] },
+  })
+  const order = [...html.matchAll(/<script src="([^"]+)"><\/script>/g)].map((m) => m[1])
+  assert.deepEqual(order, ['/a.js', '/b.js', '/assets/app.js'])
+  // 旧字段 jsHref 已删除：传了也不该被渲染出来
+  assert.equal(html.includes('jsHref"'), false)
+})
+
 // ───────────────────────────── 文档 ─────────────────────────────
 
 test('文档：默认内联样式与脚本', () => {
@@ -142,7 +234,9 @@ test('文档：给出 assets 时走外链，不再内联', () => {
   const html = renderDocument({
     title: 't',
     body: '',
-    assets: { cssHref: '/console/usage/assets/usage.css', jsHref: '/console/usage/assets/usage.js' },
+    // 旧字段 `jsHref` 已按方案删除（只留 jsHrefs，不留双源）；断言对象同步换名，
+    // 强度不变：仍然断言外链 href/src 都出现、且不再内联。
+    assets: { cssHref: '/console/usage/assets/usage.css', jsHrefs: ['/console/usage/assets/usage.js'] },
   })
   assert.ok(html.includes('href="/console/usage/assets/usage.css"'))
   assert.ok(html.includes('src="/console/usage/assets/usage.js"'))

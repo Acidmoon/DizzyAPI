@@ -7,11 +7,12 @@
 import { randomUUID } from 'node:crypto'
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import { Service, type Context } from 'cordis'
-import { CLIENT_JS, COMPONENT_CSS, PAGE_CSS, type PageTemplateService } from '@dizzyapi/plugin-page-template'
+import { CLIENT_JS, COMPONENT_CSS, PAGE_CSS, VENDOR_ASSET_PREFIX, type PageTemplateService } from '@dizzyapi/plugin-page-template'
 import { validateWebConfig, type ResolvedWebConfig, type WebConfig } from './config.ts'
 import { assertSameOrigin, readForm, WebError } from './forms.ts'
 import { clearSessionCookie, isSecureRequest, readCookie, sessionCookie } from './session.ts'
 import { readNotice, type ActionContext, type PageContext, type PageModule } from './layout.ts'
+import { DOCUMENT_ASSETS } from './layout.ts'
 import type {
   AccountAdminLike,
   ApiKeyLike,
@@ -186,8 +187,27 @@ export class WebService extends Service {
       if (path === '/assets/app.css') {
         const font = this.runtime().fontSmiley
         const fontCss = font === undefined ? '' : font.css()
-        this.send(res, 200, 'text/css; charset=utf-8', `${PAGE_CSS}${COMPONENT_CSS}\n${fontCss}`, true)
+        // vendor 的两个 CSS（Tom Select / flatpickr）拼进来：全站仍然只有一个 CSS 文件，
+        // 不需要多写 <link>，也不用改 CSP。
+        // 用 this.template 而不是 runtime()：pageTemplate 是 static inject，必然已装载。
+        const vendorCss = this.template.vendorCss()
+        this.send(res, 200, 'text/css; charset=utf-8', `${PAGE_CSS}${COMPONENT_CSS}\n${vendorCss}\n${fontCss}`, true)
         return
+      }
+      if (path.startsWith(VENDOR_ASSET_PREFIX)) {
+        // 白名单查表：名字不在表里就是 404，不做路径拼接，天然没有穿越问题。
+        const name = path.slice(VENDOR_ASSET_PREFIX.length)
+        const file = this.template.vendorFile(name)
+        if (file !== undefined) {
+          res.writeHead(200, {
+            ...SECURITY_HEADERS,
+            'Content-Type': file.contentType,
+            // 第三方库按版本 vendor，内容不会变。
+            'Cache-Control': 'public, max-age=31536000, immutable',
+          })
+          res.end(file.body)
+          return
+        }
       }
       if (path.startsWith('/assets/fonts/')) {
         const font = this.runtime().fontSmiley
@@ -399,7 +419,7 @@ export class WebService extends Service {
   private renderNotFound(message = '没有这个页面'): string {
     return this.template.renderDocument({
       title: '404 · DizzyAPI',
-      assets: { cssHref: '/assets/app.css', jsHref: '/assets/app.js' },
+      assets: DOCUMENT_ASSETS,
       body: `<div class="auth-wrap"><div class="auth-card"><h1 class="auth-title">404</h1><p class="auth-sub">${this.template.escapeText(message)}</p><a class="btn" href="/console/usage">返回控制台</a></div></div>`,
     })
   }

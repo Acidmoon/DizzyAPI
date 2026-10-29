@@ -5,6 +5,17 @@
  * 这里只新增类名，颜色与圆角全部复用同一套 token。
  */
 export const COMPONENT_CSS = `
+/* ── htmx：indicator 样式（服务端输出，不是 JS 注入）─────────────
+ * 为什么写在这里：htmx 默认会自己 insertAdjacentHTML 注入一段内联 <style>
+ * 来实现这两个类，而被 \`style-src 'self'\` 拦掉（实测 1 条违规）。
+ * 我们的做法是关掉它的注入（app.js 里 includeIndicatorStyles = false），
+ * 把等价规则放进这份**服务端 CSS**——必须服务端输出：靠 JS 补的话，
+ * 首屏第一次请求时 indicator 会先裸奔一下。
+ * 规则与 htmx 自带的一致，另加 transition 让显隐不生硬。 */
+.htmx-indicator { opacity: 0; visibility: hidden; transition: opacity 200ms ease-in; }
+.htmx-request .htmx-indicator,
+.htmx-request.htmx-indicator { opacity: 1; visibility: visible; }
+
 /* ── 数据表格 ──────────────────────────────────────────────────── */
 .panel { background: var(--bg-layer-1); border-radius: 16px; overflow: hidden; margin-bottom: 24px; }
 .table { width: 100%; border-collapse: collapse; font-size: var(--fs-label); line-height: var(--lh-label); }

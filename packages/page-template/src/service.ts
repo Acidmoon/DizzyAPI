@@ -18,6 +18,13 @@ import {
 } from './charts.ts'
 import { escapeAttr, escapeText } from './escape.ts'
 import {
+  VENDOR_ASSET_PREFIX,
+  VENDOR_SCRIPT_ORDER,
+  readVendorFile,
+  vendorCss,
+  type VendorFile,
+} from './vendor.ts'
+import {
   AXIS_LABEL_GAP,
   DARK_TOKENS,
   FONT_ROLES,
@@ -235,6 +242,27 @@ export class PageTemplateService extends Service {
   }
 
   readonly axisLabelGap = AXIS_LABEL_GAP
+
+  // ── vendor（第三方前端库）──────────────────────────────────────
+  // page-template 原先没有任何「发字节」的能力；控件库要能被浏览器加载，
+  // 就得有个 seam。形态照 font-smiley 的 file()：给名字、拿字节，
+  // 名字必须命中白名单（见 vendor.ts），不接受任意路径。
+
+  /** `/assets/vendor/*` 的 URL 前缀。 */
+  readonly vendorAssetPrefix = VENDOR_ASSET_PREFIX
+
+  /** 白名单内的 vendor 文件；名字不在白名单返回 undefined（调用方按 404 处理）。 */
+  vendorFile(name: string): VendorFile | undefined {
+    return readVendorFile(name)
+  }
+
+  /** vendor CSS 合并文本（拼进 `/assets/app.css`）。 */
+  vendorCss(): string {
+    return vendorCss()
+  }
+
+  /** 页面 `<script src>` 里 vendor 部分应有的顺序（`app.js` 由调用方接在最后）。 */
+  readonly vendorScriptOrder = VENDOR_SCRIPT_ORDER
 }
 
 export type {

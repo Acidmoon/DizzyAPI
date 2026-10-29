@@ -2,6 +2,7 @@
  * 布局：侧栏导航 + 主列外壳。页面只负责主列内容。
  */
 import type { PageTemplateService, NavItem } from '@dizzyapi/plugin-page-template'
+import { VENDOR_ASSET_PREFIX, VENDOR_SCRIPT_ORDER } from '@dizzyapi/plugin-page-template'
 import type { SessionView, WebRuntime } from './runtime.ts'
 import { formatYuan } from './forms.ts'
 
@@ -89,7 +90,21 @@ function userLine(t: PageTemplateService, user: SessionView): string {
 export const ASSET_CSS = '/assets/app.css'
 export const ASSET_JS = '/assets/app.js'
 
-const DOC_ASSETS = { cssHref: ASSET_CSS, jsHref: ASSET_JS }
+/**
+ * 脚本顺序**是契约**（见 `DocumentOptions.assets.jsHrefs` 的注释）：
+ * 1. vendor 库按 `VENDOR_SCRIPT_ORDER`（htmx → tom-select → flatpickr → floating-ui.core → floating-ui.dom）；
+ * 2. `/assets/app.js` **必须最后**：它初始化控件，并在 htmx 已加载的前提下把
+ *    `htmx.config.includeIndicatorStyles` 关掉。顺序反过来 htmx 会注入内联 `<style>`（被 CSP 拦）。
+ */
+const DOC_SCRIPTS: readonly string[] = [
+  ...VENDOR_SCRIPT_ORDER.map((name) => `${VENDOR_ASSET_PREFIX}${name}`),
+  ASSET_JS,
+]
+
+const DOC_ASSETS = { cssHref: ASSET_CSS, jsHrefs: DOC_SCRIPTS }
+
+/** 文档级 assets（404 等直接渲染文档的地方复用同一份，保证脚本顺序一致）。 */
+export const DOCUMENT_ASSETS = DOC_ASSETS
 
 /** 用户站外壳。 */
 export function renderConsoleShell(ctx: PageContext, content: string): string {

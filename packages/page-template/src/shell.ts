@@ -78,10 +78,21 @@ export interface DocumentOptions {
   readonly title: string
   /** `<body>` 里的内容，通常是一次 `renderShell()` 的结果。 */
   readonly body: string
-  /** 给出时用外链；不给则把样式与脚本内联进文档。 */
+  /** 给出时用外链；不给则把样式与脚本内联进文档（仅测试用：生产 CSP 会拦内联）。 */
   readonly assets?: {
     readonly cssHref: string
-    readonly jsHref?: string
+    /**
+     * 按顺序输出的 `<script src>` 列表。
+     *
+     * **顺序有意义，别随手排序**：
+     * 1. 第三方库之间有依赖（`floating-ui.dom` 要用 `floating-ui.core` 暴露的全局 `FloatingUICore`）；
+     * 2. `/assets/app.js` **必须排最后**——它初始化各控件，并在 htmx 加载之后
+     *    设置 `htmx.config.includeIndicatorStyles = false`。
+     *    若 app.js 在 htmx 之前执行，那时 `window.htmx` 还是 `undefined`，
+     *    配置设不进去，htmx 会按默认值注入一段内联 `<style>`（被 CSP 拦掉）。
+     *    实测见 AGENTS.md「前端 / CSP」一节。
+     */
+    readonly jsHrefs?: readonly string[]
   }
 }
 
@@ -144,11 +155,11 @@ export function renderDocument(options: DocumentOptions): string {
   const head = assets === undefined
     ? `<style>${PAGE_CSS}${COMPONENT_CSS}</style>`
     : `<link rel="stylesheet" href="${escapeAttr(assets.cssHref)}">`
+  // 外链模式：按给定顺序逐个输出，顺序本身是契约（见 DocumentOptions.assets.jsHrefs）。
+  // 内联模式只给测试用——生产 CSP 是 style-src/script-src 'self'，内联会被拦。
   const script = assets === undefined
     ? `<script>${CLIENT_JS}</script>`
-    : assets.jsHref === undefined
-      ? ''
-      : `<script src="${escapeAttr(assets.jsHref)}"></script>`
+    : (assets.jsHrefs ?? []).map((href) => `<script src="${escapeAttr(href)}"></script>`).join('\n')
   return `<!doctype html>
 <html lang="zh-CN" class="dark" data-ds-dark-theme="dark">
 <head>

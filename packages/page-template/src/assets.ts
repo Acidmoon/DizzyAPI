@@ -293,6 +293,20 @@ export const CLIENT_JS = `
 (function () {
   'use strict';
 
+  // ── htmx 配置（必须在 htmx 之后、DOMContentLoaded 之前执行）──────────
+  // htmx 默认会 insertAdjacentHTML 注入一段内联 <style> 给 indicator 上样式，
+  // 而站点 CSP 是 style-src 'self'（无 'unsafe-inline'、无 nonce），实测该注入
+  // 被拦下并产生 1 条 style-src-elem 违规。关掉注入，等价规则放在
+  // COMPONENT_CSS（服务端输出，首屏就生效，不会闪）。
+  //
+  // 时机说明：htmx 的 init 挂在 DOMContentLoaded 上，而本文件是 body 末尾的
+  // 经典脚本，一定先于 DOMContentLoaded 执行，所以「设置 → 初始化」没有窗口期。
+  // 实测见 AGENTS.md「前端 / CSP」。若把本脚本挪到 htmx 之前，window.htmx 还是
+  // undefined，配置设不进去，htmx 就会按默认值注入（实测那才是唯一会出违规的写法）。
+  if (window.htmx && window.htmx.config) {
+    window.htmx.config.includeIndicatorStyles = false;
+  }
+
   function closeAll(except) {
     var pills = document.querySelectorAll('.pill[aria-expanded="true"]');
     for (var i = 0; i < pills.length; i++) {
