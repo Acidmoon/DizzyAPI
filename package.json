@@ -11,6 +11,7 @@
     "predev": "pnpm build:go",
     "dev": "cross-env NODE_ENV=development NODE_OPTIONS=\"--import tsx --import @cordisjs/unyaml\" node --expose-internals node_modules/cordis/bin.js run",
     "build:go": "node -e \"require('node:fs').mkdirSync('bin',{recursive:true})\" && go build -trimpath -o bin/ ./cmd/gatewayd",
+    "build:dashboard": "npm --prefix packages/dashboard/app run build",
     "build:cli": "node -e \"require('node:fs').mkdirSync('bin',{recursive:true})\" && go build -trimpath -o bin/ ./cmd/dizzy",
     "build:all": "pnpm build:go && pnpm build:cli",
     "test": "node --import tsx --test \"packages/*/test/*.test.ts\"",
