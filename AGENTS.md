@@ -643,6 +643,13 @@ pnpm build:all        # 两个二进制一起编
 - `Config` 上不能叫 `merge`；字段元数据用别的名字（本项目叫 `fields`）。
 - Node 24 + tsx 跑测试要用 glob：`node --import tsx --test "packages/*/test/*.test.ts"`。
 - `fiber.dispose()` 返回 `void`，要捕获异常用 `try { await fiber.dispose() } catch {}`。
+- **`ctx.provide(...)` 返回的销毁器是异步的**，必须 `await` 之后才能断言「服务没了」：
+  cordis 的实现是「同步删 store → notify → `await new Promise(...)` 等所有依赖方 release」
+  （`node_modules/cordis/lib/index.js` 的 `reflect.provide`）。不 await 就断言 503 / 404，
+  全量并发时那个 await 会被拖长，断言撞上中间态 → **偶发 flake**
+  （2026-10-30 在 `packages/api/test/service.test.ts` 踩到，修法是 `await dispose()`，
+  不许改成轮询等待）。**teardown 里不用 await**：那里后面没有断言，且紧跟 `fiber.dispose()`
+  收整棵树，await 反而可能被不 release 的依赖方挂住。
 - `server.close()` 会被 SSE / keep-alive 挂住，配 `closeAllConnections()`。
 - `EventSource` 发不了自定义请求头；SSE 客户端要用 `fetch` + `ReadableStream`。
 - `ctx.setInterval` / `ctx.timeout` 是 `@cordisjs/plugin-timer` 往 Context 上 mixin 的方法，
