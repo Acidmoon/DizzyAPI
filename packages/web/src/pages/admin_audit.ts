@@ -168,15 +168,21 @@ ${t.renderDatePicker({ name: 'to', value: toDate, ariaLabel: '结束日期' })}
           '记录管理员高危写操作（改余额 / 改角色 / 账号增删改 / 生成兑换码 / 确认到账 / 改价格与设置）。' +
             '审计是旁路：它挂掉不影响业务写操作；记录已脱敏，不含密码、密钥与凭据明文。',
         ),
-        t.renderStatCards(
-          [
-            { label: '记录总数', value: t.formatThousands(stats.total) },
-            { label: '今日', value: t.formatThousands(stats.today) },
-            { label: '最近 24 小时', value: t.formatThousands(stats.last24h) },
-            { label: '失败操作', value: t.formatThousands(stats.failed) },
-          ],
-          'metrics',
-        ),
+        // 改前 4 张等权卡片平铺。现在「记录量」与「异常」分组，失败操作单独拎出来。
+        t.renderMetricGroups([
+          {
+            title: '记录量',
+            cards: [
+              { label: '记录总数', value: t.formatThousands(stats.total), emphasis: 'primary' },
+              { label: '今日', value: t.formatThousands(stats.today) },
+              { label: '最近 24 小时', value: t.formatThousands(stats.last24h) },
+            ],
+          },
+          {
+            title: '异常',
+            cards: [{ label: '失败操作', value: t.formatThousands(stats.failed) }],
+          },
+        ]),
         `<p class="muted">最近一条：${t.escapeText(shortTime(stats.lastAt))}（UTC）；保留期由 audit 插件配置，过期自动清理。</p>`,
         filterHtml,
         t.renderTable({

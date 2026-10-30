@@ -225,25 +225,39 @@ ${t.renderSelect({
             '规则每个推送周期心跳式发给网关（内容不变也推），禁用的规则不推。',
         ),
         ...notices,
-        t.renderStatCards(
-          [
-            { label: '规则总数', value: t.formatThousands(rules.length) },
-            { label: '启用中', value: t.formatThousands(enabledRules) },
-            { label: '拦截次数', value: hits === null ? '—' : t.formatThousands(hits.blocked) },
-            { label: '只记日志', value: hits === null ? '—' : t.formatThousands(hits.logged) },
-            { label: '快照年龄', value: msOrDash(status.ageMs) },
-            { label: '网关 TTL', value: msOrDash(status.ttlMs) },
-          ],
-          'metrics',
-        ),
+        // 改前 6 张等权卡片平铺。现在分「规则 / 命中 / 推送」三组。
+        t.renderMetricGroups([
+          {
+            title: '规则',
+            cards: [
+              { label: '规则总数', value: t.formatThousands(rules.length), emphasis: 'primary' },
+              { label: '启用中', value: t.formatThousands(enabledRules) },
+            ],
+          },
+          {
+            title: '命中',
+            cards: [
+              { label: '拦截次数', value: hits === null ? '—' : t.formatThousands(hits.blocked) },
+              { label: '只记日志', value: hits === null ? '—' : t.formatThousands(hits.logged) },
+            ],
+          },
+          {
+            title: '推送',
+            cards: [
+              { label: '快照年龄', value: msOrDash(status.ageMs) },
+              { label: '网关 TTL', value: msOrDash(status.ttlMs) },
+            ],
+          },
+        ]),
         `<p class="muted">命中明细：${t.escapeText(hitsLine)}</p>`,
         `<p class="muted">最近推送：${t.escapeText(shortTime(status.lastPushAt))}（UTC）· ` +
           `累计 ${t.escapeText(t.formatThousands(status.pushes))} 次、其中心跳 ${t.escapeText(t.formatThousands(status.heartbeats))} 次 · ` +
           `revision <code class="mono">${t.escapeText(status.revision ?? '—')}</code> · ` +
           `审核${status.enabled ? '开启' : '关闭'} · 推送间隔 ${t.escapeText(String(status.pushIntervalMs))} ms</p>`,
         `<div class="filters">${pushForm}</div>`,
-        `\n<h2>新增规则</h2>\n${createForm}`,
-        `\n<h2>规则列表</h2>\n` +
+        // 用 renderSectionTitle（不是裸 <h2>）：区块节奏与其它页面一致。
+        `${t.renderSectionTitle('新增规则')}\n${createForm}`,
+        `${t.renderSectionTitle('规则列表')}\n` +
           t.renderTable({
             columns: [
               { label: '关键词' },
