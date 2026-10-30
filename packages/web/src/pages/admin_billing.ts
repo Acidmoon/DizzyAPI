@@ -91,18 +91,27 @@ export const adminBillingPage: PageModule = {
           '真实扣费：一轮的顺序是 拉取 → 落库 → 结算 → 推进游标，同一 reqId 只扣一次；' +
             '落库失败被隔离的用量不结算也不扣费（见「全站用量」）。日期按 UTC。',
         ),
-        t.renderStatCards(
-          [
-            { label: '已结算', value: t.formatThousands(totals.settled) },
-            { label: '累计扣费', value: formatYuan(totals.chargedMicros), unit: 'CNY' },
-            { label: '今日扣费', value: formatYuan(totals.todayChargedMicros), unit: 'CNY' },
-            { label: '待处理', value: t.formatThousands(openCases) },
-            { label: '透支', value: t.formatThousands(totals.overdrawn) },
-            { label: '无价格', value: t.formatThousands(totals.noPrice) },
-            { label: '无用户', value: t.formatThousands(totals.noUser) },
-          ],
-          'metrics',
-        ),
+        // 改前 7 张等权卡片平铺。现在分「扣费」与「异常」两组：钱是一组，
+        // 需要人处理的（待处理 / 透支 / 无价格 / 无用户）是另一组。
+        t.renderMetricGroups([
+          {
+            title: '扣费',
+            cards: [
+              { label: '累计扣费', value: formatYuan(totals.chargedMicros), unit: 'CNY', emphasis: 'primary' },
+              { label: '今日扣费', value: formatYuan(totals.todayChargedMicros), unit: 'CNY' },
+              { label: '已结算', value: t.formatThousands(totals.settled) },
+            ],
+          },
+          {
+            title: '异常与未计费',
+            cards: [
+              { label: '待处理', value: t.formatThousands(openCases) },
+              { label: '透支', value: t.formatThousands(totals.overdrawn) },
+              { label: '无价格', value: t.formatThousands(totals.noPrice) },
+              { label: '无用户', value: t.formatThousands(totals.noUser) },
+            ],
+          },
+        ]),
         t.renderSectionTitle('失败 / 残留'),
         t.renderTable({
           columns: [

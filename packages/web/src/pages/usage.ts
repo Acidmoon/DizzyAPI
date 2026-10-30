@@ -17,9 +17,6 @@ import {
   averageTtft,
   buildChart,
   chartSlots,
-  detailModal,
-  detailTrigger,
-  dialogIdOf,
   filtersForm,
   formatClock,
   formatMs,
@@ -29,6 +26,7 @@ import {
   queryOf,
   rangeOnlyQuery,
 } from '../usage-view.ts'
+import { detailModal, detailTrigger, dialogIdOf } from '../usage-detail-view.ts'
 
 const DETAIL_PATH = '/console/usage/detail'
 
@@ -75,16 +73,21 @@ export const usagePage: PageModule = {
       chart,
     })
 
-    const stats = t.renderStatCards(
-      [
-        { label: '消费金额', value: formatYuan(summary.totals.costMicros), unit: 'CNY' },
-        { label: 'API 请求次数', value: t.formatThousands(summary.totals.requests) },
-        { label: 'Tokens', value: t.formatThousands(summary.totals.totalTokens) },
-        // 首字延迟：只统计采集到的（流式）请求；一条都没有时显示「—」。
-        { label: '平均首字延迟', value: formatMs(averageTtft(rows)) },
-      ],
-      'metrics',
-    )
+    // 指标区：消费金额是主指标（大号 + 强调色），其余三项是次级指标。
+    // 改前是四张等权卡片平铺，看不出这张页面在说什么。
+    const stats = t.renderMetricGroups([
+      {
+        title: '本次筛选',
+        note: '所选时间范围内、按当前筛选条件汇总',
+        cards: [
+          { label: '消费金额', value: formatYuan(summary.totals.costMicros), unit: 'CNY', emphasis: 'primary' },
+          { label: 'API 请求次数', value: t.formatThousands(summary.totals.requests) },
+          { label: 'Tokens', value: t.formatThousands(summary.totals.totalTokens) },
+          // 首字延迟：只统计采集到的（流式）请求；一条都没有时显示「—」。
+          { label: '平均首字延迟', value: formatMs(averageTtft(rows)) },
+        ],
+      },
+    ])
 
     const modelRows = summary.models.map((model) => [
       t.escapeText(model.model),

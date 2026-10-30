@@ -28,6 +28,13 @@ export interface StatCard {
   readonly info?: boolean
   /** 右下角动作按钮。 */
   readonly action?: { readonly label: string; readonly href: string }
+  /**
+   * 视觉权重：`primary` = 主指标（数字大一号 + 强调色 + 左侧强调条）。
+   *
+   * 有了它，「8 个指标挤一行、谁也看不出哪个重要」这类问题才有解：
+   * 一页里只该有一两个 primary，其余是次级指标（见 `metric-groups.ts`）。
+   */
+  readonly emphasis?: 'primary'
 }
 
 export interface FilterPillItem {
@@ -75,19 +82,20 @@ ${note}`
 }
 
 /**
- * 指标 / 余额卡。
+ * 单张指标卡的 DOM（`renderStatCards` 与 `metric-groups.ts` 共用这一份）。
  *
- * `balances` 是首屏的大卡（带动作按钮），`metrics` 是三列指标卡；
- * 两者的卡片 DOM 相同，只是容器类名不同。
+ * 共用是刻意的：卡片结构只该有一个源，否则「主指标卡」和普通卡片迟早长得不一样。
+ * `extraClass` 用来加用途修饰类（例如指标区的 ` card--metric`），前面自带空格。
  */
-export function renderStatCards(cards: readonly StatCard[], layout: 'balances' | 'metrics' = 'metrics'): string {
-  const blocks = cards.map((card) => {
-    const info = card.info === true ? iconInfo() : ''
-    const unit = card.unit === undefined ? '' : `<span class="value-unit">${escapeText(card.unit)}</span>`
-    const action = card.action === undefined
-      ? ''
-      : `<a class="btn" href="${escapeAttr(card.action.href)}">${escapeText(card.action.label)}</a>`
-    return `<div class="card">
+export function statCardHtml(card: StatCard, extraClass = ''): string {
+  const info = card.info === true ? iconInfo() : ''
+  const unit = card.unit === undefined ? '' : `<span class="value-unit">${escapeText(card.unit)}</span>`
+  const action = card.action === undefined
+    ? ''
+    : `<a class="btn" href="${escapeAttr(card.action.href)}">${escapeText(card.action.label)}</a>`
+  // 主指标：数字大一号 + 强调色 + 左侧强调条（样式见 extra-styles.ts / assets.ts）。
+  const emphasis = card.emphasis === 'primary' ? ' card--primary' : ''
+  return `<div class="card${emphasis}${extraClass}">
 <div class="card-col">
 <div class="card-head"><span class="card-label">${escapeText(card.label)}</span>${info}</div>
 <div class="card-value-row">
@@ -95,7 +103,17 @@ export function renderStatCards(cards: readonly StatCard[], layout: 'balances' |
 </div>
 </div>
 </div>`
-  }).join('\n')
+}
+
+/**
+ * 指标 / 余额卡。
+ *
+ * `balances` 是首屏的大卡（带动作按钮），`metrics` 是网格指标卡；
+ * 两者的卡片 DOM 相同，只是容器类名不同（`metrics` 现在是网格：
+ * 等宽等高、最多 4 列，不再把 8 张卡挤成一行）。
+ */
+export function renderStatCards(cards: readonly StatCard[], layout: 'balances' | 'metrics' = 'metrics'): string {
+  const blocks = cards.map((card) => statCardHtml(card)).join('\n')
   return `<div class="${layout}">
 ${blocks}
 </div>`

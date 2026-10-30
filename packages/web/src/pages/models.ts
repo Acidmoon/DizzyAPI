@@ -109,15 +109,23 @@ export const modelsPage: PageModule = {
       ctx,
       [
         header,
-        t.renderStatCards(
-          [
-            { label: '可用模型', value: t.formatThousands(catalog.summary.availableCount) },
-            { label: '不可用', value: t.formatThousands(catalog.summary.unavailableCount) },
-            { label: '已定价', value: t.formatThousands(catalog.summary.pricedCount) },
-            { label: '参与统计的账号', value: t.formatThousands(catalog.summary.accountCount) },
-          ],
-          'metrics',
-        ),
+        // 改前 4 张等权卡片平铺。现在「可用性」与「定价与账号」两组。
+        t.renderMetricGroups([
+          {
+            title: '可用性',
+            cards: [
+              { label: '可用模型', value: t.formatThousands(catalog.summary.availableCount), emphasis: 'primary' },
+              { label: '不可用', value: t.formatThousands(catalog.summary.unavailableCount) },
+            ],
+          },
+          {
+            title: '定价与账号',
+            cards: [
+              { label: '已定价', value: t.formatThousands(catalog.summary.pricedCount) },
+              { label: '参与统计的账号', value: t.formatThousands(catalog.summary.accountCount) },
+            ],
+          },
+        ]),
         `<form class="form form--wide form--spaced" method="get" action="/console/models">
 <div class="row row--stack-actions">
 ${t.renderField({ label: '搜索模型', name: 'search', required: false, value: search, placeholder: '例如 deepseek' })}

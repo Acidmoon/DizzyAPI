@@ -11,6 +11,12 @@ dist
 .env
 
 node_modules
+# 并行工作树（worktree）目录：前端线建在仓库内（.agents/worktrees/<分支> /
+# .claude/worktrees/<分支>），绝不能提交。用 `**/` 兜住任意一层，别再逐个补。
+**/worktrees/
+# skill 的规范入口只有 .agents/skills/**；.claude/skills 是指向它的 junction（Windows
+# 目录联接），git 会把 junction 当目录跟进、把同一份文件再存一份 → 两份会漂移。
+/.claude/skills
 npm-debug.log
 yarn-debug.log
 tsconfig.tsbuildinfo
