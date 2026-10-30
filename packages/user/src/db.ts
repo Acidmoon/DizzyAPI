@@ -33,6 +33,7 @@ CREATE TABLE IF NOT EXISTS users (
   balance_enabled INTEGER NOT NULL DEFAULT 0,
   avatar TEXT,
   concurrency_limit INTEGER,
+  ui_preferences TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
@@ -316,6 +317,22 @@ export class UserDatabase {
   }
 
   /**
+   * 读界面偏好的**原始 JSON 串**（`null` = 从没设过 / 老库刚补的列）。
+   *
+   * 解析与校验在 `uiprefs.ts`——那一层不认识 SQL，这一层不认识偏好语义。
+   */
+  getUiPreferences(id: UserId): string | null {
+    const row = this.row('SELECT ui_preferences AS prefs FROM users WHERE id = ?', id)
+    const value = row?.prefs
+    return typeof value === 'string' ? value : null
+  }
+
+  /** 写界面偏好（整份覆盖，不做部分更新——合并逻辑在 `uiprefs.ts`）。 */
+  setUiPreferences(id: UserId, json: string, at: string): void {
+    this.run('UPDATE users SET ui_preferences = ?, updated_at = ? WHERE id = ?', json, at, id)
+  }
+
+  /**
    * 改余额 + 记流水，在同一个事务里完成：两者要么都成功，要么都不发生。
    * 返回改动后的余额。允许扣成负数（D11）。
    */
@@ -427,7 +444,7 @@ function migrate(db: DatabaseSync): void {
   }
   db.exec(SCHEMA)
   // 旧库升级：只加列、不改历史行（历史用户 = 不限并发）。幂等：列已存在就跳过。
-  ensureUserColumns(db, ['concurrency_limit'])
+  ensureUserColumns(db, ['concurrency_limit', 'ui_preferences'])
   if (version < SCHEMA_VERSION) db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`)
 }
 

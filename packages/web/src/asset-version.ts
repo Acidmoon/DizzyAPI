@@ -21,6 +21,7 @@ import {
   LAYOUT_CSS,
   MODAL_CSS,
   PAGE_CSS,
+  THEME_CSS_PATH,
   VENDOR_THEME_CSS,
   vendorCss,
 } from '@dizzyapi/plugin-page-template'
@@ -68,4 +69,15 @@ export function appCssHref(fontCss: string): string {
   cachedCssHref = `/assets/app.css?v=${shortHash(`${APP_CSS_BODY}${fontCss}`)}`
   cachedFontCss = fontCss
   return cachedCssHref
+}
+
+/**
+ * `/assets/theme.css` 的地址（用户偏好那张样式表）。
+ *
+ * 与 `app.css` 同一套规则：**地址带内容哈希**。不同的是它按用户生成，所以：
+ * - 响应必须是 `Cache-Control: private, no-store`（共享缓存绝不能把 A 的字号发给 B）；
+ * - 哈希由 `web` 按当前用户的偏好 CSS 现算，同一份偏好稳定、改档位立刻变。
+ */
+export function themeCssHref(themeCss: string): string {
+  return `${THEME_CSS_PATH}?v=${shortHash(themeCss)}`
 }

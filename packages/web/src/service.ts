@@ -7,7 +7,7 @@
 import { randomUUID } from 'node:crypto'
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import { Service, type Context } from 'cordis'
-import { VENDOR_ASSET_PREFIX, type PageTemplateService } from '@dizzyapi/plugin-page-template'
+import { renderThemeCss, THEME_CSS_PATH, VENDOR_ASSET_PREFIX, type PageTemplateService } from '@dizzyapi/plugin-page-template'
 import { APP_CSS_BODY, APP_JS_BODY } from './asset-version.ts'
 import { validateWebConfig, type ResolvedWebConfig, type WebConfig } from './config.ts'
 import { apiDocsResource } from './content/api_docs.ts'
@@ -170,6 +170,20 @@ export class WebService extends Service {
         this.send(res, 200, 'text/css; charset=utf-8', `${APP_CSS_BODY}${fontCss}`, true)
         return
       }
+      if (path === THEME_CSS_PATH) {
+        // 用户偏好表：**按用户生成**，所以缓存语义是 `private, no-store`。
+        // 地址照样带内容哈希（`themeCssHref`），同一份偏好稳定、改档位立刻变。
+        const css = await this.themeCssOf(await this.sessionOf(req))
+        if (!res.headersSent) {
+          res.writeHead(200, {
+            ...SECURITY_HEADERS,
+            'Content-Type': 'text/css; charset=utf-8',
+            'Cache-Control': 'private, no-store',
+          })
+          res.end(css)
+        }
+        return
+      }
       if (path.startsWith(VENDOR_ASSET_PREFIX)) {
         // 白名单查表：名字不在表里就是 404，不做路径拼接，天然没有穿越问题。
         const name = path.slice(VENDOR_ASSET_PREFIX.length)
@@ -257,7 +271,7 @@ export class WebService extends Service {
         return
       }
 
-      const context = this.contextFor(page, url, session)
+      const context = await this.contextFor(page, url, session)
       const html = await page.render(context)
       this.send(res, 200, 'text/html; charset=utf-8', html, true)
     } catch (error) {
@@ -283,7 +297,7 @@ export class WebService extends Service {
     const form = await readForm(req)
     const cookies: string[] = []
     const context: ActionContext = {
-      ...this.contextFor(page, url, session),
+      ...await this.contextFor(page, url, session),
       form,
       cookieName: this.config.sessionCookieName,
       secure: isSecureRequest(req),
@@ -311,7 +325,11 @@ export class WebService extends Service {
     }
   }
 
-  private contextFor(page: PageModule, url: URL, session: { session: SessionView; token: string } | null): PageContext {
+  private async contextFor(
+    page: PageModule,
+    url: URL,
+    session: { session: SessionView; token: string } | null,
+  ): Promise<PageContext> {
     const user = session?.session ?? placeholderSession()
     return {
       path: page.path,
@@ -321,7 +339,31 @@ export class WebService extends Service {
       t: this.template,
       services: this.runtime(),
       notice: readNotice(url.searchParams),
+      themeCss: await this.themeCssOf(session),
       takeSecret: () => this.takeSecret(url.searchParams.get('new')),
+    }
+  }
+
+  /**
+   * 当前会话用户该用的界面偏好 CSS。
+   *
+   * 未登录 / 没有 `user` 服务 / 从来不设过偏好 → **空串**，页面就不引用主题表
+   * （站默认值本来就是「标准字号 + 标准字距」，引一张空表只是多一个请求）。
+   *
+   * 读失败也只回落空串：字号不是页面能不能打开的前提，绝不因此 500。
+   */
+  private async themeCssOf(session: { session: SessionView; token: string } | null): Promise<string> {
+    const userId = session?.session.user.id
+    if (userId === undefined) return ''
+    const user = this.runtime().user
+    if (user === undefined) return ''
+    try {
+      const preferences = await user.getUiPreferences(userId)
+      // 站默认值不生成表：与不加载主题完全等价，少一个请求。
+      if (preferences.fontScale === 1 && preferences.letterSpacing === 'normal') return ''
+      return renderThemeCss(preferences)
+    } catch {
+      return ''
     }
   }
 

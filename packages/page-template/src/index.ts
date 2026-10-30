@@ -84,7 +84,6 @@ export {
 
 export {
   renderChartCard,
-  renderDocument,
   renderEmpty,
   renderExportButton,
   renderField,
@@ -102,7 +101,6 @@ export {
   renderTable,
   type BrandOptions,
   type ChartCardOptions,
-  type DocumentOptions,
   type FilterPill,
   type FilterPillItem,
   type ModelBlock,
@@ -115,3 +113,14 @@ export {
   type TableColumn,
   type UserOptions,
 } from './shell.ts'
+export { renderDocument, type DocumentOptions } from './document.ts'
+export {
+  DEFAULT_THEME_PREFERENCES,
+  FONT_SCALE_VALUES,
+  LETTER_SPACING_EM,
+  renderThemeCss,
+  THEME_CSS_PATH,
+  type ThemeFontScale,
+  type ThemeLetterSpacing,
+  type ThemePreferences,
+} from './theme.ts'

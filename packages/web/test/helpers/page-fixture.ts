@@ -80,6 +80,8 @@ export function pageContext(
     t: template,
     services,
     notice: null,
+    // 界面偏好 CSS（字号 / 字距）：默认站值 = 空串，页面就不引用主题表。
+    themeCss: '',
     takeSecret: () => undefined,
   }
 }

@@ -3,7 +3,7 @@
  */
 import type { PageTemplateService, NavItem } from '@dizzyapi/plugin-page-template'
 import { VENDOR_SCRIPT_ORDER, vendorHref } from '@dizzyapi/plugin-page-template'
-import { APP_JS_HREF, appCssHref } from './asset-version.ts'
+import { APP_JS_HREF, appCssHref, themeCssHref } from './asset-version.ts'
 import type { SessionView, WebRuntime } from './runtime.ts'
 import { formatYuan } from './forms.ts'
 
@@ -16,6 +16,13 @@ export interface PageContext {
   readonly t: PageTemplateService
   readonly services: WebRuntime
   readonly notice: { readonly kind: 'ok' | 'err'; readonly text: string } | null
+  /**
+   * 当前用户的界面偏好 CSS（`/assets/theme.css` 的正文）。
+   *
+   * 由 `web` 在构建上下文时按会话读一次（`user.getUiPreferences`），所以渲染层保持纯同步。
+   * 未登录 / 没设过偏好时是空串——那种情况下页面**不引用**主题表，等于站 defaults。
+   */
+  readonly themeCss: string
   /** 一次性 secret：创建 key 后第一次渲染可取出，之后拿不到。 */
   takeSecret(): string | undefined
 }
@@ -114,8 +121,18 @@ const DOC_SCRIPTS: readonly string[] = [
  * `fontSmiley.css()`，字体块一变（改 `scope` / 换字体字节）地址就得变，否则 `immutable`
  * 缓存会让回访浏览器一直用旧 CSS。脚本地址是常量（正文不含运行时内容）。
  */
-export function documentAssets(fontCss: string): { cssHref: string; jsHrefs: readonly string[] } {
-  return { cssHref: appCssHref(fontCss), jsHrefs: DOC_SCRIPTS }
+export function documentAssets(fontCss: string, themeCss = ''): {
+  cssHref: string
+  themeCssHref?: string
+  jsHrefs: readonly string[]
+} {
+  return {
+    cssHref: appCssHref(fontCss),
+    // 主题表按用户生成，地址同样走内容哈希（与 app.css 同一套规则，见 asset-version.ts）；
+    // 空偏好时干脆不引用，省一个请求。
+    ...(themeCss === '' ? {} : { themeCssHref: themeCssHref(themeCss) }),
+    jsHrefs: DOC_SCRIPTS,
+  }
 }
 
 /** 当前页面该用的字体 CSS（没装载 font-smiley 时为空串）。 */
@@ -129,7 +146,7 @@ export function renderConsoleShell(ctx: PageContext, content: string): string {
   const isAdmin = ctx.user.user.role === 'admin'
   return ctx.t.renderDocument({
     title: `${ctx.title} · DizzyAPI`,
-    assets: documentAssets(fontCssOf(ctx)),
+    assets: documentAssets(fontCssOf(ctx), ctx.themeCss),
     body: ctx.t.renderShell({
       brand: { word: 'Dizzy', badge: 'API', href: '/console/usage' },
       nav: navFor('console', ctx.path, isAdmin),
@@ -147,7 +164,7 @@ export function renderConsoleShell(ctx: PageContext, content: string): string {
 export function renderAdminShell(ctx: PageContext, content: string): string {
   return ctx.t.renderDocument({
     title: `管理台 · DizzyAPI`,
-    assets: documentAssets(fontCssOf(ctx)),
+    assets: documentAssets(fontCssOf(ctx), ctx.themeCss),
     body: ctx.t.renderShell({
       brand: { word: 'Dizzy', badge: '管理台', href: '/admin/users' },
       nav: navFor('admin', ctx.path, true),
@@ -167,12 +184,14 @@ export function renderAuthShell(t: PageTemplateService, options: {
   readonly subtitle?: string
   readonly content: string
   readonly footer?: string
-  /** 当前字体 CSS；**必须传**，否则这一页的 `app.css` 地址会与发出去的正文对不上。 */
+  /** 当前字体 CSS；**必须传**，否则这一页的 `app.css` 地址会与发出的正文对不上。 */
   readonly fontCss: string
+  /** 当前用户的界面偏好 CSS（登录页通常是空串：那时还没有会话）。 */
+  readonly themeCss?: string
 }): string {
   return t.renderDocument({
     title: `${options.title} · DizzyAPI`,
-    assets: documentAssets(options.fontCss),
+    assets: documentAssets(options.fontCss, options.themeCss ?? ''),
     body: t.renderAuthPage(options),
   })
 }

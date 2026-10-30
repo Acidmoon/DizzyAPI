@@ -72,6 +72,16 @@ export interface UserLike {
   /** 用户级并发上限；null = 不限。 */
   setConcurrencyLimit(actor: string, id: UserId, limit: number | null): Promise<UserView>
   remove(actor: string, id: UserId): Promise<UserView>
+  /** 界面偏好：**永不抛错**（坏数据回落默认），所以调用方不需要 try。 */
+  getUiPreferences(id: UserId): Promise<UiPreferencesView>
+  /** 界面偏好：部分更新；未知字段抛 `USER_UI_PREFERENCES_INVALID`。 */
+  setUiPreferences(id: UserId, patch: unknown): Promise<UiPreferencesView>
+}
+
+/** 界面偏好（与 `user` 插件的 `UiPreferences` 同形；这里只描述 web 用到的字段）。 */
+export interface UiPreferencesView {
+  readonly fontScale: number
+  readonly letterSpacing: string
 }
 
 export interface ApiKeyView {

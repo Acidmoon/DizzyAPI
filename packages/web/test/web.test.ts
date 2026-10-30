@@ -181,6 +181,22 @@ test('HTTP：登录 POST 在鉴权服务缺失时回到登录页带错误', asyn
   }
 })
 
+test('HTTP：主题表按用户生成，必须是 private / no-store', async () => {
+  // 这张表是按登录用户的偏好生成的：共享缓存把 A 的字号发给 B 是不能接受的。
+  // 匿名请求也必须 200（此时正文为空，页面就不引用它）——不能 404，否则
+  // 「先打开过登录页、再登录」那一跳会因为缓存里的 404 丢主题。
+  const app = await boot()
+  try {
+    const res = await fetch(`${app.base}/assets/theme.css`)
+    assert.equal(res.status, 200)
+    assert.equal(res.headers.get('content-type'), 'text/css; charset=utf-8')
+    assert.equal(res.headers.get('cache-control'), 'private, no-store')
+    assert.equal(await res.text(), '')
+  } finally {
+    await app.close()
+  }
+})
+
 test('HTTP：字体 @font-face 追加进 app.css，woff2 可下载', async () => {
   const app = await boot()
   try {

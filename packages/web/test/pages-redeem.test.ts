@@ -70,6 +70,7 @@ function pageContext(
     t: template,
     services,
     notice: null,
+  themeCss: '',
     takeSecret: () => options.secret,
   }
 }

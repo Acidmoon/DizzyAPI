@@ -8,10 +8,6 @@
  * 交互约定：筛选条件放在 URL 查询串里，菜单项就是普通链接；
  * 客户端脚本只负责开合浮层（`CLIENT_JS`），不重绘。
  */
-import { CLIENT_JS, PAGE_CSS } from './assets.ts'
-import { COMPONENT_CSS } from './extra-styles.ts'
-import { LAYOUT_CSS } from './layout-classes.ts'
-import { renderConfirmDialog } from './confirm.ts'
 import { escapeAttr, escapeText } from './escape.ts'
 import {
   iconBars,
@@ -76,27 +72,6 @@ export interface ShellOptions {
   readonly content: string
 }
 
-export interface DocumentOptions {
-  readonly title: string
-  /** `<body>` 里的内容，通常是一次 `renderShell()` 的结果。 */
-  readonly body: string
-  /** 给出时用外链；不给则把样式与脚本内联进文档（仅测试用：生产 CSP 会拦内联）。 */
-  readonly assets?: {
-    readonly cssHref: string
-    /**
-     * 按顺序输出的 `<script src>` 列表。
-     *
-     * **顺序有意义，别随手排序**：
-     * 1. 第三方库之间有依赖（`floating-ui.dom` 要用 `floating-ui.core` 暴露的全局 `FloatingUICore`）；
-     * 2. `/assets/app.js` **必须排最后**——它初始化各控件，并在 htmx 加载之后
-     *    设置 `htmx.config.includeIndicatorStyles = false`。
-     *    若 app.js 在 htmx 之前执行，那时 `window.htmx` 还是 `undefined`，
-     *    配置设不进去，htmx 会按默认值注入一段内联 `<style>`（被 CSP 拦掉）。
-     *    实测见 AGENTS.md「前端 / CSP」一节。
-     */
-    readonly jsHrefs?: readonly string[]
-  }
-}
 
 export interface PageHeaderOptions {
   readonly title: string
@@ -151,33 +126,6 @@ export interface ModelBlock {
   readonly items: readonly ModelBlockItem[]
 }
 
-/** 渲染完整 HTML 文档。 */
-export function renderDocument(options: DocumentOptions): string {
-  const { title, body, assets } = options
-  const head = assets === undefined
-    ? `<style>${PAGE_CSS}${COMPONENT_CSS}${LAYOUT_CSS}</style>`
-    : `<link rel="stylesheet" href="${escapeAttr(assets.cssHref)}">`
-  // 外链模式：按给定顺序逐个输出，顺序本身是契约（见 DocumentOptions.assets.jsHrefs）。
-  // 内联模式只给测试用——生产 CSP 是 style-src/script-src 'self'，内联会被拦。
-  const script = assets === undefined
-    ? `<script>${CLIENT_JS}</script>`
-    : (assets.jsHrefs ?? []).map((href) => `<script src="${escapeAttr(href)}"></script>`).join('\n')
-  return `<!doctype html>
-<html lang="zh-CN" class="dark" data-ds-dark-theme="dark">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,minimum-scale=1.0,user-scalable=no">
-<title>${escapeText(title)}</title>
-${head}
-</head>
-<body>
-${body}
-${renderConfirmDialog()}
-${script}
-</body>
-</html>
-`
-}
 
 /** 外壳：侧栏 + 主列。 */
 export function renderShell(options: ShellOptions): string {
