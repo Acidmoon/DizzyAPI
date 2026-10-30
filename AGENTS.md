@@ -492,6 +492,17 @@ pnpm test:go
     `/api/usage/:reqId` 这类先后依赖；动它之前先看顺序表，改完用全量测试验。
   - 这套 `(host, …)` 自由函数风格是刻意的：拆文件时先在类上留同名薄委派、调用点一个字不改，
     分 5 批把调用点改成直接函数调用再删委派，每批独立跑绿、出问题能二分。
+- **`packages/api/test` 的布局（2026-10-30 拆完）**：测试也按域分文件，别往单文件里堆
+  （`fixtures.ts` 曾 1791 行、`server.test.ts` 曾 977 行，都超 500 上限）：
+  - `test/fixtures/<域>.ts`：假端口一个域一个文件（`session` / `keys` / `usage` / `accounts` /
+    `commerce` / `catalog` / `audit` / `observability` / `settings` / `modelhub` + 公共 `support`），
+    `test/fixtures/index.ts` 是**唯一对外面**（`createFixture` / `Fixture` / `FixtureOptions`）。
+    用例只 import `fixtures/index.ts`，不直接 import 某个域文件。
+  - `test/server-*.test.ts`：真 HTTP 用例按入口分组（`session` / `keys-admin` / `accounts` /
+    `catalog-settings` / `usage-static`），请求封装与 `setup` 在 `test/helpers/server-harness.ts`
+    （只有工具、不断言）。
+  - 新增假端口 = 加一个 `fixtures/<域>.ts` 并在 `index.ts` 登记；**不要**再扩容
+    `createFixture` 所在文件的其它职责。
 - **低耦合的执行标准**：插件之间只经服务接口 / 进程内事件（§2.2 已有）；插件内部
   不跨层直连别人的存储；Go 侧 `modules/*` 只 import `contracts/`（§2.3 已有）；
   传输层 / 渲染层 / 存储层不互相 import 实现文件。
