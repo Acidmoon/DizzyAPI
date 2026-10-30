@@ -29,7 +29,7 @@ import {
  *
  * 路由前缀约定（别的批次写页面时按这个来，别自己另起一套）：
  * - `/dashboard/*`     管理员侧（`仪表盘` 是 `/dashboard` 本身）
- * - `/dashboard/me/*`  普通用户侧
+ * - `/user/*`  普通用户侧
  */
 
 export type NavBadge = "new" | "updated" | "soon";
@@ -94,15 +94,15 @@ export const sidebarItems: NavGroup[] = [
     id: 2,
     label: "用户",
     items: [
-      { id: "me-overview", title: "概览", url: "/dashboard/me", icon: CircleUser },
-      { id: "me-usage", title: "用量", url: "/dashboard/me/usage", icon: Gauge },
-      { id: "me-keys", title: "API 密钥", url: "/dashboard/me/keys", icon: KeyRound },
-      { id: "me-topup", title: "充值", url: "/dashboard/me/topup", icon: Wallet },
-      { id: "me-redeem", title: "兑换码", url: "/dashboard/me/redeem", icon: Ticket },
-      { id: "me-models", title: "模型广场", url: "/dashboard/me/models", icon: Bot },
-      { id: "me-pricing", title: "价格表", url: "/dashboard/me/pricing", icon: ReceiptText },
-      { id: "me-docs", title: "API 文档", url: "/dashboard/me/docs", icon: BookOpen },
-      { id: "me-profile", title: "个人资料", url: "/dashboard/me/profile", icon: UserRound },
+      { id: "me-overview", title: "概览", url: "/user", icon: CircleUser },
+      { id: "me-usage", title: "用量", url: "/user/usage", icon: Gauge },
+      { id: "me-keys", title: "API 密钥", url: "/user/keys", icon: KeyRound },
+      { id: "me-topup", title: "充值", url: "/user/topup", icon: Wallet },
+      { id: "me-redeem", title: "兑换码", url: "/user/redeem", icon: Ticket },
+      { id: "me-models", title: "模型广场", url: "/user/models", icon: Bot },
+      { id: "me-pricing", title: "价格表", url: "/user/pricing", icon: ReceiptText },
+      { id: "me-docs", title: "API 文档", url: "/user/docs", icon: BookOpen },
+      { id: "me-profile", title: "个人资料", url: "/user/profile", icon: UserRound },
     ],
   },
 ];
