@@ -13,6 +13,9 @@
 import { CLIENT_JS, PAGE_CSS } from './assets.ts'
 import { COMPONENT_CSS } from './extra-styles.ts'
 import { LAYOUT_CSS } from './layout-classes.ts'
+import { MODAL_CSS } from './modal.ts'
+import { TOAST_CSS, renderToastHost } from './toast.ts'
+import { TOOLTIP_CSS, renderTooltipHost } from './tooltip.ts'
 import { renderConfirmDialog } from './confirm.ts'
 import { escapeAttr, escapeText } from './escape.ts'
 
@@ -52,7 +55,7 @@ export interface DocumentOptions {
 export function renderDocument(options: DocumentOptions): string {
   const { title, body, assets } = options
   const style = assets === undefined
-    ? `<style>${PAGE_CSS}${COMPONENT_CSS}${LAYOUT_CSS}</style>`
+    ? `<style>${PAGE_CSS}${COMPONENT_CSS}${LAYOUT_CSS}${MODAL_CSS}${TOOLTIP_CSS}${TOAST_CSS}</style>`
     : [
       `<link rel="stylesheet" href="${escapeAttr(assets.cssHref)}">`,
       ...(assets.themeCssHref === undefined
@@ -75,6 +78,8 @@ ${style}
 <body>
 ${body}
 ${renderConfirmDialog()}
+${renderToastHost()}
+${renderTooltipHost()}
 ${script}
 </body>
 </html>

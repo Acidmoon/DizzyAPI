@@ -18,8 +18,17 @@
  * 点了直接导航过去——状态因此可分享、可刷新、可后退。脚本不做重绘，
  * 只做三件事：**开合浮层**（菜单 / 确认框 / 弹窗）、**升级控件**（下拉 / 日期）、
  * 以及设置 htmx 配置。
+ *
+ * 悬浮提示与轻提示的代码不在这里：它们是独立的两块行为（`client-tooltip.ts` /
+ * `client-toast.ts`），在文件末尾拼进同一个 `CLIENT_JS`。
+ * 为什么仍是一个文件发出去：站点只引一个 `/assets/app.js`（多一个 `<script>` 就多一次
+ * 请求与一次版本串维护），但**源码按职责拆开**，谁改 tooltip 不用读这一段。
  */
-export const CLIENT_JS = `
+import { TOAST_JS } from './client-toast.ts'
+import { TOOLTIP_JS } from './client-tooltip.ts'
+
+/** 浮层开合 / 控件升级 / htmx 配置那一段。 */
+const CLIENT_CORE_JS = `
 (function () {
   'use strict';
 
@@ -262,3 +271,12 @@ export const CLIENT_JS = `
   }
 })();
 `
+
+/**
+ * 站点脚本全文：核心段 + 悬浮提示 + 轻提示。
+ *
+ * 顺序不影响正确性（三个 IIFE 各管各的），但按「页面骨架 → 交互辅助」排更好读。
+ */
+export const CLIENT_JS = `${CLIENT_CORE_JS}
+${TOOLTIP_JS}
+${TOAST_JS}`

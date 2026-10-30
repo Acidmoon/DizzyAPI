@@ -17,12 +17,29 @@ document.addEventListener('click', function (event) {
   if (!button) return;
   var value = button.getAttribute('data-copy');
   if (!value) return;
-  if (navigator.clipboard && navigator.clipboard.writeText) {
-    navigator.clipboard.writeText(value).then(function () {
-      var original = button.textContent;
-      button.textContent = '已复制';
-      setTimeout(function () { button.textContent = original; }, 1500);
-    });
+
+  // 反馈走**轻提示**（page-template 的 toast）：复制是「不刷新页面」的动作，
+  // 页面级 notice 用不上；原先改按钮文字的做法在长 key / 文档整页复制时
+  // 会把按钮撑变形，而且 1.5 秒后悄悄还原，用户经常没看见。
+  function done(tone) {
+    if (window.dizzyToast) {
+      window.dizzyToast(tone === 'err' ? '复制失败：请手动选择并复制' : '已复制到剪贴板', tone);
+      return;
+    }
+    // 老页面（没有 toast 宿主）退回改按钮文字，功能不丢
+    var original = button.textContent;
+    button.textContent = tone === 'err' ? '复制失败' : '已复制';
+    setTimeout(function () { button.textContent = original; }, 1500);
   }
+
+  if (!navigator.clipboard || !navigator.clipboard.writeText) {
+    done('err');
+    return;
+  }
+  navigator.clipboard.writeText(value).then(function () {
+    done('ok');
+  }, function () {
+    done('err');
+  });
 });
 `

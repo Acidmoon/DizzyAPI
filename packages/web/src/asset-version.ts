@@ -22,6 +22,8 @@ import {
   MODAL_CSS,
   PAGE_CSS,
   THEME_CSS_PATH,
+  TOAST_CSS,
+  TOOLTIP_CSS,
   VENDOR_THEME_CSS,
   vendorCss,
 } from '@dizzyapi/plugin-page-template'
@@ -38,6 +40,8 @@ export const APP_CSS_BODY = [
   COMPONENT_CSS,
   LAYOUT_CSS,
   MODAL_CSS,
+  TOOLTIP_CSS,
+  TOAST_CSS,
   '\n',
   vendorCss(),
   '\n',
