@@ -134,17 +134,30 @@ export const adminTopupOrdersPage: PageModule = {
           '确认到账会立刻给用户增加余额（走 user.adjustBalance，按订单号幂等，只加一次）；' +
             '请先核对线下转账再点。当前没有在线支付，也没有支付回调。',
         ),
-        t.renderStatCards(
-          [
-            { label: '今日到账', value: formatYuan(stats.todayPaidMicros), unit: 'CNY' },
-            { label: '今日笔数', value: t.formatThousands(stats.todayPaidCount) },
-            { label: '累计到账', value: formatYuan(stats.totalPaidMicros), unit: 'CNY' },
-            { label: '累计笔数', value: t.formatThousands(stats.totalPaidCount) },
-            { label: '待确认', value: t.formatThousands(stats.pendingCount) },
-            { label: '已过期', value: t.formatThousands(stats.expiredCount) },
-          ],
-          'metrics',
-        ),
+        // 改前 6 张等权卡片平铺。现在按「今日 / 累计 / 待办」三组分开。
+        t.renderMetricGroups([
+          {
+            title: '今日',
+            cards: [
+              { label: '今日到账', value: formatYuan(stats.todayPaidMicros), unit: 'CNY', emphasis: 'primary' },
+              { label: '今日笔数', value: t.formatThousands(stats.todayPaidCount) },
+            ],
+          },
+          {
+            title: '累计',
+            cards: [
+              { label: '累计到账', value: formatYuan(stats.totalPaidMicros), unit: 'CNY', emphasis: 'primary' },
+              { label: '累计笔数', value: t.formatThousands(stats.totalPaidCount) },
+            ],
+          },
+          {
+            title: '待办',
+            cards: [
+              { label: '待确认', value: t.formatThousands(stats.pendingCount) },
+              { label: '已过期', value: t.formatThousands(stats.expiredCount) },
+            ],
+          },
+        ]),
         filterHtml,
         t.renderTable({
           columns: [

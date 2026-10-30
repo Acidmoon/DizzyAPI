@@ -137,17 +137,16 @@ export const adminRedeemCodesPage: PageModule = {
 </div>`,
         ].join('\n')
 
-    const statCards = t.renderStatCards(
-      [
-        { label: '批次', value: String(stats.batches) },
-        { label: '兑换码', value: String(stats.codes) },
-        { label: '可用', value: String(stats.enabled) },
-        { label: '已用', value: String(stats.used) },
-        { label: '兑换中（需核查）', value: String(stats.redeeming) },
-        { label: '已兑金额', value: formatYuan(stats.redeemedAmountMicro), unit: 'CNY' },
-      ],
-      'metrics',
-    )
+    // 改前 6 张等权卡片平铺。现在是一个「兑换码」组 + 主指标（已兑金额），
+    // 这里保持紧凑写法：本文件已超 400 行软上限，只许缩短（§5.6）。
+    const statCards = t.renderMetricGroups([{ title: '兑换码', cards: [
+      { label: '已兑金额', value: formatYuan(stats.redeemedAmountMicro), unit: 'CNY', emphasis: 'primary' },
+      { label: '兑换码', value: String(stats.codes) },
+      { label: '批次', value: String(stats.batches) },
+      { label: '可用', value: String(stats.enabled) },
+      { label: '已用', value: String(stats.used) },
+      { label: '兑换中（需核查）', value: String(stats.redeeming) },
+    ] }])
 
     const selectedStatusLabel =
       STATUS_FILTERS.find((item) => item.value === current.status)?.label ?? '全部'

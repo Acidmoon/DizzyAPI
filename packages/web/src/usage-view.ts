@@ -15,7 +15,7 @@ import {
   type PageTemplateService,
   type SelectOption,
 } from '@dizzyapi/plugin-page-template'
-import { formatYuan, microsToYuan } from './forms.ts'
+import { microsToYuan } from './forms.ts'
 import type { UsageQuery, UsageRow } from './usage-types.ts'
 
 const DAY_MS = 86_400_000
@@ -349,52 +349,5 @@ export function filtersForm(
 </form>`
 }
 
-/** 「详情」按钮：JS 在的时候开弹窗；没有 JS 时退化成整页链接（明细页渲染该条详情）。 */
-export function detailTrigger(t: PageTemplateService, row: UsageRow, dialogId: string, fallbackHref: string): string {
-  return `<a class="btn small" href="${t.escapeAttr(fallbackHref)}"${t.dialogOpenAttr(dialogId)}>详情</a>`
-}
+/** 「详情」按钮的点击目标在 `usage-detail-view.ts`（详情正文也从那里拆出去了）。 */
 
-/** 详情弹窗的正文：模型 / 耗时 / 首字延迟 / 四桶 / 金额（金额注明读取时算价）。 */
-export function detailBody(t: PageTemplateService, row: UsageRow): string {
-  const status = row.status === 200 ? '200' : `${row.status}`
-  const rows: readonly (readonly string[])[] = [
-    ['模型', `<span class="mono">${t.escapeText(row.model)}</span>`],
-    ['请求 ID', `<span class="mono">${t.escapeText(row.reqId)}</span>`],
-    ['API key', t.escapeText(row.apiKeyName === '' ? '—' : row.apiKeyName)],
-    ['开始时间', t.escapeText(formatClock(row.startedAt))],
-    ['状态', row.status === 200 ? status : t.renderBadge(status, 'err')],
-    ['总耗时', t.escapeText(formatMs(row.durationMs))],
-    ['首字延迟（TTFT）', t.escapeText(formatMs(row.ttftMs))],
-    ['输入 tokens', t.escapeText(t.formatThousands(row.inputTokens))],
-    ['输出 tokens', t.escapeText(t.formatThousands(row.outputTokens))],
-    ['缓存读 tokens', t.escapeText(t.formatThousands(row.cacheReadTokens))],
-    ['缓存写 tokens', t.escapeText(t.formatThousands(row.cacheWriteTokens))],
-    ['推理 tokens', t.escapeText(t.formatThousands(row.reasoningTokens))],
-    ['合计 tokens', t.escapeText(t.formatThousands(row.totalTokens))],
-    ['金额', `${t.escapeText(formatYuan(row.costMicros))} CNY`],
-  ]
-  const usageFlags = [
-    row.usagePresent ? null : t.renderBadge('响应未带 usage', 'warn'),
-    row.usageComplete ? null : t.renderBadge('流未读完（客户端可能提前断开）', 'warn'),
-  ].filter((item) => item !== null)
-  return [
-    t.renderTable({ columns: [{ label: '字段' }, { label: '值', align: 'right' }], rows }),
-    t.renderNotice({ kind: 'info', text: '金额在读取时按价格表计算（整数微元换算，不落库）；首字延迟只有流式请求才有值。' }),
-    usageFlags.length === 0 ? '' : `<div class="actions">${usageFlags.join('')}</div>`,
-  ].join('\n')
-}
-
-/** 一条记录的详情弹窗（服务端预渲染：没有客户端 fetch，也就不依赖任何脚本）。 */
-export function detailModal(t: PageTemplateService, row: UsageRow): string {
-  return t.renderModal({
-    id: dialogIdOf(row),
-    title: '请求详情',
-    bodyHtml: detailBody(t, row),
-    footerHtml: '<button class="btn" type="button" data-dialog-close>关闭</button>',
-    size: 'wide',
-  })
-}
-
-export function dialogIdOf(row: UsageRow): string {
-  return `usage-detail-${row.id}`
-}

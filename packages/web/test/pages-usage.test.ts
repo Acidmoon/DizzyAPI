@@ -253,7 +253,9 @@ test('概览：最近请求只 10 条，完整列表给明细页', async (t) => 
   for (let index = 0; index < 15; index += 1) app.usage.rows.push(row())
 
   const html = await page(app, '/console/usage')
-  const reqIds = [...html.matchAll(/class="mono">(req-\d+)<\/span>/g)].map((match) => match[1])
+  // 详情改成分组键值对之后，reqId 在 dd.kv-value--mono 里（不再是一行表格）。
+  // 断言口径不变：概览页只该出现 10 条请求（每条一个详情弹窗）。
+  const reqIds = [...html.matchAll(/class="kv-value kv-value--mono">(req-\d+)<\/dd>/g)].map((match) => match[1])
   assert.equal(new Set(reqIds).size, 10, `概览只该有 10 条请求，实际 ${new Set(reqIds).size}`)
   assert.match(html, /查看全部明细/)
   assert.match(html, /\/console\/usage\/detail\?/)
@@ -310,6 +312,11 @@ test('概览：详情弹窗含 TTFT / 四桶 / 金额，且注明金额是读取
   assert.match(html, /推理 tokens/)
   assert.match(html, /2\.00 CNY/)
   assert.match(html, /读取时按价格表计算/)
+  // 详情是**分组键值对**（请求 / 令牌 / 费用 / 时间 四小节），不再是「字段 / 值」两列平铺表。
+  for (const title of ['请求', '令牌', '费用', '时间']) {
+    assert.match(html, new RegExp(`<h3 class="kv-group-title">${title}</h3>`), `详情缺少小节：${title}`)
+  }
+  assert.ok(!html.includes('>字段</th>'), '详情不该再是「字段 / 值」表格')
   // 「详情」在无 JS 时是普通链接，跳到明细页并带 reqId。
   assert.match(html, /href="\/console\/usage\/detail\?[^"]*reqId=req-detail"[^>]*data-dialog-open="usage-detail-7"/)
 })
@@ -318,7 +325,7 @@ test('概览：没有采集到 TTFT 的记录显示「—」而不是 0 ms', asy
   const app = await boot(t)
   app.usage.rows.push(row({ ttftMs: null }))
   const html = await page(app, '/console/usage')
-  assert.match(html, /首字延迟（TTFT）<\/td><td class="num">—<\/td>/)
+  assert.match(html, /首字延迟（TTFT）<\/dt><dd class="kv-value">—<\/dd>/)
   assert.ok(!html.includes('>0 ms<'), '未采集不能显示 0 ms')
 })
 
