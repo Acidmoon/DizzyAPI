@@ -373,7 +373,7 @@ pnpm test:go
 
 - 新增插件必须有 `test/*.test.ts`；新增 Go 模块必须有单测。
 - 测试失败先修实现，不允许删断言或放宽断言来变绿。
-- 当前基线（2026-10-30 实测）：`pnpm test` 822 个用例（821 通过 / 1 跳过），`pnpm typecheck` 干净，
+- 当前基线（2026-10-30 实测）：`pnpm test` 840 个用例（839 通过 / 1 跳过），`pnpm typecheck` 干净，
   `go test ./...` **26 包**全 ok，`gofmt -l .` 与 `go vet ./...` 无输出。
   这个数字会变，以实际输出为准。
 - **验收任何分支前先 `pnpm build:go`**（不只是改过 Go 的分支）：`pnpm test` 里有真进程用例会
@@ -381,6 +381,11 @@ pnpm test:go
   改动的 main 之后，旧二进制不认识新 flag，`api-key/test/gateway-gates-pricing.test.ts` 会直接红
   （2026-10-30 实测：`优化` 首次 793 通过 / 1 失败，`pnpm build:go` 之后 5/5 全绿）。
   这不是回归，但**不 build 就分不清是不是回归**。
+- **主仓库也一样要 build**（2026-10-30 实测踩坑）：合完一个分支直接跑 `pnpm test`，
+  主仓库的 `bin/gatewayd.exe` 还是合并前的旧二进制 → **8 条真进程用例全红**，报
+  `BRIDGE_BAD_REQUEST: API key 快照参数不合法：json: unknown field "expiresAt"`。
+  这不是代码回归，是旧二进制不认识新快照字段；`pnpm build:go` 之后 840 / 839 / 1 / 0 全绿。
+  **凡是 `pnpm test` 报 `BRIDGE_BAD_REQUEST` 或「参数不合法」，第一件事是 build，不是改代码**。
 - **多 worktree 并行跑测试会互相抢端口**：`pnpm test` 里有多条**真进程用例**（`content-audit`
   的 `gateway-smoke`、`account-priority` 的子进程），它们用 `freePort()` 拿临时端口再 spawn
   `bin/gatewayd`。几个 worktree 同时跑全量时，A 释放的端口可能被 B 抢到，表现是
