@@ -65,6 +65,10 @@ export const CONSOLE_NAV: readonly { label: string; path: string; icon: NavItem[
   { label: '用量信息', path: '/console/usage', icon: 'bars' },
   { label: '模型广场', path: '/console/models', icon: 'tag' },
   { label: 'API 文档', path: '/console/api-docs', icon: 'doc' },
+  // 文档站：DeepSeek 文档站形态的独立页（顶部分类导航 + 左侧本页目录）。
+  // 与上面那条「API 文档」并存：旧页是自证文档（内容 = 叙述 + 派生事实表 + 整页 markdown），
+  // 这一页是形态上的文档站。两者共用 `docs/api/*.md`，内容不会分叉。
+  { label: '文档站', path: '/console/docs', icon: 'help' },
   { label: 'API keys', path: '/console/api-keys', icon: 'search' },
   { label: '充值', path: '/console/top-up', icon: 'card' },
   { label: '兑换', path: '/console/redeem', icon: 'receipt' },

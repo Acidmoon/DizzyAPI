@@ -28,6 +28,7 @@ import {
   vendorCss,
 } from '@dizzyapi/plugin-page-template'
 import { COPY_JS } from './client-extras.ts'
+import { DOCS_SITE_CSS } from './content/docs_site_css.ts'
 
 /** 内容的短哈希（sha256 前 8 位十六进制）。 */
 export function shortHash(input: string | Buffer): string {
@@ -42,6 +43,9 @@ export const APP_CSS_BODY = [
   MODAL_CSS,
   TOOLTIP_CSS,
   TOAST_CSS,
+  // 文档站（`/console/docs`）的样式：文本在 `content/docs_site_css.ts`（归文档线），
+  // 这里只做装配。**排在 vendor 之前**：下面那两块是第三方覆盖，后者该压在上面。
+  DOCS_SITE_CSS,
   '\n',
   vendorCss(),
   '\n',
