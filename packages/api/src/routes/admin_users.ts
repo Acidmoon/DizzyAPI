@@ -13,6 +13,8 @@ import { ApiError, badRequest, notFound } from '../errors.ts'
 import { type IncomingMessage, type ServerResponse } from 'node:http'
 import type { UserStatusLike } from '../types.ts'
 
+// ───────────────────────────────── 管理员：用户 ─────────────────────────────────
+
 export async function routeUsers(host: ApiServer, req: IncomingMessage, res: ServerResponse, parts: readonly string[]): Promise<void> {
   const { view: adminView } = await host.requireAdmin(req)
   const actor = auditActorOf(adminView)
@@ -219,5 +221,3 @@ export async function routeUsers(host: ApiServer, req: IncomingMessage, res: Ser
 
   throw notFound('没有这个用户接口')
 }
-
-// ───────────────────────────────── 管理员：上游账号 ─────────────────────────────────

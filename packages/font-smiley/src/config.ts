@@ -49,8 +49,13 @@ export function validateFontSmileyConfig(value: unknown): ResolvedFontSmileyConf
   return { scope, enabled }
 }
 
-/** `@font-face` + 作用范围覆盖。 */
-export function renderFontCss(scope: FontScope): string {
+/** `@font-face` + 作用范围覆盖。
+ *
+ * @param version 字体字节的内容短哈希，拼成 `?v=` 版本串。
+ *   **必须带**：`web` 用 `immutable` 发字体（一年不可变），路径固定的话换字体版本
+ *   （或只是重新导出同一个文件名）后，回访浏览器会一直用旧字体。
+ */
+export function renderFontCss(scope: FontScope, version: string): string {
   const original = 'Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Microsoft YaHei", sans-serif'
   const stack = `'${FONT_FAMILY}', ${original}`
   const targets = scope === 'all'
@@ -60,7 +65,7 @@ export function renderFontCss(scope: FontScope): string {
   const keepModelName = scope === 'all' ? `\n.model-name { font-family: ${original}; }` : ''
   return `@font-face {
   font-family: '${FONT_FAMILY}';
-  src: url('${FONT_URL}') format('woff2');
+  src: url('${FONT_URL}?v=${version}') format('woff2');
   font-weight: 400;
   font-style: normal;
   font-display: swap;

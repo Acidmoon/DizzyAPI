@@ -81,8 +81,6 @@ actor: string,
 }
 
 /** 隔离区列表视图：分页与状态筛选都在这里校验，非法值明确 400。 */
-
-/** 隔离区列表视图：分页与状态筛选都在这里校验，非法值明确 400。 */
 export function adminRejectedView(
 host: ApiServer,
 usage: UsagePort,
@@ -118,11 +116,3 @@ offset: number
     offset,
   }
 }
-
-/**
- * `GET /api/admin/stats`：全站计数与 token 汇总。
- *
- * 计数优先用服务的 `count()`；user 的角色 / 状态拆分与 key 的启用拆分需要逐条读，
- * 但 key 的总数绝不为了一个数字加载整表。accountAdmin / apiKey 缺席时对应块全 0，
- * 整个接口照常返回；只有 usage 缺席时 `usage: null`。
- */

@@ -4,6 +4,7 @@
  * 与 `web` 的接线：web 在 `/assets/app.css` 末尾追加 `css()`，
  * 并用 `file()` 的字节回应 `/assets/fonts/smiley-sans.woff2`。
  */
+import { createHash } from 'node:crypto'
 import { Service, type Context } from 'cordis'
 import {
   FONT_CONTENT_TYPE,
@@ -28,6 +29,8 @@ export class FontSmileyService extends Service {
   static catalog = { capabilities: ['font'], events: [], bridge: [] } as const
 
   private readonly config: ResolvedFontSmileyConfig
+  /** ersion() 的缓存：字体文件在进程生命周期内不变。 */
+  private cachedVersion: string | undefined
 
   constructor(ctx: Context, config: FontSmileyConfig = {}) {
     super(ctx, 'fontSmiley')
@@ -44,9 +47,17 @@ export class FontSmileyService extends Service {
     return this.config.scope
   }
 
+  /** 字体字节的内容短哈希（拼进 `?v=` 版本串，见 `css()`）。进程内算一次。 */
+  version(): string {
+    if (this.cachedVersion === undefined) {
+      this.cachedVersion = createHash('sha256').update(readFontFile()).digest('hex').slice(0, 8)
+    }
+    return this.cachedVersion
+  }
+
   /** `@font-face` + 作用范围覆盖；禁用时返回空串。 */
   css(): string {
-    return this.config.enabled ? renderFontCss(this.config.scope) : ''
+    return this.config.enabled ? renderFontCss(this.config.scope, this.version()) : ''
   }
 
   /** 字体文件；`name` 已经写成固定文件名，不接受外部路径。 */

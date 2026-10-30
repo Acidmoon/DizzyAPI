@@ -9,17 +9,31 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { VENDOR_THEME_CSS, vendorCss } from '@dizzyapi/plugin-page-template'
-import { APP_CSS_BODY, APP_CSS_HREF, APP_JS_BODY, APP_JS_HREF, shortHash } from '../src/asset-version.ts'
+import { APP_CSS_BODY, APP_JS_BODY, APP_JS_HREF, appCssHref, shortHash } from '../src/asset-version.ts'
 
-test('版本串：href 里的哈希就是正文的哈希', () => {
-  assert.match(APP_CSS_HREF, /^\/assets\/app\.css\?v=[0-9a-f]{8}$/)
+test('版本串：href 里的哈希就是正文的哈希（含字体 CSS）', () => {
+  const noFont = appCssHref('')
+  assert.match(noFont, /^\/assets\/app\.css\?v=[0-9a-f]{8}$/)
   assert.match(APP_JS_HREF, /^\/assets\/app\.js\?v=[0-9a-f]{8}$/)
-  assert.equal(APP_CSS_HREF, `/assets/app.css?v=${shortHash(APP_CSS_BODY)}`)
+  assert.equal(noFont, `/assets/app.css?v=${shortHash(APP_CSS_BODY)}`)
   assert.equal(APP_JS_HREF, `/assets/app.js?v=${shortHash(APP_JS_BODY)}`)
   // 哈希只取前 8 位十六进制
   assert.equal(shortHash('x').length, 8)
   // 内容不同 → 哈希不同
   assert.notEqual(shortHash('a'), shortHash('b'))
+})
+
+test('版本串：字体 CSS 一变，app.css 的地址必须跟着变', () => {
+  // 这是「哈希洞」的回归用例：`/assets/app.css` 实际发的是 `APP_CSS_BODY + fontCss`，
+  // 只哈希 APP_CSS_BODY 的话，改字体 scope / 换字体版本时地址不变 → immutable 缓存
+  // 让回访浏览器一年内还在用旧 CSS。
+  const a = appCssHref('@font-face { src: url(/f.woff2?v=11111111) }')
+  const b = appCssHref('@font-face { src: url(/f.woff2?v=22222222) }')
+  assert.notEqual(a, b)
+  // 同一份字体 CSS 必须稳定（否则每页都换地址，缓存全失效）
+  assert.equal(appCssHref('x'), appCssHref('x'))
+  // 空字体与有字体也是两个地址
+  assert.notEqual(appCssHref(''), a)
 })
 
 test('app.css 的装配顺序是契约：vendor 主题必须排在 vendorCss 之后', () => {

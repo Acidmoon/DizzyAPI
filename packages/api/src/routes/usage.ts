@@ -89,13 +89,6 @@ export async function usage(host: ApiServer, req: IncomingMessage, url: URL): Pr
  * 响应是 JSON `{ filename, content }`，由浏览器自己生成 Blob 下载；
  * 这样不用在 HTTP 层区分下载 / 错误信封，也不会把 CSV 当 JSON 解析。
  */
-
-/**
- * `GET /api/usage/export`：把当前筛选条件下的明细导出成 CSV。
- *
- * 响应是 JSON `{ filename, content }`，由浏览器自己生成 Blob 下载；
- * 这样不用在 HTTP 层区分下载 / 错误信封，也不会把 CSV 当 JSON 解析。
- */
 export async function usageExport(host: ApiServer, req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
   const view = await host.requireSession(req)
   const usage = host.runtime.usage()
@@ -153,17 +146,6 @@ export async function usageExport(host: ApiServer, req: IncomingMessage, res: Se
  * 比列表多给四个字段：`reasoningTokens` / `usagePresent` / `usageComplete`
  * （库里一直有、列表接口没出）与 `ttftMs`（首字延迟，旧记录是 null）。
  */
-
-/**
- * `GET /api/usage/:reqId`：单条用量详情。
- *
- * 权限与列表同口径：普通用户只能看自己的记录，管理员可以查全部。
- * **查不到与「不是自己的」返回同一个 404**——不向外泄露某个 reqId 是否存在
- * （与充值订单的「用户面不泄露存在性」同一条纪律）。
- *
- * 比列表多给四个字段：`reasoningTokens` / `usagePresent` / `usageComplete`
- * （库里一直有、列表接口没出）与 `ttftMs`（首字延迟，旧记录是 null）。
- */
 export async function usageDetail(host: ApiServer, req: IncomingMessage, res: ServerResponse, reqId: string): Promise<void> {
   const view = await host.requireSession(req)
   const usage = host.runtime.usage()
@@ -178,14 +160,3 @@ export async function usageDetail(host: ApiServer, req: IncomingMessage, res: Se
   }
   host.sendJson(req, res, 200, { record: usageDetailOf(row) })
 }
-
-/**
- * `/api/pricing`：读价格表（会话）与改价格（管理员）。
- *
- * - `GET /api/pricing` → `{ items }`；
- * - `GET /api/pricing/:model` → 单个价格，没有就 404；
- * - `PUT /api/pricing/:model` → 写入并返回新价格；
- * - `DELETE /api/pricing/:model` → `{ removed }`。
- *
- * 模型名可能含 `/`，由 `encodeURIComponent` 编成 `%2F` 留在同一路径段里。
- */

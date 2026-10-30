@@ -8,6 +8,8 @@ import type { ApiServer } from '../http.ts'
 import { ApiError } from '../errors.ts'
 import { type IncomingMessage, type ServerResponse } from 'node:http'
 
+// ───────────────────────────────── 管理员：运维总览 ─────────────────────────────────
+
 /**
  * `GET /api/admin/observability`：运维总览（只读聚合）。
  *
@@ -37,5 +39,3 @@ res: ServerResponse,
   }
   host.sendJson(req, res, 200, await observability.observe())
 }
-
-// ───────────────────────────────── 管理员：用户 ─────────────────────────────────

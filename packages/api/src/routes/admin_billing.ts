@@ -11,6 +11,8 @@ import { API_ACTOR } from '../constants.ts'
 import { notFound } from '../errors.ts'
 import { type IncomingMessage, type ServerResponse } from 'node:http'
 
+// ───────────────────────────────── 管理员：结算 ─────────────────────────────────
+
 /**
  * `GET /api/admin/billing`：结算记录 + 汇总（只读，真实扣费不在 HTTP 层发生）。
  *
@@ -46,18 +48,3 @@ url: URL,
     generatedAt: host.runtime.now().toISOString(),
   })
 }
-
-// ───────────────────────────────── 管理员：审计 ─────────────────────────────────
-
-/**
- * `GET /api/admin/audit`：管理员操作审计（只读，时间倒序分页）。
- *
- * 查询参数：
- * - `actor` / `actorPlugin` / `action` / `targetType` / `targetId`：精确匹配；
- * - `from` / `to`：毫秒时间范围，左闭右开；
- * - `limit`（1..200，默认 50）/ `offset`（默认 0）；
- * - `stats=1`：附带汇总（总量 / 今天 / 24 小时 / 失败数 / Top 动作与操作者）。
- *
- * 读权限由审计服务判（`adminPlugins` 白名单，actor 是本插件）。审计服务缺席只让这条
- * 路由 503——**写操作照常成功**，审计是旁路（见 `audit.ts`）。
- */

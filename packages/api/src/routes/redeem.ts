@@ -10,6 +10,8 @@ import { redeemResultOf, redemptionOf } from '../views/commerce.ts'
 import { notFound } from '../errors.ts'
 import { type IncomingMessage, type ServerResponse } from 'node:http'
 
+// ───────────────────────────────── 兑换码 ─────────────────────────────────
+
 /**
  * 用户面：`POST /api/redeem` 兑换，`GET /api/redeem` 我的兑换记录。
  *
@@ -43,9 +45,3 @@ url: URL,
   }
   host.sendMethodNotAllowed(req, res, ['GET', 'HEAD', 'POST'])
 }
-
-/**
- * 管理面：兑换码列表 / 生成批次 / 单码启停 / 人工核查 / 批量删除。
- *
- * 生成是唯一会返回明文的接口，而且**只在这一次响应里**；列表永远只有掩码。
- */

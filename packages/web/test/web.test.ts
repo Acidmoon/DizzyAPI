@@ -188,12 +188,33 @@ test('HTTP：字体 @font-face 追加进 app.css，woff2 可下载', async () =>
     assert.ok(css.includes('@font-face'))
     assert.ok(css.includes("font-family: 'Smiley Sans'"))
     assert.ok(css.includes('/assets/fonts/smiley-sans.woff2'))
+    // 字体 URL 自己带版本串：它是 immutable 一年缓存，路径固定就换不动。
+    assert.match(css, /\/assets\/fonts\/smiley-sans\.woff2\?v=[0-9a-f]{8}/)
 
     const font = await fetch(`${app.base}/assets/fonts/smiley-sans.woff2`)
     assert.equal(font.status, 200)
     assert.equal(font.headers.get('content-type'), 'font/woff2')
     const bytes = Buffer.from(await font.arrayBuffer())
     assert.equal(bytes.subarray(0, 4).toString('latin1'), 'wOF2')
+  } finally {
+    await app.close()
+  }
+})
+
+test('HTTP：页面 `<link>` 里的 app.css 版本串 == 实际发出的正文哈希（含字体块）', async () => {
+  // 这是「哈希洞」的端到端守护：正文是 `APP_CSS_BODY + fontSmiley.css()`，
+  // 而字体块要运行时才有。只要有一边漏算字体，这条就红。
+  const app = await boot()
+  try {
+    const html = await (await fetch(`${app.base}/login`)).text()
+    const href = html.match(/<link rel="stylesheet" href="([^"]+)"/)?.[1]
+    assert.ok(href !== undefined, '登录页没有 <link rel="stylesheet">')
+    assert.match(href, /^\/assets\/app\.css\?v=[0-9a-f]{8}$/)
+
+    const css = await (await fetch(`${app.base}${href}`)).text()
+    // 用抓到的正文复算哈希，必须与页面给的版本串一致
+    const { shortHash } = await import('../src/asset-version.ts')
+    assert.equal(href, `/assets/app.css?v=${shortHash(css)}`)
   } finally {
     await app.close()
   }

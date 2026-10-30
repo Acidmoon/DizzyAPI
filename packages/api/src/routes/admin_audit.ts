@@ -7,9 +7,11 @@
 import type { ApiServer } from '../http.ts'
 import { parseIntegerParam, queryStringOf } from '../params.ts'
 import { API_ACTOR } from '../constants.ts'
-import { ApiError, toApiError } from '../errors.ts'
+import { ApiError } from '../errors.ts'
 import { type IncomingMessage, type ServerResponse } from 'node:http'
 import type { AuditQueryLike } from '../types.ts'
+
+// ───────────────────────────────── 管理员：审计 ─────────────────────────────────
 
 /**
  * `GET /api/admin/audit`：管理员操作审计（只读，时间倒序分页）。
@@ -70,21 +72,3 @@ url: URL,
     ...(wantStats ? { stats: audit.stats(API_ACTOR) } : {}),
   })
 }
-
-// ───────────────────────────────── 管理员：内容审核 ─────────────────────────────────
-
-/**
- * 管理面内容审核规则：`/api/admin/content-audit`。
- *
- * - `GET` → `{ items, status }`：规则列表 + 推送健康度 + Go 侧命中统计；
- * - `POST` → 新增规则（`pattern` 必填，`action` 默认 `block`）；
- * - `GET|PATCH|DELETE .../<id>` → 读一条 / 改一条 / 删一条（`enabled` 用来启停单条规则）；
- * - `POST .../push` → 立刻推一次（排障用），回 `{ revision }`。
- *
- * 三条纪律：
- * - **规则**的语义校验（长度 / 去重 / 上限 / 控制字符）全在插件里，这里只做形状校验，
- *   插件抛的稳定码由 `toApiError` 映射状态码；
- * - **审计在调用点记**：插件对 `audit` 零依赖，actor 只有这里知道。审计元数据里
- *   **不放 pattern**（关键词是管理面数据，没必要扩散到审计表），只放 id / action / 启停；
- * - 列表与状态是**只读**的，`allowRead` 照旧挡非 GET；`status` 里 Go 侧读不到就是 `null`。
- */

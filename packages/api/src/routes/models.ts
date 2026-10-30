@@ -56,11 +56,3 @@ export async function routeModels(host: ApiServer, req: IncomingMessage, res: Se
 
   host.sendJson(req, res, 200, modelCatalogOf(modelhub.catalog(query)))
 }
-
-/**
- * `/api/admin/usage`：管理员口径的用量明细与导出。
- *
- * 查询窗口与用户侧 `/api/usage` 同口径：[from 当天 00:00 UTC, 明天 00:00 UTC)。
- * `records.items` 比用户侧多 `userName` / `accountId` / `attempts`；
- * `userName` 在同一次请求内按 userId 缓存，查不到就是 null。
- */

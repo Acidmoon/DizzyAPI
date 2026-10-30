@@ -80,11 +80,3 @@ url: URL,
 
   throw notFound('没有这个充值接口')
 }
-
-/**
- * 管理面：`GET /api/admin/topup-orders`（列表 + 筛选）、`.../stats`、
- * `POST .../<orderNo>/confirm`（人工确认到账）、`POST .../<orderNo>/cancel`。
- *
- * 确认到账会**真的加余额**（走 user.adjustBalance，幂等）：重复确认只回 `credited: false`，
- * 不会重复加钱。本批没有支付回调路由——没有验签的回调一律不挂。
- */

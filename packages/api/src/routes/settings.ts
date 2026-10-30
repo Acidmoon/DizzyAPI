@@ -82,7 +82,7 @@ export async function routeSettings(host: ApiServer, req: IncomingMessage, res: 
   throw notFound('没有这个设置接口')
 }
 
-// ───────────────────────────────── 会话 ─────────────────────────────────
+// ───────────────────────────────── 管理员：目录与设置 ─────────────────────────────────
 
 export async function catalogModules(
 host: ApiServer,

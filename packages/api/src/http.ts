@@ -283,7 +283,7 @@ export class ApiServer {
     }
   }
 
-  // ───────────────────────────────── 静态 ─────────────────────────────────
+  // ───────────────────────────────── API 路由 ─────────────────────────────────
 
   private async routeApi(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
     const pathname = url.pathname
@@ -424,6 +424,8 @@ export class ApiServer {
     throw notFound('没有这个接口')
   }
 
+  // ───────────────────────────────── 内部工具 ─────────────────────────────────
+
   requireFrontend(): FrontendPort {
   // 供 routes/* 经 host 读取（TS 没有包级可见性），行为不变。
     const frontend = this.runtime.frontend()
@@ -520,7 +522,6 @@ export class ApiServer {
     }
     return contentAudit
   }
-
   /** @internal 实现在 routes/health.ts（薄委派；注释与实现在那边，这里只转发）。 */
 async health(): Promise<GatewayHealthView> {
     return await health(this)

@@ -1,5 +1,5 @@
 /** 登录页。 */
-import { renderAuthShell, type PageModule } from '../layout.ts'
+import { fontCssOf, renderAuthShell, type PageModule } from '../layout.ts'
 import { requiredString, WebError } from '../forms.ts'
 import { sessionCookie } from '../session.ts'
 
@@ -12,6 +12,7 @@ export const loginPage: PageModule = {
   async render(ctx) {
     const t = ctx.t
     return renderAuthShell(t, {
+      fontCss: fontCssOf(ctx),
       title: '登录 DizzyAPI',
       subtitle: '使用注册邮箱和密码登录。',
       content: `<form class="form" method="post" action="/login?action=login">
