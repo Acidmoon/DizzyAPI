@@ -2,7 +2,7 @@
   "name": "@dizzyapi/plugin-dashboard",
   "version": "0.1.0",
   "private": true,
-  "description": "DizzyAPI · 新前端（next-shadcn-admin-dashboard，MIT）：Next 静态导出 SPA + 托管其静态字节；同包内提供前端专用的 /api/* 客户端层",
+  "description": "DizzyAPI · 控制台前端（next-shadcn-admin-dashboard，MIT）：Next 静态导出的托管（静态字节 + SPA 路由回退 + CSP nonce）；同包内提供前端专用的 /api/* 客户端层",
   "type": "module",
   "license": "MIT",
   "main": "./src/index.ts",
@@ -21,6 +21,7 @@
   },
   "dependencies": {
     "@dizzyapi/plugin-api": "workspace:*",
+    "@dizzyapi/plugin-kit": "workspace:*",
     "cordis": "^4.0.0-rc.11"
   }
 }
