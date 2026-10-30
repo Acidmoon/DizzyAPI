@@ -6,7 +6,7 @@
  * 默认只展开基本信息——控件多起来之后平铺一页不可用。
  */
 import { pageHeader, renderAdminShell, type ActionContext, type PageContext, type PageModule } from '../layout.ts'
-import { renderSelectShell } from '@dizzyapi/plugin-page-template'
+import { renderSelectShell, type PageTemplateService } from '@dizzyapi/plugin-page-template'
 import { requiredString, WebError } from '../forms.ts'
 import { WEB_ACTOR, type AccountUpdatePatch, type AccountView } from '../runtime.ts'
 import { auditedAction } from '../audit.ts'
@@ -346,10 +346,11 @@ function requireAccountId(ctx: ActionContext): string {
   return requiredString(ctx.form, 'id', '账号')
 }
 
+/** 折叠分组：必须加 card--group（.card 是 flex 行，套 details 会让标题与内容并排成两列）。 */
 function group(title: string, open: boolean, content: string): string {
-  return `<details class="card"${open ? ' open' : ''}>
+  return `<details class="card card--group"${open ? ' open' : ''}>
 <summary>${escapeText(title)}</summary>
-${content}
+<div class="card-body">${content}</div>
 </details>`
 }
 
@@ -382,14 +383,9 @@ function textareaField(label: string, name: string, value: string): string {
 </div>`
 }
 
-function renderKeyValueTable(
-  t: import('@dizzyapi/plugin-page-template').PageTemplateService,
-  rows: readonly (readonly [string, string])[],
-): string {
-  return t.renderTable({
-    columns: [{ label: '项目' }, { label: '值' }],
-    rows: rows.map(([key, value]) => [t.escapeText(key), t.escapeText(value)]),
-  })
+/** 一组键值对（「凭据与令牌」用）：改前是「项目 / 值」两列表格，一行一个字段。 */
+function renderKeyValueTable(t: PageTemplateService, rows: readonly (readonly [string, string])[]): string {
+  return t.renderKeyValueGroups([{ items: rows.map(([label, value]) => ({ label, value: t.escapeText(value) })) }])
 }
 
 function parseCsv(text: string): string[] {

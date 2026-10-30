@@ -11,6 +11,8 @@ dist
 .env
 
 node_modules
+# 前端线的并行 worktree 建在仓库内（.agents/worktrees/<分支>），绝不能提交
+/.agents/worktrees
 npm-debug.log
 yarn-debug.log
 tsconfig.tsbuildinfo

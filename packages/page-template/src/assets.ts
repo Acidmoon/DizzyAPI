@@ -41,6 +41,8 @@ export const THEME_VARS = `
   --sidebar-nav-hover: #2C2C2E;
   --chart-1: #FD8D3C;
   --chart-2: #FED976;
+  /* 主指标的强调色：与图表主色同一支橙，只用在「主指标数字 / 左侧强调条」上。 */
+  --accent: #FD8D3C;
   --chart-grid: rgba(255,255,255,.12);
   --chart-axis: rgb(150,150,150);
 
@@ -150,7 +152,7 @@ button { font: inherit; color: inherit; }
 .page-note .info { color: var(--label-caption); display: inline-flex; }
 
 /* ── 余额卡 ────────────────────────────────────────────────────── */
-.balances { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-start; margin-bottom: 40px; }
+.balances { display: flex; flex-wrap: wrap; gap: 12px; align-items: stretch; margin-bottom: 40px; }
 .card {
   background: var(--bg-module-platform); border-radius: 16px; padding: 16px 20px;
   min-height: 100px; display: flex; flex: 1 1 0; min-width: 0; gap: 12px;
@@ -159,9 +161,17 @@ button { font: inherit; color: inherit; }
 .card-head { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; min-width: 0; }
 .card-label { font-size: var(--fs-body); line-height: var(--lh-body); color: var(--label-primary); white-space: nowrap; }
 .card-info { color: var(--label-caption); display: inline-flex; margin-right: 4px; }
-.card-value-row { display: flex; align-items: flex-end; gap: 12px 16px; flex-wrap: wrap; width: 100%; }
-.card-value { display: flex; align-items: baseline; gap: 6px; }
-.value-main { font-size: var(--fs-metric); line-height: var(--lh-metric); font-weight: 500; font-variant-numeric: tabular-nums; }
+.card-value-row { display: flex; align-items: flex-end; gap: 12px 16px; flex-wrap: wrap; width: 100%; min-width: 0; }
+.card-value { display: flex; align-items: baseline; gap: 6px; min-width: 0; }
+/* 次级指标用 title 字号（28px）；主指标与余额大卡是 metric 字号（34px，见下）。
+ * 数字可以换行（overflow-wrap），长值不会把卡片撑破——但级差保证主指标一眼最重。 */
+.value-main {
+  font-size: var(--fs-title); line-height: var(--lh-title);
+  font-weight: 500; font-variant-numeric: tabular-nums;
+  min-width: 0; overflow-wrap: anywhere;
+}
+.balances .value-main,
+.card--primary .value-main { font-size: var(--fs-metric); line-height: var(--lh-metric); }
 .value-unit { font-size: var(--fs-emphasis); line-height: var(--lh-emphasis); color: var(--label-caption); }
 .tag {
   display: inline-flex; align-items: center; gap: 4px; height: 24px; padding: 0 6px;
@@ -217,9 +227,20 @@ button { font: inherit; color: inherit; }
 .menu-item[aria-selected="true"] { color: var(--label-primary); font-weight: 600; }
 
 /* ── 指标卡 ────────────────────────────────────────────────────── */
-.metrics { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 12px; margin-bottom: 24px; }
-/* 原站三张指标卡等宽排布 */
-.metrics .card { flex: 1 1 0; }
+/* 改前：display:flex + flex-wrap，卡片再 flex: 1 1 0 —— 8 张卡被压成一行、
+ * 每张 ~110px 宽，「今日 Tokens / 累计 Tokens / 累计隔离」全糊在一起
+ * （owner 的原话：「全站用量这些指标全部挤在一起，谁能看得清楚？」）。
+ *
+ * 现在用网格：桌面最多 4 列、窄了自动降列，同一行的卡片**等宽等高**；
+ * 需要主次时用 .metric-groups（组标题 + 网格 + 主指标卡，见 extra-styles.ts）。 */
+.metrics {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 12px;
+  align-items: stretch;
+  margin-bottom: 24px;
+}
+.metrics .card { min-width: 0; }
 
 /* ── 图表卡 ────────────────────────────────────────────────────── */
 .chart-card {
