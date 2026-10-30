@@ -64,18 +64,46 @@ export type VendorFileName = keyof typeof VENDOR_FILES
  * 页面里 `<script src>` 的**顺序**（不含 `/assets/app.js`，它由调用方接在最后）。
  *
  * **这张表 = 现在真的有代码在调的库**，不是「白名单里有的库」：
- * - `tom-select` / `flatpickr`：下拉与日期的渐进增强在用（`client-script.ts` 的
- *   `upgradeControls()`）；
- * - `htmx`：第 4 批（侧栏局部刷新）落地时加回来；
- * - `floating-ui`：tooltip 落地时加回来（`core` 必须在 `dom` 之前，dom 的 UMD 读全局
- *   `FloatingUICore`，顺序反了实测 `Cannot read properties of undefined`）。
+ * - `tom-select` / `flatpickr`：下拉与日期的渐进增强在用（`upgradeControls()`）；
+ * - `floating-ui`：悬浮提示的定位在用（`client-tooltip.ts`）。
+ *   `core` 必须在 `dom` 之前——dom 的 UMD 读全局 `FloatingUICore`，顺序反了实测
+ *   `Cannot read properties of undefined`；这条契约只写在这一个数组里。
+ * - `htmx`：第 4 批（侧栏局部刷新）落地时加回来。
  *
+ * **顺序只有这一个源**：`vendorScriptsFor()` 只做过滤，不重排。
  * 别再往这里加「以后可能要用」的库——每多一个，所有页面（含登录页）都要下载它。
+ * 曾经把 htmx(52 KB) + floating-ui(22 KB) 挂在每一个页面上而零调用，就是这个教训。
  */
 export const VENDOR_SCRIPT_ORDER: readonly VendorFileName[] = [
   'tom-select/tom-select.complete.min.js',
   'flatpickr/flatpickr.min.js',
+  'floating-ui/floating-ui.core.umd.min.js',
+  'floating-ui/floating-ui.dom.umd.min.js',
 ]
+
+/**
+ * 只在**真的出现 tooltip 的页面**上才需要的库。
+ *
+ * 为什么还要再分一层：无 JS 的渐进增强让 `data-tooltip` 只出现在图表页，
+ * 但 `VENDOR_SCRIPT_ORDER` 是「全站公共脚本表」。把 floating-ui 无条件挂上去，
+ * 登录页 / 注册页就要为一张不存在的图表多下 22 KB——这正是上一批被驳回的那件事
+ * （「74 KB 死代码在每页下载」）。所以这里只做**过滤**，顺序仍然沿用上面那张表。
+ */
+export const TOOLTIP_VENDOR_FILES: readonly VendorFileName[] = [
+  'floating-ui/floating-ui.core.umd.min.js',
+  'floating-ui/floating-ui.dom.umd.min.js',
+]
+
+/**
+ * 这一页该引哪些 vendor 脚本（顺序 = `VENDOR_SCRIPT_ORDER` 的子序列）。
+ *
+ * @param options.tooltips 页面里是否真的有 `data-tooltip`（见 `needsTooltips`）；
+ *         false 时不引 floating-ui。
+ */
+export function vendorScriptsFor(options: { readonly tooltips?: boolean } = {}): readonly VendorFileName[] {
+  if (options.tooltips === true) return VENDOR_SCRIPT_ORDER
+  return VENDOR_SCRIPT_ORDER.filter((name) => !TOOLTIP_VENDOR_FILES.includes(name))
+}
 
 /** vendor 的 CSS 文件；`web` 把它们拼进 `/assets/app.css`。 */
 export const VENDOR_CSS_ORDER: readonly VendorFileName[] = [

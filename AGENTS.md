@@ -438,6 +438,21 @@ pnpm test:go
   + `= + - @` 前导 `'` 防公式注入，`ttft_ms` 为 null 时留**空单元格**（与页面「—」同口径）。
   与 `packages/api/src/views/usage.ts` 的 `csvField` 是**两份实现**（插件之间不互相 import），
   由 `usage-export.test.ts` 钉住规则一致。
+- **提示与轻提示是自研控件，不用浏览器默认的**（2026-10-30，B 段）：
+  - **悬浮提示**用 `t.tooltipAttr('…')` 挂 `data-tooltip`，浮层是 `renderDocument` 输出的空壳
+    （`#dizzy-tooltip`），定位用 Floating UI 的 `computePosition` + `offset/flip/shift`，
+    坐标写 `el.style.left/top`（CSSOM，不受 `style-src 'self'` 限制）。**页面里不许写
+    `title="…"` 当提示**（浏览器绘制，CSS 碰不到）——`pages-guards.test.ts` 有护栏，
+    `<link title>` 例外（HTML 规范里的备选样式表名）。
+  - 图表柱子同时留 `<title>` 作**无 JS 兜底**，脚本确认接管后摘掉（否则原生提示与自绘浮层
+    一起弹）。库没加载成功时脚本整体 `return`，兜底因此不会被误摘——这是刻意的顺序。
+  - 浮层 CSS 必须 `pointer-events: none`：否则鼠标移向浮层的一瞬触发 `mouseleave`，开始闪。
+  - **轻提示（Toast）**：宿主 `#dizzy-toasts`（每页一个，`aria-live="polite"`），
+    用法两种——声明式 `data-toast="文案"`（点一下弹）、命令式 `window.dizzyToast(文案, 'err')`。
+    文案一律 `textContent` 写入（`innerHTML` 是 XSS 面），最多同时 4 条。
+  - **toast 与 `renderNotice` 分工不能混**：notice 是页面级状态（服务端渲染、随页面出现），
+    toast 是动作级反馈（复制这类不刷新页面的动作）。服务端消息别走 toast，否则刷新就重弹。
+    **CSV 导出不是这一类**：它是普通链接 + 浏览器原生下载，不需要 toast（见上一条）。
 - **静态资源一律带内容哈希，`immutable` 才成立**（2026-10-30）：`/assets/app.css?v=…`、
   `/assets/app.js?v=…`、`/assets/vendor/<name>?v=…` 的 `?v=` 是**正文的 sha256 前 8 位**，
   装配点只有 `packages/web/src/asset-version.ts`（`APP_CSS_BODY` / `APP_JS_BODY`）与
@@ -939,9 +954,9 @@ pnpm build:all        # 两个二进制一起编
   都行），设 `htmx.config.…` 一定赶在 htmx 初始化之前。反过来把 `app.js` 挪到 htmx **之前**
   （比如放 `<head>`），那时 `window.htmx` 还是 `undefined`，配置设不进去，htmx 就按默认值注入
   ——**实测只有这种写法出违规**。
-- **`jsHrefs` 的顺序是契约**：当前是 `[tom-select, flatpickr, /assets/app.js]`
-  （`app.js` 必须最后）。将来把 htmx / floating-ui 加回来时，`floating-ui.dom` 的 UMD 读全局
-  `FloatingUICore`，必须排在 core 之后；htmx 要排在 `app.js` 之前（`app.js` 要改它的 config）。
+- **`jsHrefs` 的顺序是契约**：当前是 `[tom-select, flatpickr, (floating-ui.core, floating-ui.dom)?,
+  /assets/app.js]`（`app.js` 必须最后；`?` 表示按页过滤）。`floating-ui.dom` 的 UMD 读全局
+  `FloatingUICore`，必须排在 core 之后；htmx 将来加回时要排在 `app.js` 之前（`app.js` 要改它的 config）。
   `page-template/test/page-template.test.ts` 有用例钉住顺序，且**没被用到的库一旦出现在
   引用列表里就会红**。
 - **vendor 的库照白名单发字节**（`page-template/src/vendor.ts`）：查表而非拼路径，
@@ -951,7 +966,15 @@ pnpm build:all        # 两个二进制一起编
   `/login`、`/register` 都下），而全站 `hx-*` 属性与 `FloatingUIDOM` 调用各 0 处 —— 74 KB
   死代码。摘掉时**保留**白名单条目、字节、LICENSE、`client-script.ts` 里的 `htmx.config`
   护栏与 `htmx:afterSwap` 监听（`window.htmx` 是 undefined 时它们空转，无副作用）。
-  htmx 在第 4 批（侧栏局部刷新）加回来，floating-ui 在 tooltip 加回来。
+  htmx 在第 4 批（侧栏局部刷新）加回来。
+- **库要「按页」加载，而 `VENDOR_SCRIPT_ORDER` 只是顺序源**（2026-10-30，B 段 tooltip）：
+  floating-ui 现在真的在用（`client-tooltip.ts`），但它只有带 `data-tooltip` 的页面需要。
+  所以引用列表走 `vendorScriptsFor({ tooltips })`——**只过滤、不重排**（顺序仍由
+  `VENDOR_SCRIPT_ORDER` 说了算），`TOOLTIP_VENDOR_FILES` 声明哪几个属于 tooltip。
+  判据在 `layout.ts`：`needsTooltips(主列 HTML)` 扫已渲染的标记，**不靠页面清单**
+  （新加一个带提示的页面不用改装配点）。漏判的后果只是提示退回原生 `<title>`，
+  多判的后果才是白下载 22 KB。`web/test/shell-assets.test.ts` 钉着「登录 / 注册页 0 个
+  floating-ui、图表页 core 在 dom 之前、`app.js` 永远最后」。
 - **静态资源的 URL 一律带内容哈希**（`web/src/asset-version.ts` + `page-template/src/vendor.ts`）：
   `/assets/app.css?v=…`、`/assets/app.js?v=…`、`/assets/vendor/<name>?v=…`、
   `/assets/fonts/<name>.woff2?v=…` 的 `?v=` 都是**那一份字节**的 sha256 前 8 位。
