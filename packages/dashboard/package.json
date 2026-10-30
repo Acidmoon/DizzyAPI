@@ -1,0 +1,26 @@
+{
+  "name": "@dizzyapi/plugin-dashboard",
+  "version": "0.1.0",
+  "private": true,
+  "description": "DizzyAPI · 新前端（next-shadcn-admin-dashboard，MIT）：Next 静态导出 SPA + 托管其静态字节；同包内提供前端专用的 /api/* 客户端层",
+  "type": "module",
+  "license": "MIT",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./api": "./app/src/lib/api/index.ts",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "src",
+    "app/src/lib"
+  ],
+  "scripts": {
+    "test": "node --import tsx --test \"test/*.test.ts\""
+  },
+  "dependencies": {
+    "@dizzyapi/plugin-api": "workspace:*",
+    "cordis": "^4.0.0-rc.11"
+  }
+}
