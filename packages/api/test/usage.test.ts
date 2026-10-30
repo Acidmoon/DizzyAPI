@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { test, type TestContext } from 'node:test'
 import { ApiServer } from '../src/http.ts'
 import type { UsageRowLike } from '../src/types.ts'
-import { createFixture, type Fixture, type FixtureOptions } from './fixtures.ts'
+import { createFixture, type Fixture, type FixtureOptions } from './fixtures/index.ts'
 
 interface Reply {
   readonly status: number

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { test, type TestContext } from 'node:test'
 import { Context, FiberState } from 'cordis'
 import ApiService from '../src/index.ts'
-import { createFixture, type Fixture } from './fixtures.ts'
+import { createFixture, type Fixture } from './fixtures/index.ts'
 
 /**
  * 直接构造 ApiService：不经过 Loader，用 `ctx.provide` 放入假服务。
