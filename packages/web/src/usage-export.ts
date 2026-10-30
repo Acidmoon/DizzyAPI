@@ -4,16 +4,22 @@
  * 为什么由 `web` 发、而不是复用 `/api/usage/export`：
  * - 生产 nginx 只把 `/api/*` 反代 `api`（7791），其余全打 `web`（7792）；
  * - `/api/usage/export` 的契约是 JSON `{filename, content}`（**不动它**），
- *   浏览器要拿到文件还得自己拼 Blob，那需要客户端脚本。
+ *   浏览器要拿到文件还得自己拼 Blob，那就要客户端脚本了。
  * 所以这里直接回 `text/csv` + `Content-Disposition`，**一次请求就下载**，没脚本也行。
  *
- * 两条硬口径：
+ * **CSV 正文不在这里拼**：格式（BOM / 表头 / 列序 / 转义 / 公式注入）由
+ * `usage` 插件的 `exportCsv()` 唯一实现（`packages/usage/src/csv.ts`），
+ * 页面导出与 `/api/usage/export` 出的是同一份字节。这里只负责 HTTP 部分。
+ *
+ * 三条硬口径：
  * - **必须按会话用户过滤**（`userId` 必传）：`usage.exportRows` 不给 userId 就是全站口径；
- * - **权限在路由层判**：`usage` 服务只照条件查，不认人。
+ * - **权限在路由层判**：`usage` 服务只照条件查，不认人；
+ * - **文件名按本地时区**：页面上的日期一律本地显示（页头写明），
+ *   用 UTC 日期当文件名会让 UTC+8 的用户觉得「导出的是昨天的」。
  */
 import type { PageTemplateService } from '@dizzyapi/plugin-page-template'
 import type { SessionView } from './runtime.ts'
-import type { UsageLike, UsageRow } from './usage-types.ts'
+import type { UsageLike } from './usage-types.ts'
 import type { UsageFilters } from './usage-view.ts'
 import { hrefOf, parseFilters, queryOf } from './usage-view.ts'
 
@@ -34,80 +40,12 @@ export function exportHref(t: PageTemplateService, filters: UsageFilters): strin
   return t.escapeAttr(hrefOf(USAGE_EXPORT_PATH, filters, { cursor: undefined }))
 }
 
-/**
- * CSV 表头：与 `/api/usage/export` 的用户侧列对齐，另加 `ttft_ms`。
- *
- * 对齐是刻意的：两边字段名一致才便于「用同一份脚本对账」。`api` 那份**不动**
- * （它的契约是 JSON），这里多一列首字延迟——那是本次新采集的字段，用户面要能下载到。
- */
-export const USAGE_CSV_HEADER = [
-  'time',
-  'api_key',
-  'model',
-  'input_tokens',
-  'output_tokens',
-  'cache_read_tokens',
-  'cache_write_tokens',
-  'total_tokens',
-  'cost_micros',
-  'status',
-  'duration_ms',
-  'ttft_ms',
-  'client_ip',
-] as const
-
-/**
- * CSV 单元格：`= + - @` 开头加前导 `'` 防公式注入，再按 RFC 4180 转义。
- *
- * 与 `packages/api/src/views/usage.ts` 的 `csvField` 同一规则——两处各一份是刻意的：
- * `web` 不能 import `api` 的实现（插件之间不互相 import），所以由用例钉住两边一致
- * （`usage-export.test.ts` 逐条验公式注入与转义）。
- */
-export function csvField(value: unknown): string {
-  let text = value === undefined || value === null ? '' : String(value)
-  if (/^[=+\-@\t\r]/.test(text)) text = `'${text}`
-  if (/[",\r\n]/.test(text)) text = `"${text.replaceAll('"', '""')}"`
-  return text
-}
-
-/**
- * 用户侧用量 CSV：UTF-8 BOM + 表头 + 行（CRLF）。
- *
- * BOM 是给 Excel 认 UTF-8 的；`ttftMs` 为 null（没采集）时留**空单元格**，不写 0
- * ——「没测到」和「0 毫秒」是两件事，与页面显示「—」同口径。
- */
-export function usageCsv(rows: readonly UsageRow[]): string {
-  const lines = [USAGE_CSV_HEADER.join(',')]
-  for (const row of rows) {
-    lines.push(
-      [
-        row.startedAt,
-        row.apiKeyName === '' ? row.apiKeyId : row.apiKeyName,
-        row.model,
-        String(row.inputTokens),
-        String(row.outputTokens),
-        String(row.cacheReadTokens),
-        String(row.cacheWriteTokens),
-        String(row.totalTokens),
-        row.costMicros,
-        String(row.status),
-        String(row.durationMs),
-        row.ttftMs === null ? '' : String(row.ttftMs),
-        '',
-      ]
-        .map(csvField)
-        .join(','),
-    )
-  }
-  return `﻿${lines.join('\r\n')}`
-}
-
-/** 导出文件名：`usage-20261030.csv`（单日）/ `usage-20261001-20261030.csv`（跨天）。 */
+/** 导出文件名：`usage-20261030.csv`（单日）/ `usage-20261001-20261030.csv`（跨天），**本地时区**。 */
 export function exportFilename(filters: UsageFilters): string {
-  // 窗口是 `[from, to)`，文件名用最后一毫秒落在的那天。
   const pad2 = (value: number): string => String(value).padStart(2, '0')
   const stamp = (date: Date): string =>
     `${date.getFullYear()}${pad2(date.getMonth() + 1)}${pad2(date.getDate())}`
+  // 窗口是 `[from, to)`，文件名用最后一毫秒落在的那天。
   const first = stamp(new Date(filters.range.from()))
   const last = stamp(new Date(filters.range.to() - 1))
   return first === last ? `usage-${first}.csv` : `usage-${first}-${last}.csv`
@@ -146,7 +84,8 @@ export function usageExportResource(
   }
 
   const filters = parseFilters(query)
-  const rows = usage.exportRows(queryOf(filters, session.userId), EXPORT_LIMIT)
+  // 正文来自 `usage` 的唯一实现；文件名按本地时区（见文件头）。
+  const { content } = usage.exportCsv(queryOf(filters, session.userId), EXPORT_LIMIT)
   return {
     status: 200,
     headers: {
@@ -155,6 +94,6 @@ export function usageExportResource(
       // 按用户生成 → 共享缓存不能复用（与 theme.css 同一条纪律）。
       'Cache-Control': 'private, no-store',
     },
-    body: usageCsv(rows),
+    body: content,
   }
 }

@@ -140,7 +140,7 @@ export class ApiService extends Service {
       settings: () => this.optionalService<SettingsPort>('settings', ['describe', 'update', 'reset']),
       apiKey: () => this.optionalService<ApiKeyPort>('apiKey', ['list', 'create', 'update', 'remove', 'rotate']),
       accountPriority: () => this.optionalService<AccountPriorityPort>('accountPriority', ['status']),
-      usage: () => this.optionalService<UsagePort>('usage', ['list', 'summary', 'stats', 'exportRows', 'get']),
+      usage: () => this.optionalService<UsagePort>('usage', ['list', 'summary', 'stats', 'exportRows', 'exportCsv', 'get']),
       pricing: () => this.optionalService<PricingPort>('pricing', ['list', 'get', 'set', 'remove']),
       modelhub: () => this.optionalService<ModelHubPort>('modelhub', ['catalog']),
       redeem: () =>

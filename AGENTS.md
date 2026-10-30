@@ -427,17 +427,28 @@ pnpm test:go
   `rangeOnlyQuery(filters, userId)` 的 `userId` 是**必填位**——新页面忘了传会编译失败，
   而不是静默越权。护栏在 `pages-usage.test.ts` 的「越权回归」两条：既断言 HTML 里不出现
   别人的行 / 模型名 / key 名 / reqId，也断言**每一次查询都带了会话 userId**（双向钉死）。
-- **CSV 导出走 `web` 自己的服务端 `text/csv` 路由**（`/console/usage/export.csv`，
-  `usage-export.ts`）：明细页的「导出 CSV」是**普通链接**（带当前筛选），浏览器原生下载，
-  **不需要任何脚本**，所以那条没人处理的 `data-export` 钩子没被使用。为什么不由 `web` 调
-  `/api/usage/export`：生产 nginx 只把 `/api/*` 反代 `api`（7791），而**那个接口的契约是
-  JSON `{filename, content}`，不动它**；浏览器要拿文件还得自己拼 Blob，就又要客户端脚本了。
-  三个细节：未登录 302 到登录页（不是 401，导出是给人点的链接）；`usage` 不在运行时回
-  `text/plain` 503（别让浏览器存下一个空文件）；响应是 `private, no-store`（按用户生成，
-  共享缓存不能复用，与 `theme.css` 同一条纪律）。CSV 格式：UTF-8 BOM + CRLF + RFC 4180 转义
-  + `= + - @` 前导 `'` 防公式注入，`ttft_ms` 为 null 时留**空单元格**（与页面「—」同口径）。
-  与 `packages/api/src/views/usage.ts` 的 `csvField` 是**两份实现**（插件之间不互相 import），
-  由 `usage-export.test.ts` 钉住规则一致。
+- **CSV 导出（2026-10-30 收敛成单一实现）**：格式只有一份 —— `packages/usage/src/csv.ts`
+  的 `usageCsv(rows)` / `usageCsvExport(rows, query)`，转义原语是
+  `packages/kit/src/csv.ts` 的 `csvField` / `csvLine` / `csvDocument`（api 与 usage 都依赖 kit）。
+  `usage.exportCsv(query, limit?)` 是服务方法，返回 `{ filename, content }`；两个调用方：
+  - `/api/usage/export`（`api` 插件）→ **JSON `{filename, content}` 契约逐字不变**，由页面拼 Blob；
+  - `/console/usage/export.csv`（`web` 插件）→ 服务端直接回 `text/csv`，
+    `Content-Disposition: attachment` + `private, no-store`，**一条普通链接就能下载，零脚本**，
+    所以那条没人处理的 `data-export` 钩子没被使用。
+  为什么页面不由它调 `/api/usage/export`：生产 nginx 只把 `/api/*` 反代 `api`（7791），
+  而那个接口回 JSON，浏览器要拿到文件还得自己拼 Blob，就又要客户端脚本了。
+  两个细节：未登录 **302** 到登录页（不是 401，导出是给人点的链接）；`usage` 不在运行时回
+  `text/plain` 503（别让浏览器存下一个空文件）。
+  **文件名分两种口径，都对**：`api` 用 UTC 日期且始终两段（`usage-20261013-20261019.csv`，
+  历史契约，用例逐字钉着）；页面用**本地时区**（页头写明「所有日期按本地时区显示」，
+  用 UTC 日期会让 UTC+8 的用户以为导出了昨天的）。
+  表头 12 列、**不含 `ttft_ms`**：那是现有 `/api/usage/export` 的契约，单一实现必须原样沿用。
+  护栏：`packages/usage/test/csv.test.ts`（格式本身：BOM/CRLF/列序/公式注入/RFC 4180/空结果）
+  + `packages/web/test/usage-export.test.ts`（HTTP 契约：content-type、attachment、
+  未登录 302、服务缺失 503、`userId` 必传、正文**原样**发出）。
+- **`packages/usage/src/service.ts` 已从 1432 降到 1414 行**：`queryWhere` / `clampLimit`
+  搬进 `packages/usage/src/query.ts`（纯函数，只把 `UsageQuery` 翻成 SQL 片段）。
+  往这个超限文件加东西时照此办理：先搬一块同职责的出去再加。
 - **提示与轻提示是自研控件，不用浏览器默认的**（2026-10-30，B 段）：
   - **悬浮提示**用 `t.tooltipAttr('…')` 挂 `data-tooltip`，浮层是 `renderDocument` 输出的空壳
     （`#dizzy-tooltip`），定位用 Floating UI 的 `computePosition` + `offset/flip/shift`，
@@ -484,9 +495,9 @@ pnpm test:go
   `service → db / types / errors`，反向 import 一律不允许。
 - **已有超限文件只许缩短，不许加长**（大文件债，按需拆，不搞一次性大重构；
   数字按上面的统一口径，2026-10-30 实测）：
-  `packages/account-admin/src/service.ts` 1445、`packages/usage/src/service.ts` 1432、
+  `packages/account-admin/src/service.ts` 1445、`packages/usage/src/service.ts` 1414（原 1432）、
   `packages/account-priority/src/service.ts` 1238、`packages/identity/src/service.ts` 1132、
-  `packages/api/src/types.ts` 1054、`modules/protoconv/codec_anthropic.go` 1034、
+  `packages/api/src/types.ts` 1051（原 1054）、`modules/protoconv/codec_anthropic.go` 1034、
   `packages/web/src/runtime.ts` 977、`modules/protoconv/codec_responses.go` 974、
   `internal/httpapi/server.go` 843、
   `modules/protoconv/codec_gemini.go` 705、`modules/protoconv/codec_chat.go` 697；
@@ -701,11 +712,13 @@ pnpm build:all        # 两个二进制一起编
   算完再相加（不同模型单价不同）。`pricing` 不在运行时费用是 0，页面要提示。
 - **导入的 base_url 约定**：new-api 的 `base_url` 是源站（`https://api.openai.com`），
   DizzyAPI 的 `baseUrl` 自带版本前缀；导入时只给「路径为空或 `/`」的裸源站补 `/v1`。
-- **CSV 导出有两条路，别混**：`/api/usage/export`（`api` 插件）仍返回 JSON
-  `{filename, content}`，契约不动；用户侧页面走 `web` 自己的服务端 `text/csv` 路由
-  `/console/usage/export.csv`（普通链接、无需脚本，细节见 §5.5）。两处的格式规则相同：
-  UTF-8 BOM + CRLF + RFC 4180 转义 + `= + - @` 开头加前导 `'`（防公式注入），
-  `ttft_ms` 为 null 留空单元格。
+- **CSV 导出有两条路，但格式只有一份实现**：格式在 `packages/usage/src/csv.ts`
+  （转义原语在 `packages/kit/src/csv.ts`）：UTF-8 BOM + CRLF + RFC 4180 + `= + - @` 开头加
+  前导 `'`（防公式注入），**12 列、不含 `ttft_ms`**（那是 `/api/usage/export` 的既有契约，
+  单一实现必须原样沿用；`ttft_ms` 只出现在页面表格与详情弹窗）。两个调用方：
+  `/api/usage/export`（`api` 插件）仍返回 JSON `{filename, content}`，契约不动；用户侧页面走
+  `web` 自己的服务端 `text/csv` 路由 `/console/usage/export.csv`（普通链接、无需脚本，
+  细节见 §5.5）。**不要新增第三份拼 CSV 的代码。**
 - **桥的拓扑是「Go 服务端 + TS 客户端」**：`internal/bridge` 是 Server，TS 侧 `BridgeClient`
   才是发起方。所以结算**不能**设计成 Go 主动调 TS；正确形态是 TS 拉到用量后同步结算。
   要 Go 主动推，只能新增反向通道，那是新架构。

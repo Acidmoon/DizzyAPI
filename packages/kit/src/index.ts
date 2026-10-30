@@ -32,6 +32,14 @@ export {
   type StandardSchema,
 } from './schema.ts'
 
+export {
+  CSV_BOM,
+  CSV_EOL,
+  csvDocument,
+  csvField,
+  csvLine,
+} from './csv.ts'
+
 /** 当前时间的 ISO 8601 字符串；集中一处，方便将来换成可注入的时钟。 */
 export function nowIso(): string {
   return new Date().toISOString()

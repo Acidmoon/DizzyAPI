@@ -30,6 +30,8 @@ import { FiberState, Service, type Context, type Logger } from 'cordis'
 import { USAGE_CONFIG_SCHEMA, USAGE_DEFAULTS, type ResolvedUsageConfig, type UsageConfig } from './config.ts'
 import { openUsageDatabase } from './db.ts'
 import { UsageError } from './errors.ts'
+import { usageCsvExport, type UsageCsvExport } from './csv.ts'
+import { clampLimit, queryWhere } from './query.ts'
 import type {
   BillingPort,
   PricingPort,
@@ -623,6 +625,17 @@ export class UsageService extends Service implements UsageServiceLike {
     const rows = statement.all(...where.params, capped) as Record<string, SQLOutputValue>[]
     const pricing = this.pricingSeam()
     return rows.map((row) => withCost(rowOf(row), pricing))
+  }
+
+  /**
+   * 导出 CSV（`{ filename, content }`）。**CSV 格式只此一处实现**（`csv.ts`）。
+   *
+   * 两个调用方：`web` 的 `/console/usage/export.csv`（服务端直接回 `text/csv`）与
+   * `api` 的 `/api/usage/export`（JSON `{filename, content}` 契约，由页面拼 Blob）。
+   * 权限与用户口径仍由调用方判（服务只照 query 查）。
+   */
+  exportCsv(query: UsageQuery, limit?: number): UsageCsvExport {
+    return usageCsvExport(this.exportRows(query, limit), query)
   }
 
   status(): UsageStatus {
@@ -1220,32 +1233,6 @@ function resolveDataPath(ctx: Context, path: string | undefined): string | undef
   return resolve(base, path)
 }
 
-function queryWhere(query: UsageQuery, withCursor: boolean): { sql: string; params: SQLInputValue[] } {
-  const clauses: string[] = ['started_at_ms >= ?', 'started_at_ms < ?']
-  const params: SQLInputValue[] = [query.fromMs, query.toMs]
-  if (query.userId !== undefined) {
-    clauses.push('user_id = ?')
-    params.push(query.userId)
-  }
-  if (query.apiKeyId !== undefined) {
-    clauses.push('api_key_id = ?')
-    params.push(query.apiKeyId)
-  }
-  if (query.model !== undefined) {
-    clauses.push('model = ?')
-    params.push(query.model)
-  }
-  if (query.status !== undefined) {
-    clauses.push('status = ?')
-    params.push(query.status)
-  }
-  if (withCursor && query.cursor !== undefined) {
-    clauses.push('id < ?')
-    params.push(query.cursor)
-  }
-  return { sql: clauses.join(' AND '), params }
-}
-
 function rowOf(row: Record<string, SQLOutputValue>): UsageRow {
   const startedAtMs = integerOf(row.started_at_ms)
   return {
@@ -1338,11 +1325,6 @@ function safeNumber(value: bigint): number {
   if (value > max) return Number.MAX_SAFE_INTEGER
   if (value < -max) return Number.MIN_SAFE_INTEGER
   return Number(value)
-}
-
-function clampLimit(value: number | undefined, fallback: number, max: number): number {
-  if (value === undefined || !Number.isFinite(value)) return fallback
-  return Math.min(Math.max(Math.trunc(value), 1), max)
 }
 
 function integerOf(value: unknown): number {

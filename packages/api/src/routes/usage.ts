@@ -7,7 +7,7 @@
 import type { ApiServer } from '../http.ts'
 import { parseIntegerParam } from '../params.ts'
 import { centsOf, dateOf } from '../views/common.ts'
-import { usageCsv, usageDetailOf, usageRowOf, usageTotalsOf } from '../views/usage.ts'
+import { usageDetailOf, usageRowOf, usageTotalsOf } from '../views/usage.ts'
 import { parseUserId, roleOf } from '../views/session.ts'
 import { USAGE_RANGE_DAYS } from '../constants.ts'
 import { ApiError, badRequest, notFound, unauthorized } from '../errors.ts'
@@ -123,19 +123,15 @@ export async function usageExport(host: ApiServer, req: IncomingMessage, res: Se
   const modelParam = url.searchParams.get('model')
   const model = modelParam === null || modelParam === '' ? undefined : modelParam
 
-  const rows = usage.exportRows({
+  // 文件名与正文都由 `usage` 插件出（CSV 格式只此一处实现）；
+  // 本接口的 JSON 契约仍是 `{ filename, content }`，逐字不变。
+  sendJson(host, req, res, 200, usage.exportCsv({
     fromMs,
     toMs,
     ...(userId === undefined ? {} : { userId }),
     ...(apiKeyId === undefined ? {} : { apiKeyId }),
     ...(model === undefined ? {} : { model }),
-  })
-  const from = dateOf(new Date(fromMs)).replaceAll('-', '')
-  const to = dateOf(new Date(toMs - 86_400_000)).replaceAll('-', '')
-  sendJson(host, req, res, 200, {
-    filename: `usage-${from}-${to}.csv`,
-    content: usageCsv(rows),
-  })
+  }))
 }
 
 /**

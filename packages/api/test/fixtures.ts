@@ -10,7 +10,7 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, resolve, sep } from 'node:path'
 import { validateApiConfig, type ResolvedApiConfig } from '../src/config.ts'
-import { isIssueList } from '@dizzyapi/plugin-kit'
+import { csvField, isIssueList } from '@dizzyapi/plugin-kit'
 import type {
   AccountAdminPort,
   AccountPriorityPort,
@@ -854,6 +854,42 @@ export class FakeUsage implements UsagePort {
 
   exportRows(query: UsageQueryLike, limit = 1000): readonly UsageRowLike[] {
     return this.filter(query).slice(0, limit)
+  }
+
+  /**
+   * 假 `exportCsv`：与真实实现（`packages/usage/src/csv.ts`）同格式。
+   *
+   * 夹具里必然有一份「照着真实实现写」的构造——这是桩的本质。真正的格式护栏在
+   * `packages/usage/test/csv.test.ts`（对着唯一实现断言）；这里的用例验的是
+   *「`/api/usage/export` 的 JSON 信封与筛选口径」，格式只是顺带盯一眼没漂。
+   */
+  exportCsv(query: UsageQueryLike, limit = 1000): { filename: string; content: string } {
+    const rows = this.exportRows(query, limit)
+    const header = 'time,api_key,model,input_tokens,output_tokens,cache_read_tokens,cache_write_tokens,total_tokens,cost_micros,status,duration_ms,client_ip'
+    const lines = rows.map((row) =>
+      [
+        row.startedAt,
+        row.apiKeyName === '' ? row.apiKeyId : row.apiKeyName,
+        row.model,
+        row.inputTokens,
+        row.outputTokens,
+        row.cacheReadTokens,
+        row.cacheWriteTokens,
+        row.totalTokens,
+        row.costMicros,
+        row.status,
+        row.durationMs,
+        row.clientIp ?? '',
+      ]
+        .map(csvField)
+        .join(','),
+    )
+    const from = new Date(query.fromMs).toISOString().slice(0, 10).replaceAll('-', '')
+    const to = new Date(query.toMs - 1).toISOString().slice(0, 10).replaceAll('-', '')
+    return {
+      filename: `usage-${from}-${to}.csv`,
+      content: `﻿${[header, ...lines].join('\r\n')}`,
+    }
   }
 
   status(): UsageStatusLike {

@@ -382,6 +382,8 @@ export interface UsagePort {
   summary(query: UsageQueryLike): UsageSummaryLike
   stats(nowMs?: number): UsageStatsLike
   exportRows(query: UsageQueryLike, limit?: number): readonly UsageRowLike[]
+  /** 导出 CSV：格式由 `usage` 插件唯一实现，api 与 web 都调它，不各拼一份。 */
+  exportCsv(query: UsageQueryLike, limit?: number): { readonly filename: string; readonly content: string }
   status(): UsageStatusLike
   listRejected(query?: UsageRejectedQueryLike): UsageRejectedPageLike
   ignoreRejected(reqId: string): void
@@ -522,12 +524,7 @@ export interface AuditStatsLike {
   readonly byActor: readonly { readonly actor: string; readonly count: number }[]
 }
 
-/**
- * 审计服务端口。
- *
- * `record` 用来写（不设限），`list` / `stats` 是**读**，要求 actor 在审计插件的
- * `adminPlugins` 白名单里（默认拒绝）。
- */
+/** 审计服务端口：`record` 写（不设限），`list` / `stats` 读，要求 actor 在审计插件的 `adminPlugins` 白名单里（默认拒绝）。 */
 export interface AuditPort {
   record(entry: AuditEntryLike): unknown
   list(actor: string, query?: AuditQueryLike): AuditPageLike
