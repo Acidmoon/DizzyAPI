@@ -334,9 +334,11 @@ async function post(app: App, path: string, body: string): Promise<Response> {
 
 test('回归：停用按钮走 disable(WEB_ACTOR)，不是 update', async (t) => {
   const app = await boot(t)
-  const response = await post(app, '/admin/accounts?action=disable', 'id=acc-1')
+  // 列表行上只剩「详情」，开关按钮收在详情页（owner 第 9 条：操作收进「编辑」）。
+  const response = await post(app, '/admin/accounts/detail?action=disable&id=acc-1', 'id=acc-1')
   assert.equal(response.status, 303)
-  assert.equal((response.headers.get('location') ?? '').startsWith('/admin/accounts?ok='), true)
+  const location = response.headers.get('location') ?? ''
+  assert.equal(location.startsWith('/admin/accounts/detail?id=acc-1&ok='), true)
 
   const call = app.admin.lastCall()
   assert.equal(call?.method, 'disable')
@@ -350,7 +352,7 @@ test('回归：停用按钮走 disable(WEB_ACTOR)，不是 update', async (t) =>
 
 test('回归：启用按钮走 enable(WEB_ACTOR)', async (t) => {
   const app = await boot(t)
-  const response = await post(app, '/admin/accounts?action=enable', 'id=acc-1')
+  const response = await post(app, '/admin/accounts/detail?action=enable&id=acc-1', 'id=acc-1')
   assert.equal(response.status, 303)
   assert.equal(app.admin.lastCall()?.method, 'enable')
   assert.deepEqual(app.admin.lastCall()?.args, [WEB_ACTOR, 'acc-1'])
