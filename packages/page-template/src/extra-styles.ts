@@ -53,10 +53,13 @@ export const COMPONENT_CSS = `
 .input, .select, .textarea {
   background: var(--bg-layer-2); border: 1px solid var(--border-l2); border-radius: 10px;
   color: var(--label-primary); font: inherit; font-size: var(--fs-body); line-height: var(--lh-body);
-  padding: 8px 12px; height: 38px; outline: none; width: 100%;
+  padding: 8px 12px; height: 38px; width: 100%;
 }
 .textarea { height: auto; min-height: 96px; resize: vertical; }
-.input:focus, .select:focus, .textarea:focus { border-color: var(--border-l3); }
+/* 焦点环由 a11y.ts 的 :focus-visible 统一提供（这里只补一层边框层次感）。
+ * 原先这里是裸的 outline: none + .input:focus { border-color }：
+ * 原生环被摘掉却没给替代，键盘用户根本看不见焦点在哪个框里（WCAG 2.4.7）。 */
+.input:focus-visible, .select:focus-visible, .textarea:focus-visible { border-color: var(--border-l3); }
 .row { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-end; }
 .row > .field { flex: 1 1 200px; }
 .actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }

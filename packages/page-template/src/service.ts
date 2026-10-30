@@ -57,6 +57,7 @@ import {
   renderStatCards,
   renderTable,
   type ChartCardOptions,
+  type FieldOptions,
   type FilterPill,
   type FilterPillItem,
   type ModelBlock,
@@ -178,20 +179,15 @@ export class PageTemplateService extends Service {
     return renderTable(options)
   }
 
-  renderNotice(options: { readonly kind: 'ok' | 'err' | 'info'; readonly text: string }): string {
+  renderNotice(options: {
+    readonly kind: 'ok' | 'err' | 'info'
+    readonly text: string
+    readonly field?: string
+  }): string {
     return renderNotice(options)
   }
 
-  renderField(options: {
-    readonly label: string
-    readonly name: string
-    readonly type?: string
-    readonly value?: string
-    readonly placeholder?: string
-    readonly hint?: string
-    readonly required?: boolean
-    readonly autocomplete?: string
-  }): string {
+  renderField(options: FieldOptions): string {
     return renderField(options)
   }
 

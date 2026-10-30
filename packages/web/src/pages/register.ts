@@ -21,7 +21,7 @@ export const registerPage: PageModule = {
         subtitle: `验证码已发往 ${email || '你的邮箱'}，10 分钟内有效。`,
         content: `<form class="form" method="post" action="/register?action=confirm">
 <input type="hidden" name="email" value="${t.escapeAttr(email)}">
-${t.renderField({ label: '验证码', name: 'code', required: true, autocomplete: 'one-time-code', hint: '6 位数字' })}
+${t.renderField({ label: '验证码', name: 'code', required: true, autocomplete: 'one-time-code', inputmode: 'numeric', placeholder: '例如：123456', hint: '6 位数字' })}
 <div class="actions"><button class="btn" type="submit">完成注册</button></div>
 </form>`,
         footer: `<span>没收到？</span><a href="/register">重新填写</a>`,
@@ -33,8 +33,8 @@ ${t.renderField({ label: '验证码', name: 'code', required: true, autocomplete
       title: '注册 DizzyAPI',
       subtitle: '验证码会发到邮箱；首个注册用户自动成为管理员。',
       content: `<form class="form" method="post" action="/register?action=request">
-${t.renderField({ label: '邮箱', name: 'email', type: 'email', required: true, autocomplete: 'email' })}
-${t.renderField({ label: '用户名', name: 'name', autocomplete: 'nickname' })}
+${t.renderField({ label: '邮箱', name: 'email', type: 'email', required: true, autocomplete: 'email', placeholder: 'you@example.com' })}
+${t.renderField({ label: '用户名', name: 'name', autocomplete: 'nickname', placeholder: '例如：张三' })}
 ${t.renderField({ label: '密码', name: 'password', type: 'password', required: true, autocomplete: 'new-password', hint: '至少 8 位' })}
 <div class="actions"><button class="btn" type="submit">发送验证码</button></div>
 </form>`,

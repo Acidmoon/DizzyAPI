@@ -180,7 +180,7 @@ ${
     }${
       current.status === '' ? '' : `<input type="hidden" name="status" value="${t.escapeAttr(current.status)}">`
     }
-${t.renderField({ label: '掩码尾号', name: 'keyword', value: current.keyword, placeholder: 'A3F7' })}
+${t.renderField({ label: '掩码尾号', name: 'keyword', value: current.keyword, placeholder: '例如：A3F7' })}
 <div class="actions"><button class="btn small" type="submit">筛选</button></div>
 </form>`
 
@@ -262,11 +262,11 @@ ${t.renderField({ label: '掩码尾号', name: 'keyword', value: current.keyword
         secretBlock,
         `<form class="form form--wide form--spaced" method="post" action="/admin/redeem-codes?action=create">
 <div class="row">
-${t.renderField({ label: '批次名称', name: 'name', required: true, placeholder: '双十一', hint: '1..20 个字符' })}
-${t.renderField({ label: '单码额度（元）', name: 'amount', required: true, placeholder: '5.00', hint: '最多 6 位小数，按整数微元入账' })}
-${t.renderField({ label: '生成数量', name: 'count', required: true, type: 'number', placeholder: '10', hint: '1..100' })}
+${t.renderField({ label: '批次名称', name: 'name', required: true, placeholder: '例如：双十一', hint: '1..20 个字符' })}
+${t.renderField({ label: '单码额度（元）', name: 'amount', inputmode: 'decimal', required: true, placeholder: '例如：5.00', hint: '最多 6 位小数，按整数微元入账' })}
+${t.renderField({ label: '生成数量', name: 'count', required: true, type: 'number', placeholder: '例如：10', hint: '1..100' })}
 ${t.renderField({ label: '有效期（可选）', name: 'expiresAt', type: 'datetime-local', hint: '留空 = 永不过期' })}
-${t.renderField({ label: '备注（可选）', name: 'notes', placeholder: '活动说明' })}
+${t.renderField({ label: '备注（可选）', name: 'notes', placeholder: '例如：双十一活动' })}
 <div class="actions"><button class="btn" type="submit">生成兑换码</button></div>
 </div>
 </form>`,

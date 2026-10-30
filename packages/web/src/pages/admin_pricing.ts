@@ -104,7 +104,7 @@ function renderPriceForm(
 ): string {
   // 新建时模型名可填；编辑时模型名是主键，锁死（改名等于新建 + 删旧，页面上不做）。
   const modelField = price === undefined
-    ? t.renderField({ label: '模型', name: 'model', required: true, placeholder: 'deepseek-chat' })
+    ? t.renderField({ label: '模型', name: 'model', required: true, placeholder: '例如：deepseek-chat' })
     : `<input type="hidden" name="model" value="${t.escapeAttr(price.model)}">
 ${t.renderField({ label: '模型（主键，不可改）', name: 'modelDisplay', value: price.model, hint: '换名等于新建一条 + 删旧，请新建后再删旧。' })}`
   return `<form class="form form--wide" method="post" action="${action}">
@@ -112,29 +112,33 @@ ${modelField}
 ${t.renderField({
   label: '输入价（元 / 百万 token）',
   name: 'inputPerMillion',
+  inputmode: 'decimal',
   value: price?.inputPerMillion ?? '',
   required: true,
-  placeholder: '2',
+  placeholder: '例如：2',
 })}
 ${t.renderField({
   label: '输出价（元 / 百万 token）',
   name: 'outputPerMillion',
+  inputmode: 'decimal',
   value: price?.outputPerMillion ?? '',
   required: true,
-  placeholder: '8',
+  placeholder: '例如：8',
 })}
 ${t.renderField({
   label: '缓存读价（元 / 百万 token）',
   name: 'cacheReadPerMillion',
+  inputmode: 'decimal',
   value: price?.cacheReadPerMillion ?? '',
-  placeholder: '0.5',
+  placeholder: '例如：0.5',
   hint: '留空 = 0。',
 })}
 ${t.renderField({
   label: '缓存写价（元 / 百万 token）',
   name: 'cacheWritePerMillion',
+  inputmode: 'decimal',
   value: price?.cacheWritePerMillion ?? '',
-  placeholder: '0',
+  placeholder: '例如：0',
   hint: '留空 = 0。',
 })}
 <div class="actions"><button class="btn" type="submit">保存</button></div>

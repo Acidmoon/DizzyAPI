@@ -11,6 +11,7 @@ import assert from 'node:assert/strict'
 import { Context } from 'cordis'
 import { PageTemplateService } from '@dizzyapi/plugin-page-template'
 import type { ActionContext, PageContext, PageModule } from '../../src/layout.ts'
+import { readFieldError, readNotice } from '../../src/layout.ts'
 import type { AuditEntryView, AuditLike, SessionView, WebRuntime } from '../../src/runtime.ts'
 
 /** 管理员会话（管理台页面都要求 `role: 'admin'`）。 */
@@ -73,14 +74,17 @@ export function pageContext(
   template: PageTemplateService,
   query = '',
 ): PageContext {
+  const params = new URLSearchParams(query)
   return {
     path: module.path,
     title: module.title,
-    query: new URLSearchParams(query),
+    query: params,
     user: ADMIN_SESSION,
     t: template,
     services,
-    notice: null,
+    // 与 web 的 contextFor 同一套解析（不要各写一份）：失败回跳的 err / field 都要能落地。
+    notice: readNotice(params),
+    fieldError: readFieldError(params),
     // 界面偏好 CSS（字号 / 字距）：默认站值 = 空串，页面就不引用主题表。
     themeCss: '',
     // 侧栏顺序：默认站顺序（空数组 = 不覆盖任何一项）。

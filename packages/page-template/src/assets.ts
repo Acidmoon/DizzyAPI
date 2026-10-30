@@ -14,6 +14,8 @@
  * 这里用原生 DOM + CSS 实现同样的行为，不引任何运行时依赖。
  */
 
+import { A11Y_CSS } from './a11y.ts'
+
 /** 深色主题下的 CSS 变量；页面所有颜色都从这里取。 */
 export const THEME_VARS = `
 :root {
@@ -301,6 +303,7 @@ button { font: inherit; color: inherit; }
   .side { display: none; }
   .model-grid { grid-template-columns: minmax(0, 1fr); }
 }
+${A11Y_CSS}
 `
 
 

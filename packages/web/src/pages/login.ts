@@ -16,7 +16,7 @@ export const loginPage: PageModule = {
       title: '登录 DizzyAPI',
       subtitle: '使用注册邮箱和密码登录。',
       content: `<form class="form" method="post" action="/login?action=login">
-${t.renderField({ label: '邮箱', name: 'email', type: 'email', required: true, autocomplete: 'username' })}
+${t.renderField({ label: '邮箱', name: 'email', type: 'email', required: true, autocomplete: 'username', placeholder: 'you@example.com' })}
 ${t.renderField({ label: '密码', name: 'password', type: 'password', required: true, autocomplete: 'current-password' })}
 <div class="actions"><button class="btn" type="submit">登录</button></div>
 </form>`,

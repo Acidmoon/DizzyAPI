@@ -144,6 +144,7 @@ export async function renderDocs(query = ''): Promise<string> {
     t: template,
     services: EMPTY_SERVICES,
     notice: null,
+    fieldError: null,
   themeCss: '',  navOrder: [],
     takeSecret: () => undefined,
   }

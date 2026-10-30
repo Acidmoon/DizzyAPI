@@ -3,11 +3,21 @@ import type { IncomingMessage } from 'node:http'
 
 const MAX_BODY = 256 * 1024
 
+/**
+ * 业务错误。
+ *
+ * `field` 是**出错字段的表单 name**（可选）。有值时 `web` 会把它带进失败重定向
+ * （`?err=…&field=…`），页面顶部的提示条带上 `data-field`，客户端脚本据此把
+ * 错误**搬到那个字段下方**并聚焦它（「错误就地显示 + 聚焦第一个错误」）。
+ * 技术性字段（隐藏的 id）不挂 field：它们没有可见控件可以抬头。
+ */
 export class WebError extends Error {
   readonly code: string
-  constructor(code: string, message: string) {
+  readonly field: string | undefined
+  constructor(code: string, message: string, field?: string) {
     super(message)
     this.code = code
+    this.field = field
   }
 }
 
@@ -47,6 +57,20 @@ export function describeError(error: unknown): string {
     }
   }
   return '操作失败，请稍后再试'
+}
+
+/**
+ * 失败动作的 303 目标地址：`<page>?err=…[&field=…]`。
+ *
+ * 为什么放在这里：`describeError` 决定「给人看的那句话」，`field` 决定「这句话该
+ * 贴在哪个字段下方」，两者是同一件事（把内部错误翻成用户能照着改的提示）。
+ * 放在 `service.ts` 的 catch 里会把那个文件继续撑大（本就 460+ 行）。
+ */
+export function errorRedirect(pagePath: string, error: unknown): string {
+  const query = new URLSearchParams({ err: describeError(error) })
+  const field = error instanceof WebError && typeof error.field === 'string' ? error.field : undefined
+  if (field !== undefined && field !== '') query.set('field', field)
+  return `${pagePath}?${query.toString()}`
 }
 
 /**
@@ -92,7 +116,8 @@ function isHttps(req: IncomingMessage): boolean {
 
 export function requiredString(params: URLSearchParams, key: string, label: string): string {
   const value = params.get(key)?.trim() ?? ''
-  if (value === '') throw new WebError('WEB_FIELD_REQUIRED', `${label}不能为空`)
+  // 挂上字段名，失败回跳时就地提示在字段下方（`id` 这类隐藏字段不挂）。
+  if (value === '') throw new WebError('WEB_FIELD_REQUIRED', `${label}不能为空`, key === 'id' ? undefined : key)
   return value
 }
 

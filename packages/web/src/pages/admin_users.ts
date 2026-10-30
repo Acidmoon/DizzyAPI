@@ -59,6 +59,7 @@ ${t.renderSelect({
 ${t.renderField({
   label: `并发上限（${String(MIN_CONCURRENCY)}–${String(MAX_CONCURRENCY)}，留空 = 不限）`,
   name: 'concurrencyLimit',
+  inputmode: 'numeric',
   value: user.concurrencyLimit === null ? '' : String(user.concurrencyLimit),
   placeholder: '例如：8',
   hint: '该用户所有 key 的在飞请求合计超过上限时返回 429 USER_CONCURRENCY_LIMIT。',
@@ -74,8 +75,9 @@ function renderBalanceForm(t: PageContext['t'], user: UserView): string {
 ${t.renderField({
   label: `增减（元）— 当前 ${formatYuan(user.balance)}`,
   name: 'deltaYuan',
+  inputmode: 'decimal',
   required: true,
-  placeholder: '10 或 -5.5',
+  placeholder: '例如：10 或 -5.5',
   hint: '正数加、负数减；最多两位小数。余额允许为负 = 后付费。',
 })}
 ${t.renderField({ label: '原因', name: 'reason', required: true, placeholder: '例如：充值 / 补偿' })}

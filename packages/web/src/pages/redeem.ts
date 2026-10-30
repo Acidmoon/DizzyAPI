@@ -62,7 +62,7 @@ ${t.renderField({
   label: '兑换码',
   name: 'code',
   required: true,
-  placeholder: 'ABCD-EFGH-JKMN-PQRS-TVWX-YZ23',
+  placeholder: '例如：ABCD-EFGH-JKMN',
   hint: '不区分大小写，分隔符可以省略',
 })}
 <div class="actions"><button class="btn" type="submit">兑换</button></div>

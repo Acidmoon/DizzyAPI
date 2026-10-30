@@ -71,11 +71,13 @@ export function renderDocument(options: DocumentOptions): string {
 <html lang="zh-CN" class="dark" data-ds-dark-theme="dark">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,minimum-scale=1.0,user-scalable=no">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#151517">
 <title>${escapeText(title)}</title>
 ${style}
 </head>
 <body>
+<div class="sr-only" id="dizzy-status" role="status" aria-live="polite"></div>
 ${body}
 ${renderConfirmDialog()}
 ${renderToastHost()}
