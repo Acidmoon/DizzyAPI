@@ -771,10 +771,16 @@ export interface AccountAdminLike {
   }>
 }
 
-/** 站点字体：web 只用到这两件事。 */
+/**
+ * 站点字体：web 只用到这三件事。
+ *
+ * `version()` 是**字体字节的内容短哈希**，用来判断字体请求的 `?v=` 对不对：
+ * 只有带对版本串的请求才发 `immutable`（见 `service.ts` 的字体路由）。
+ */
 export interface FontLike {
   css(): string
   file(): { readonly name: string; readonly contentType: string; readonly body: Buffer }
+  version(): string
 }
 
 // ───────────────────────────────── 运维总览 ─────────────────────────────────

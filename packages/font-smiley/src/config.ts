@@ -1,17 +1,27 @@
 /**
- * 站点字体：自托管 Smiley Sans（得意黑），SIL OFL-1.1。
+ * 站点字体：得意黑（Smiley Sans）的**子集**，SIL OFL-1.1。
  *
  * 纯资源服务：不监听 HTTP、不写存储。`web` 在 `/assets/app.css` 里追加
- * `css()`，并从 `/assets/fonts/smiley-sans.woff2` 发 `file()` 的字节。
+ * `css()`，并从 `/assets/fonts/dizzy-sans.woff2` 发 `file()` 的字节。
+ *
+ * **发的是子集，不是上游全量文件**（`assets/dizzy-sans.woff2`，1.15 MB → 508 KB）：
+ * 全量字体 9497 个字形、8335 个汉字，站点只用到其中一小撮。字体是首屏最大的单笔
+ * 开销，`scope: all` 时**每个页面**都要下它。生成脚本见 `tools/build-subset.py`。
+ *
+ * **家族名是 `Dizzy Sans`，不是上游的 `Smiley Sans`**：OFL-1.1 条件 3 规定
+ * Modified Version 不得使用保留字体名，上游声明的是 `<Smiley>` 与 `<得意黑>`
+ * （见 `assets/LICENSE` 首行）。删字形就是 Modified Version，必须改名；
+ * OFL-FAQ 3.1 写得很直白：「even if it is just a small change」。
+ * 版权声明、设计者、许可说明与许可 URL 这些 name 记录**全部原样保留**（OFL 条件 2）。
  *
  * 字体文件与 LICENSE 一起放在 `assets/`：OFL 要求随字体分发许可文本。
  */
 import { readFileSync } from 'node:fs'
 
-const FONT_FILE = new URL('../assets/smiley-sans.woff2', import.meta.url)
+const FONT_FILE = new URL('../assets/dizzy-sans.woff2', import.meta.url)
 
-export const FONT_FAMILY = 'Smiley Sans'
-export const FONT_FILE_NAME = 'smiley-sans.woff2'
+export const FONT_FAMILY = 'Dizzy Sans'
+export const FONT_FILE_NAME = 'dizzy-sans.woff2'
 export const FONT_CONTENT_TYPE = 'font/woff2'
 export const FONT_URL = `/assets/fonts/${FONT_FILE_NAME}`
 

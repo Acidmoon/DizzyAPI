@@ -47,6 +47,19 @@ const SECURITY_HEADERS: Readonly<Record<string, string>> = {
   'X-Frame-Options': 'DENY',
 }
 
+/**
+ * **内容寻址**资源的缓存语义：一年、不重新验证。
+ *
+ * 成立的前提是 **URL 随内容变**（`?v=<sha256 前 8 位>`）。全站符合这一条的只有四类：
+ * `/assets/app.css`（哈希吃 `APP_CSS_BODY + fontCss`）、`/assets/app.js`、
+ * `/assets/vendor/*`、`/assets/fonts/*`。没有版本串的路径**不许**用这个值——
+ * 那等于「改了内容、回访浏览器一年不变」。
+ */
+const IMMUTABLE_CACHE = 'public, max-age=31536000, immutable'
+
+/** 页面 HTML 与会话相关正文：必须每次回源（内容按会话变，且可能带一次性信息）。 */
+const NO_STORE = 'no-store'
+
 /** 一次性 secret：只给创建后的第一次渲染。 */
 interface SecretEntry {
   readonly value: string
@@ -167,9 +180,11 @@ export class WebService extends Service {
       if (path === '/assets/app.css') {
         const font = this.runtime().fontSmiley
         const fontCss = font === undefined ? '' : font.css()
-        // 正文由 `asset-version.ts` 装配：那份正文的哈希就是页面里 `<link>` 的 `?v=`。
-        // 字体 CSS 要运行时才有（font-smiley 可能没装载），所以不进哈希；见 AGENTS.md §5.5。
-        this.send(res, 200, 'text/css; charset=utf-8', `${APP_CSS_BODY}${fontCss}`, true)
+        // **发 `immutable` 是安全的**：`appCssHref(fontCss)` 的哈希吃的是
+        // `APP_CSS_BODY + fontCss`——**含运行时追加的字体块**，与这里发出去的正文
+        // 逐字节对应（`web.test.ts` 有一条端到端复算用例钉着）。所以「内容寻址 + URL
+        // 带哈希 + immutable」三件事同时成立：改样式或改字体 scope，URL 就变。
+        this.send(res, 200, 'text/css; charset=utf-8', `${APP_CSS_BODY}${fontCss}`, IMMUTABLE_CACHE)
         return
       }
       if (path === THEME_CSS_PATH) {
@@ -206,10 +221,16 @@ export class WebService extends Service {
         if (font !== undefined) {
           const file = font.file()
           if (path === `/assets/fonts/${file.name}`) {
+            // **只有带对 `?v=` 的请求才发 immutable**：字体 URL 的版本串由
+            // `font-smiley` 自己算（`css()` 里拼 `?v=<字体字节 sha256 前 8 位>`）。
+            // 不带版本串的裸路径不能发长缓存——路径不随内容变，改了字体字节回访
+            // 浏览器一年内还是旧字体。裸路径照样回字节（有人手敲它也不该 404），
+            // 只是明确了「不可缓存」。
+            const versioned = url.searchParams.get('v') === font.version()
             res.writeHead(200, {
               ...SECURITY_HEADERS,
               'Content-Type': file.contentType,
-              'Cache-Control': 'public, max-age=31536000, immutable',
+              'Cache-Control': versioned ? IMMUTABLE_CACHE : NO_STORE,
             })
             res.end(file.body)
             return
@@ -217,7 +238,8 @@ export class WebService extends Service {
         }
       }
       if (path === '/assets/app.js') {
-        this.send(res, 200, 'text/javascript; charset=utf-8', APP_JS_BODY, true)
+        // 正文是常量 `APP_JS_BODY`，`?v=` 就是它的 sha256 前 8 位 → immutable 成立。
+        this.send(res, 200, 'text/javascript; charset=utf-8', APP_JS_BODY, IMMUTABLE_CACHE)
         return
       }
       if (path === '/favicon.ico') {
@@ -292,10 +314,10 @@ export class WebService extends Service {
       // 都在这之前返回，未登录的 HX 请求照样 302）。
       const fragment = fragmentResponse(req, html)
       if (fragment !== undefined) {
-        this.send(res, 200, 'text/html; charset=utf-8', fragment, true)
+        this.send(res, 200, 'text/html; charset=utf-8', fragment, NO_STORE)
         return
       }
-      this.send(res, 200, 'text/html; charset=utf-8', html, true)
+      this.send(res, 200, 'text/html; charset=utf-8', html, NO_STORE)
     } catch (error) {
       this.fail(req, res, error)
     }
@@ -346,7 +368,7 @@ export class WebService extends Service {
       const message = describeError(error)
       this.ctx.logger('web').warn(`web 动作失败：${message}`)
       if (wantsNoRedirect(req)) {
-        this.send(res, 400, 'text/plain; charset=utf-8', message, true)
+        this.send(res, 400, 'text/plain; charset=utf-8', message, NO_STORE)
         return
       }
       // 目标地址里带着出错字段（如果知道），页面据此把错误就地渲染到字段下方。
@@ -434,7 +456,20 @@ export class WebService extends Service {
     res.end()
   }
 
-  private send(res: ServerResponse, status: number, contentType: string, body: string, noStore = false): void {
+  /**
+   * 发一段文本。
+   *
+   * @param cacheControl `Cache-Control` 的值。**内容寻址的资源**（URL 带内容哈希）传
+   *        `IMMUTABLE_CACHE`；其余（页面 HTML、动作错误）一律 `NO_STORE`——它们要么按会话
+   *        变，要么带一次性信息，缓存下来就是串号。
+   */
+  private send(
+    res: ServerResponse,
+    status: number,
+    contentType: string,
+    body: string,
+    cacheControl?: string,
+  ): void {
     if (res.headersSent) {
       res.end()
       return
@@ -442,7 +477,7 @@ export class WebService extends Service {
     res.writeHead(status, {
       ...SECURITY_HEADERS,
       'Content-Type': contentType,
-      ...(noStore ? { 'Cache-Control': 'no-store' } : {}),
+      ...(cacheControl === undefined ? {} : { 'Cache-Control': cacheControl }),
     })
     res.end(body)
   }
