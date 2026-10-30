@@ -311,11 +311,7 @@ export class WebService extends Service {
     }
   }
 
-  private contextFor(
-    page: PageModule,
-    url: URL,
-    session: { session: SessionView; token: string } | null,
-  ): PageContext {
+  private contextFor(page: PageModule, url: URL, session: { session: SessionView; token: string } | null): PageContext {
     const user = session?.session ?? placeholderSession()
     return {
       path: page.path,
@@ -440,6 +436,7 @@ function describeError(error: unknown): string {
       role: 'user',
       balance: 0n,
       balanceEnabled: false,
+      concurrencyLimit: null,
       avatar: null,
       createdAt: '',
       updatedAt: '',

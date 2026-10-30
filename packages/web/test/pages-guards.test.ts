@@ -79,6 +79,27 @@ test('护栏：不用 window.confirm（原生模态框不可样式化）', () =>
   assert.deepEqual(offenders, [], `这些文件还有 window.confirm：${offenders.join('、')}`)
 })
 
+/** 去掉注释再扫：注释里写 `<dialog>` 解释降级方案是正常的，不该被当成裸标签。 */
+function stripComments(text: string): string {
+  return text.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
+}
+
+test('护栏：不用 alert / prompt，也不手写裸 <dialog>（弹窗一律走 t.renderModal）', () => {
+  // 第 3 条要求所有弹窗与浮层都是自研控件：alert / prompt 是浏览器画的，
+  // 手写 <dialog> 会绕过模板里那套 class 与 `data-dialog-backdrop`，视觉与行为都会飘。
+  const offenders: string[] = []
+  for (const { name, text } of pageFiles()) {
+    const code = stripComments(text)
+    const hits = [
+      code.includes('alert(') ? 'alert(' : '',
+      code.includes('prompt(') ? 'prompt(' : '',
+      /<dialog[\s>]/.test(code) ? '<dialog>' : '',
+    ].filter((item) => item !== '')
+    if (hits.length > 0) offenders.push(`${name}（${hits.join('、')}）`)
+  }
+  assert.deepEqual(offenders, [], `这些文件用了浏览器默认弹窗：${offenders.join('、')}`)
+})
+
 // ─────────────────────── 类名存在性 ───────────────────────
 
 test('护栏：页面用到的修饰类都必须在模板 CSS 里有定义', () => {

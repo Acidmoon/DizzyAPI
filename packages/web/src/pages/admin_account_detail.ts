@@ -10,6 +10,7 @@ import { renderSelectShell } from '@dizzyapi/plugin-page-template'
 import { requiredString, WebError } from '../forms.ts'
 import { WEB_ACTOR, type AccountUpdatePatch, type AccountView } from '../runtime.ts'
 import { auditedAction } from '../audit.ts'
+import { disableAccountAction, enableAccountAction, renderAccountStateForm } from './admin_account_state.ts'
 import {
   errorText,
   formatNumber,
@@ -121,6 +122,7 @@ ${t.renderField({ label: '优先级（0–1000）', name: 'priority', value: Str
 
       group('健康与自动停用', false, `
 <p>当前健康状态：${healthBadge(t, account.health)}（${t.escapeText(healthText(account.health))}）</p>
+${renderAccountStateForm(t, account)}
 <form class="form" method="post" action="${PATH}?action=health&id=${encodeURIComponent(account.id)}">
 <div class="row">
 ${selectField('健康状态', 'health', [
@@ -174,6 +176,9 @@ ${renderKeyValueTable(t, [
   },
 
   actions: {
+    enable: enableAccountAction,
+    disable: disableAccountAction,
+
     async update(ctx) {
       const admin = requireAdmin(ctx)
       const id = requireAccountId(ctx)
@@ -343,14 +348,9 @@ function requireAccountId(ctx: ActionContext): string {
 
 function group(title: string, open: boolean, content: string): string {
   return `<details class="card"${open ? ' open' : ''}>
-<summary>${escapeSummary(title)}</summary>
+<summary>${escapeText(title)}</summary>
 ${content}
 </details>`
-}
-
-/** `<summary>` 里只有固定标题，不需要转义外部数据；保留这个薄封装是为了统一写法。 */
-function escapeSummary(text: string): string {
-  return text.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')
 }
 
 function formatValue(value: number | null): string {
