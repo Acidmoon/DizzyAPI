@@ -330,3 +330,82 @@ node cmd/dizzy/testdata/e2e-full/run.mjs
 - 密码没有终端隐藏输入（见 §4 的说明）。
 - `--json` 输出里 `costMicros` 仍是字符串（整数微元），不要当数字解析。
 - 交易类操作的确认交互没做：`keys delete` / `accounts enable|disable` 直接执行。
+- `chat` 只打 `/v1/chat/completions` 一个入口；`/v1/messages`（Anthropic）、
+  `/v1/responses`、`/v1beta/models/{model}:generateContent`（Gemini）与 `/v1/embeddings`
+  目前**没有 CLI 命令**，验这几条要 curl 或前端。这是 CLI 的已知空白（§4.2 协议入口已实现，
+  缺的是客户端侧的命令）。
+
+---
+
+## 10. 新前端（next-shadcn-admin-dashboard）上线后对 CLI 的影响
+
+**结论：CLI 不用改。** 它只走 `/api/*` 的 JSON 契约与 `/v1/*` 的 Bearer 链路；
+两条都不经过前端静态资源，也不经过旧 SSR `web` 插件的页面路由（表单 POST + 303）。
+下面是证据与三处「知道就行」的风险，逐条对应服务端源码行号。
+
+### 10.1 登录与会话是两条独立路径
+
+| 谁 | 怎么登录 | 会话存在哪 | 证据 |
+|---|---|---|---|
+| CLI | `POST /api/auth/login`（JSON body）→ 从响应的 `Set-Cookie` 里取 `dizzyapi_session` | 本机 `~/.dizzy/credentials.json` | `cmd/dizzy/cmd_auth.go:56-64`、`:75`、`cmd/dizzy/client.go:246-256` |
+| 浏览器（新 SPA 或旧 SSR 都一样） | 同一个 `POST /api/auth/login`，浏览器自己接 `Set-Cookie` | 那个浏览器的 cookie jar | `packages/api/src/routes/auth.ts:42-54`、`packages/api/src/http_session.ts:90-105` |
+
+服务端**只有一处**发会话 cookie：`packages/api/src/routes/auth.ts:52` 的 `setSessionCookie`。
+它属于 `api` 插件，与「页面由谁渲染」无关 —— 换前端不改这条路由，所以 CLI 的登录行为不变。
+
+### 10.2 CLI 不依赖浏览器登录态
+
+- CLI 自己拿 cookie、自己存 token：`~/.dizzy/credentials.json`，权限 `0600`
+  （`cmd/dizzy/config.go:33` 的 `credentialsFileMode`，`cmd/dizzy/credentials.go:54-68` 原子写）。
+  文件里只有 `token` / `expiresAt` / `email`（`credentials.go:17-24`），**API key 永不落盘**。
+- 浏览器 cookie 是 `HttpOnly; SameSite=Lax; Path=/`（`http_session.ts:103`），**只活在那个
+  浏览器里**：它不会被写进 `~/.dizzy/`，CLI 也不会去读浏览器的 cookie。
+- 所以「浏览器里已经登录了，`dizzy` 却说未登录（退出码 3）」是**正确行为**，不是 bug。
+  要让 CLI 能跑，要么 `dizzy login`，要么用只走 Bearer 的命令（`models` / `chat` /
+  `health` 的数据面部分）加 `--key` / `DIZZYAPI_KEY`。
+
+### 10.3 命令行为：不变（CLI 不依赖 303）
+
+- `/api/*` 里**没有任何 302 / 303**。`api` 插件整个进程只有一处重定向：
+  `/` → `/console/usage`（`packages/api/src/http.ts:171-175`），那是给浏览器点的入口页，
+  CLI 从不请求它（`cmd/dizzy` 里没有发往 `/` 的调用）。
+- CLI 的 20 个 `/api/*` 调用全部期望 **200 + JSON**，逐条清单（带行号）见
+  [`docs/验收/08-cli-api-依赖清单.md`](验收/08-cli-api-依赖清单.md)。
+- 旧 SSR `web` 插件的「表单 POST + 303」写在**页面路由**上
+  （`packages/web/src/service.ts:264-274` 的 `/logout`、`:303` 的 `handleAction`），
+  CLI 一个都不碰。谁把这些改成 JSON，与 CLI 无关。
+
+### 10.4 三处风险（不用改代码，但别踩）
+
+1. **CLI 会静默跟随重定向**：`Client` 用的是默认的 `http.Client`（`cmd/dizzy/client.go:94`），
+   **没有设 `CheckRedirect`**。今天 `/api/*` 不重定向所以无害；但如果以后让某个 `/api/*`
+   路由对未登录请求回 302/303 到 `/login`，CLI 会把 POST 变成 GET 静默跟过去，最后拿到
+   一个 HTML 200 → 报「解析响应 JSON 失败」（退出码 1），而不是清晰的「未登录」（退出码 3/4）。
+   真要做，先给 CLI 加「不跟随重定向」，并把这种改动当**接口破坏**处理。
+2. **`X-Request-Id` 有两个来源，别混**：`/v1/*` 的响应头是 Go 给的**用量 reqId**
+   （`internal/httpapi`，与用量记录 `RequestID` 同源）；`/api/*` 的响应头是 `api` 插件的
+   8 字节随机 hex（`packages/api/src/http.ts:152`），**两者毫无关系**。`dizzy chat` 只用
+   `/v1/*` 的那个（`cmd/dizzy/cmd_chat.go:218`），不要改成从 `/api/*` 响应里取。
+3. **`apiBase` 别指到前端端口**：`/api/*` 在生产反代到 `api` 插件的 `7791`；指到前端
+   `7792` 会 404 且回 HTML（退出码 6，错误信息不好认）。本地开发用
+   `--api-base http://127.0.0.1:7791 --llm-base http://127.0.0.1:8080` 分开指。
+
+### 10.5 agent 用 CLI 调试的推荐流程
+
+owner 把 CLI 定为项目三足之一，用意就是 agent 不开浏览器也能验后端。按这个顺序走：
+
+1. `dizzy health` —— 两条链路都探：`/healthz`（Go 数据面）与 `/api/health`（TS 控制面），
+   退出码 0 才继续。任一侧异常会打在哪一侧。
+2. `dizzy models` —— `/v1/models`（Bearer）看模型名并集；`dizzy models --catalog` 走
+   `/api/models`（会话）看价格、可用性、覆盖账号数。
+3. `dizzy login --email <邮箱>`（密码走 `DIZZYAPI_PASSWORD` 或 stdin），`dizzy whoami`
+   确认角色、余额（整数分）。
+4. `dizzy chat -m <模型> "…"` —— 响应里的 reqId 会被拿去回查 `/api/usage/<reqId>` 的
+   `costMicros`，这是**唯一的权威费用**；`--json` 里同名字段。
+5. `dizzy usage` / `dizzy usage show <reqId>` —— 对账：第 4 步打的数与明细必须逐字相等。
+6. 验余额闸门：把余额压到阈值以下再 `chat`，期望**退出码 7** 且错误体
+   `INSUFFICIENT_BALANCE`；验限流看退出码 8 并读错误体 `code`（`/api/*` 的 429 是认证限流，
+   与 `/v1/*` 的上游限流不同因）。
+
+> 只验 OpenAI Chat 这一个客户端入口；Anthropic / Responses / Gemini / Embeddings 见 §9
+> 最后一条（CLI 侧还没做，别以为 CLI 报绿就代表四个入口都验过）。
