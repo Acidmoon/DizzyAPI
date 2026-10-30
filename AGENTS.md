@@ -686,8 +686,11 @@ pnpm build:all        # 两个二进制一起编
   算完再相加（不同模型单价不同）。`pricing` 不在运行时费用是 0，页面要提示。
 - **导入的 base_url 约定**：new-api 的 `base_url` 是源站（`https://api.openai.com`），
   DizzyAPI 的 `baseUrl` 自带版本前缀；导入时只给「路径为空或 `/`」的裸源站补 `/v1`。
-- **CSV 导出**：UTF-8 BOM + `= + - @` 开头加前导 `'`（防公式注入）；接口返回 JSON
-  `{filename, content}`，由页面生成 Blob 下载。
+- **CSV 导出有两条路，别混**：`/api/usage/export`（`api` 插件）仍返回 JSON
+  `{filename, content}`，契约不动；用户侧页面走 `web` 自己的服务端 `text/csv` 路由
+  `/console/usage/export.csv`（普通链接、无需脚本，细节见 §5.5）。两处的格式规则相同：
+  UTF-8 BOM + CRLF + RFC 4180 转义 + `= + - @` 开头加前导 `'`（防公式注入），
+  `ttft_ms` 为 null 留空单元格。
 - **桥的拓扑是「Go 服务端 + TS 客户端」**：`internal/bridge` 是 Server，TS 侧 `BridgeClient`
   才是发起方。所以结算**不能**设计成 Go 主动调 TS；正确形态是 TS 拉到用量后同步结算。
   要 Go 主动推，只能新增反向通道，那是新架构。
