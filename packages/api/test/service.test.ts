@@ -133,7 +133,10 @@ test('ApiService：settings 与 apiKey 按需解析，注销后立刻 503', asyn
   const withSettings = await getJson(`${service.url}/api/settings`, { cookie })
   assert.equal(withSettings.status, 200)
   assert.equal(withSettings.json.namespaces[0].ns, 'mailer')
-  disposeSettings()
+  // `ctx.provide(...)` 返回的是**异步**销毁器：它先同步删 store，然后 notify，
+  // 再 `await` 等所有依赖方 release。不 await 就断言 503，全量并发下这个 await
+  // 会被拖长，断言就会撞上中间态（2026-10-30 查到的一处 flake）。
+  await disposeSettings()
   const goneSettings = await getJson(`${service.url}/api/settings`, { cookie })
   assert.equal(goneSettings.status, 503)
 
@@ -145,7 +148,7 @@ test('ApiService：settings 与 apiKey 按需解析，注销后立刻 503', asyn
   const withKeys = await getJson(`${service.url}/api/keys`, { cookie })
   assert.equal(withKeys.status, 200)
   assert.equal(withKeys.json.items.length, 1)
-  disposeKeys()
+  await disposeKeys()
   const goneKeys = await getJson(`${service.url}/api/keys`, { cookie })
   assert.equal(goneKeys.status, 503)
 })
