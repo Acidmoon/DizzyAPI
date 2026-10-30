@@ -22,6 +22,7 @@ import {
   METRICS,
   PAGE_CSS,
   PageTemplateService,
+  BOOST_VENDOR_FILES,
   VENDOR_CSS_ORDER,
   VENDOR_ASSET_PREFIX,
   VENDOR_SCRIPT_ORDER,
@@ -140,18 +141,20 @@ test('CSS 与客户端脚本完整带过来', () => {
 
 test('vendor：脚本顺序是契约，app.js 必须最后', () => {
   // 顺序为什么是契约：
-  // 1. floating-ui.dom 的 UMD 读全局 FloatingUICore，必须在 core 之后；
-  // 2. /assets/app.js 要初始化控件、并在 htmx 已加载后改 htmx.config。
-  // 顺序错了的后果是实测过的：htmx 会用默认配置注入内联 <style>（被 CSP 拦）。
+  // 1. htmx 必须第 0 位：`/assets/app.js` 要改它的 config（关内联 indicator 样式、
+  //    关 history 缓存），配置必须赶在 htmx 初始化之前；
+  // 2. floating-ui.dom 的 UMD 读全局 FloatingUICore，必须在 core 之后；
+  // 3. /assets/app.js 永远最后（它初始化控件）。
   //
   // **这张表 = 现在真的有代码在调的库**，不是「白名单里有的库」：
   // 曾经把 htmx(52 KB) + floating-ui(22 KB) 挂在每一页，而全站 `hx-*` 与
   // `FloatingUIDOM` 调用各 0 处——74 KB 死代码连登录页都在下载。
-  // 现在 floating-ui 真的在用（`client-tooltip.ts`），所以它在表里；
+  // 现在两个都真的在用（htmx：侧栏局部刷新；floating-ui：悬浮提示）；
   // 但「在表里」≠「每页都下」：`vendorScriptsFor()` 按页面过滤，见下一条用例。
   assert.deepEqual(
     [...VENDOR_SCRIPT_ORDER],
     [
+      'htmx/htmx.min.js',
       'tom-select/tom-select.complete.min.js',
       'flatpickr/flatpickr.min.js',
       'floating-ui/floating-ui.core.umd.min.js',
@@ -159,43 +162,56 @@ test('vendor：脚本顺序是契约，app.js 必须最后', () => {
     ],
   )
 
-  // 还没用上的库不许留在引用列表里（白名单里保留字节与 LICENSE，要用时加回来）
-  for (const unused of ['htmx/htmx.min.js']) {
-    assert.equal(VENDOR_SCRIPT_ORDER.includes(unused as never), false, `${unused} 现在没人用，不该加载`)
-    // 但字节必须还在：加回来时不用重新 vendor
-    assert.ok(readVendorFile(unused) !== undefined, `${unused} 的白名单字节丢了`)
+  // htmx 必须是第一个（app.js 要在它之后改 config）
+  assert.equal(VENDOR_SCRIPT_ORDER.indexOf('htmx/htmx.min.js'), 0)
+  // 每个登记在表里的库，字节必须真的在（防「登记了却没 vendor」）
+  for (const name of VENDOR_SCRIPT_ORDER) {
+    assert.ok(readVendorFile(name) !== undefined, `${name} 在表里但读不到字节`)
   }
 
-  // floating-ui 一旦被加回来，core 必须排在 dom 之前（这条守卫在加回来后立刻生效）
+  // floating-ui 的 core 必须排在 dom 之前
   const coreIdx = VENDOR_SCRIPT_ORDER.indexOf('floating-ui/floating-ui.core.umd.min.js')
   const domIdx = VENDOR_SCRIPT_ORDER.indexOf('floating-ui/floating-ui.dom.umd.min.js')
   assert.ok(coreIdx >= 0 && domIdx > coreIdx, 'floating-ui.core 必须排在 floating-ui.dom 之前')
-  // htmx 一旦被加回来，必须在第一个（app.js 要在它之后改 config）
-  const htmxIdx = VENDOR_SCRIPT_ORDER.indexOf('htmx/htmx.min.js')
-  if (htmxIdx >= 0) assert.equal(htmxIdx, 0)
 
   // app.js 不在 vendor 列表里——它由调用方接在最后，不能混进来
   assert.equal(VENDOR_SCRIPT_ORDER.includes('/assets/app.js' as never), false)
 })
 
-test('vendor：按页面过滤——没有提示的页面不引 22 KB 的 floating-ui', () => {
-  // 上一批被驳回的正是「每页下载用不到的库」。floating-ui 只在有 data-tooltip 的
-  // 页面才需要（现在只有图表页），所以引用列表必须是 `VENDOR_SCRIPT_ORDER` 的**子序列**：
-  // 过滤可以删项，但绝不能重排（core 在 dom 之前仍是硬约束）。
-  const plain = vendorScriptsFor({})
-  assert.deepEqual([...plain], ['tom-select/tom-select.complete.min.js', 'flatpickr/flatpickr.min.js'])
-  const plainExplicit = vendorScriptsFor({ tooltips: false })
-  assert.deepEqual([...plainExplicit], [...plain])
-  // 明确列出的 tooltip 库 = 被过滤掉的那些（不要在两处各写一份清单）
+test('vendor：按页面过滤——登录页不引 htmx(52 KB)，没有提示的页面不引 floating-ui(22 KB)', () => {
+  // 上一批被驳回的正是「每页下载用不到的库」。现在两个库都真的在用，
+  // 但各有各的**页面条件**，所以引用列表必须是 `VENDOR_SCRIPT_ORDER` 的**子序列**：
+  // 过滤可以删项，但绝不能重排（htmx 在第 0 位、core 在 dom 之前仍是硬约束）。
+  //
+  // - `boost`：有侧栏的页面（htmx 局部刷新）；登录 / 注册卡没有侧栏。
+  // - `tooltips`：主列里真有 `data-tooltip`（判据见 `needsTooltips`）。
+  const none = vendorScriptsFor({})
+  assert.deepEqual([...none], ['tom-select/tom-select.complete.min.js', 'flatpickr/flatpickr.min.js'])
+
+  // 只有侧栏、没有提示：要 htmx，不要 floating-ui
+  const boosted = vendorScriptsFor({ boost: true })
+  assert.deepEqual([...boosted], [
+    'htmx/htmx.min.js',
+    'tom-select/tom-select.complete.min.js',
+    'flatpickr/flatpickr.min.js',
+  ])
+
+  // 有侧栏 + 有提示：全都要（顺序 = 总表）
+  const full = vendorScriptsFor({ boost: true, tooltips: true })
+  assert.deepEqual([...full], [...VENDOR_SCRIPT_ORDER])
+
+  // 明确列出的两个「按页过滤」清单 = 被过滤掉的那些（不要在两处各写一份清单）
+  for (const name of BOOST_VENDOR_FILES) {
+    assert.ok(VENDOR_SCRIPT_ORDER.includes(name), `${name} 必须在总表里，不要另开一张清单`)
+    assert.equal(none.includes(name), false, `${name} 在没有侧栏的页面上不该被引用`)
+  }
   for (const name of TOOLTIP_VENDOR_FILES) {
-    assert.equal(plain.includes(name), false, `${name} 在没有提示的页面上不该被引用`)
+    assert.equal(none.includes(name), false, `${name} 在没有提示的页面上不该被引用`)
     assert.ok(VENDOR_SCRIPT_ORDER.includes(name), `${name} 必须在总表里，不要另开一张清单`)
   }
 
-  const rich = vendorScriptsFor({ tooltips: true })
-  assert.deepEqual([...rich], [...VENDOR_SCRIPT_ORDER])
   // 子序列性质：过滤只删不改顺序
-  const positions = plain.map((name) => rich.indexOf(name))
+  const positions = boosted.map((name) => full.indexOf(name))
   assert.deepEqual(positions, [...positions].sort((a, b) => a - b), '过滤后顺序必须保持不变')
 })
 

@@ -62,7 +62,7 @@ function pageContext(services: WebRuntime, query = '', template: PageTemplateSer
     t: template,
     services,
     notice: null,
-  themeCss: '',
+  themeCss: '',  navOrder: [],
     takeSecret: () => undefined,
   }
 }

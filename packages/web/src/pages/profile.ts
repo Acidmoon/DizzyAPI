@@ -1,6 +1,7 @@
 /** 个人资料：用户名、头像、改密码、界面偏好（字号 / 字距）。 */
-import { pageHeader, renderConsoleShell, type PageModule } from '../layout.ts'
+import { ADMIN_NAV, CONSOLE_NAV, pageHeader, renderConsoleShell, type PageModule } from '../layout.ts'
 import { requiredString, WebError } from '../forms.ts'
+import { normalizeNavOrder, splitNavOrder } from '../nav-order.ts'
 import {
   DEFAULT_THEME_PREFERENCES,
   FONT_SCALE_VALUES,
@@ -111,6 +112,29 @@ ${t.renderField({ label: '新密码', name: 'newPassword', type: 'password', req
       const newPassword = requiredString(ctx.form, 'newPassword', '新密码')
       await auth.changePassword({ token: ctx.token, currentPassword, newPassword })
       return '/console/profile?ok=' + encodeURIComponent('密码已更新')
+    },
+
+    /**
+     * 侧栏拖动排序落库（第 12 条）。
+     *
+     * 由 `client-nav-order.ts` 用 `fetch` 调用，带 `X-Requested-With: dizzyapi`，
+     * 所以 `handleAction` 会回 204 而不是 303（避免 fetch 跟着重定向把整页拉一遍）。
+     *
+     * 校验分两层，**各自干自己懂的**：
+     * - 这里只知道「哪些路径属于这次拖动的区域」（`CONSOLE_NAV` / `ADMIN_NAV`），
+     *   所以只过滤未知路径；
+     * - 「是不是合法路径、要不要去重限长」是数据层的事，交给 `user` 插件。
+     *
+     * 落库失败直接抛：前端会 `catch` 到并**回滚成服务端顺序**（不许只改 DOM 假装成功）。
+     */
+    'nav-order': async (ctx) => {
+      const users = ctx.services.user
+      if (users === undefined) throw new WebError('WEB_NO_USER', '用户服务未运行')
+      const area = ctx.form.get('area') === 'admin' ? 'admin' : 'console'
+      const defaults = area === 'admin' ? ADMIN_NAV : CONSOLE_NAV
+      const submitted = splitNavOrder(ctx.form.get('navOrder'))
+      await users.setUiPreferences(ctx.user.userId, { navOrder: normalizeNavOrder(defaults, submitted) })
+      return '/console/profile?ok=' + encodeURIComponent('侧栏顺序已保存')
     },
   },
 }

@@ -1,77 +1,16 @@
 /**
- * 页面外壳与通用组件。
+ * 通用组件：卡片 / 过滤行 / 图表卡 / 表格 / 表单 / 提示条 / 登录卡 / 状态标签。
  *
  * 结构与类名**照搬** deepseek-usage 的像素级实现，只把业务数据参数化：
  * 同一份 `assets.ts` 的 CSS（THEME_VARS + PAGE_CSS）配同一套 DOM，
  * 换页面时只换内容，不重做视觉。
  *
- * 交互约定：筛选条件放在 URL 查询串里，菜单项就是普通链接；
- * 客户端脚本只负责开合浮层（`CLIENT_JS`），不重绘。
+ * 侧栏与主列外壳**不在这里**：它们是 `sidebar.ts`（第 4 批加 boost 与拖动契约后
+ * 顶过 400 行软上限，拆开）。组件是「一页里的零件」，外壳是「页面之间的骨架」，
+ * 两者改动理由不同，放一起会互相牵制。
  */
 import { escapeAttr, escapeText } from './escape.ts'
-import {
-  iconBars,
-  iconCard,
-  iconCaret,
-  iconChat,
-  iconDoc,
-  iconDots,
-  iconHelp,
-  iconInfo,
-  iconReceipt,
-  iconSearch,
-  iconTag,
-} from './icons.ts'
-
-/** 侧栏图标名；未知值回退成圆点（与 deepseek-usage 的容错一致）。 */
-export type NavIconName = 'bars' | 'search' | 'card' | 'receipt' | 'doc' | 'help' | 'tag' | 'chat'
-
-const NAV_ICONS: Readonly<Record<NavIconName, () => string>> = {
-  bars: iconBars,
-  search: iconSearch,
-  card: iconCard,
-  receipt: iconReceipt,
-  doc: iconDoc,
-  help: iconHelp,
-  tag: iconTag,
-  chat: iconChat,
-}
-
-/** 侧栏 / 底部链接。 */
-export interface NavItem {
-  readonly label: string
-  readonly href: string
-  readonly icon?: NavIconName
-  /** 当前页：加 `aria-current="page"`，图标变强调色。 */
-  readonly current?: boolean
-  /** 外链：新窗口打开并带 `rel="noreferrer"`。 */
-  readonly external?: boolean
-}
-
-export interface BrandOptions {
-  readonly word: string
-  /** 品牌名后的小徽标，例如「开放平台」。 */
-  readonly badge?: string
-  readonly href: string
-}
-
-export interface UserOptions {
-  readonly name: string
-  readonly href: string
-  /** 没有头像时显示「?」占位。 */
-  readonly avatarUrl?: string | null
-}
-
-export interface ShellOptions {
-  readonly brand: BrandOptions
-  readonly nav: readonly NavItem[]
-  /** 分隔线以下的次级链接。 */
-  readonly foot?: readonly NavItem[]
-  readonly user?: UserOptions
-  /** 主列内容。 */
-  readonly content: string
-}
-
+import { iconCaret, iconDots, iconInfo } from './icons.ts'
 
 export interface PageHeaderOptions {
   readonly title: string
@@ -124,60 +63,6 @@ export interface ModelBlockItem {
 export interface ModelBlock {
   readonly title: string
   readonly items: readonly ModelBlockItem[]
-}
-
-
-/** 外壳：侧栏 + 主列。 */
-export function renderShell(options: ShellOptions): string {
-  return `<div class="shell">
-${renderSidebar(options)}
-<main class="main">
-<div class="col">
-${options.content}
-</div>
-</main>
-</div>`
-}
-
-/** 侧栏：品牌、导航、底部链接与用户行。 */
-export function renderSidebar(options: ShellOptions): string {
-  const { brand, nav, foot, user } = options
-  const badge = brand.badge === undefined
-    ? ''
-    : `<span class="side-badge">${escapeText(brand.badge)}</span>`
-  const avatar = user === undefined
-    ? ''
-    : user.avatarUrl === undefined || user.avatarUrl === null
-      ? '<span class="side-avatar" aria-hidden="true">?</span>'
-      : `<span class="side-avatar"><img src="${escapeAttr(user.avatarUrl)}" alt=""></span>`
-  const footBlock = foot === undefined || foot.length === 0
-    ? ''
-    : `<div class="side-sep"></div>
-${foot.map((item) => renderNavLink(item)).join('\n')}`
-  const userBlock = user === undefined
-    ? ''
-    : `<a class="side-user" href="${escapeAttr(user.href)}">${avatar}<span class="side-name">${escapeText(user.name)}</span></a>`
-  return `<aside class="side">
-<div class="side-top">
-<a class="side-logo" href="${escapeAttr(brand.href)}">
-<span class="side-word">${escapeText(brand.word)}</span>${badge}
-</a>
-</div>
-<nav class="side-nav">
-${nav.map((item) => renderNavLink(item)).join('\n')}
-${footBlock}
-</nav>
-<div class="side-foot">
-${userBlock}
-</div>
-</aside>`
-}
-
-function renderNavLink(item: NavItem): string {
-  const icon = item.icon === undefined ? '' : NAV_ICONS[item.icon]?.() ?? ''
-  const current = item.current === true ? ' aria-current="page"' : ''
-  const target = item.external === true ? ' target="_blank" rel="noreferrer"' : ''
-  return `<a class="side-link"${current} href="${escapeAttr(item.href)}"${target}>${icon}<span>${escapeText(item.label)}</span></a>`
 }
 
 /** 页面标题与说明行。 */

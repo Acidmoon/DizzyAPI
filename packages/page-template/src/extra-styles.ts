@@ -16,6 +16,17 @@ export const COMPONENT_CSS = `
 .htmx-request .htmx-indicator,
 .htmx-request.htmx-indicator { opacity: 1; visibility: visible; }
 
+/* ── 侧栏拖动排序（Pointer Events）────────────────────────────────
+ * touch-action: none 只加在可拖项上：触屏上「按住拖动」必须由我们接管，
+ * 否则浏览器会先把它当成滚动（见 client-nav-order.ts 顶部）。
+ * 键鼠用户看不到区别；不可拖的底部链接（退出登录）不在此列。 */
+.side-nav .side-link[data-nav-path] { touch-action: none; cursor: grab; }
+.side-link--dragging {
+  cursor: grabbing; position: relative; z-index: 5;
+  background: var(--sidebar-nav-active); opacity: .9;
+  box-shadow: 0 8px 24px rgba(0,0,0,.45);
+}
+
 /* ── 数据表格 ──────────────────────────────────────────────────── */
 .panel { background: var(--bg-layer-1); border-radius: 16px; overflow: hidden; margin-bottom: 24px; }
 .table { width: 100%; border-collapse: collapse; font-size: var(--fs-label); line-height: var(--lh-label); }

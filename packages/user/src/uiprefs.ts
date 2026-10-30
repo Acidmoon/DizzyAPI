@@ -28,12 +28,30 @@ export type LetterSpacing = (typeof LETTER_SPACINGS)[number]
 export interface UiPreferences {
   readonly fontScale: FontScale
   readonly letterSpacing: LetterSpacing
+  /**
+   * 侧栏导航顺序：**路径数组**（`/console/usage` 这种），空表示站默认顺序。
+   *
+   * 只存「用户拖过的顺序」，**不存已知路径表**：`user` 插件不知道 `web` 有哪些页面
+   * （那是渲染层的事，见「一个数据一个写者」）。所以这一列只做**结构校验**
+   * （是字符串数组、去重、限长），「未知路径丢弃 + 缺的补到末尾」在 `web` 渲染时做——
+   * 它才知道当前有哪些导航项，而且**新加一个页面时老用户的偏好必须能自动跟上**。
+   */
+  readonly navOrder: readonly string[]
 }
 
 /** 默认值 = 「已放大一档」的基准（正文 16px），与改动前的观感一致。 */
-export const DEFAULT_UI_PREFERENCES: UiPreferences = { fontScale: 1, letterSpacing: 'normal' }
+export const DEFAULT_UI_PREFERENCES: UiPreferences = {
+  fontScale: 1,
+  letterSpacing: 'normal',
+  navOrder: [],
+}
 
-const ALLOWED_KEYS = new Set(['fontScale', 'letterSpacing'])
+const ALLOWED_KEYS = new Set(['fontScale', 'letterSpacing', 'navOrder'])
+
+/** 侧栏顺序的上限：远大于实际导航项数，防的是「一份被写坏的 JSON 撑爆页面」。 */
+const MAX_NAV_ORDER = 64
+/** 单个路经的长度上限（真实路径都在 40 字节以内）。 */
+const MAX_NAV_PATH = 200
 
 /** 校验一个 `fontScale` 候选值是不是允许的档位。 */
 function toFontScale(value: unknown): FontScale | undefined {
@@ -44,6 +62,27 @@ function toLetterSpacing(value: unknown): LetterSpacing | undefined {
   return (LETTER_SPACINGS as readonly string[]).includes(value as string)
     ? (value as LetterSpacing)
     : undefined
+}
+
+/**
+ * 侧栏顺序的结构校验：只认「短字符串数组」，去重、限长、丢掉非字符串。
+ *
+ * **坏值一律回落空数组**（= 站默认顺序），不抛错：顺序错了最坏是侧栏顺序不随心，
+ * 抛错会让整个页面打不开。`/` 开头是唯一的结构约束——真正的「这是不是我们站的路径」
+ * 由渲染层判断（它才有那份表）。
+ */
+function toNavOrder(value: unknown): readonly string[] | undefined {
+  if (!Array.isArray(value)) return undefined
+  const out: string[] = []
+  for (const item of value) {
+    if (typeof item !== 'string') continue
+    const path = item.trim()
+    if (!path.startsWith('/') || path.length > MAX_NAV_PATH) continue
+    if (out.includes(path)) continue
+    out.push(path)
+    if (out.length >= MAX_NAV_ORDER) break
+  }
+  return out
 }
 
 /**
@@ -67,6 +106,7 @@ export function parseUiPreferences(raw: string | null | undefined): UiPreference
   return {
     fontScale: toFontScale(record.fontScale) ?? DEFAULT_UI_PREFERENCES.fontScale,
     letterSpacing: toLetterSpacing(record.letterSpacing) ?? DEFAULT_UI_PREFERENCES.letterSpacing,
+    navOrder: toNavOrder(record.navOrder) ?? DEFAULT_UI_PREFERENCES.navOrder,
   }
 }
 
@@ -101,12 +141,22 @@ export function normalizeUiPreferencesPatch(
     letterSpacing = parsed
   }
 
-  return { fontScale, letterSpacing }
+  let navOrder = current.navOrder
+  if (record.navOrder !== undefined) {
+    if (!Array.isArray(record.navOrder)) return '侧栏顺序必须是路径数组'
+    navOrder = toNavOrder(record.navOrder) ?? []
+  }
+
+  return { fontScale, letterSpacing, navOrder }
 }
 
 /** 序列化成库里的那一列（键顺序固定，便于人工比对）。 */
 export function serializeUiPreferences(prefs: UiPreferences): string {
-  return JSON.stringify({ fontScale: prefs.fontScale, letterSpacing: prefs.letterSpacing })
+  return JSON.stringify({
+    fontScale: prefs.fontScale,
+    letterSpacing: prefs.letterSpacing,
+    navOrder: prefs.navOrder,
+  })
 }
 
 /** 中文标签：页面下拉与审计摘要共用，避免两处各写一套文案。 */

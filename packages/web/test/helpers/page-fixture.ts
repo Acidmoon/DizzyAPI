@@ -83,6 +83,8 @@ export function pageContext(
     notice: null,
     // 界面偏好 CSS（字号 / 字距）：默认站值 = 空串，页面就不引用主题表。
     themeCss: '',
+    // 侧栏顺序：默认站顺序（空数组 = 不覆盖任何一项）。
+    navOrder: [],
     takeSecret: () => undefined,
   }
 }

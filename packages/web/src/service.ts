@@ -7,11 +7,13 @@
 import { randomUUID } from 'node:crypto'
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import { Service, type Context } from 'cordis'
-import { renderThemeCss, THEME_CSS_PATH, VENDOR_ASSET_PREFIX, type PageTemplateService } from '@dizzyapi/plugin-page-template'
+import { THEME_CSS_PATH, VENDOR_ASSET_PREFIX, type PageTemplateService } from '@dizzyapi/plugin-page-template'
 import { APP_CSS_BODY, APP_JS_BODY } from './asset-version.ts'
 import { validateWebConfig, type ResolvedWebConfig, type WebConfig } from './config.ts'
 import { apiDocsResource } from './content/api_docs.ts'
-import { assertSameOrigin, readForm, WebError } from './forms.ts'
+import { assertSameOrigin, describeError, readForm, wantsNoRedirect, WebError } from './forms.ts'
+import { fragmentResponse } from './hx.ts'
+import { readPreferences, themeCssFrom } from './preferences.ts'
 import { clearSessionCookie, isSecureRequest, placeholderSession, readCookie, sessionCookie } from './session.ts'
 import { documentAssets, readNotice, type ActionContext, type PageContext, type PageModule } from './layout.ts'
 import type {
@@ -283,6 +285,16 @@ export class WebService extends Service {
 
       const context = await this.contextFor(page, url, session)
       const html = await page.render(context)
+      // ── htmx 局部刷新（第 4 批）────────────────────────────────────────
+      // 片段是**整页渲染结果里 `<main>` 那一截**切出来的（`fragmentResponse`），
+      // 所以它与整页逐字相同——不存在「两个函数各拼一遍」的漂移面。
+      // 顺序纪律：Host → 会话 → 鉴权 → **最后**才看 `HX-Request`（上面的 302 / 403
+      // 都在这之前返回，未登录的 HX 请求照样 302）。
+      const fragment = fragmentResponse(req, html)
+      if (fragment !== undefined) {
+        this.send(res, 200, 'text/html; charset=utf-8', fragment, true)
+        return
+      }
       this.send(res, 200, 'text/html; charset=utf-8', html, true)
     } catch (error) {
       this.fail(req, res, error)
@@ -317,6 +329,13 @@ export class WebService extends Service {
     }
     try {
       const target = await handler(context)
+      // `fetch` 提交的动作（目前只有侧栏拖动排序）：回 204，别让 fetch 跟着 303
+      // 把整页 HTML 再拉一遍——它只要知道成没成。
+      if (wantsNoRedirect(req)) {
+        res.writeHead(204, { ...SECURITY_HEADERS, ...(cookies.length === 0 ? {} : { 'Set-Cookie': cookies }) })
+        res.end()
+        return
+      }
       res.writeHead(303, {
         ...SECURITY_HEADERS,
         Location: target,
@@ -326,6 +345,10 @@ export class WebService extends Service {
     } catch (error) {
       const message = describeError(error)
       this.ctx.logger('web').warn(`web 动作失败：${message}`)
+      if (wantsNoRedirect(req)) {
+        this.send(res, 400, 'text/plain; charset=utf-8', message, true)
+        return
+      }
       res.writeHead(303, {
         ...SECURITY_HEADERS,
         Location: `${page.path}?err=${encodeURIComponent(message)}`,
@@ -341,6 +364,7 @@ export class WebService extends Service {
     session: { session: SessionView; token: string } | null,
   ): Promise<PageContext> {
     const user = session?.session ?? placeholderSession()
+    const preferences = await readPreferences(this.runtime().user, session)
     return {
       path: page.path,
       title: page.title,
@@ -349,32 +373,15 @@ export class WebService extends Service {
       t: this.template,
       services: this.runtime(),
       notice: readNotice(url.searchParams),
-      themeCss: await this.themeCssOf(session),
+      themeCss: themeCssFrom(preferences),
+      navOrder: preferences.navOrder,
       takeSecret: () => this.takeSecret(url.searchParams.get('new')),
     }
   }
 
-  /**
-   * 当前会话用户该用的界面偏好 CSS。
-   *
-   * 未登录 / 没有 `user` 服务 / 从来不设过偏好 → **空串**，页面就不引用主题表
-   * （站默认值本来就是「标准字号 + 标准字距」，引一张空表只是多一个请求）。
-   *
-   * 读失败也只回落空串：字号不是页面能不能打开的前提，绝不因此 500。
-   */
+  /** `/assets/theme.css` 的正文（按当前用户）。 */
   private async themeCssOf(session: { session: SessionView; token: string } | null): Promise<string> {
-    const userId = session?.session.user.id
-    if (userId === undefined) return ''
-    const user = this.runtime().user
-    if (user === undefined) return ''
-    try {
-      const preferences = await user.getUiPreferences(userId)
-      // 站默认值不生成表：与不加载主题完全等价，少一个请求。
-      if (preferences.fontScale === 1 && preferences.letterSpacing === 'normal') return ''
-      return renderThemeCss(preferences)
-    } catch {
-      return ''
-    }
+    return themeCssFrom(await readPreferences(this.runtime().user, session))
   }
 
   private async sessionOf(req: IncomingMessage): Promise<{ session: SessionView; token: string } | null> {
@@ -459,20 +466,3 @@ export class WebService extends Service {
   }
 }
 
-/** 业务错误带稳定 code 时显示其中文消息；其余统一兜底，不泄露内部细节。 */
-function describeError(error: unknown): string {
-  if (error instanceof WebError) return error.message
-  if (error instanceof Error) {
-    const code = (error as { code?: unknown }).code
-    if (
-      typeof code === 'string' &&
-      /^[A-Z][A-Z0-9_]+$/.test(code) &&
-      error.message.length > 0 &&
-      error.message.length <= 160 &&
-      !error.message.includes('\n')
-    ) {
-      return error.message
-    }
-  }
-  return '操作失败，请稍后再试'
-}

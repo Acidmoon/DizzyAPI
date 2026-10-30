@@ -373,7 +373,7 @@ pnpm test:go
 
 - 新增插件必须有 `test/*.test.ts`；新增 Go 模块必须有单测。
 - 测试失败先修实现，不允许删断言或放宽断言来变绿。
-- 当前基线（2026-10-30 实测）：`pnpm test` 914 个用例（913 通过 / 1 跳过），`pnpm typecheck` 干净，
+- 当前基线（2026-10-30 第 4 批实测）：`pnpm test` 968 个用例（967 通过 / 1 跳过），`pnpm typecheck` 干净，
   `go test ./...` **26 包**全 ok，`gofmt -l .` 与 `go vet ./...` 无输出。
   这个数字会变，以实际输出为准。
 - **验收任何分支前先 `pnpm build:go`**（不只是改过 Go 的分支）：`pnpm test` 里有真进程用例会
@@ -464,6 +464,39 @@ pnpm test:go
   - **toast 与 `renderNotice` 分工不能混**：notice 是页面级状态（服务端渲染、随页面出现），
     toast 是动作级反馈（复制这类不刷新页面的动作）。服务端消息别走 toast，否则刷新就重弹。
     **CSV 导出不是这一类**：它是普通链接 + 浏览器原生下载，不需要 toast（见上一条）。
+- **侧栏切换只换主列（htmx 局部刷新，2026-10-30 第 4 批）**：
+  - `renderShell` 输出的 `<main>` 由 `page-template/src/main-column.ts` 产出，整页与片段
+    **共用这一段**；HX 请求的响应体是**从整页 HTML 里切出来的那一截**
+    （`extractMainColumn`，`web/src/hx.ts` 的 `fragmentResponse`），所以两者逐字相同、
+    不可能漂移。护栏：`web/test/hx-fragment.test.ts` 直接比「片段 === 整页 `<main>` 那一截」。
+  - **判定顺序是不变量**：Host → 会话 → 鉴权 → **最后**才看 `HX-Request`。未登录的 HX
+    请求照样 **302** 到 `/login`（不返回片段）；页面拿到的若不是片段，客户端
+    `htmx:beforeSwap` 会取消本次 swap 并改成整页跳转（`client-boost.ts`）。
+  - `hx-*` 只写在**导航容器**上（`hx-target="main" hx-swap="outerHTML" hx-push-url="true"`），
+    每个主导航链接 `hx-boost="true"`。**底部链接不 boost**：`/logout` 是 GET + 303 到登录页，
+    跨区链接（管理台 ↔ 用户站）会整套换侧栏——这两类必须整页跳。
+  - 片段带 `data-page-title`（= 整页 `<title>`，**同一个变量**）与 `data-page-path`；
+    `client-boost.ts` 在 `htmx:afterSwap` 里写 `document.title` 并按路径同步侧栏
+    `aria-current`（不靠 `location.pathname` 反推，避免查询串 / 尾斜杠猜错）。
+  - **htmx 的 history 缓存必须关**（`historyCacheSize = 0`）：它把**整页 HTML** 写进
+    sessionStorage，而「新建 API key 之后那一次」的明文就在主列里（§5.1 秘密纪律）。
+    关掉之后 `refreshOnHistoryMiss = true` 让**后退 / 前进 = 整页重载**：侧栏高亮与内容
+    由服务端一起重新渲染，天然一致，也就没有「back 之后高亮错位」这类事。
+  - `allowEval = false`：全站不用 `hx-on:` / `js:` 表达式，而 CSP 没有 `'unsafe-eval'`。
+  - 无 JS 退化是天然的：`hx-boost` 全是属性，脚本没跑时 `<a href>` 就是普通链接。
+- **侧栏顺序由用户拖（Pointer Events）**：
+  - 顺序存 `users.ui_preferences.navOrder`（`user` 是唯一写者，web 不另存）。存的是
+    **路径数组**，只做结构校验（短字符串数组、去重、上限 64）；「这是不是我们站的路径」
+    由 `web/src/nav-order.ts` 判断（它才有 `CONSOLE_NAV` / `ADMIN_NAV`）。
+  - 渲染规则（`applyNavOrder`）：用户顺序里**未知路径丢弃**；默认表里**缺的路径按默认顺序
+    补到末尾**——否则以后新加一个侧栏项，老用户的偏好会把它永久藏掉。
+  - 交互：**Pointer Events**，不是 HTML5 DnD（原生 `draggable` 在 iOS Safari 不触发，
+    而 owner 要的就是触屏「按住拖动」）。按下后移动超过 **5px** 才算拖动，否则当点击放行；
+    拖动中只改 DOM，**松手才落库**；落库失败**回滚成服务端顺序**并弹错误提示。
+  - **锚点必须 `draggable="false"`**：`<a>` 默认可拖，不关掉的话按下再移动会起一次原生
+    DnD，把我们的 `pointermove` 变成 `pointercancel`（2026-10-30 实机：不写这句拖动完全不动）。
+  - 落库走 `POST /console/profile?action=nav-order`，带 `X-Requested-With: dizzyapi`，
+    服务端回 **204**（不带 303，别让 fetch 跟着重定向把整页拉一遍）。普通表单提交仍走 303。
 - **静态资源一律带内容哈希，`immutable` 才成立**（2026-10-30）：`/assets/app.css?v=…`、
   `/assets/app.js?v=…`、`/assets/vendor/<name>?v=…` 的 `?v=` 是**正文的 sha256 前 8 位**，
   装配点只有 `packages/web/src/asset-version.ts`（`APP_CSS_BODY` / `APP_JS_BODY`）与
@@ -502,7 +535,7 @@ pnpm test:go
   `internal/httpapi/server.go` 843、
   `modules/protoconv/codec_gemini.go` 705、`modules/protoconv/codec_chat.go` 697；
   400～500 的次级面：`packages/api/src/http.ts` 465、`packages/web/src/pages/admin_account_detail.ts` 440、
-  `packages/web/src/service.ts` 449、`packages/page-template/src/shell.ts` 447。
+  `packages/web/src/service.ts` 468、`packages/web/src/runtime.ts` 818。
   往这些文件里加东西时，**顺手把同一职责搬进新的小文件**，让净增行数尽量小。
 - **`packages/api/src` 的路由布局（2026-10-30 拆完，4241 → 465）**：新增 `/api/*` 路由**一律**
   写进 `routes/<前缀>.ts`，不再进 `http.ts`：
@@ -985,27 +1018,26 @@ pnpm build:all        # 两个二进制一起编
   都行），设 `htmx.config.…` 一定赶在 htmx 初始化之前。反过来把 `app.js` 挪到 htmx **之前**
   （比如放 `<head>`），那时 `window.htmx` 还是 `undefined`，配置设不进去，htmx 就按默认值注入
   ——**实测只有这种写法出违规**。
-- **`jsHrefs` 的顺序是契约**：当前是 `[tom-select, flatpickr, (floating-ui.core, floating-ui.dom)?,
-  /assets/app.js]`（`app.js` 必须最后；`?` 表示按页过滤）。`floating-ui.dom` 的 UMD 读全局
-  `FloatingUICore`，必须排在 core 之后；htmx 将来加回时要排在 `app.js` 之前（`app.js` 要改它的 config）。
-  `page-template/test/page-template.test.ts` 有用例钉住顺序，且**没被用到的库一旦出现在
-  引用列表里就会红**。
+- **`jsHrefs` 的顺序是契约**：当前是 `[(htmx)?, tom-select, flatpickr, (floating-ui.core,
+  floating-ui.dom)?, /assets/app.js]`（`app.js` 必须最后；`?` 表示按页过滤）。
+  `floating-ui.dom` 的 UMD 读全局 `FloatingUICore`，必须排在 core 之后；htmx 必须在
+  **第 0 位**（`app.js` 要在它之后改 config）。`page-template/test/page-template.test.ts`
+  有用例钉住顺序，且**没被用到的库一旦出现在引用列表里就会红**。
 - **vendor 的库照白名单发字节**（`page-template/src/vendor.ts`）：查表而非拼路径，
   名字不在表里就 404。加库只改那张表，`VENDOR_SCRIPT_ORDER` / `vendorCss()` 都从它派生。
 - **`VENDOR_SCRIPT_ORDER` 只放「现在真的有代码在调」的库**，不是「白名单里有的库」。
   2026-10-30 实测事故：htmx（52 KB）+ floating-ui（22 KB）挂在**每一个**页面上（连
   `/login`、`/register` 都下），而全站 `hx-*` 属性与 `FloatingUIDOM` 调用各 0 处 —— 74 KB
-  死代码。摘掉时**保留**白名单条目、字节、LICENSE、`client-script.ts` 里的 `htmx.config`
-  护栏与 `htmx:afterSwap` 监听（`window.htmx` 是 undefined 时它们空转，无副作用）。
-  htmx 在第 4 批（侧栏局部刷新）加回来。
-- **库要「按页」加载，而 `VENDOR_SCRIPT_ORDER` 只是顺序源**（2026-10-30，B 段 tooltip）：
-  floating-ui 现在真的在用（`client-tooltip.ts`），但它只有带 `data-tooltip` 的页面需要。
-  所以引用列表走 `vendorScriptsFor({ tooltips })`——**只过滤、不重排**（顺序仍由
-  `VENDOR_SCRIPT_ORDER` 说了算），`TOOLTIP_VENDOR_FILES` 声明哪几个属于 tooltip。
-  判据在 `layout.ts`：`needsTooltips(主列 HTML)` 扫已渲染的标记，**不靠页面清单**
-  （新加一个带提示的页面不用改装配点）。漏判的后果只是提示退回原生 `<title>`，
-  多判的后果才是白下载 22 KB。`web/test/shell-assets.test.ts` 钉着「登录 / 注册页 0 个
-  floating-ui、图表页 core 在 dom 之前、`app.js` 永远最后」。
+  死代码。第 4 批把 htmx 加了回来（侧栏局部刷新真的在用了），但**仍然是按页加载**。
+- **库要「按页」加载，而 `VENDOR_SCRIPT_ORDER` 只是顺序源**（2026-10-30）：现在有两个
+  页面条件，`vendorScriptsFor({ boost, tooltips })`——**只过滤、不重排**（顺序仍由
+  `VENDOR_SCRIPT_ORDER` 说了算）：
+  - `boost`：这一页有没有侧栏（`renderShell` 的产物）。登录 / 注册卡没有侧栏、也就没有
+    `hx-boost` 链接，**不引 htmx**（52 KB 死代码）；`BOOST_VENDOR_FILES` 声明它。
+  - `tooltips`：主列里真有 `data-tooltip` 才引 floating-ui（22 KB），判据
+    `needsTooltips(主列 HTML)`，**不靠页面清单**。
+  `web/test/shell-assets.test.ts` + `hx-fragment.test.ts` 钉着「登录页 0 个 htmx、图表页
+  core 在 dom 之前、`app.js` 永远最后」。
 - **静态资源的 URL 一律带内容哈希**（`web/src/asset-version.ts` + `page-template/src/vendor.ts`）：
   `/assets/app.css?v=…`、`/assets/app.js?v=…`、`/assets/vendor/<name>?v=…`、
   `/assets/fonts/<name>.woff2?v=…` 的 `?v=` 都是**那一份字节**的 sha256 前 8 位。
