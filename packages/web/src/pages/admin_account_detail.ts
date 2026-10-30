@@ -92,7 +92,7 @@ ${t.renderField({ label: '邮箱', name: 'email', value: account.email ?? '' })}
 ${t.renderField({ label: '上游主体', name: 'subject', value: account.subject ?? '' })}
 </div>
 <div class="row">
-${t.renderField({ label: 'Base URL', name: 'baseUrl', value: account.baseUrl ?? '', placeholder: 'https://upstream.example.com/v1' })}
+${t.renderField({ label: 'Base URL', name: 'baseUrl', value: account.baseUrl ?? '', placeholder: '例如：https://upstream.example.com/v1' })}
 ${selectField('上游协议', 'protocol', [
   { value: '', label: '未声明（走旧行为）' },
   { value: 'openai-chat', label: 'openai-chat' },
@@ -111,10 +111,10 @@ ${textareaField('模型映射（每行 对外名=上游名，留空 = 不改写�
       group('调度参数', false, `
 <form class="form" method="post" action="${PATH}?action=scheduling&id=${encodeURIComponent(account.id)}">
 <div class="row">
-${t.renderField({ label: '标签（逗号分隔；留空 = 清空）', name: 'labels', value: account.labels.join(', '), placeholder: 'tier:pro, team:ops' })}
-${t.renderField({ label: '权重（> 0；留空 = 未声明）', name: 'weight', value: formatValue(account.weight), placeholder: '2.5' })}
-${t.renderField({ label: '并发上限（1–10000；留空 = 未声明）', name: 'concurrency', value: formatValue(account.concurrency), placeholder: '4' })}
-${t.renderField({ label: '优先级（0–1000）', name: 'priority', value: String(account.priority) })}
+${t.renderField({ label: '标签（逗号分隔；留空 = 清空）', name: 'labels', value: account.labels.join(', '), placeholder: '例如：tier:pro, team:ops' })}
+${t.renderField({ label: '权重（> 0；留空 = 未声明）', name: 'weight', inputmode: 'decimal', value: formatValue(account.weight), placeholder: '例如：2.5' })}
+${t.renderField({ label: '并发上限（1–10000；留空 = 未声明）', name: 'concurrency', inputmode: 'numeric', value: formatValue(account.concurrency), placeholder: '例如：4' })}
+${t.renderField({ label: '优先级（0–1000）', name: 'priority', inputmode: 'numeric', value: String(account.priority) })}
 </div>
 <p class="hint">标签会转成 Go 侧的 tags（「key:value」精确匹配；不带冒号的标签记为「标签名 加空值」）。权重与并发上限进账号快照，参与打分与容量过滤。</p>
 <div class="actions"><button class="btn" type="submit">保存调度参数</button></div>
@@ -138,7 +138,7 @@ ${selectField('健康状态', 'health', [
 ${account.status === 'auto_disabled'
   ? `<p class="hint">自动停用时间 ${formatTime(account.autoDisabledAt)}；原因：${t.escapeText(account.autoDisabledReason ?? '—')}</p>
 <div class="actions"><button class="btn" type="submit">解除自动停用（恢复 active）</button></div>`
-  : `<div class="row">${t.renderField({ label: '模拟自动停用的原因', name: 'reason', placeholder: '连续失败 3 次：HTTP 502' })}</div>
+  : `<div class="row">${t.renderField({ label: '模拟自动停用的原因', name: 'reason', placeholder: '例如：连续失败 3 次：HTTP 502' })}</div>
 <p class="hint">这是人工复核用的入口：只把 status 改成 auto_disabled，不动「启用 / 停用」开关。</p>
 <div class="actions"><button class="btn small danger" type="submit">标记为自动停用</button></div>`}
 </form>`),

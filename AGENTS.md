@@ -508,6 +508,32 @@ pnpm test:go
   页面渲染用 `fontCssOf(ctx)`；字体 URL 自己也带 `?v=<字体字节哈希>`。
   **改回常量就是 2026-10-30 修掉的那个洞**（改字体 scope 后 URL 不变 → 回访浏览器一年用旧 CSS）。
   具体规则与护栏见 §7「前端」。
+- **可访问性与交互反馈按 Vercel Web Interface Guidelines 落地**（2026-10-30，`交互` 线）：
+  - **焦点只用 `:focus-visible`**，环是 `2px solid var(--focus-ring)`（`#4D93F8`）。
+    **不许出现裸的 `outline: none`**（摘掉原生环却不给替代 = 键盘用户看不见焦点在哪）；
+    `.panel` / `.table` 是 `overflow: hidden`，那里改用 `outline-offset: -2px` 内描边。
+    样式在 `packages/page-template/src/a11y.ts`（拼在 `PAGE_CSS` 末尾），
+    护栏在 `page-template/test/a11y.test.ts`。
+  - **跳过链接**：`renderShell` 的第一个可聚焦元素是 `a.skip-link[href="#main-content"]`，
+    落点 `<main id="main-content" tabindex="-1">`（`main-column.ts` 的 `MAIN_COLUMN_ID`）。
+    登录 / 注册卡用 `<main class="auth-wrap">` 当正文地标。
+  - **表单**：`renderField` 统一给 `label[for]` + `id`、`autocomplete`（非认证字段默认 `off`）、
+    `spellcheck`（邮箱 / 验证码 / 标识符自动关）、`inputmode`（按 `type` 派生）、
+    占位符**统一补「…」**（调用方只写示例）。**同页同名字段出现多次必须传 `id`**
+    （弹窗化编辑表单是「每行一个」，不传就有一堆重复 id、点 label 跳到别的行）。
+  - **错误就地显示**：`WebError` 可带 `field`；`errorRedirect()` 把失败回跳写成
+    `?err=…&field=…`，页顶提示条带上 `data-field`，`client-feedback.ts` 负责把它
+    **搬到字段下方**、补 `aria-invalid` / `aria-describedby` 并聚焦（浏览器原生校验气泡
+    也改成就地文字）。`pageHeader` 是唯一接线点，新页面**不用**自己渲染就地错误。
+  - **交互反馈**：`client-feedback.ts` 在提交那一刻点亮待定态（按钮文案 +「…」、`aria-busy`、
+    `aria-disabled`，宽度用 CSSOM 钉住），并往 `#dizzy-status`
+    （`role="status" aria-live="polite"`）播报；**不用 `disabled` 属性**
+    （那会让 `<button name=… value=…>` 的值从表单数据里消失）。htmx 局部刷新期间主列加
+    `.is-busy` 并播报，`pageshow` 还原（bfcache 恢复的页面不能停在「保存…」）。
+  - **触控 / 动效**：`a11y.ts` 统一给了 `touch-action: manipulation`、
+    `-webkit-tap-highlight-color`、浮层 `overscroll-behavior: contain`，以及全局
+    `prefers-reduced-motion` 兜底（`transition-duration: .01ms !important`）。
+  - 视口**不许** `user-scalable=no` / `maximum-scale=1`（等于禁缩放，是明确的 anti-pattern）。
 
 ### 5.6 文件粒度与耦合（owner 2026-10-29 追加）
 

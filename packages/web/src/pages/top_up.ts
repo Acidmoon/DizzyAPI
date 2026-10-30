@@ -106,11 +106,12 @@ export const topUpPage: PageModule = {
 ${t.renderField({
   label: `充值金额（元，${formatYuan(options.minAmountMicros)} ~ ${formatYuan(options.maxAmountMicros)}）`,
   name: 'amountYuan',
+  inputmode: 'decimal',
   required: true,
-  placeholder: '例如 100',
+  placeholder: '例如：100',
   hint: `最多 6 位小数；订单 ${options.expiresMinutes} 分钟内有效`,
 })}
-${t.renderField({ label: '备注（可选）', name: 'note', required: false, placeholder: '例如 对公转账尾号' })}
+${t.renderField({ label: '备注（可选）', name: 'note', required: false, placeholder: '例如：对公转账尾号 1234' })}
 <div class="actions"><button class="btn" type="submit">创建订单</button></div>
 </div>
 </form>`,

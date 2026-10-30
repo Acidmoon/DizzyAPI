@@ -27,7 +27,16 @@ export interface MainColumnOptions {
 /** `<main>` 的开始标记：切片段、写用例都认这一个字符串。 */
 export const MAIN_COLUMN_OPEN = '<main class="main"'
 
-/** 渲染主列。整页里 `<main>` 那一截就是它的返回值（不改写、不重排）。 */
+/** 主列的 id：跳过链接（`#main-content`）与 `aria-labelledby` 之类都按它定位。 */
+export const MAIN_COLUMN_ID = 'main-content'
+
+/**
+ * 渲染主列。整页里 `<main>` 那一截就是它的返回值（不改写、不重排）。
+ *
+ * `id` / `tabindex="-1"` 是**跳过链接的落点**：`<a href="#main-content">` 只是把
+ * 视口滚过来，用户按 Tab 还是从链接后面那个元素继续；只有落点本身可聚焦
+ * （`tabindex="-1"`）浏览器才会把焦点一起交过去，键盘用户才真的「跳进正文」。
+ */
 export function renderMainColumn(options: MainColumnOptions): string {
   const title = options.pageTitle === undefined
     ? ''
@@ -35,7 +44,7 @@ export function renderMainColumn(options: MainColumnOptions): string {
   const path = options.pagePath === undefined
     ? ''
     : ` data-page-path="${escapeAttr(options.pagePath)}"`
-  return `${MAIN_COLUMN_OPEN}${title}${path}>
+  return `${MAIN_COLUMN_OPEN} id="${MAIN_COLUMN_ID}" tabindex="-1"${title}${path}>
 <div class="col">
 ${options.content}
 </div>

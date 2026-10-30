@@ -62,6 +62,7 @@ function pageContext(services: WebRuntime, query = '', template: PageTemplateSer
     t: template,
     services,
     notice: null,
+    fieldError: null,
   themeCss: '',  navOrder: [],
     takeSecret: () => undefined,
   }

@@ -94,7 +94,11 @@ export interface ShellOptions {
 
 /** 外壳：侧栏 + 主列。 */
 export function renderShell(options: ShellOptions): string {
+  // 跳过链接必须是**正文里第一个可聚焦元素**：键盘 / 读屏用户按一下 Tab 就能
+  // 越过 12 个侧栏项直达主列（指南 Accessibility 一条的硬要求）。
+  // 平时用 transform 移出视口（只动合成器属性），聚焦时才滑下来，见 a11y.ts。
   return `<div class="shell">
+<a class="skip-link" href="#main-content">跳到主内容</a>
 ${renderSidebar(options)}
 ${renderMainColumn({
     content: options.content,

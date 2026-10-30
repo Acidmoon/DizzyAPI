@@ -26,6 +26,7 @@
  */
 import { BOOST_JS } from './client-boost.ts'
 import { NAV_ORDER_JS } from './client-nav-order.ts'
+import { FEEDBACK_JS } from './client-feedback.ts'
 import { TOAST_JS } from './client-toast.ts'
 import { TOOLTIP_JS } from './client-tooltip.ts'
 
@@ -77,6 +78,15 @@ const CLIENT_CORE_JS = `
       var open = pill.getAttribute('aria-expanded') === 'true';
       closeAll(pill);
       pill.setAttribute('aria-expanded', open ? 'false' : 'true');
+      // 键盘打开（Enter / Space 触发的 click，其 detail 是 0）时把焦点送进菜单，
+      // 否则焦点还留在胶囊上，用户得再按一次 Tab 才够得到第一项。
+      // 鼠标点击不搬焦点：那会让浮层刚出现就闪一圈焦点环。
+      if (!open && event.detail === 0) {
+        var wrap = pill.parentNode;
+        var item = wrap && wrap.querySelector('.menu-item[aria-selected="true"]');
+        if (!item && wrap) item = wrap.querySelector('.menu-item');
+        if (item && item.focus) item.focus();
+      }
       event.stopPropagation();
       return;
     }
@@ -91,7 +101,12 @@ const CLIENT_CORE_JS = `
   });
 
   document.addEventListener('keydown', function (event) {
-    if (event.key === 'Escape') closeAll(null);
+    if (event.key !== 'Escape') return;
+    // 按 Esc 收起浮层之后，焦点必须回到那个胶囊上：否则焦点停在一个
+    // 已经 display: none 的菜单项里，下一次 Tab 会从文档开头重新数。
+    var open = document.querySelector('.pill[aria-expanded="true"]');
+    closeAll(null);
+    if (open && open.focus) open.focus();
   });
 
   // ── 确认框（替代 window.confirm）──────────────────────────────────────
@@ -135,7 +150,12 @@ const CLIENT_CORE_JS = `
     if (!confirmDialog || !confirmOk) return;
     event.preventDefault();
     if (confirmText) confirmText.textContent = message;
-    pendingAction = function () { form.submit(); };
+    pendingAction = function () {
+      // 程序化 form.submit() **不触发** submit 事件，待定态（「保存…」）得在这里显式点亮，
+      // 否则确认之后按钮毫无变化，看起来还是「点了没反应」。
+      if (window.dizzyPending) window.dizzyPending(form);
+      form.submit();
+    };
     confirmDialog.showModal();
   });
 
@@ -288,14 +308,16 @@ const CLIENT_CORE_JS = `
 `
 
 /**
- * 站点脚本全文：核心段 + 悬浮提示 + 轻提示 + 局部刷新 + 侧栏拖动排序。
+ * 站点脚本全文：核心段 + 悬浮提示 + 轻提示 + 交互反馈 + 局部刷新 + 侧栏拖动排序。
  *
  * 顺序不影响正确性（每段各管各的），但按「页面骨架 → 交互辅助」排更好读。
+ * `FEEDBACK_JS` 要排在 `CLIENT_CORE_JS` 之后（确认框那段引用它导出的 `window.dizzyPending`）；
  * `BOOST_JS` 要在 `CLIENT_CORE_JS` 之后（它读 htmx 的 afterSwap，前提是 htmx 已配好）；
  * `NAV_ORDER_JS` 放在最后（它只碰侧栏，与其它段无耦合）。
  */
 export const CLIENT_JS = `${CLIENT_CORE_JS}
 ${TOOLTIP_JS}
 ${TOAST_JS}
+${FEEDBACK_JS}
 ${BOOST_JS}
 ${NAV_ORDER_JS}`

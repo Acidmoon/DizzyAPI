@@ -36,6 +36,7 @@ export {
 } from './tokens.ts'
 
 export { PAGE_CSS, THEME_VARS, CLIENT_JS } from './assets.ts'
+export { A11Y_CSS, FOCUS_RING_VAR } from './a11y.ts'
 export { COMPONENT_CSS } from './extra-styles.ts'
 export { LAYOUT_CSS } from './layout-classes.ts'
 
@@ -71,6 +72,7 @@ export {
 export { VENDOR_THEME_CSS } from './vendor-theme.ts'
 
 export {
+  MAIN_COLUMN_ID,
   MAIN_COLUMN_OPEN,
   extractMainColumn,
   renderMainColumn,
@@ -123,6 +125,7 @@ export {
   type StatCard,
   type TableColumn,
   type ChartCardOptions,
+  type FieldOptions,
   type FilterPill,
   type FilterPillItem,
   type ModelBlock,

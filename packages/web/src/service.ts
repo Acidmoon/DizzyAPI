@@ -11,11 +11,11 @@ import { THEME_CSS_PATH, VENDOR_ASSET_PREFIX, type PageTemplateService } from '@
 import { APP_CSS_BODY, APP_JS_BODY } from './asset-version.ts'
 import { validateWebConfig, type ResolvedWebConfig, type WebConfig } from './config.ts'
 import { apiDocsResource } from './content/api_docs.ts'
-import { assertSameOrigin, describeError, readForm, wantsNoRedirect, WebError } from './forms.ts'
+import { assertSameOrigin, describeError, errorRedirect, readForm, wantsNoRedirect, WebError } from './forms.ts'
 import { fragmentResponse } from './hx.ts'
 import { readPreferences, themeCssFrom } from './preferences.ts'
 import { clearSessionCookie, isSecureRequest, placeholderSession, readCookie, sessionCookie } from './session.ts'
-import { documentAssets, readNotice, type ActionContext, type PageContext, type PageModule } from './layout.ts'
+import { documentAssets, readFieldError, readNotice, type ActionContext, type PageContext, type PageModule } from './layout.ts'
 import type {
   AccountAdminLike,
   ApiKeyLike,
@@ -349,9 +349,10 @@ export class WebService extends Service {
         this.send(res, 400, 'text/plain; charset=utf-8', message, true)
         return
       }
+      // 目标地址里带着出错字段（如果知道），页面据此把错误就地渲染到字段下方。
       res.writeHead(303, {
         ...SECURITY_HEADERS,
-        Location: `${page.path}?err=${encodeURIComponent(message)}`,
+        Location: errorRedirect(page.path, error),
         ...(cookies.length === 0 ? {} : { 'Set-Cookie': cookies }),
       })
       res.end()
@@ -373,6 +374,7 @@ export class WebService extends Service {
       t: this.template,
       services: this.runtime(),
       notice: readNotice(url.searchParams),
+      fieldError: readFieldError(url.searchParams),
       themeCss: themeCssFrom(preferences),
       navOrder: preferences.navOrder,
       takeSecret: () => this.takeSecret(url.searchParams.get('new')),

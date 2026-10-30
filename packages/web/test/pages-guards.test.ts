@@ -118,8 +118,10 @@ test('护栏：不用 alert / prompt，也不手写裸 <dialog>（弹窗一律�
 
 test('护栏：页面用到的修饰类都必须在模板 CSS 里有定义', () => {
   // 防止「class 写了但样式没写」——那和内联样式被丢弃一样，是无声的失败。
+  // `a11y.ts` 也在清单里：它定义 `.notice--moved` 这类修饰类（可访问性样式单独一个文件）。
   const templateCss = readFileSync(join(TEMPLATE_DIR, 'layout-classes.ts'), 'utf8')
     + readFileSync(join(TEMPLATE_DIR, 'extra-styles.ts'), 'utf8')
+    + readFileSync(join(TEMPLATE_DIR, 'a11y.ts'), 'utf8')
     + readFileSync(join(TEMPLATE_DIR, 'assets.ts'), 'utf8')
 
   const known = new Set<string>()

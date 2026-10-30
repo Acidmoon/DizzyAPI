@@ -18,6 +18,14 @@ export interface PageContext {
   readonly services: WebRuntime
   readonly notice: { readonly kind: 'ok' | 'err'; readonly text: string } | null
   /**
+   * 失败动作**属于哪个字段**（`?err=…&field=…` 里的 `field`）。
+   *
+   * 只带字段名与文案，不带渲染位置：服务端把 `data-field` 交给提示条，
+   * 客户端脚本负责把它搬到字段下方（`client-feedback.ts`）。
+   * 这样「错误就地显示」不必让 20 多个页面各写一遍。
+   */
+  readonly fieldError: { readonly field: string; readonly text: string } | null
+  /**
    * 当前用户的界面偏好 CSS（`/assets/theme.css` 的正文）。
    *
    * 由 `web` 在构建上下文时按会话读一次（`user.getUiPreferences`），所以渲染层保持纯同步。
@@ -248,9 +256,27 @@ export function readNotice(query: URLSearchParams): PageContext['notice'] {
   return null
 }
 
+/**
+ * 失败动作的字段名（`handleAction` 在 303 里带过来的 `field`）。
+ *
+ * 只有 `err` 与 `field` 同时在时才算「字段级错误」——单独一个 `field` 没有意义。
+ */
+export function readFieldError(query: URLSearchParams): PageContext['fieldError'] {
+  const err = query.get('err')
+  const field = query.get('field')
+  if (err === null || err === '' || field === null || field === '') return null
+  return { field, text: err }
+}
+
 /** 页面标题 + 提示条。 */
 export function pageHeader(ctx: PageContext, title: string, note?: string): string {
   const header = ctx.t.renderPageHeader({ title, ...(note === undefined ? {} : { note }) })
   if (ctx.notice === null) return header
-  return `${header}\n${ctx.t.renderNotice({ kind: ctx.notice.kind, text: ctx.notice.text })}`
+  // 字段级错误把字段名一起交出去：客户端脚本据此把这条提示搬到字段下方。
+  const field = ctx.fieldError === null ? undefined : ctx.fieldError.field
+  return `${header}\n${ctx.t.renderNotice({
+    kind: ctx.notice.kind,
+    text: ctx.notice.text,
+    ...(field === undefined ? {} : { field }),
+  })}`
 }

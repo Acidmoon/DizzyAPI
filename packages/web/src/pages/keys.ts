@@ -94,6 +94,7 @@ ${t.renderDatePicker({ name: 'expiresAt', id: 'f-expiresAt', value: isoToDate(ke
 ${t.renderField({
   label: '金额上限（元，留空 = 不限）',
   name: 'spendingLimitYuan',
+  inputmode: 'decimal',
   value: microsToYuanInput(key.spendingLimitMicros),
   placeholder: '例如：100',
   hint: '累计消费达到上限后返回 402 API_KEY_SPENDING_LIMIT。',
@@ -101,6 +102,7 @@ ${t.renderField({
 ${t.renderField({
   label: `并发上限（${String(MIN_CONCURRENCY)}–${String(MAX_CONCURRENCY)}，留空 = 不限）`,
   name: 'concurrencyLimit',
+  inputmode: 'numeric',
   value: key.concurrencyLimit === null ? '' : String(key.concurrencyLimit),
   placeholder: '例如：4',
   hint: '同时在飞的请求超过上限时返回 429 API_KEY_CONCURRENCY_LIMIT。',

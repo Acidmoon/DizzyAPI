@@ -76,8 +76,8 @@ function renderFilters(
   ]
   return `<form class="form form--wide form--spaced" method="get" action="/admin/accounts">
 <div class="row">
-${t.renderField({ label: '搜索（id / 名称 / 邮箱）', name: 'search', value: search, placeholder: '留空 = 不筛' })}
-${t.renderField({ label: '标签（逗号分隔，AND）', name: 'labels', value: labels, placeholder: 'tier:pro, team:ops' })}
+${t.renderField({ label: '搜索（id / 名称 / 邮箱）', name: 'search', value: search, placeholder: '例如：alice 或 ops@example.com' })}
+${t.renderField({ label: '标签（逗号分隔，AND）', name: 'labels', value: labels, placeholder: '例如：tier:pro, team:ops' })}
 <div class="field">
 <label for="f-health">健康状态</label>
 ${t.renderSelect({ name: 'health', id: 'f-health', allowEmpty: false, options: healthSelect })}
@@ -272,19 +272,19 @@ function renderBulkForm(t: import('@dizzyapi/plugin-page-template').PageTemplate
 </div>
 <div class="row">
 <label class="hint"><input type="checkbox" name="useLabels" value="1"> 标签</label>
-${t.renderField({ label: '标签（逗号分隔；留空 = 清空）', name: 'labels', placeholder: 'tier:pro, team:ops' })}
+${t.renderField({ label: '标签（逗号分隔；留空 = 清空）', name: 'labels', placeholder: '例如：tier:pro, team:ops' })}
 </div>
 <div class="row">
 <label class="hint"><input type="checkbox" name="useWeight" value="1"> 权重</label>
-${t.renderField({ label: '权重（> 0；留空 = 未声明）', name: 'weight', placeholder: '2.5' })}
+${t.renderField({ label: '权重（> 0；留空 = 未声明）', name: 'weight', inputmode: 'decimal', placeholder: '例如：2.5' })}
 </div>
 <div class="row">
 <label class="hint"><input type="checkbox" name="useConcurrency" value="1"> 并发上限</label>
-${t.renderField({ label: '并发上限（1–10000；留空 = 未声明）', name: 'concurrency', placeholder: '4' })}
+${t.renderField({ label: '并发上限（1–10000；留空 = 未声明）', name: 'concurrency', inputmode: 'numeric', placeholder: '例如：4' })}
 </div>
 <div class="row">
 <label class="hint"><input type="checkbox" name="usePriority" value="1"> 优先级</label>
-${t.renderField({ label: '优先级（0–1000）', name: 'priority', placeholder: '0' })}
+${t.renderField({ label: '优先级（0–1000）', name: 'priority', inputmode: 'numeric', placeholder: '例如：0' })}
 </div>
 <div class="actions"><button class="btn" type="submit">对勾选账号执行</button></div>
 </form>`

@@ -70,7 +70,9 @@ export function renderPageHeader(options: PageHeaderOptions): string {
   const note = options.note === undefined
     ? ''
     : `<p class="page-note"><span>${escapeText(options.note)}</span>${iconInfo()}</p>`
-  return `<h1 class="page-title" role="heading" aria-level="1">${escapeText(options.title)}</h1>
+  // 不再挂 `role="heading" aria-level="1"`：`<h1>` 本来就是一级标题，
+  // 重复声明 ARIA 只会多一个可能与真实层级不符的源（语义标签优先于 ARIA）。
+  return `<h1 class="page-title">${escapeText(options.title)}</h1>
 ${note}`
 }
 
@@ -197,7 +199,8 @@ export function renderTable(options: {
   readonly empty?: string
 }): string {
   const head = options.columns
-    .map((column) => `<th${column.align === 'right' ? ' class="num"' : ''}>${escapeText(column.label)}</th>`)
+    // `scope="col"`：读屏念单元格时会带上列名（否则只念「¥12.00」，不说是哪一列）。
+    .map((column) => `<th scope="col"${column.align === 'right' ? ' class="num"' : ''}>${escapeText(column.label)}</th>`)
     .join('')
   const body = options.rows.length === 0
     ? `<tr class="empty-row"><td colspan="${options.columns.length}">${escapeText(options.empty ?? '没有数据')}</td></tr>`
@@ -219,13 +222,29 @@ ${body}
 export function renderNotice(options: {
   readonly kind: 'ok' | 'err' | 'info'
   readonly text: string
+  /**
+   * 这条错误属于哪个字段（表单 `name`）。
+   *
+   * 给了就写进 `data-field`：客户端脚本会把这条提示**搬到那个字段下方**
+   * （`client-feedback.ts` 的 relocateNotice），所以「哪个字段错了」不必让
+   * 每个页面各自渲染一遍就地错误——服务端只说事实，摆放交给一层统一的脚本。
+   * 没有脚本时它仍是一条正常的页顶提示，信息不丢。
+   */
+  readonly field?: string
 }): string {
   const cls = options.kind === 'ok' ? 'notice ok' : options.kind === 'err' ? 'notice err' : 'notice'
-  return `<div class="${cls}" role="status">${escapeText(options.text)}</div>`
+  // 失败用 `role="alert"`（读屏会打断当前朗读、立刻念出来——失败必须被听见）；
+  // 成功 / 说明用 `role="status"`（礼貌播报，不打断）。
+  // `tabindex="-1"` 让脚本能把焦点移过来（失败后键盘用户不该自己去页顶找原因）。
+  const fieldAttr = options.field === undefined ? '' : ` data-field="${escapeAttr(options.field)}"`
+  if (options.kind === 'err') {
+    return `<div class="${cls}" role="alert" tabindex="-1"${fieldAttr}>${escapeText(options.text)}</div>`
+  }
+  return `<div class="${cls}" role="status" aria-live="polite">${escapeText(options.text)}</div>`
 }
 
 /** 表单字段。 */
-export function renderField(options: {
+export interface FieldOptions {
   readonly label: string
   readonly name: string
   readonly type?: string
@@ -234,14 +253,80 @@ export function renderField(options: {
   readonly hint?: string
   readonly required?: boolean
   readonly autocomplete?: string
-}): string {
+  /**
+   * 显式元素 id。**同一页里同名字段出现多次时必须给**：默认 id 是 `f-<name>`，
+   * 而弹窗化的编辑表单是「每行一个」（`admin_users` / `keys` 都是这样），
+   * 同名字段一多，`<label for>` 就全部指向第一个、点标签会跳到看不见的控件上。
+   */
+  readonly id?: string
+  /** 键盘类型（`inputmode`）；不给时按 `type` 派生。 */
+  readonly inputmode?: string
+  /** 拼写检查；不给时按字段语义派生（邮箱 / 验证码 / 标识符一律关掉）。 */
+  readonly spellcheck?: boolean
+  /** 就地错误文案：渲染在字段正下方，并挂 `aria-invalid` + `aria-describedby`。 */
+  readonly error?: string
+}
+
+/** 按 `type` 派生 `inputmode`（移动端决定弹什么键盘）。 */
+function inputModeOf(type: string): string | undefined {
+  if (type === 'email') return 'email'
+  if (type === 'number') return 'numeric'
+  if (type === 'tel') return 'tel'
+  if (type === 'url') return 'url'
+  if (type === 'search') return 'search'
+  return undefined
+}
+
+/**
+ * 按字段语义决定要不要拼写检查。
+ *
+ * 邮箱 / 验证码 / 用户名 / 模型名 / URL 这类**标识符**开着拼写检查只会捣乱：
+ * 输入法给它加下划线、移动端还可能「自动纠错」把验证码改掉。
+ * 自由文本（备注、原因、活动说明）保持开启。
+ */
+const NO_SPELLCHECK_NAME = /(email|code|username|password|name|model|key|url|tag|label|search)/i
+function spellcheckOf(name: string, type: string): boolean {
+  if (type === 'email' || type === 'password' || type === 'url' || type === 'number') return false
+  return !NO_SPELLCHECK_NAME.test(name)
+}
+
+/**
+ * 占位符统一以「…」结尾（指南：placeholder 是**示例**，不是标签）。
+ * 调用方只需要给示例本身（`例如：本地开发`），结尾的省略号在这里补，
+ * 免得 30 多个调用点各写一遍、漏一个是一个。
+ */
+function placeholderOf(text: string | undefined): string | undefined {
+  if (text === undefined || text === '') return undefined
+  return text.endsWith('…') ? text : `${text}…`
+}
+
+export function renderField(options: FieldOptions): string {
   const type = options.type ?? 'text'
+  const id = options.id ?? `f-${options.name}`
   const required = options.required === true ? ' required' : ''
-  const hint = options.hint === undefined ? '' : `<span class="hint">${escapeText(options.hint)}</span>`
+  // 标识符类字段关掉拼写检查；调用方给的显式值优先。
+  const spellcheck = options.spellcheck ?? spellcheckOf(options.name, type)
+  const inputmode = options.inputmode ?? inputModeOf(type)
+  // 非认证字段默认 `autocomplete="off"`：否则浏览器的密码管理器会在
+  // 「上游账号 / 模型价格」这类表单上弹出「保存密码」，用户一脸问号。
+  // 登录 / 注册页显式传 `username` / `current-password` / `new-password`，不受影响。
+  const autocomplete = options.autocomplete ?? 'off'
+  const hintId = `${id}-hint`
+  const errorId = `${id}-error`
+  const hint = options.hint === undefined ? '' : `<span class="hint" id="${escapeAttr(hintId)}">${escapeText(options.hint)}</span>`
+  const error = options.error === undefined
+    ? ''
+    : `<p class="field-error" id="${escapeAttr(errorId)}" role="alert">${escapeText(options.error)}</p>`
+  // 说明与错误都要能被读屏念出来：hint 在前、error 在后（先原因后说明）。
+  const describedBy = [
+    options.hint === undefined ? '' : hintId,
+    options.error === undefined ? '' : errorId,
+  ].filter((item) => item !== '').join(' ')
   return `<div class="field">
-<label for="f-${escapeAttr(options.name)}">${escapeText(options.label)}</label>
-<input class="input" id="f-${escapeAttr(options.name)}" name="${escapeAttr(options.name)}" type="${escapeAttr(type)}"${required} value="${escapeAttr(options.value ?? '')}"${options.placeholder === undefined ? '' : ` placeholder="${escapeAttr(options.placeholder)}"`}${options.autocomplete === undefined ? '' : ` autocomplete="${escapeAttr(options.autocomplete)}"`}>
+<label for="${escapeAttr(id)}">${escapeText(options.label)}</label>
+<input class="input" id="${escapeAttr(id)}" name="${escapeAttr(options.name)}" type="${escapeAttr(type)}"${required} value="${escapeAttr(options.value ?? '')}"${placeholderOf(options.placeholder) === undefined ? '' : ` placeholder="${escapeAttr(placeholderOf(options.placeholder) as string)}"`}${` autocomplete="${escapeAttr(autocomplete)}"`}${` spellcheck="${spellcheck ? 'true' : 'false'}"`}${inputmode === undefined ? '' : ` inputmode="${escapeAttr(inputmode)}"`}${describedBy === '' ? '' : ` aria-describedby="${escapeAttr(describedBy)}"`}${options.error === undefined ? '' : ' aria-invalid="true"'}>
 ${hint}
+${error}
 </div>`
 }
 
@@ -258,14 +343,16 @@ export function renderAuthPage(options: {
   const footer = options.footer === undefined
     ? ''
     : `<div class="auth-foot">${options.footer}</div>`
-  return `<div class="auth-wrap">
+  // 外层用 `<main>`：登录 / 注册页没有侧栏，也就没有别的正文地标。
+  // 读屏用户靠地标（landmark）跳转，全站每页都该有一个 main。
+  return `<main class="auth-wrap">
 <div class="auth-card">
 <h1 class="auth-title">${escapeText(options.title)}</h1>
 ${subtitle}
 ${options.content}
 ${footer}
 </div>
-</div>`
+</main>`
 }
 
 /** 区块标题。 */
