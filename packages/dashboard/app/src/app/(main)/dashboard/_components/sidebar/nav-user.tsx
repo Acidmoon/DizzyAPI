@@ -69,13 +69,13 @@ export function NavUser({ user = PLACEHOLDER_USER }: { readonly user?: typeof PL
             <DropdownMenuSeparator />
             <DropdownMenuGroup>
               <DropdownMenuItem asChild>
-                <a href="/dashboard/me/profile">
+                <a href="/user/profile">
                   <CircleUser />
                   个人资料
                 </a>
               </DropdownMenuItem>
               <DropdownMenuItem asChild>
-                <a href="/dashboard/me/keys">
+                <a href="/user/keys">
                   <KeyRound />
                   API 密钥
                 </a>
