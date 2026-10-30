@@ -107,6 +107,13 @@ export class GateFeedService extends Service {
   /** Go 侧两份快照的健康度（每轮读一次；读不到是 null，不影响推送）。 */
   private goPricing: GoSnapshotState | null = null
   private goSpend: GoSnapshotState | null = null
+  /**
+   * 定价闸门装没装：`null` = 还没读到过 Go 侧状态。
+   *
+   * 只在**读到了** `pricing.status` 之后才更新：读失败保持上一次的值而不是退回 null，
+   * 否则一次桥抖动就会让价格页从「闸门开着」翻成「不知道」。
+   */
+  private pricingGateEnabled: boolean | null = null
   /** 上一轮算出的消费快照缓存：key 集合与用量游标都没变时直接复用。 */
   private spendCache: SpendCache | undefined
   private spendRecomputes = 0
@@ -175,6 +182,7 @@ export class GateFeedService extends Service {
         this.goTtlMs !== null && this.goTtlMs < this.config.pollIntervalMs * 2,
       goPricing: this.goPricing,
       goSpend: this.goSpend,
+      pricingGateEnabled: this.pricingGateEnabled,
       spendRecomputes: this.spendRecomputes,
       spendReuses: this.spendReuses,
     }
@@ -314,6 +322,9 @@ export class GateFeedService extends Service {
       const spend = (await bridge.keySpendStatus()) as Record<string, unknown>
       this.goPricing = goStateOf(pricing)
       this.goSpend = goStateOf(spend)
+      // 定价闸门装没装：`pricing.status` 的 `gate` 是 omitempty，**闸门没装就不出现**。
+      // 指针非 nil 时哪怕计数全 0 也会输出 `"gate":{}`，所以「键在」= 闸门装了。
+      this.pricingGateEnabled = Object.hasOwn(pricing, 'gate')
       if (this.goPricing.ttlMs > 0) {
         this.goTtlMs = this.goPricing.ttlMs
         if (this.goPricing.ttlMs < this.config.pollIntervalMs * 2) {

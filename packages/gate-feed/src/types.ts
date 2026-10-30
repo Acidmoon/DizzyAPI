@@ -115,6 +115,17 @@ export interface GateFeedStatus {
    */
   readonly goPricing: GoSnapshotState | null
   readonly goSpend: GoSnapshotState | null
+  /**
+   * 定价闸门阶段**到底装没装**（= gatewayd 的 `-pricing-gate` 开没开）。
+   *
+   * 为什么必须暴露：`pricing.status` 的 `gate` 键是 omitempty，**闸门没装就不出现**。
+   * 价格页不能写死一句「闸门默认关，现在仍可请求」——运维打开闸门那天它就变成假话，
+   * 而这个页面正是「未定价模型到底会不会被拒」的唯一解释处。
+   *
+   * `null` = 读不到 Go 侧状态（桥断 / 旧二进制），与 `false`（确认没装）**必须分开**：
+   * 拿「不知道」冒充「没开」就是另一种说谎。
+   */
+  readonly pricingGateEnabled: boolean | null
   /** 消费快照的重算 / 复用次数（心跳成本护栏的观察口）。 */
   readonly spendRecomputes: number
   readonly spendReuses: number

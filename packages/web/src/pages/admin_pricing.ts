@@ -4,8 +4,8 @@
  * owner 第 10 条：操作收进编辑弹窗，并新增「添加模型」按钮；**标出未定价 = 不可请求**。
  *
  * 「未定价不可请求」的实现方式是 Go 的定价闸门（`-pricing-gate` 打开后返回
- * 403 `MODEL_NOT_PRICED`）。闸门**默认关**，所以页面上要写清「闸门关时仍可请求」，
- * 不能让运维以为现在就已经拦住了。
+ * 403 `MODEL_NOT_PRICED`）。闸门**默认关**，但运维随时会打开——所以页面上不能写死
+ * 「现在仍可请求」，要读真实的闸门状态（`gateFeed.status()`）再说这句话。
  *
  * 未定价的模型从 `modelhub.catalog()` 拿（账号声明了但价格表里没有的那些）——
  * 价格表本身只能列出「已定价」的，光看它永远发现不了缺价。
@@ -17,6 +17,7 @@ import { pageHeader, renderAdminShell, type PageContext, type PageModule } from 
 import { requiredString, WebError } from '../forms.ts'
 import { WEB_ACTOR } from '../runtime.ts'
 import { auditedAction } from '../audit.ts'
+import type { GateFeedStatusView } from '../gate-types.ts'
 
 /** 一个模型的价格（列表与表单共用）。 */
 interface PriceRow {
@@ -26,6 +27,73 @@ interface PriceRow {
   readonly cacheReadPerMillion: string
   readonly cacheWritePerMillion: string
   readonly updatedAt: string
+}
+
+/**
+ * 读闸门状态：读不到一律 `null`（=「不知道」），**不冒充「闸门没开」**。
+ *
+ * `gateFeed` 缺席（插件被禁用 / 还没装载）与 `status()` 抛错是同一档：
+ * 这一页只负责如实说「不知道」，不让运维拿一个猜测去做「要不要开闸门」的决定。
+ */
+function gateStateOf(ctx: PageContext): GateFeedStatusView | null {
+  const feed = ctx.services.gateFeed
+  if (feed === undefined) return null
+  try {
+    return feed.status()
+  } catch {
+    return null
+  }
+}
+
+/**
+ * 闸门状态提示：**三态分明**（开着 / 关着 / 读不到）。
+ *
+ * 为什么不能写死一句「闸门默认关，现在仍可请求」：`-pricing-gate` 是 gatewayd 的
+ * 启动开关，运维打开它的那天这句文案就变成假话，而这一页正是「未定价到底会不会被拒」
+ * 的唯一解释处。宁可说「读不到」，也不能替 Go 猜开关。
+ */
+function renderGateState(t: PageContext['t'], status: GateFeedStatusView | null): string {
+  const blocked =
+    '<code class="mono">403 MODEL_NOT_PRICED</code>，不转发上游'
+
+  if (status === null || status.pricingGateEnabled === null) {
+    return t.renderNotice({
+      kind: 'info',
+      text: `读不到网关的定价闸门状态（桥断 / 网关二进制过旧）：未定价的模型现在会不会被拒是「未知」，不是「一定放行」。开启闸门后它们会被拒（${blocked}）。`,
+    })
+  }
+
+  if (!status.pricingGateEnabled) {
+    return t.renderNotice({
+      kind: 'info',
+      text: `定价闸门当前是<b>关</b>的（gatewayd 没开 <code class="mono">-pricing-gate</code>）：未定价的模型现在<b>仍可请求</b>，费用按 0 计。开启闸门后它们会被拒（${blocked}）。`,
+    })
+  }
+
+  // 闸门开着：快照健康度才是真正的拦人因素（fail-closed：stale 就全站 503）。
+  const pricing = status.goPricing
+  if (pricing === null || !pricing.ready) {
+    return t.renderNotice({
+      kind: 'err',
+      text: `定价闸门<b>已开启</b>，但网关还没收到价格快照（fail-closed）：所有模型都会被拒 503 <code class="mono">PRICING_SNAPSHOT_UNAVAILABLE</code>。先确认推送在跑，再排查桥。`,
+    })
+  }
+  if (pricing.stale) {
+    return t.renderNotice({
+      kind: 'err',
+      text: `定价闸门<b>已开启</b>，但价格快照已过期（${String(pricing.ageMs)}ms > TTL ${String(pricing.ttlMs)}ms，fail-closed）：所有模型都会被拒 503。检查推送间隔与 TTL 的比例（TTL 必须 ≥ 3 × 推送间隔）。`,
+    })
+  }
+  if (status.failureStreak > 0) {
+    return t.renderNotice({
+      kind: 'info',
+      text: `定价闸门<b>已开启</b>：未定价的模型会被拒（${blocked}）。最近有 ${String(status.failureStreak)} 次推送失败：${status.lastError ?? '—'}。`,
+    })
+  }
+  return t.renderNotice({
+    kind: 'ok',
+    text: `定价闸门<b>已开启</b>，价格快照健康：未定价的模型会被拒（${blocked}）。`,
+  })
 }
 
 /** 价格表单：`action` 决定是「改已有」还是「新建」，字段完全一样。 */
@@ -168,7 +236,7 @@ ${renderPriceForm(t, '/admin/pricing?action=set', prefilled === null ? undefined
       }),
     ]
 
-    const gateNote = `<p class="hint p--spaced">未定价的模型在<b>打开 <code class="mono">-pricing-gate</code> 之后</b>会被直接拒绝（403 <code class="mono">MODEL_NOT_PRICED</code>，不转发上游）；闸门默认关，现在仍可请求。</p>`
+    const gateNote = renderGateState(t, gateStateOf(ctx))
 
     return renderAdminShell(ctx, [
       pageHeader(ctx, '模型价格', '单价单位：元 / 每百万 token。费用在读取用量时按这张表计算。'),
@@ -190,7 +258,8 @@ ${renderPriceForm(t, '/admin/pricing?action=set', prefilled === null ? undefined
         rows,
         empty: '还没有价格',
       }),
-      t.renderSectionTitle('未定价的模型（不可请求）'),
+      // 标题不能说「不可请求」：闸门没开时它们其实可以请求。条件写在提示里。
+      t.renderSectionTitle('未定价的模型（闸门打开后会被拒）'),
       t.renderTable({
         columns: [{ label: '模型' }, { label: '状态' }, { label: '操作' }],
         rows: unpricedRows,

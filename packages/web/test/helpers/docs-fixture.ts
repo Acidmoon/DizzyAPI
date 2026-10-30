@@ -128,6 +128,7 @@ const EMPTY_SERVICES: WebRuntime = {
   audit: undefined,
   observability: undefined,
   contentAudit: undefined,
+  gateFeed: undefined,
 }
 
 /** 渲染文档页的 HTML（不鉴权，页面本身要登录由 HTTP 层管）。 */
