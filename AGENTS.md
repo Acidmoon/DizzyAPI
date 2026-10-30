@@ -1233,6 +1233,9 @@ pnpm build:all        # 两个二进制一起编
 - **`skip` 不算绿**：真进程用例（`packages/content-audit/test/gateway-smoke.test.ts`）没有
   `bin/gatewayd` 时会 skip。改了 Go 侧链路就**先 `pnpm build:go`**，再看用例数里的 skip 数
   ——基线是 1 个 skip（那是真 skip），多出来的都是「因为没编二进制而没跑」。
+- **验退出码不要接 `| Select-Object -First`**：管道提前关闭会让子进程吃断管、`$LASTEXITCODE`
+  失真（`config show` / `--help` 被误判成 EXIT=2 就是这么来的）。要截断就重定向到文件再读
+  前几行。
 
 
 ---
