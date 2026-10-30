@@ -1,6 +1,10 @@
 {
   "compilerOptions": {
-    "target": "ES2017",
+    // ES2022 而不是上游的 ES2017：客户端层 import 的 `@dizzyapi/plugin-api/types`
+    // 里有一处 `import('./config.ts').ResolvedApiConfig`，而 config.ts 用了 BigInt 字面量
+    // （`10_000n`），ES2017 下会报 TS2737。Next 的产物本身由 Turbopack 按现代浏览器编译，
+    // 这个 target 只影响类型检查口径，不影响产物。
+    "target": "ES2022",
     "lib": ["dom", "dom.iterable", "esnext"],
     "allowJs": true,
     "skipLibCheck": true,
@@ -13,6 +17,10 @@
     "isolatedModules": true,
     "jsx": "react-jsx",
     "incremental": true,
+    // 客户端层（`src/lib/api/`）与它 import 的 `@dizzyapi/plugin-api` 类型都写成
+    // 带 `.ts` 扩展名的相对导入（本仓库的 Node ESM 约定）。Next 的构建期类型检查
+    // 用的是这份 tsconfig，所以要在这里放行；`noEmit` 已开，不会有产物。
+    "allowImportingTsExtensions": true,
     "plugins": [
       {
         "name": "next"

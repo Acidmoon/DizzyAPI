@@ -7,9 +7,9 @@
  * **cookie 名是 `dizzyapi_session`，HttpOnly**：前端读不到也不需要读，
  * 一律靠 `credentials: 'include'` 让浏览器带上。
  */
-import type { SessionInfoView, SessionUserView } from '@dizzyapi/plugin-api'
+import type { SessionInfoView, SessionUserView } from '@dizzyapi/plugin-api/types'
 
-export type { SessionInfoView, SessionRole, SessionUserView } from '@dizzyapi/plugin-api'
+export type { SessionInfoView, SessionRole, SessionUserView } from '@dizzyapi/plugin-api/types'
 
 /** `GET /api/session` 的响应（`sessionResponse()`）。 */
 export interface SessionView {

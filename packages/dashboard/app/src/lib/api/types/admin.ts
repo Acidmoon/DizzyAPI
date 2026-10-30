@@ -8,11 +8,11 @@
  * 路径注意：管理员的**用户**与**上游账号**挂在 `/api/users`、`/api/accounts`
  * （**不带 `admin` 前缀**），但都要管理员权限。
  */
-import type { AccountViewLike, AdminUserView } from '@dizzyapi/plugin-api'
+import type { AccountViewLike, AdminUserView } from '@dizzyapi/plugin-api/types'
 
 import type { UsageDailyView, UsageModelView, UsageTotalsView, UsageUserView } from './usage.ts'
 
-export type { AccountViewLike, AdminUserView, UserStatusLike } from '@dizzyapi/plugin-api'
+export type { AccountViewLike, AdminUserView, UserStatusLike } from '@dizzyapi/plugin-api/types'
 
 // ───────────────────────────── 用户 ─────────────────────────────
 

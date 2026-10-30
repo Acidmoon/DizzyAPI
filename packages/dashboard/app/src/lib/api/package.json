@@ -1,0 +1,4 @@
+{
+  "//": "把这一层标记为 ESM：Next 的 `@/*` 映射要求客户端层放在 `app/src/lib/` 下，而 `app/package.json` 是 Next 工程自己的（无 type 字段），Node 会把这里的 .ts 当 CJS 解析 → `import { ApiClient }` 报「没有导出成员」。这里只声明模块类型，不影响 Next 的打包（Next 自己按相对路径解析源码）。",
+  "type": "module"
+}

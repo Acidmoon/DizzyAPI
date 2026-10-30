@@ -4,9 +4,9 @@
  * 能 import 的**一律 import**（`packages/api/src/types.ts` 是纯类型文件，
  * 前端 `import type` 不产生运行时依赖），不手抄。
  */
-import type { CatalogModuleView, GatewayHealthView } from '@dizzyapi/plugin-api'
+import type { CatalogModuleView, GatewayHealthView } from '@dizzyapi/plugin-api/types'
 
-export type { CatalogModuleView, GatewayComponentHealth, GatewayHealthState, GatewayHealthView } from '@dizzyapi/plugin-api'
+export type { CatalogModuleView, GatewayComponentHealth, GatewayHealthState, GatewayHealthView } from '@dizzyapi/plugin-api/types'
 
 /** 健康检查的响应（服务端就是 `GatewayHealthView`，直接复用）。 */
 export type HealthView = GatewayHealthView
