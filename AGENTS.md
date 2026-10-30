@@ -373,7 +373,7 @@ pnpm test:go
 
 - 新增插件必须有 `test/*.test.ts`；新增 Go 模块必须有单测。
 - 测试失败先修实现，不允许删断言或放宽断言来变绿。
-- 当前基线（2026-10-30 实测）：`pnpm test` 859 个用例（858 通过 / 1 跳过），`pnpm typecheck` 干净，
+- 当前基线（2026-10-30 实测）：`pnpm test` 878 个用例（877 通过 / 1 跳过），`pnpm typecheck` 干净，
   `go test ./...` **26 包**全 ok，`gofmt -l .` 与 `go vet ./...` 无输出。
   这个数字会变，以实际输出为准。
 - **验收任何分支前先 `pnpm build:go`**（不只是改过 Go 的分支）：`pnpm test` 里有真进程用例会
@@ -697,11 +697,13 @@ pnpm build:all        # 两个二进制一起编
   算完再相加（不同模型单价不同）。`pricing` 不在运行时费用是 0，页面要提示。
 - **导入的 base_url 约定**：new-api 的 `base_url` 是源站（`https://api.openai.com`），
   DizzyAPI 的 `baseUrl` 自带版本前缀；导入时只给「路径为空或 `/`」的裸源站补 `/v1`。
-- **CSV 导出**：格式**唯一实现**在 `packages/usage/src/csv.ts`（转义原语在
-  `packages/kit/src/csv.ts`）：UTF-8 BOM + CRLF + RFC 4180 + `= + - @` 开头加前导 `'`
-  （防公式注入），12 列（不含 `ttft_ms`，那是 `/api/usage/export` 的既有契约）。
-  `/api/usage/export` 回 JSON `{filename, content}`（契约不动）；页面走
-  `/console/usage/export.csv` 的 `text/csv`（见 §5.5）。**不要新增第三份拼 CSV 的代码。**
+- **CSV 导出有两条路，但格式只有一份实现**：格式在 `packages/usage/src/csv.ts`
+  （转义原语在 `packages/kit/src/csv.ts`）：UTF-8 BOM + CRLF + RFC 4180 + `= + - @` 开头加
+  前导 `'`（防公式注入），**12 列、不含 `ttft_ms`**（那是 `/api/usage/export` 的既有契约，
+  单一实现必须原样沿用；`ttft_ms` 只出现在页面表格与详情弹窗）。两个调用方：
+  `/api/usage/export`（`api` 插件）仍返回 JSON `{filename, content}`，契约不动；用户侧页面走
+  `web` 自己的服务端 `text/csv` 路由 `/console/usage/export.csv`（普通链接、无需脚本，
+  细节见 §5.5）。**不要新增第三份拼 CSV 的代码。**
 - **桥的拓扑是「Go 服务端 + TS 客户端」**：`internal/bridge` 是 Server，TS 侧 `BridgeClient`
   才是发起方。所以结算**不能**设计成 Go 主动调 TS；正确形态是 TS 拉到用量后同步结算。
   要 Go 主动推，只能新增反向通道，那是新架构。
@@ -883,9 +885,20 @@ pnpm build:all        # 两个二进制一起编
 - **金额上限靠 `keyspend.replace` 心跳快照**：花钱的事实只有 TS 知道（结算与算价都在 TS），
   Go 只读、只比大小。消费快照不可用 / 快照里没有这个 key 时**放行 + 计数**（`spendingUnknown`）：
   上限是运营保护，不是钱（钱由额度闸门 + 后付费结算兜底）。
+- **「该 key 已消费多少」只有一个口径：`usage.summary({ apiKeyId })` 读取时按当前价表算**
+  （2026-10-30 定）。不能用 `billing` 的已结算额——`settle` 表**没有 `api_key_id` 列**，
+  按 key 聚合做不到（要加列 + 迁移 + 回填历史）；而 `usage` 明细本来就有 `api_key_id`。
+  代价是改价会重算历史消费（上限判定跟着变），换来的是**页面与闸门永远同一个数字**：
+  `/console/api-keys` 的「已消费」列与 Go 侧 `spentMicros` 调的是同一个方法。
+  页面对**没配上限**的 key 不查（Go 侧根本不判金额），单条算不出来只显示「—」，不影响整页。
 - **定价闸门默认关（`-pricing-gate`）**，且是 **fail-closed**：快照没收到 / 超过 TTL → 503
   `PRICING_SNAPSHOT_UNAVAILABLE`，模型没价 → 403 `MODEL_NOT_PRICED`。与额度闸门 / 内容审核
   相反（那两个是可用性优先），因为这是「准入」不是「保护」。
+- **「未定价模型到底会不会被拒」必须读真实闸门状态，不能在页面上写死**（2026-10-30 定）：
+  `gateFeed.status().pricingGateEnabled` 来自 `pricing.status` 的 `gate` 键**在不在**
+  （Go 侧 omitempty：闸门没装就不出现）。三态必须分明——`true` 开 / `false` 关 /
+  `null` 读不到；**拿 `null` 冒充 `false` 是另一种说谎**。所以不给 `modelhub` 加
+  `requestable` 字段：它看不见 Go 的开关，那个字段在闸门关着时会谎报「不可请求」。
 - **`*` 兜底价两处必须同口径**：Go 的 `internal/pricing.Priced()` 与 TS 的
   `billing.hasPrice()` 都是「精确命中 或 有 `*`」；两处不一致会出现「billing 认为有价、
   闸门认为没价」的分裂。Go 侧与 TS 侧各有用例。
