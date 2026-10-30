@@ -161,7 +161,7 @@ export default FooService
 | `@dizzyapi/plugin-deepseek-usage` | `deepseekUsage` | 独立成页的「用量信息」页（DeepSeek 开放平台用量页的像素级复刻）：自起 `127.0.0.1:7793`；**已禁用**，保留为像素级参考 |
 | `@dizzyapi/plugin-page-template` | `pageTemplate` | 页面模板：从 deepseek-usage 原样抽出的设计 token、侧栏/卡片/表格/表单、堆叠柱状图与面积折线图、线性图标；纯服务，不起 HTTP、不读写存储 |
 | `@dizzyapi/plugin-web` | `web` | 服务端渲染前端：**一页一个文件**（`packages/web/src/pages/*.ts`），数据走进程内服务，写操作是表单 POST + 303；监听 `127.0.0.1:7792` |
-| `@dizzyapi/plugin-font-smiley` | `fontSmiley` | 站点字体：自托管 Smiley Sans（得意黑）v2.0.1，OFL-1.1；纯资源服务，web 追加 `@font-face` 并发 `/assets/fonts/smiley-sans.woff2` |
+| `@dizzyapi/plugin-font-smiley` | `fontSmiley` | 站点字体：得意黑（Smiley Sans）**子集**，因 OFL 保留字体名改名 **Dizzy Sans**，SIL OFL-1.1；纯资源服务，web 追加 `@font-face` 并发 `/assets/fonts/dizzy-sans.woff2` |
 
 ### 4.2 Go 模块
 
@@ -373,7 +373,7 @@ pnpm test:go
 
 - 新增插件必须有 `test/*.test.ts`；新增 Go 模块必须有单测。
 - 测试失败先修实现，不允许删断言或放宽断言来变绿。
-- 当前基线（2026-10-30 第 4 批实测）：`pnpm test` 968 个用例（967 通过 / 1 跳过），`pnpm typecheck` 干净，
+- 当前基线（2026-10-30 前端四线合完实测）：`pnpm test` **1021 个用例（1020 通过 / 1 跳过）**，`pnpm typecheck` 干净，
   `go test ./...` **26 包**全 ok，`gofmt -l .` 与 `go vet ./...` 无输出。
   这个数字会变，以实际输出为准。
 - **验收任何分支前先 `pnpm build:go`**（不只是改过 Go 的分支）：`pnpm test` 里有真进程用例会
@@ -405,9 +405,12 @@ pnpm test:go
 - 旧的 `frontend` SPA（`packages/console`）已禁用：`/assets/frontend/*` 与 SPA 路由不再提供，
   `/api/*` JSON 入口仍由 `api` 插件保留。
 - 不把完整 key 写进 localStorage / URL / 日志；页面只在创建 / 轮换后显示一次。
-- 站点字体是 `font-smiley` 插件：自托管 Smiley Sans（得意黑）v2.0.1（OFL-1.1），
-  字体与 LICENSE 在 `packages/font-smiley/assets/`；`scope` 默认 `headings`（只换标题与品牌），
-  改 `all` 才换正文。web 负责把 `@font-face` 追加进 `/assets/app.css` 并发送 woff2 字节。
+- 站点字体是 `font-smiley` 插件：**得意黑（Smiley Sans）的子集**（1.15 MB → 508 KB，
+  9497 → 4126 字形），因 OFL 保留字体名（`<Smiley>` / `<得意黑>`）**改名 Dizzy Sans**；
+  版权声明 / 设计者 / 许可说明 / 许可 URL 等 `name` 记录原样保留，`LICENSE` 全文仍在
+  `packages/font-smiley/assets/`（OFL 要求随分发）。生成脚本 `tools/build-subset.py`。
+  `scope` 默认 `headings`（只换标题与品牌），改 `all` 才换正文。
+  web 负责把 `@font-face` 追加进 `/assets/app.css` 并发送 `/assets/fonts/dizzy-sans.woff2`。
 - **用量页分两页**：`/console/usage` 是**概览**（指标卡 + 恒定 7 个时间点的消费图 + 按模型 + 最近
   10 条请求），`/console/usage/detail` 是**明细**（完整列表 + keyset 分页 + 筛选 + 每行详情）。
   时间维度是**显式下拉**（今天 / 昨天 / 近 7 天 / 近 30 天，`renderSelect`），查看维度是图卡里的
