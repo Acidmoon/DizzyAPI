@@ -30,3 +30,6 @@ tsconfig.tsbuildinfo
 
 # 前端浏览器侧代码在 assets/lib/ 下；上面的 `lib` 规则会把它当构建产物忽略。
 !packages/console/assets/lib/
+# 新前端（Next 静态导出）的浏览器侧代码在 `app/src/lib/` 下（Next 的 `@/*` 映射到
+# `app/src/*`，所以客户端层的路径必须叫 `lib`）。同 `lib` 规则，要显式收回。
+!packages/dashboard/app/src/lib/
