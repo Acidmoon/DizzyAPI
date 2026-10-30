@@ -25,6 +25,7 @@ import {
   queryOf,
   rangeOnlyQuery,
 } from '../usage-view.ts'
+import { exportHref } from '../usage-export.ts'
 
 const DETAIL_PATH = '/console/usage/detail'
 
@@ -42,10 +43,12 @@ export const usageDetailPage: PageModule = {
     }
 
     const filters = parseFilters(ctx.query)
-    const query = queryOf(filters)
+    // 用户侧**必须**带 userId：`usage` 服务不给 userId 就是全站口径（管理面语义）。
+    const userId = ctx.user.userId
+    const query = queryOf(filters, userId)
     const page = usage.list({ ...query, limit: DETAIL_PAGE_SIZE })
-    const optionRows = usage.exportRows(rangeOnlyQuery(filters), CHART_SAMPLE_LIMIT)
-    const optionSummary = usage.summary(rangeOnlyQuery(filters))
+    const optionRows = usage.exportRows(rangeOnlyQuery(filters, userId), CHART_SAMPLE_LIMIT)
+    const optionSummary = usage.summary(rangeOnlyQuery(filters, userId))
 
     // `?reqId=`：无脚本路径下的单条详情。**只给本人**（页面是用户面，
     // 服务层的 get 不判归属，权限必须在这一层判，否则改 URL 就能看别人的记录）。
@@ -114,7 +117,9 @@ export const usageDetailPage: PageModule = {
         )}">下一页</a>`,
       )
     }
-    const pagerHtml = pager.length === 0 ? '' : `<div class="actions">${pager.join('')}</div>`
+    // 导出：普通链接指向 web 自己的 `text/csv` 路由（带当前筛选），浏览器原生下载，
+    // 不依赖任何客户端脚本；所以不需要 `data-export` 钩子。
+    const exportHtml = `<a class="btn" href="${exportHref(t, filters)}">导出 CSV</a>`
 
     return renderConsoleShell(ctx, [
       pageHeader(ctx, '用量明细', '完整列表：四桶 token、耗时、首字延迟与金额。金额在读取时按价格表计算。'),
@@ -131,7 +136,7 @@ export const usageDetailPage: PageModule = {
         text: '首字延迟（TTFT）只有流式请求才有值；非流式请求与升级前的历史记录显示「—」。',
       }),
       table,
-      pagerHtml,
+      `<div class="actions">${exportHtml}${pager.join('')}</div>`,
       `<div class="actions"><a class="btn" href="${t.escapeAttr(
         hrefOf('/console/usage', filters, { cursor: undefined, reqId: undefined }),
       )}">返回概览</a></div>`,

@@ -112,12 +112,15 @@ interface Query {
 
 class FakeUsage extends Service {
   rows: Row[] = []
+  /** 记下每次查询：用例据此断言「页面确实传了 userId」，而不是只看输出。 */
+  readonly queries: Query[] = []
 
   constructor(ctx: Context) {
     super(ctx, 'usage')
   }
 
   private filter(query: Query): Row[] {
+    this.queries.push(query)
     return this.rows
       .filter((item) => Date.parse(item.startedAt) >= query.fromMs && Date.parse(item.startedAt) < query.toMs)
       .filter((item) => query.userId === undefined || item.userId === query.userId)
@@ -372,3 +375,49 @@ test('明细：按模型 / 按 API key 筛选真的传给服务（不留假成�
   assert.match(byKey, /生产 key/)
   assert.ok(!byKey.includes('<td>测试 key</td>'), '按 key 筛选后表格里不该出现别的 key（下拉选项里可以有）')
 })
+
+// ───────────────────────────── 越权（回归） ─────────────────────────────
+
+test('越权回归：两页的查询都必须带会话 userId，别人的用量一个字都不许出现', async (t) => {
+  // 这是 2026-10-30 修掉的真漏洞：`usage.list/summary/exportRows` 在**不给 userId**
+  // 时是全站口径（那是管理面的语义）。页面漏传就等于把所有人的用量摊给任意登录用户看。
+  // 断言方式：别人的行带上独有标记，两页 HTML 里都不能出现。
+  const app = await boot(t)
+  app.usage.rows.push(
+    row({ id: 21, reqId: 'mine-1', userId: USER_ID, model: 'my-model', apiKeyName: '我的 key' }),
+    row({ id: 22, reqId: 'other-1', userId: 99, model: 'others-model', apiKeyName: '别人的 key' }),
+    row({ id: 23, reqId: 'other-2', userId: 99, model: 'others-model', apiKeyName: '别人的 key' }),
+  )
+
+  for (const path of ['/console/usage', '/console/usage/detail?range=7d']) {
+    app.usage.queries.length = 0
+    const html = await page(app, path)
+    assert.ok(html.includes('my-model'), `${path}：自己的记录必须出现`)
+    assert.ok(!html.includes('others-model'), `${path}：别人的模型名泄露了`)
+    assert.ok(!html.includes('别人的 key'), `${path}：别人的 key 名泄露了`)
+    assert.ok(!html.includes('other-1') && !html.includes('other-2'), `${path}：别人的 reqId 泄露了`)
+    // 双向钉死：光看输出没泄露不够，还要确认每一次查询都带了会话 userId。
+    // （以后加新查询忘了传 userId，这条会红，而不是等用户报「能看到别人的量」。）
+    assert.ok(app.usage.queries.length > 0, `${path}：一次查询都没发生？`)
+    const missing = app.usage.queries.filter((query) => query.userId !== USER_ID)
+    assert.equal(missing.length, 0, `${path}：有 ${missing.length} 次查询没带 userId（全站口径）`)
+  }
+})
+
+test('越权回归：别人的用量不进统计卡 / 图 / 下拉选项（不只是不进表格）', async (t) => {
+  // 光把行过滤掉不够：汇总数字、7 个时间点的柱子、模型与 key 的下拉选项
+  // 都是从「同一个查询」来的，任何一处漏传 userId 都会把别人的量算进来。
+  const app = await boot(t)
+  app.usage.rows.push(
+    row({ id: 31, userId: USER_ID, costMicros: '1000000', model: 'my-model', apiKeyName: '我的 key' }),
+    // 别人的 9 元：如果被算进汇总，概览的「消费金额」就会变成 ¥10.00 而不是 ¥1.00。
+    row({ id: 32, userId: 99, costMicros: '9000000', model: 'others-model', apiKeyName: '别人的 key' }),
+  )
+
+  const overview = await page(app, '/console/usage')
+  assert.match(overview, /¥1\.00/, '汇总金额只该算自己的（¥1.00）')
+  assert.ok(!overview.includes('¥10.00'), '汇总金额把别人的用量算进来了')
+  assert.ok(!overview.includes('others-model'), '模型下拉选项里出现了别人的模型')
+  assert.ok(!overview.includes('别人的 key'), 'key 下拉选项里出现了别人的 key')
+})
+

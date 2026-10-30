@@ -373,7 +373,7 @@ pnpm test:go
 
 - 新增插件必须有 `test/*.test.ts`；新增 Go 模块必须有单测。
 - 测试失败先修实现，不允许删断言或放宽断言来变绿。
-- 当前基线（2026-10-30 实测）：`pnpm test` 859 个用例（858 通过 / 1 跳过），`pnpm typecheck` 干净，
+- 当前基线（2026-10-30 实测）：`pnpm test` 887 个用例（886 通过 / 1 跳过），`pnpm typecheck` 干净，
   `go test ./...` **26 包**全 ok，`gofmt -l .` 与 `go vet ./...` 无输出。
   这个数字会变，以实际输出为准。
 - **验收任何分支前先 `pnpm build:go`**（不只是改过 Go 的分支）：`pnpm test` 里有真进程用例会
@@ -420,10 +420,24 @@ pnpm test:go
   `data-dialog-open` 与指向明细页 `?reqId=` 的普通链接——**没有 JS 时退化成整页详情**，这是
   `renderModal` 要求的「别把唯一入口放进弹窗」的落地方式。明细页的 `?reqId=` **必须在页面层判
   归属**（`record.userId === ctx.user.userId`），服务层 `usage.get` 不判权限。
-- **已知缺口（第 3 批没做）**：明细页的「导出 CSV」按钮没接。`renderExportButton` 输出的
-  `data-export` 钩子**在 `CLIENT_JS` 里没有处理器**（没有 fetch→Blob），而 `/api/usage/export`
-  只返回 JSON `{filename, content}`；要让浏览器真的下载，要么在设计线的 `client-extras.ts`
-  加 ~15 行并用 `asset-version.ts` 拼进 `app.js`，要么把导出接口改成 `text/csv` 契约。
+- **用量页的查询必须带 `userId`（2026-10-30 修掉的真越权）**：`usage.list` / `summary` /
+  `exportRows` 在**不给 `userId`** 时是**全站口径**（那是管理面 `/admin/usage` 的语义），
+  `usage` 服务只照条件查、**不认人**。第 3 批第一版页面漏传，任意登录用户在 `/console/usage`
+  能看到全站用量（含别人的模型名、API key 名与金额）。现在 `queryOf(filters, userId)` /
+  `rangeOnlyQuery(filters, userId)` 的 `userId` 是**必填位**——新页面忘了传会编译失败，
+  而不是静默越权。护栏在 `pages-usage.test.ts` 的「越权回归」两条：既断言 HTML 里不出现
+  别人的行 / 模型名 / key 名 / reqId，也断言**每一次查询都带了会话 userId**（双向钉死）。
+- **CSV 导出走 `web` 自己的服务端 `text/csv` 路由**（`/console/usage/export.csv`，
+  `usage-export.ts`）：明细页的「导出 CSV」是**普通链接**（带当前筛选），浏览器原生下载，
+  **不需要任何脚本**，所以那条没人处理的 `data-export` 钩子没被使用。为什么不由 `web` 调
+  `/api/usage/export`：生产 nginx 只把 `/api/*` 反代 `api`（7791），而**那个接口的契约是
+  JSON `{filename, content}`，不动它**；浏览器要拿文件还得自己拼 Blob，就又要客户端脚本了。
+  三个细节：未登录 302 到登录页（不是 401，导出是给人点的链接）；`usage` 不在运行时回
+  `text/plain` 503（别让浏览器存下一个空文件）；响应是 `private, no-store`（按用户生成，
+  共享缓存不能复用，与 `theme.css` 同一条纪律）。CSV 格式：UTF-8 BOM + CRLF + RFC 4180 转义
+  + `= + - @` 前导 `'` 防公式注入，`ttft_ms` 为 null 时留**空单元格**（与页面「—」同口径）。
+  与 `packages/api/src/views/usage.ts` 的 `csvField` 是**两份实现**（插件之间不互相 import），
+  由 `usage-export.test.ts` 钉住规则一致。
 - **提示与轻提示是自研控件，不用浏览器默认的**（2026-10-30，B 段）：
   - **悬浮提示**用 `t.tooltipAttr('…')` 挂 `data-tooltip`，浮层是 `renderDocument` 输出的空壳
     （`#dizzy-tooltip`），定位用 Floating UI 的 `computePosition` + `offset/flip/shift`，
@@ -437,7 +451,8 @@ pnpm test:go
     用法两种——声明式 `data-toast="文案"`（点一下弹）、命令式 `window.dizzyToast(文案, 'err')`。
     文案一律 `textContent` 写入（`innerHTML` 是 XSS 面），最多同时 4 条。
   - **toast 与 `renderNotice` 分工不能混**：notice 是页面级状态（服务端渲染、随页面出现），
-    toast 是动作级反馈（复制 / 导出这类不刷新页面的动作）。服务端消息别走 toast，否则刷新就重弹。
+    toast 是动作级反馈（复制这类不刷新页面的动作）。服务端消息别走 toast，否则刷新就重弹。
+    **CSV 导出不是这一类**：它是普通链接 + 浏览器原生下载，不需要 toast（见上一条）。
 - **静态资源一律带内容哈希，`immutable` 才成立**（2026-10-30）：`/assets/app.css?v=…`、
   `/assets/app.js?v=…`、`/assets/vendor/<name>?v=…` 的 `?v=` 是**正文的 sha256 前 8 位**，
   装配点只有 `packages/web/src/asset-version.ts`（`APP_CSS_BODY` / `APP_JS_BODY`）与
@@ -686,8 +701,11 @@ pnpm build:all        # 两个二进制一起编
   算完再相加（不同模型单价不同）。`pricing` 不在运行时费用是 0，页面要提示。
 - **导入的 base_url 约定**：new-api 的 `base_url` 是源站（`https://api.openai.com`），
   DizzyAPI 的 `baseUrl` 自带版本前缀；导入时只给「路径为空或 `/`」的裸源站补 `/v1`。
-- **CSV 导出**：UTF-8 BOM + `= + - @` 开头加前导 `'`（防公式注入）；接口返回 JSON
-  `{filename, content}`，由页面生成 Blob 下载。
+- **CSV 导出有两条路，别混**：`/api/usage/export`（`api` 插件）仍返回 JSON
+  `{filename, content}`，契约不动；用户侧页面走 `web` 自己的服务端 `text/csv` 路由
+  `/console/usage/export.csv`（普通链接、无需脚本，细节见 §5.5）。两处的格式规则相同：
+  UTF-8 BOM + CRLF + RFC 4180 转义 + `= + - @` 开头加前导 `'`（防公式注入），
+  `ttft_ms` 为 null 留空单元格。
 - **桥的拓扑是「Go 服务端 + TS 客户端」**：`internal/bridge` 是 Server，TS 侧 `BridgeClient`
   才是发起方。所以结算**不能**设计成 Go 主动调 TS；正确形态是 TS 拉到用量后同步结算。
   要 Go 主动推，只能新增反向通道，那是新架构。
