@@ -11,7 +11,7 @@ import assert from 'node:assert/strict'
 import { request as httpRequest, type IncomingHttpHeaders } from 'node:http'
 import { test, type TestContext } from 'node:test'
 import { API_ACTOR, ApiServer } from '../src/http.ts'
-import { createFixture, type Fixture, type FixtureOptions } from './fixtures.ts'
+import { createFixture, type Fixture, type FixtureOptions } from './fixtures/index.ts'
 
 const ORDER_NO = 'T20261019110000ABCD1234'
 
