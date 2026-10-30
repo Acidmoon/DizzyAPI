@@ -73,6 +73,7 @@ import {
   type UserOptions,
 } from './shell.ts'
 import { renderDocument, type DocumentOptions } from './document.ts'
+import { tooltipAttr } from './tooltip.ts'
 
 export class PageTemplateService extends Service {
   static inject: readonly string[] = []
@@ -300,6 +301,17 @@ export class PageTemplateService extends Service {
   /** 打开某个弹窗的属性片段（前面带一个空格，直接拼进触发元素）。 */
   dialogOpenAttr(id: string): string {
     return dialogOpenAttr(id)
+  }
+
+  /**
+   * 悬浮提示：`data-tooltip` 属性片段（前面带一个空格）。
+   *
+   * 浮层是自绘的（`client-tooltip.ts` + Floating UI 定位），替掉浏览器原生 `title`。
+   * 无 JS 时属性无副作用；需要「无 JS 也有提示」的元素自己再留一份 `<title>`，
+   * 脚本接管时会把它们摘掉。
+   */
+  tooltipAttr(text: string): string {
+    return tooltipAttr(text)
   }
 }
 

@@ -2,7 +2,7 @@
  * 布局：侧栏导航 + 主列外壳。页面只负责主列内容。
  */
 import type { PageTemplateService, NavItem } from '@dizzyapi/plugin-page-template'
-import { VENDOR_SCRIPT_ORDER, vendorHref } from '@dizzyapi/plugin-page-template'
+import { needsTooltips, vendorHref, vendorScriptsFor } from '@dizzyapi/plugin-page-template'
 import { APP_JS_HREF, appCssHref, themeCssHref } from './asset-version.ts'
 import type { SessionView, WebRuntime } from './runtime.ts'
 import { formatYuan } from './forms.ts'
@@ -104,15 +104,18 @@ export const ASSET_JS = APP_JS_HREF
 
 /**
  * 脚本顺序**是契约**（见 `DocumentOptions.assets.jsHrefs` 的注释）：
- * 1. vendor 库按 `VENDOR_SCRIPT_ORDER`（当前只有 tom-select → flatpickr，
- *    只放「现在真的有代码在调」的库；htmx 与 floating-ui 在对应批次落地时加回来）；
+ * 1. vendor 库按 `VENDOR_SCRIPT_ORDER`（顺序只有那一个源），**只放这一页真的用到的**：
+ *    `vendorScriptsFor({ tooltips })` 会把 floating-ui 过滤掉——没有提示的页面
+ *    （登录 / 注册 / 大部分管理页）不该为它下 22 KB；
  * 2. `/assets/app.js` **必须最后**：它初始化控件，并在 htmx 已加载的前提下把
  *    `htmx.config.includeIndicatorStyles` 关掉。顺序反过来 htmx 会注入内联 `<style>`（被 CSP 拦）。
  */
-const DOC_SCRIPTS: readonly string[] = [
-  ...VENDOR_SCRIPT_ORDER.map((name) => vendorHref(name)),
-  ASSET_JS,
-]
+function docScripts(options: { readonly tooltips?: boolean }): readonly string[] {
+  return [
+    ...vendorScriptsFor(options).map((name) => vendorHref(name)),
+    ASSET_JS,
+  ]
+}
 
 /**
  * 页面文档级的 assets（**导出版**：`web` 渲染 404 时没有 `PageContext`，自己算字体 CSS）。
@@ -120,8 +123,11 @@ const DOC_SCRIPTS: readonly string[] = [
  * `cssHref` 必须**按当前字体 CSS 惰性算**：`/assets/app.css` 的正文末尾会追加
  * `fontSmiley.css()`，字体块一变（改 `scope` / 换字体字节）地址就得变，否则 `immutable`
  * 缓存会让回访浏览器一直用旧 CSS。脚本地址是常量（正文不含运行时内容）。
+ *
+ * @param options.tooltips 这一页里有没有 `data-tooltip`（决定要不要引 Floating UI）。
+ *        调用方用 `needsTooltips(body)` 从**已渲染的 HTML** 判，不靠页面清单。
  */
-export function documentAssets(fontCss: string, themeCss = ''): {
+export function documentAssets(fontCss: string, themeCss = '', options: { readonly tooltips?: boolean } = {}): {
   cssHref: string
   themeCssHref?: string
   jsHrefs: readonly string[]
@@ -131,7 +137,7 @@ export function documentAssets(fontCss: string, themeCss = ''): {
     // 主题表按用户生成，地址同样走内容哈希（与 app.css 同一套规则，见 asset-version.ts）；
     // 空偏好时干脆不引用，省一个请求。
     ...(themeCss === '' ? {} : { themeCssHref: themeCssHref(themeCss) }),
-    jsHrefs: DOC_SCRIPTS,
+    jsHrefs: docScripts(options),
   }
 }
 
@@ -146,7 +152,9 @@ export function renderConsoleShell(ctx: PageContext, content: string): string {
   const isAdmin = ctx.user.user.role === 'admin'
   return ctx.t.renderDocument({
     title: `${ctx.title} · DizzyAPI`,
-    assets: documentAssets(fontCssOf(ctx), ctx.themeCss),
+    // Tooltip 只有带图表 / 带 data-tooltip 的页面才有，按**主列内容**判：
+    // 漏判只是那段提示退回浏览器原生（有 <title> 兜底），多判才是白下载 22 KB。
+    assets: documentAssets(fontCssOf(ctx), ctx.themeCss, { tooltips: needsTooltips(content) }),
     body: ctx.t.renderShell({
       brand: { word: 'Dizzy', badge: 'API', href: '/console/usage' },
       nav: navFor('console', ctx.path, isAdmin),
@@ -164,7 +172,7 @@ export function renderConsoleShell(ctx: PageContext, content: string): string {
 export function renderAdminShell(ctx: PageContext, content: string): string {
   return ctx.t.renderDocument({
     title: `管理台 · DizzyAPI`,
-    assets: documentAssets(fontCssOf(ctx), ctx.themeCss),
+    assets: documentAssets(fontCssOf(ctx), ctx.themeCss, { tooltips: needsTooltips(content) }),
     body: ctx.t.renderShell({
       brand: { word: 'Dizzy', badge: '管理台', href: '/admin/users' },
       nav: navFor('admin', ctx.path, true),
@@ -191,6 +199,7 @@ export function renderAuthShell(t: PageTemplateService, options: {
 }): string {
   return t.renderDocument({
     title: `${options.title} · DizzyAPI`,
+    // 登录 / 注册页没有任何 tooltip（内容是卡片表单），不引 Floating UI。
     assets: documentAssets(options.fontCss, options.themeCss ?? ''),
     body: t.renderAuthPage(options),
   })

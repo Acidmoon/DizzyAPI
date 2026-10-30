@@ -79,6 +79,20 @@ test('护栏：不用 window.confirm（原生模态框不可样式化）', () =>
   assert.deepEqual(offenders, [], `这些文件还有 window.confirm：${offenders.join('、')}`)
 })
 
+test('护栏：不用 title 属性当悬浮提示（浏览器绘制，样式碰不到）', () => {
+  // 与 window.confirm / 原生 select 同一类问题：原生提示由**浏览器绘制**，
+  // 字色、圆角、换行、延迟都不可控。页面里要提示就挂 `t.tooltipAttr(...)`
+  // （自绘浮层，Floating UI 定位）。
+  //
+  // `<link title="…">` 是另一回事（HTML 规范里的备选样式表名），不算提示，放行。
+  const offenders: string[] = []
+  for (const { name, text } of pageFiles()) {
+    const withoutLinks = stripComments(text).replace(/<link\b[^>]*>/g, '')
+    if (/\stitle="/.test(withoutLinks)) offenders.push(name)
+  }
+  assert.deepEqual(offenders, [], `这些文件用 title 属性当提示：${offenders.join('、')}`)
+})
+
 /** 去掉注释再扫：注释里写 `<dialog>` 解释降级方案是正常的，不该被当成裸标签。 */
 function stripComments(text: string): string {
   return text.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')

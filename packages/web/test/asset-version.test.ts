@@ -10,6 +10,7 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { VENDOR_THEME_CSS, vendorCss } from '@dizzyapi/plugin-page-template'
 import { APP_CSS_BODY, APP_JS_BODY, APP_JS_HREF, appCssHref, shortHash, themeCssHref } from '../src/asset-version.ts'
+import { documentAssets } from '../src/layout.ts'
 
 test('版本串：href 里的哈希就是正文的哈希（含字体 CSS）', () => {
   const noFont = appCssHref('')
@@ -63,4 +64,33 @@ test('版本串：主题表也带哈希，且同一份偏好稳定', () => {
   assert.match(a, /^\/assets\/theme\.css\?v=[0-9a-f]{8}$/)
   assert.notEqual(a, b)
   assert.equal(themeCssHref(':root{--font-scale:1.25;}'), a)
+})
+
+test('脚本：floating-ui 只挂在真的有提示的页面上，且 app.js 永远最后', () => {
+  // 22 KB 的 floating-ui 不该出现在登录页（上一批驳回的就是「每页下载用不到的库」）。
+  const plain = documentAssets('').jsHrefs
+  const rich = documentAssets('', '', { tooltips: true }).jsHrefs
+
+  const floating = (hrefs: readonly string[]): string[] => hrefs.filter((href) => href.includes('floating-ui'))
+  assert.deepEqual(floating(plain), [], '没有提示的页面不该引 floating-ui')
+  assert.equal(floating(rich).length, 2, '有提示的页面必须引 core + dom')
+  // 顺序：core 在 dom 之前（dom 的 UMD 读全局 FloatingUICore）
+  assert.match(rich[rich.indexOf(rich.find((h) => h.includes('floating-ui.core'))!) + 1] ?? '', /floating-ui\.dom/)
+
+  // 两条路径都必须以 app.js 结尾（它在最后才能初始化控件）
+  assert.equal(plain[plain.length - 1], APP_JS_HREF)
+  assert.equal(rich[rich.length - 1], APP_JS_HREF)
+  // 公共部分（tom-select / flatpickr）两条路径一致，说明过滤没有误伤
+  const shared = (hrefs: readonly string[]): string[] => hrefs.filter((href) => href.includes('tom-select') || href.includes('flatpickr'))
+  assert.deepEqual(shared(plain), shared(rich))
+  // 每个 href 都带内容哈希（immutable 的前提）
+  for (const href of [...plain, ...rich]) assert.match(href, /\?v=[0-9a-f]{8}$/)
+})
+
+test('样式：提示与轻提示的 CSS 都在 app.css 正文里（否则浮层是裸的）', () => {
+  assert.ok(APP_CSS_BODY.includes('.tooltip {'), 'app.css 缺 tooltip 样式')
+  assert.ok(APP_CSS_BODY.includes('.toasts {'), 'app.css 缺 toast 宿主样式')
+  // 脚本侧：两段行为都真的发出去了
+  assert.match(APP_JS_BODY, /dizzy-tooltip/)
+  assert.match(APP_JS_BODY, /dizzyToast/)
 })
