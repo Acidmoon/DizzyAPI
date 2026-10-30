@@ -8,8 +8,15 @@
 export interface UsageQuery {
   readonly fromMs: number
   readonly toMs: number
+  /**
+   * 不给 = **全站口径**（那是管理面 `/admin/usage` 的语义）。
+   *
+   * 用户侧页面**必须**传当前会话的 userId：`usage` 服务不判权限，
+   * 它只照查询条件过滤。漏传就是把所有人的用量摊给任意登录用户看。
+   */
   readonly userId?: number
   readonly apiKeyId?: string
+  readonly model?: string
 }
 
 export interface UsageTotals {

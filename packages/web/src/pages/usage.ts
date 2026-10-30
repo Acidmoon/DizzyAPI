@@ -46,16 +46,18 @@ export const usagePage: PageModule = {
     }
 
     const filters = parseFilters(ctx.query)
-    const query = queryOf(filters)
+    // 用户侧**必须**带 userId：`usage` 服务不给 userId 就是全站口径（管理面语义）。
+    const userId = ctx.user.userId
+    const query = queryOf(filters, userId)
     // 两个汇总：一个**不受 model / API key 筛选影响**（给下拉选项用），一个按当前筛选（给数字用）。
-    const optionSummary = usage.summary(rangeOnlyQuery(filters))
+    const optionSummary = usage.summary(rangeOnlyQuery(filters, userId))
     const summary = usage.summary(query)
     const page = usage.list({ ...query, limit: RECENT_LIMIT })
     const rows = usage.exportRows(query, CHART_SAMPLE_LIMIT)
     const keyRows =
       filters.model === '' && filters.apiKeyId === ''
         ? rows
-        : usage.exportRows(rangeOnlyQuery(filters), CHART_SAMPLE_LIMIT)
+        : usage.exportRows(rangeOnlyQuery(filters, userId), CHART_SAMPLE_LIMIT)
 
     const singleDay = filters.range.key === 'today' || filters.range.key === 'yesterday'
     const slots = chartSlots(filters.range)
