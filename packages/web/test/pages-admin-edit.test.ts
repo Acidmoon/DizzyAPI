@@ -18,6 +18,7 @@ import { adminUsersPage } from '../src/pages/admin_users.ts'
 import { adminPricingPage } from '../src/pages/admin_pricing.ts'
 import { WebError } from '../src/forms.ts'
 import { auditSpy, emptyServices, renderPage, runAction } from './helpers/page-fixture.ts'
+import type { GateFeedLike, GateFeedStatusView } from '../src/gate-types.ts'
 import type {
   ApiKeyGatePatch,
   ApiKeyLike,
@@ -159,6 +160,40 @@ test('API key 编辑：金额上限为 0 或负、并发非法时明确失败且
     (error: unknown) => error instanceof WebError,
   )
   assert.deepEqual(keys.updates, [], '校验失败不能写库')
+})
+
+test('API key 页「已消费」列：与闸门同一个来源（usage.summary 按 key 汇总）', async () => {
+  const keys = apiKeySpy()
+  const summaryCalls: { readonly apiKeyId?: string }[] = []
+  const usage = {
+    summary(query: { readonly apiKeyId?: string }) {
+      summaryCalls.push({ ...(query.apiKeyId === undefined ? {} : { apiKeyId: query.apiKeyId }) })
+      return { totals: { costMicros: '2500000' } }
+    },
+  } as unknown as NonNullable<WebRuntime['usage']>
+
+  const html = await renderPage(keysPage, { ...emptyServices(), apiKey: keys, usage })
+
+  // 只有「配了上限」的 key 才查（没上限的 Go 侧根本不判金额）。
+  assert.deepEqual(summaryCalls, [{ apiKeyId: 'k1' }])
+  assert.ok(html.includes('已消费'), '表头要有「已消费」')
+  assert.ok(html.includes('2.5'), '已消费按元显示（2500000 微元 = 2.5 元）')
+})
+
+test('API key 页「已消费」列：没上限的 key 不查、显示「—」；用量服务缺席也不报错', async () => {
+  const noLimit: ApiKeyView = { ...KEY, spendingLimitMicros: null }
+  const keys = { ...apiKeySpy(), async list() { return [noLimit] } }
+  const usage = {
+    summary() {
+      throw new Error('不该被调用')
+    },
+  } as unknown as NonNullable<WebRuntime['usage']>
+
+  const html = await renderPage(keysPage, { ...emptyServices(), apiKey: keys, usage })
+  assert.ok(html.includes('已消费'))
+
+  const withoutUsage = await renderPage(keysPage, { ...emptyServices(), apiKey: apiKeySpy() })
+  assert.ok(withoutUsage.includes('已消费'), '用量服务缺席只是少一个数，页面照常渲染')
 })
 
 // ───────────────────────────── 用户页 ─────────────────────────────
@@ -354,6 +389,69 @@ test('价格页：无脚本时 ?edit=<model> 与 ?add=1 各渲染一张整页表
   const addHtml = await renderPage(adminPricingPage, services, 'add=1&model=brand-new')
   assert.ok(addHtml.includes('添加模型价格'))
   assert.ok(addHtml.includes('name="model" value="brand-new"'), '?model= 预填模型名（未定价表里的「补价格」）')
+})
+
+// ── 闸门状态三态：页面不能替 Go 猜开关（写死「默认关」在打开那天就变假话）
+
+function gateFeedSpy(status: Partial<GateFeedStatusView> | null): GateFeedLike {
+  return {
+    status() {
+      if (status === null) throw new Error('桥断')
+      return {
+        enabled: true,
+        goPricing: { ready: true, stale: false, ageMs: 0, ttlMs: 60_000 },
+        pricingGateEnabled: null,
+        lastError: null,
+        failureStreak: 0,
+        ...status,
+      }
+    },
+  }
+}
+
+test('价格页闸门状态：闸门关着才敢说「现在仍可请求」', async () => {
+  const html = await renderPage(adminPricingPage, {
+    ...emptyServices(),
+    pricing: pricingSpy(),
+    gateFeed: gateFeedSpy({ pricingGateEnabled: false }),
+  })
+  assert.ok(html.includes('仍可请求'), '闸门关：要明确说现在还能请求')
+  assert.ok(html.includes('MODEL_NOT_PRICED'))
+})
+
+test('价格页闸门状态：闸门开着就说会被拒，且给出健康度', async () => {
+  const html = await renderPage(adminPricingPage, {
+    ...emptyServices(),
+    pricing: pricingSpy(),
+    gateFeed: gateFeedSpy({ pricingGateEnabled: true }),
+  })
+  assert.ok(html.includes('已开启'))
+  assert.equal(html.includes('仍可请求'), false, '闸门开着时绝不能说仍可请求')
+})
+
+test('价格页闸门状态：闸门开着但快照 stale 要报 503（fail-closed）', async () => {
+  const html = await renderPage(adminPricingPage, {
+    ...emptyServices(),
+    pricing: pricingSpy(),
+    gateFeed: gateFeedSpy({
+      pricingGateEnabled: true,
+      goPricing: { ready: true, stale: true, ageMs: 60_000, ttlMs: 15_000 },
+    }),
+  })
+  assert.ok(html.includes('PRICING_SNAPSHOT_UNAVAILABLE') || html.includes('已过期'))
+  assert.ok(html.includes('503'))
+})
+
+test('价格页闸门状态：读不到状态时说「未知」，不冒充「没开」', async () => {
+  for (const gateFeed of [undefined, gateFeedSpy(null), gateFeedSpy({ pricingGateEnabled: null })]) {
+    const html = await renderPage(adminPricingPage, {
+      ...emptyServices(),
+      pricing: pricingSpy(),
+      gateFeed,
+    })
+    assert.ok(html.includes('未知'), '读不到就说未知')
+    assert.equal(html.includes('仍可请求'), false, '不知道时不能断言「仍可请求」')
+  }
 })
 
 test('价格页保存：调到 pricing.set 并记 pricing.write 审计', async () => {

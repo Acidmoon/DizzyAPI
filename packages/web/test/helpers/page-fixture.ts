@@ -51,6 +51,7 @@ export function emptyServices(): WebRuntime {
     audit: undefined,
     observability: undefined,
     contentAudit: undefined,
+    gateFeed: undefined,
   }
 }
 
