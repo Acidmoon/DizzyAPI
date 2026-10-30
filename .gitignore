@@ -30,3 +30,9 @@ tsconfig.tsbuildinfo
 
 # 前端浏览器侧代码在 assets/lib/ 下；上面的 `lib` 规则会把它当构建产物忽略。
 !packages/console/assets/lib/
+
+# 上游 Next 工程的源码在 app/src/lib/ 下（utils / preferences / 字体注册表 / highlighter）——
+# 根部的 `lib` 规则本是给构建产物用的，会把整棵源码树一起吞掉（vendor 上游时踩到：git add 被拒）。
+# 目录本身与内容都要显式豁免，否则 "父目录被忽略" 会让 `!` 规则失效。
+!packages/dashboard/app/src/lib/
+!packages/dashboard/app/src/lib/**
