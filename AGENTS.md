@@ -454,22 +454,25 @@ pnpm test:go
   `packages/account-priority/src/service.ts` 1238、`packages/identity/src/service.ts` 1132、
   `packages/api/src/types.ts` 1054、`modules/protoconv/codec_anthropic.go` 1034、
   `packages/web/src/runtime.ts` 977、`modules/protoconv/codec_responses.go` 974、
-  `packages/api/src/http.ts` 873、`internal/httpapi/server.go` 843、
+  `internal/httpapi/server.go` 843、
   `modules/protoconv/codec_gemini.go` 705、`modules/protoconv/codec_chat.go` 697；
-  400～500 的次级面：`packages/web/src/pages/admin_account_detail.ts` 440、
+  400～500 的次级面：`packages/api/src/http.ts` 465、`packages/web/src/pages/admin_account_detail.ts` 440、
   `packages/web/src/service.ts` 449、`packages/page-template/src/shell.ts` 447。
   往这些文件里加东西时，**顺手把同一职责搬进新的小文件**，让净增行数尽量小。
-- **`packages/api/src` 的路由布局（2026-10-30 拆完，4241 → 873）**：新增 `/api/*` 路由**一律**
+- **`packages/api/src` 的路由布局（2026-10-30 拆完，4241 → 465）**：新增 `/api/*` 路由**一律**
   写进 `routes/<前缀>.ts`，不再进 `http.ts`：
   - `routes/*.ts`：一前缀一个文件（`keys` / `usage` / `admin_usage` / `admin_accounts` …），
     导出一个 `routeXxx(host, req, res, parts, url)`；每个管理面文件**自己先调
-    `host.requireAdmin(req)` 再干活**（不要假设上游已经鉴权过）。
+    `requireAdmin(host, req)` 再干活**（不要假设上游已经鉴权过）。
   - `views/*.ts`：DTO 的纯函数映射（`usage` / `commerce` / `account` / `audit` …），不碰 IO。
-  - `http.ts`：只留类字段、生命周期、`dispatch`、`routeApi` 分发与 51 个同名薄委派。
-    **`routeApi` 的判定顺序是不变量**，它有 `/api/usage/export` 必须早于 `/api/usage/:reqId`
-    这类先后依赖；动它之前先看顺序表，改完用全量测试验。
-  - 拆文件时 `routeApi` 的委派层是刻意留的：调用点一个字不改，风险最小。要压掉委派层
-    （能再省约 400 行）属于单独一批，需要同时改所有 `this.xxx` 调用点，不能顺手做。
+  - `http_static.ts` / `http_session.ts` / `http_respond.ts`：静态资源、会话与 cookie、
+    响应 / 错误渲染 / 入参，都是 `(host, …)` 形式的导出函数。
+  - `http.ts`：只剩**类字段 + 生命周期 + `dispatch` + `routeApi` + 各端口的 `requireXxx()`
+    访问器**；路由函数一律从 `routes/*` 直接 import，**没有委派层**（2026-10-30 分 5 批删掉，
+    873 → 465）。**`routeApi` 的判定顺序是不变量**，它有 `/api/usage/export` 必须早于
+    `/api/usage/:reqId` 这类先后依赖；动它之前先看顺序表，改完用全量测试验。
+  - 这套 `(host, …)` 自由函数风格是刻意的：拆文件时先在类上留同名薄委派、调用点一个字不改，
+    分 5 批把调用点改成直接函数调用再删委派，每批独立跑绿、出问题能二分。
 - **低耦合的执行标准**：插件之间只经服务接口 / 进程内事件（§2.2 已有）；插件内部
   不跨层直连别人的存储；Go 侧 `modules/*` 只 import `contracts/`（§2.3 已有）；
   传输层 / 渲染层 / 存储层不互相 import 实现文件。

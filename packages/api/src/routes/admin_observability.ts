@@ -6,7 +6,9 @@
  */
 import type { ApiServer } from '../http.ts'
 import { ApiError } from '../errors.ts'
-import { type IncomingMessage, type ServerResponse } from 'node:http'
+import { IncomingMessage, ServerResponse } from 'node:http'
+import { requireAdmin } from '../http_session.ts'
+import { allowRead, sendJson } from '../http_respond.ts'
 
 // ───────────────────────────────── 管理员：运维总览 ─────────────────────────────────
 
@@ -27,8 +29,8 @@ host: ApiServer,
 req: IncomingMessage,
 res: ServerResponse,
 ): Promise<void> {
-  await host.requireAdmin(req)
-  if (!host.allowRead(req, res)) return
+  await requireAdmin(host, req)
+  if (!allowRead(host, req, res)) return
   const observability = host.runtime.observability()
   if (observability === undefined) {
     throw new ApiError(
@@ -37,5 +39,5 @@ res: ServerResponse,
       '运维总览服务不在运行：暂时看不到聚合状态',
     )
   }
-  host.sendJson(req, res, 200, await observability.observe())
+  sendJson(host, req, res, 200, await observability.observe())
 }

@@ -8,25 +8,27 @@ import type { ApiServer } from '../http.ts'
 import { assertOnlyKeys, requiredBoolean, requiredInteger, requiredString } from '../params.ts'
 import { normalizeCreatedKey, normalizeKeyList, normalizeKeySummary } from '../views/account.ts'
 import { badRequest, notFound } from '../errors.ts'
-import { type IncomingMessage, type ServerResponse } from 'node:http'
+import { IncomingMessage, ServerResponse } from 'node:http'
+import { requireSession } from '../http_session.ts'
+import { allowMethod, jsonBody, sendJson, sendMethodNotAllowed } from '../http_respond.ts'
 
 export async function routeKeys(host: ApiServer, req: IncomingMessage, res: ServerResponse, parts: readonly string[]): Promise<void> {
-  const view = await host.requireSession(req)
+  const view = await requireSession(host, req)
 
   if (parts.length === 1) {
     if (req.method === 'GET' || req.method === 'HEAD') {
       const apiKey = host.requireApiKey()
-      host.sendJson(req, res, 200, { items: normalizeKeyList(await apiKey.list(view.userId)) })
+      sendJson(host, req, res, 200, { items: normalizeKeyList(await apiKey.list(view.userId)) })
       return
     }
     if (req.method === 'POST') {
       const apiKey = host.requireApiKey()
-      const body = await host.jsonBody(req)
+      const body = await jsonBody(host, req)
       const name = requiredString(body, 'name')
-      host.sendJson(req, res, 200, normalizeCreatedKey(await apiKey.create(view.userId, { name })))
+      sendJson(host, req, res, 200, normalizeCreatedKey(await apiKey.create(view.userId, { name })))
       return
     }
-    host.sendMethodNotAllowed(req, res, ['GET', 'HEAD', 'POST'])
+    sendMethodNotAllowed(host, req, res, ['GET', 'HEAD', 'POST'])
     return
   }
 
@@ -34,7 +36,7 @@ export async function routeKeys(host: ApiServer, req: IncomingMessage, res: Serv
     const id = parts[1] as string
     if (req.method === 'PATCH') {
       const apiKey = host.requireApiKey()
-      const body = await host.jsonBody(req)
+      const body = await jsonBody(host, req)
       assertOnlyKeys(body, [
         'name',
         'enabled',
@@ -64,23 +66,23 @@ export async function routeKeys(host: ApiServer, req: IncomingMessage, res: Serv
         patch.concurrencyLimit = body.concurrencyLimit === null ? null : requiredInteger(body, 'concurrencyLimit')
       }
       if (Object.keys(patch).length === 0) throw badRequest('没有可修改的字段')
-      host.sendJson(req, res, 200, normalizeKeySummary(await apiKey.update(view.userId, id, patch)))
+      sendJson(host, req, res, 200, normalizeKeySummary(await apiKey.update(view.userId, id, patch)))
       return
     }
     if (req.method === 'DELETE') {
       const apiKey = host.requireApiKey()
       await apiKey.remove(view.userId, id)
-      host.sendJson(req, res, 200, { removed: true })
+      sendJson(host, req, res, 200, { removed: true })
       return
     }
-    host.sendMethodNotAllowed(req, res, ['PATCH', 'DELETE'])
+    sendMethodNotAllowed(host, req, res, ['PATCH', 'DELETE'])
     return
   }
 
   if (parts.length === 3 && parts[2] === 'rotate') {
-    if (!host.allowMethod(req, res, ['POST'])) return
+    if (!allowMethod(host, req, res, ['POST'])) return
     const apiKey = host.requireApiKey()
-    host.sendJson(req, res, 200, normalizeCreatedKey(await apiKey.rotate(view.userId, parts[1] as string)))
+    sendJson(host, req, res, 200, normalizeCreatedKey(await apiKey.rotate(view.userId, parts[1] as string)))
     return
   }
 

@@ -8,7 +8,9 @@ import type { ApiServer } from '../http.ts'
 import { queryStringOf } from '../params.ts'
 import { modelCatalogOf } from '../views/catalog.ts'
 import { ApiError, badRequest } from '../errors.ts'
-import { type IncomingMessage, type ServerResponse } from 'node:http'
+import { IncomingMessage, ServerResponse } from 'node:http'
+import { allowRead, sendJson } from '../http_respond.ts'
+import { requireSession } from '../http_session.ts'
 
 /**
  * `/api/models`：模型广场（只读目录）。
@@ -25,8 +27,8 @@ import { type IncomingMessage, type ServerResponse } from 'node:http'
  * 金额一律十进制字符串（元 / 百万 token），响应里不出现裸 bigint 或浮点。
  */
 export async function routeModels(host: ApiServer, req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
-  if (!host.allowRead(req, res)) return
-  await host.requireSession(req)
+  if (!allowRead(host, req, res)) return
+  await requireSession(host, req)
   const modelhub = host.runtime.modelhub()
   if (modelhub === undefined) {
     throw new ApiError('MODELHUB_UNAVAILABLE', 503, '模型广场服务不在运行：暂时不能查询模型目录')
@@ -54,5 +56,5 @@ export async function routeModels(host: ApiServer, req: IncomingMessage, res: Se
     query.priced = priced
   }
 
-  host.sendJson(req, res, 200, modelCatalogOf(modelhub.catalog(query)))
+  sendJson(host, req, res, 200, modelCatalogOf(modelhub.catalog(query)))
 }

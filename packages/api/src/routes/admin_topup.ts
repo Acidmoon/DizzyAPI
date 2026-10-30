@@ -10,8 +10,10 @@ import { topupOrderOf, topupStatsOf } from '../views/commerce.ts'
 import { auditActorOf, audited } from '../audit.ts'
 import { API_ACTOR } from '../constants.ts'
 import { notFound } from '../errors.ts'
-import { type IncomingMessage, type ServerResponse } from 'node:http'
+import { IncomingMessage, ServerResponse } from 'node:http'
 import type { TopupOrderLike } from '../types.ts'
+import { requireAdmin } from '../http_session.ts'
+import { allowMethod, allowRead, sendJson } from '../http_respond.ts'
 
 /**
  * 管理面：`GET /api/admin/topup-orders`（列表 + 筛选）、`.../stats`、
@@ -27,12 +29,12 @@ res: ServerResponse,
 parts: readonly string[],
 url: URL,
 ): Promise<void> {
-  const { view: adminView } = await host.requireAdmin(req)
+  const { view: adminView } = await requireAdmin(host, req)
   const identity = { actor: auditActorOf(adminView), actorPlugin: API_ACTOR }
   const topup = host.requireTopup()
 
   if (parts.length === 2) {
-    if (!host.allowRead(req, res)) return
+    if (!allowRead(host, req, res)) return
     const query: {
       status?: string
       userId?: number
@@ -54,7 +56,7 @@ url: URL,
     if (limit !== undefined) query.limit = limit
     if (offset !== undefined) query.offset = offset
     const page = await topup.list(API_ACTOR, query)
-    host.sendJson(req, res, 200, {
+    sendJson(host, req, res, 200, {
       items: page.items.map(topupOrderOf),
       total: page.total,
     })
@@ -62,15 +64,15 @@ url: URL,
   }
 
   if (parts.length === 3 && parts[2] === 'stats') {
-    if (!host.allowRead(req, res)) return
-    host.sendJson(req, res, 200, topupStatsOf(await topup.stats(API_ACTOR)))
+    if (!allowRead(host, req, res)) return
+    sendJson(host, req, res, 200, topupStatsOf(await topup.stats(API_ACTOR)))
     return
   }
 
   if (parts.length === 4) {
     const orderNo = parts[2] as string
     if (parts[3] === 'confirm') {
-      if (!host.allowMethod(req, res, ['POST'])) return
+      if (!allowMethod(host, req, res, ['POST'])) return
       const result = await audited(
         host.runtime,
         identity,
@@ -88,14 +90,14 @@ url: URL,
         },
         () => topup.confirmPaid(API_ACTOR, orderNo),
       )
-      host.sendJson(req, res, 200, {
+      sendJson(host, req, res, 200, {
         order: topupOrderOf(result.order),
         credited: result.credited,
       })
       return
     }
     if (parts[3] === 'cancel') {
-      if (!host.allowMethod(req, res, ['POST'])) return
+      if (!allowMethod(host, req, res, ['POST'])) return
       const canceled = await audited<TopupOrderLike>(
         host.runtime,
         identity,
@@ -108,7 +110,7 @@ url: URL,
         },
         async () => topup.cancel(API_ACTOR, orderNo),
       )
-      host.sendJson(req, res, 200, topupOrderOf(canceled))
+      sendJson(host, req, res, 200, topupOrderOf(canceled))
       return
     }
   }
