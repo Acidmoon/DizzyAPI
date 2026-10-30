@@ -1,14 +1,14 @@
 /**
  * 用量 CSV 导出（`GET /console/usage/export.csv`）的用例。
  *
- * 为什么单独一个文件：导出是**路由 + 文件格式**，不是页面渲染；
- * 和 `pages-usage.test.ts` 里那堆 HTML 断言混在一起会看不出「导出到底验了什么」。
+ * **CSV 正文不在这里测**：格式由 `usage` 插件的 `exportCsv` 唯一实现
+ * （`packages/usage/src/csv.ts`，护栏在 `packages/usage/test/csv.test.ts`）。
+ * 本文件只盯 `web` 这一层的责任：
  *
- * 盯住四件事：
- * 1. **只导自己的**（`userId` 必传，别人的行一条都不许进文件）；
- * 2. 真下载：`text/csv` + `Content-Disposition: attachment`，且**不需要任何脚本**；
- * 3. 格式：UTF-8 BOM、CRLF、RFC 4180 转义、`= + - @` 前导 `'` 防公式注入；
- * 4. `ttftMs` 为 null 时留**空单元格**（不是 0），与页面显示「—」同口径。
+ * 1. **只导自己的**（`userId` 必传，别人的行一条都不许进请求）；
+ * 2. 真下载：`text/csv` + `Content-Disposition: attachment` + `private, no-store`；
+ * 3. 未登录 302 / 服务缺失 503（不给空文件）；
+ * 4. 筛选条件真的下传，且**正文就是服务返回的那份字节**（不二次加工）。
  */
 import assert from 'node:assert/strict'
 import { test, type TestContext } from 'node:test'
@@ -17,14 +17,9 @@ import { FontSmileyService } from '@dizzyapi/plugin-font-smiley'
 import { PageTemplateService } from '@dizzyapi/plugin-page-template'
 import { WebService } from '../src/service.ts'
 import { listenFetchable } from './helpers/fetch-port.ts'
-import {
-  USAGE_CSV_HEADER,
-  USAGE_EXPORT_PATH,
-  exportFilename,
-  usageCsv,
-} from '../src/usage-export.ts'
+import { exportFilename, USAGE_EXPORT_PATH } from '../src/usage-export.ts'
 import { parseFilters } from '../src/usage-view.ts'
-import type { UsageRow } from '../src/usage-types.ts'
+import type { UsageQuery, UsageRow } from '../src/usage-types.ts'
 
 const SESSION_COOKIE = 'dizzyapi_session=test-token'
 const USER_ID = 1
@@ -58,29 +53,25 @@ class FakeAuth extends Service {
   async logout(): Promise<void> {}
 }
 
-interface Query {
-  fromMs: number
-  toMs: number
-  userId?: number
-  model?: string
-  apiKeyId?: string
-}
-
 class FakeUsage extends Service {
+  /** 假 CSV 正文：故意带一个哨兵串，用来证明 web 原样发出、没有二次加工。 */
+  static readonly CONTENT = '\uFEFFtime,api_key,model\r\n2026-10-30T01:02:03.000Z,key-1,deepseek-chat'
+  readonly queries: UsageQuery[] = []
   readonly rows: UsageRow[] = []
-  readonly queries: Query[] = []
 
   constructor(ctx: Context) {
     super(ctx, 'usage')
   }
 
-  exportRows(query: Query, limit = 5_000): readonly UsageRow[] {
+  /** 唯一实现出的 `{ filename, content }`：web 只该拿 `content` 当正文。 */
+  exportCsv(query: UsageQuery, _limit?: number) {
     this.queries.push(query)
-    return this.rows
-      .filter((row) => query.userId === undefined || row.userId === query.userId)
-      .filter((row) => query.model === undefined || row.model === query.model)
-      .filter((row) => query.apiKeyId === undefined || row.apiKeyId === query.apiKeyId)
-      .slice(0, limit)
+    return { filename: 'usage-20261030.csv', content: FakeUsage.CONTENT }
+  }
+
+  exportRows(query: UsageQuery, limit = 5_000): readonly UsageRow[] {
+    this.queries.push(query)
+    return this.rows.slice(0, limit)
   }
 
   summary() {
@@ -106,31 +97,6 @@ class FakeUsage extends Service {
   ignoreRejected(): void {}
   async replayRejected() {
     return { status: 'replayed', inserted: false }
-  }
-}
-
-function row(overrides: Partial<UsageRow> = {}): UsageRow {
-  return {
-    id: 1,
-    reqId: 'req-1',
-    userId: USER_ID,
-    startedAt: '2026-10-30T01:02:03.000Z',
-    model: 'deepseek-chat',
-    apiKeyId: 'key-1',
-    apiKeyName: '生产 key',
-    inputTokens: 10,
-    outputTokens: 5,
-    cacheReadTokens: 2,
-    cacheWriteTokens: 1,
-    reasoningTokens: 3,
-    totalTokens: 21,
-    usagePresent: true,
-    usageComplete: true,
-    costMicros: '1234567',
-    durationMs: 2500,
-    ttftMs: 321,
-    status: 200,
-    ...overrides,
   }
 }
 
@@ -177,9 +143,8 @@ async function fetchExport(app: App, query = ''): Promise<Response> {
 
 // ───────────────────────────── 真下载 ─────────────────────────────
 
-test('导出：200 + text/csv + attachment，一次请求就拿到文件（不依赖脚本）', async (t) => {
+test('导出：200 + text/csv + attachment，正文就是服务返回的那份字节', async (t) => {
   const app = await boot(t)
-  app.usage.rows.push(row())
 
   const response = await fetchExport(app, '?range=7d')
   assert.equal(response.status, 200)
@@ -191,25 +156,24 @@ test('导出：200 + text/csv + attachment，一次请求就拿到文件（不�
   assert.equal(response.headers.get('cache-control'), 'private, no-store')
   assert.equal(response.headers.get('x-content-type-options'), 'nosniff')
 
-  // BOM 必须看**字节**：`response.text()` 走 TextDecoder，默认会把 BOM 吃掉，
-  // 用字符串判断永远看不到它，等于这条断言从来没生效过。
+  // 原样发出（web 不再二次拼 CSV）。**用字节比**：`response.text()` 走 TextDecoder，
+  // 默认会把 BOM 吃掉，用它比较等于从来没验过 BOM。
   const bytes = Buffer.from(await response.arrayBuffer())
-  assert.deepEqual([...bytes.subarray(0, 3)], [0xef, 0xbb, 0xbf], 'CSV 必须以 UTF-8 BOM 开头（Excel 认中文）')
-  const body = bytes.toString('utf8').replace(/^\uFEFF/, '')
-  assert.equal(body.split('\r\n')[0], USAGE_CSV_HEADER.join(','))
+  assert.deepEqual(bytes, Buffer.from(FakeUsage.CONTENT, 'utf8'))
+  assert.deepEqual([...bytes.subarray(0, 3)], [0xef, 0xbb, 0xbf], 'BOM 必须原样发出')
 })
 
 test('导出：未登录 302 到登录页（不是 401，也不是空文件）', async (t) => {
   const app = await boot(t)
-  app.usage.rows.push(row())
 
   const response = await fetch(`${app.base}${USAGE_EXPORT_PATH}?range=7d`, { redirect: 'manual' })
   assert.equal(response.status, 302)
   assert.equal(response.headers.get('location'), '/login?err=' + encodeURIComponent('请先登录'))
   assert.equal(await response.text(), '')
+  assert.equal(app.usage.queries.length, 0, '未登录不该发起任何用量查询')
 })
 
-test('导出：用量服务不在运行时给人话 503，不返回空 CSV', async (t) => {
+test('导出：用量服务不在运行时给人话 503，不返回空文件', async (t) => {
   const app = await boot(t, false)
 
   const response = await fetchExport(app, '?range=7d')
@@ -218,90 +182,35 @@ test('导出：用量服务不在运行时给人话 503，不返回空 CSV', asy
   assert.match(await response.text(), /用量服务未运行/)
 })
 
-// ───────────────────────────── 只导自己的 ─────────────────────────────
+// ───────────────────────────── 口径 ─────────────────────────────
 
-test('导出：只导自己的行，别人的一条都不许进文件', async (t) => {
+test('导出：查询必须带会话 userId（不给就是全站口径 = 越权）', async (t) => {
   const app = await boot(t)
-  app.usage.rows.push(
-    row({ id: 1, reqId: 'mine', userId: USER_ID, model: 'my-model' }),
-    row({ id: 2, reqId: 'other', userId: 99, model: 'others-model' }),
-  )
 
-  const body = await (await fetchExport(app, '?range=7d')).text()
-  assert.match(body, /my-model/)
-  assert.ok(!body.includes('others-model'), '别人的模型名进了导出文件')
-  assert.ok(!body.includes('req-'), '导出里出现了别人的 reqId？')
-  // 双向钉死：查询必须带会话 userId（`usage` 服务不给 userId 就是全站口径）。
+  await fetchExport(app, '?range=7d')
   assert.equal(app.usage.queries.length, 1)
   assert.equal(app.usage.queries[0]?.userId, USER_ID)
 })
 
-test('导出：筛选条件真的下传（model / apiKeyId），不是导全量', async (t) => {
+test('导出：筛选条件真的下传（range / model / apiKeyId），不是导全量', async (t) => {
   const app = await boot(t)
-  app.usage.rows.push(
-    row({ id: 1, model: 'deepseek-chat', apiKeyId: 'key-1' }),
-    row({ id: 2, model: 'gpt-4o-mini', apiKeyId: 'key-2' }),
-  )
 
-  const byModel = await (await fetchExport(app, '?range=7d&model=gpt-4o-mini')).text()
-  assert.match(byModel, /gpt-4o-mini/)
-  assert.ok(!byModel.includes('deepseek-chat'))
-  assert.equal(app.usage.queries[0]?.model, 'gpt-4o-mini')
-
-  app.usage.queries.length = 0
-  await fetchExport(app, '?range=7d&apiKeyId=key-1')
-  assert.equal(app.usage.queries[0]?.apiKeyId, 'key-1')
+  await fetchExport(app, '?range=7d&model=gpt-4o-mini&apiKeyId=key-2')
+  const query = app.usage.queries[0]
+  assert.equal(query?.model, 'gpt-4o-mini')
+  assert.equal(query?.apiKeyId, 'key-2')
+  // 时间窗口来自 range 档位，且是个合法区间。
+  assert.ok((query?.fromMs ?? 0) < (query?.toMs ?? 0))
 })
 
-// ───────────────────────────── 格式 ─────────────────────────────
-
-test('导出：TTFT 没采集时留空单元格（不是 0），与页面「—」同口径', async (t) => {
-  const app = await boot(t)
-  app.usage.rows.push(row({ ttftMs: null }), row({ id: 2, ttftMs: 0 }))
-
-  const lines = (await (await fetchExport(app, '?range=7d')).text())
-    .replace(/^\uFEFF/, '')
-    .split('\r\n')
-  assert.equal(lines.length, 3, '表头 + 两条数据')
-  // 倒数第 2 列是 ttft_ms（最后一列是 client_ip 占位）。
-  const cellsOf = (line: string): string[] => line.split(',')
-  assert.equal(cellsOf(lines[1]!)[11], '', '没采集 → 空单元格')
-  assert.equal(cellsOf(lines[2]!)[11], '0', '真 0ms 必须写成 0（与「没采集」区分）')
-})
-
-test('导出：公式注入前缀 `\'`、逗号引号换行按 RFC 4180 转义', () => {
-  const body = usageCsv([
-    row({ model: '=HYPERLINK("http://evil")' }),
-    row({ id: 2, model: 'a,b"c' }),
-    row({ id: 3, model: '+cmd' }),
-    row({ id: 4, model: '-1+1' }),
-    row({ id: 5, model: '@SUM(1)' }),
-    row({ id: 6, model: 'line\nbreak' }),
-    row({ id: 7, apiKeyName: '', apiKeyId: 'key-raw' }),
-  ])
-  const lines = body.replace(/^\uFEFF/, '').split('\r\n').slice(1)
-  // 模型在 CSV 的第 3 列（下标 2）。
-  assert.ok(lines[0]!.includes(`"'=HYPERLINK(""http://evil"")"`), `公式没被中和：${lines[0]}`)
-  assert.ok(lines[1]!.includes('"a,b""c"'), `逗号/引号没转义：${lines[1]}`)
-  assert.ok(lines[2]!.includes("'+cmd"), `+ 开头没中和：${lines[2]}`)
-  assert.ok(lines[3]!.includes("'-1+1"), `- 开头没中和：${lines[3]}`)
-  assert.ok(lines[4]!.includes("'@SUM(1)"), `@ 开头没中和：${lines[4]}`)
-  // 换行会被引号包住，所以 split 后那条数据被拆成两行——检查原始正文里带引号版本。
-  assert.ok(body.includes('"line\nbreak"'), '换行没按 RFC 4180 包引号')
-  // key 名为空时回落 key id。
-  assert.ok(lines.at(-1)!.includes('key-raw'), 'API key 名为空时该回落 key id')
-})
-
-test('导出：文件名的日期范围与时间档位对得上', () => {
+test('导出：文件名按本地时区，单日只有一个日期段', () => {
+  // 页面上的日期一律本地显示；用 UTC 日期当文件名会让 UTC+8 的用户以为导出了昨天的。
+  assert.match(exportFilename(parseFilters(new URLSearchParams('range=yesterday'))), /^usage-\d{8}\.csv$/)
+  assert.match(exportFilename(parseFilters(new URLSearchParams('range=7d'))), /^usage-\d{8}-\d{8}\.csv$/)
   for (const key of ['today', 'yesterday', '7d', '30d'] as const) {
-    const filters = parseFilters(new URLSearchParams(`range=${key}`))
-    const name = exportFilename(filters)
+    const name = exportFilename(parseFilters(new URLSearchParams(`range=${key}`)))
     assert.match(name, /^usage-\d{8}(-\d{8})?\.csv$/, `${key} 的文件名格式不对：${name}`)
   }
-  // 单日档位只有一个日期段。
-  assert.match(exportFilename(parseFilters(new URLSearchParams('range=yesterday'))), /^usage-\d{8}\.csv$/)
-  // 近 7 天跨天，两段。
-  assert.match(exportFilename(parseFilters(new URLSearchParams('range=7d'))), /^usage-\d{8}-\d{8}\.csv$/)
 })
 
 // ───────────────────────────── 页面上的入口 ─────────────────────────────

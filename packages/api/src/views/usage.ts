@@ -3,6 +3,7 @@
  *
  * 拆出来的原因见 AGENTS.md §5.6（单文件上限）。搬动方式：整块文本原样移动，只补 import。
  */
+import { csvField } from '@dizzyapi/plugin-kit'
 import { costCentsOf } from '../views/common.ts'
 import { join } from 'node:path'
 import type { UsageDailyPointLike, UsageModelBreakdownLike, UsageRejectedRowLike, UsageRowLike, UsageTotalsLike, UsageUserBreakdownLike } from '../types.ts'
@@ -215,25 +216,11 @@ export function usageDetailOf(row: UsageRowLike): {
 type AdminUsageCsvRow = UsageRowLike & { readonly userName: string | null }
 
 
-export const USAGE_CSV_HEADER = [
-  'time',
-  'api_key',
-  'model',
-  'input_tokens',
-  'output_tokens',
-  'cache_read_tokens',
-  'cache_write_tokens',
-  'total_tokens',
-  'cost_micros',
-  'status',
-  'duration_ms',
-  'client_ip',
-] as const
-
-
 /**
  * 管理员 CSV：列与用户侧一致，另加 `user` / `account`。
- * 带 UTF-8 BOM（Excel 直接识别中文），单元格按 CSV 规则转义并防公式注入。
+ *
+ * **转义规则用 `@dizzyapi/plugin-kit` 的 `csvField`**（唯一一份）；用户侧的导出
+ * 整份搬到了 `usage` 插件（它是用量明细的唯一写者，`web` 与 `api` 都调它）。
  */
 export function adminUsageCsv(rows: readonly AdminUsageCsvRow[]): string {
   const header =
@@ -259,40 +246,4 @@ export function adminUsageCsv(rows: readonly AdminUsageCsvRow[]): string {
       .join(','),
   )
   return `﻿${header}\n${lines.length === 0 ? '' : `${lines.join('\n')}\n`}`
-}
-
-
-/** 用户侧 CSV：BOM + 表头 + 行；单元格按 CSV 规则转义并防公式注入。 */
-export function usageCsv(rows: readonly UsageRowLike[]): string {
-  const lines = [USAGE_CSV_HEADER.join(',')]
-  for (const row of rows) {
-    lines.push(
-      [
-        row.startedAt,
-        row.apiKeyName === '' ? row.apiKeyId : row.apiKeyName,
-        row.model,
-        String(row.inputTokens),
-        String(row.outputTokens),
-        String(row.cacheReadTokens),
-        String(row.cacheWriteTokens),
-        String(row.totalTokens),
-        row.costMicros,
-        String(row.status),
-        String(row.durationMs),
-        row.clientIp ?? '',
-      ]
-        .map(csvField)
-        .join(','),
-    )
-  }
-  return `﻿${lines.join('\r\n')}`
-}
-
-
-/** CSV 单元格：`= + - @` 开头加前导 `'` 防公式注入，再按 RFC 4180 转义。 */
-export function csvField(value: unknown): string {
-  let text = value === undefined || value === null ? '' : String(value)
-  if (/^[=+\-@\t\r]/.test(text)) text = `'${text}`
-  if (/[",\r\n]/.test(text)) text = `"${text.replaceAll('"', '""')}"`
-  return text
 }

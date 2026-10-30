@@ -86,6 +86,8 @@ export interface UsageLike {
   /** 按 reqId 取单条（无脚本降级路径用）；**归属检查在页面层**（服务不判权限）。 */
   get(reqId: string): UsageRow | null
   exportRows(query: UsageQuery, limit?: number): readonly UsageRow[]
+  /** 导出 CSV：格式由 `usage` 插件唯一实现，页面只负责把它当 `text/csv` 发出去。 */
+  exportCsv(query: UsageQuery, limit?: number): { readonly filename: string; readonly content: string }
   stats(nowMs?: number): UsageStats
   /** 坏记录隔离区（分页 + 计数）；这些记录没有进明细、也不会结算。 */
   listRejected(query?: UsageRejectedQuery): UsageRejectedPage

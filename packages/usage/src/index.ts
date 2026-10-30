@@ -42,6 +42,14 @@ export {
   type UsageConfig,
 } from './config.ts'
 export { USAGE_SCHEMA, openUsageDatabase } from './db.ts'
+export {
+  USAGE_CSV_HEADER,
+  usageCsv,
+  usageCsvExport,
+  usageCsvFilename,
+  type UsageCsvExport,
+} from './csv.ts'
+export { clampLimit, queryWhere } from './query.ts'
 export type { UsagePollOutcome } from './service.ts'
 export type {
   BillingPort,
