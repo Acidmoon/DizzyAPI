@@ -202,16 +202,69 @@ test('HTTP：字体 @font-face 追加进 app.css，woff2 可下载', async () =>
   try {
     const css = await (await fetch(`${app.base}/assets/app.css`)).text()
     assert.ok(css.includes('@font-face'))
-    assert.ok(css.includes("font-family: 'Smiley Sans'"))
-    assert.ok(css.includes('/assets/fonts/smiley-sans.woff2'))
+    assert.ok(css.includes("font-family: 'Dizzy Sans'"))
+    assert.ok(css.includes('/assets/fonts/dizzy-sans.woff2'))
     // 字体 URL 自己带版本串：它是 immutable 一年缓存，路径固定就换不动。
-    assert.match(css, /\/assets\/fonts\/smiley-sans\.woff2\?v=[0-9a-f]{8}/)
+    assert.match(css, /\/assets\/fonts\/dizzy-sans\.woff2\?v=[0-9a-f]{8}/)
 
-    const font = await fetch(`${app.base}/assets/fonts/smiley-sans.woff2`)
+    const font = await fetch(`${app.base}/assets/fonts/dizzy-sans.woff2`)
     assert.equal(font.status, 200)
     assert.equal(font.headers.get('content-type'), 'font/woff2')
     const bytes = Buffer.from(await font.arrayBuffer())
     assert.equal(bytes.subarray(0, 4).toString('latin1'), 'wOF2')
+  } finally {
+    await app.close()
+  }
+})
+
+test('HTTP：字体路由只有带对 `?v=` 才发 immutable，裸路径不发长缓存', async () => {
+  // 这条守的是 AGENTS.md §5.5 记的债：字体是「路径固定 + immutable」的结构，
+  // 只有 URL 真正随内容变（`?v=` 等于当前字体字节哈希）时 immutable 才成立。
+  // 裸路径照发字节（手敲也不该 404），但明确不可缓存 —— 否则换字体后回访拿旧字形。
+  const app = await boot()
+  try {
+    const html = await (await fetch(`${app.base}/login`)).text()
+    const cssHref = html.match(/<link rel="stylesheet" href="([^"]+)"/)?.[1]
+    assert.ok(cssHref !== undefined)
+    const css = await (await fetch(`${app.base}${cssHref}`)).text()
+    const fontHref = css.match(/url\('([^']+)'\)/)?.[1]
+    assert.ok(fontHref !== undefined, 'app.css 里没有字体 URL')
+
+    const versioned = await fetch(`${app.base}${fontHref}`)
+    assert.equal(versioned.status, 200)
+    assert.equal(versioned.headers.get('cache-control'), 'public, max-age=31536000, immutable')
+
+    const bare = await fetch(`${app.base}/assets/fonts/dizzy-sans.woff2`)
+    assert.equal(bare.status, 200)
+    assert.equal(bare.headers.get('cache-control'), 'no-store')
+
+    const wrong = await fetch(`${app.base}/assets/fonts/dizzy-sans.woff2?v=deadbeef`)
+    assert.equal(wrong.status, 200)
+    assert.equal(wrong.headers.get('cache-control'), 'no-store')
+  } finally {
+    await app.close()
+  }
+})
+
+test('HTTP：app.css / app.js 是内容寻址 → immutable（不是 no-store）', async () => {
+  // 内容寻址的资产发 no-store 是自相矛盾的：URL 已经随内容变，浏览器本该永久缓存。
+  // 这条同时守两件事：**不能再退回 no-store**，以及**地址里必须有版本串**
+  //（没有版本串就发 immutable 等于「改了样式用户一年看不到」）。
+  const app = await boot()
+  try {
+    const html = await (await fetch(`${app.base}/login`)).text()
+    const hrefs = [...html.matchAll(/(?:href|src)="(\/assets\/app\.(?:css|js)\?v=[0-9a-f]{8})"/g)].map((m) => m[1])
+    assert.equal(hrefs.length, 2, '页面里应恰好有 app.css 与 app.js 两个带版本的地址')
+    for (const href of hrefs) {
+      const res = await fetch(`${app.base}${href}`)
+      assert.equal(res.status, 200)
+      assert.equal(
+        res.headers.get('cache-control'),
+        'public, max-age=31536000, immutable',
+        `${href} 的缓存语义必须是 immutable`,
+      )
+    }
+    await (await fetch(`${app.base}${hrefs[0]}`)).arrayBuffer()
   } finally {
     await app.close()
   }

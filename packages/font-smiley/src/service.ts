@@ -2,7 +2,7 @@
  * 站点字体服务（cordis 服务名 `fontSmiley`）。
  *
  * 与 `web` 的接线：web 在 `/assets/app.css` 末尾追加 `css()`，
- * 并用 `file()` 的字节回应 `/assets/fonts/smiley-sans.woff2`。
+ * 并用 `file()` 的字节回应 `/assets/fonts/dizzy-sans.woff2`。
  */
 import { createHash } from 'node:crypto'
 import { Service, type Context } from 'cordis'

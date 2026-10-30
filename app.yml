@@ -303,9 +303,11 @@
 - id: page-template
   name: '@dizzyapi/plugin-page-template'
 
-# 站点字体：自托管 Smiley Sans（得意黑）v2.0.1，SIL OFL-1.1。
+# 站点字体：得意黑子集（SIL OFL-1.1，因 OFL 保留字体名而改名 Dizzy Sans）。
+# 上游 Smiley Sans v2.0.1 全量 1.15 MB / 9497 字形，本站只用到 4156 个字形；
+# 发的是子集（~508 KB），生成脚本 packages/font-smiley/tools/build-subset.py。
 # 纯资源服务：web 把它的 @font-face 追加进 /assets/app.css，并从
-# /assets/fonts/smiley-sans.woff2 发字体字节；scope 决定只换标题还是全站。
+# /assets/fonts/dizzy-sans.woff2 发字体字节；scope 决定只换标题还是全站。
 - id: font-smiley
   name: '@dizzyapi/plugin-font-smiley'
   config:

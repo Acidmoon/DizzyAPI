@@ -2,7 +2,7 @@
   "name": "@dizzyapi/plugin-font-smiley",
   "version": "0.1.0",
   "private": true,
-  "description": "DizzyAPI · 站点字体：自托管 Smiley Sans（得意黑）",
+  "description": "DizzyAPI · 站点字体：得意黑子集（改名 Dizzy Sans，OFL-1.1）",
   "type": "module",
   "license": "MIT",
   "main": "./src/index.ts",
