@@ -30,9 +30,13 @@ tsconfig.tsbuildinfo
 
 # 前端浏览器侧代码在 assets/lib/ 下；上面的 `lib` 规则会把它当构建产物忽略。
 !packages/console/assets/lib/
-# 新前端（Next 静态导出）的浏览器侧代码在 `app/src/lib/` 下（Next 的 `@/*` 映射到
-# `app/src/*`，所以客户端层的路径必须叫 `lib`）。同 `lib` 规则，要显式收回。
+
+# 上游 Next 工程的源码在 app/src/lib/ 下（utils / preferences / 字体注册表 / highlighter /
+# api 客户端层）—— 根部的 `lib` 规则本是给构建产物用的，会把整棵源码树一起吞掉
+# （vendor 上游时踩到：git add 被拒，且是**静默**少文件，只有 next build 报 module-not-found 才暴露）。
+# 目录本身与内容都要显式豁免，否则「父目录被忽略」会让 `!` 规则失效。
 !packages/dashboard/app/src/lib/
+!packages/dashboard/app/src/lib/**
 
 # 控制台静态产物（Next 静态导出的 out/ 拷到这里，构建产物不进库）
 /packages/dashboard/dist
