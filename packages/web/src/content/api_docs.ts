@@ -30,6 +30,7 @@ export const DOC_FILES: readonly string[] = [
   '02-endpoints.md',
   '03-errors.md',
   '04-examples.md',
+  '05-limits-billing.md',
 ]
 
 /** 文档目录（仓库根 `docs/api/`）。从本文件 `packages/web/src/content/` 往上四级。 */
@@ -82,19 +83,28 @@ const RENDERER = createRenderer()
 
 // ───────────────────────────── 加载叙述 ─────────────────────────────
 
+/** 一份叙述源：文件名 + 原文（事实占位符尚未展开）。 */
+export interface DocSource {
+  readonly name: string
+  readonly text: string
+}
+
 /**
  * 读入全部叙述文件（按 `DOC_FILES` 顺序）。
  *
- * **故意不缓存**：四个文件十几 KB，一次整页渲染读一遍可以忽略；缓存会让「改了 `.md`
+ * **故意不缓存**：几个文件十几 KB，一次整页渲染读一遍可以忽略；缓存会让「改了 `.md`
  * 页面没变」变得难查。
  *
  * **故意不在模块顶层读**：读不到时只让这一页报错，**不要**在 import 阶段抛——
  * `pages/index.ts` 会把所有页面 import 进来，模块顶层抛错会连带整个 web 插件装载失败。
+ *
+ * 导出这一层是因为新的文档站页面（`pages/docs.ts`）要**逐文件分区**（一份 `.md` = 一个
+ * 顶部导航分区），而不是拿拼好的整份；整页装配仍然走下面的 `expandFacts(...)`。
  */
-function loadNarrative(): readonly string[] {
+export function loadDocSources(): readonly DocSource[] {
   return DOC_FILES.map((name) => {
     try {
-      return readFileSync(new URL(name, DOCS_DIR), 'utf8')
+      return { name, text: readFileSync(new URL(name, DOCS_DIR), 'utf8') }
     } catch (error) {
       throw new Error(
         `API 文档源缺失或不可读：docs/api/${name}（${error instanceof Error ? error.message : String(error)}）`,
@@ -104,7 +114,7 @@ function loadNarrative(): readonly string[] {
 }
 
 /** `base` 只允许协议 + 主机 + 路径的安全字符，避免拼进 markdown 时破坏围栏 / 注入。 */
-function sanitizeBase(raw: string | null | undefined): string {
+export function sanitizeBase(raw: string | null | undefined): string {
   const value = (raw ?? '').trim()
   if (value === '') return DEFAULT_BASE
   return /^https?:\/\/[A-Za-z0-9.\-~_:/]+$/.test(value) ? value : DEFAULT_BASE
@@ -148,28 +158,39 @@ function errorTable(facts: readonly ErrorFact[], kind: 'gateway' | 'product'): s
   return [header, '| --- | --- | --- | --- |', ...rows].join('\n')
 }
 
-/** 把占位符换成派生出来的事实表；占位符必须**各出现一次**，否则明确失败。 */
-function assemble(): string {
-  const narrative = loadNarrative().join('\n')
+/**
+ * 把占位符换成派生出来的事实表。
+ *
+ * @param requireAll `true` 时每个占位符必须**各出现一次**（整页装配）；
+ *        `false` 时允许某份文件里根本没有某个占位符（文档站逐文件装配），
+ *        但**出现多次仍然明确失败**——重复插入会让同一张表出现两遍。
+ */
+export function expandFacts(markdown: string, requireAll: boolean): string {
   const facts = readCodeFacts()
   const replacements: { readonly marker: string; readonly table: string; readonly name: string }[] = [
     { marker: FACT_PLACEHOLDERS.entries, table: entriesTable(), name: 'entries' },
     { marker: FACT_PLACEHOLDERS.gatewayErrors, table: errorTable(facts.gatewayErrors, 'gateway'), name: 'gateway-errors' },
     { marker: FACT_PLACEHOLDERS.productErrors, table: errorTable(facts.productErrors, 'product'), name: 'product-errors' },
   ]
-  let markdown = narrative
+  let expanded = markdown
   for (const { marker, table, name } of replacements) {
-    const occurrences = markdown.split(marker).length - 1
-    if (occurrences !== 1) {
+    const occurrences = expanded.split(marker).length - 1
+    if (occurrences > 1 || (requireAll && occurrences !== 1)) {
       throw new Error(`docs/api/*.md 里占位符 ${marker} 应该出现且只出现一次（实际 ${occurrences} 次）`)
     }
-    markdown = markdown.replace(marker, table)
+    if (occurrences === 0) continue
+    expanded = expanded.replace(marker, table)
     // 自检：替换后不该还残留占位符名。
-    if (markdown.includes(`facts:${name}`) && !markdown.includes(table)) {
+    if (expanded.includes(`facts:${name}`) && !expanded.includes(table)) {
       throw new Error(`占位符 ${marker} 替换失败`)
     }
   }
-  return markdown
+  return expanded
+}
+
+/** 整页装配：叙述拼起来后展开事实表（这里每个占位符必须恰好出现一次）。 */
+function assemble(): string {
+  return expandFacts(loadDocSources().map((source) => source.text).join('\n'), true)
 }
 
 // ───────────────────────────── 对外 ─────────────────────────────
