@@ -116,10 +116,12 @@ test('提示：没有提示的页面不引 floating-ui（22 KB 不白下）', ()
   assert.equal(needsTooltips('<p>普通内容</p>'), false)
   assert.equal(needsTooltips(`<span${tooltipAttr('提示')}>x</span>`), true)
 
-  // 过滤后两个库都不在；有提示时才出现，且顺序与总表一致
+  // 过滤后两个库都不在；有提示时才出现，且顺序与总表一致。
+  // 注意 htmx 是**另一个**页面条件（`boost`，有侧栏才引），所以这里显式带上它，
+  // 否则 `rich` 会少掉 htmx、与总表比较失败（那是契约，不是放宽）。
   const plain = vendorScriptsFor({ tooltips: needsTooltips('<p>x</p>') })
   for (const name of TOOLTIP_VENDOR_FILES) assert.equal(plain.includes(name), false)
-  const rich = vendorScriptsFor({ tooltips: needsTooltips(`<i${tooltipAttr('a')}></i>`) })
+  const rich = vendorScriptsFor({ boost: true, tooltips: needsTooltips(`<i${tooltipAttr('a')}></i>`) })
   assert.deepEqual([...rich], [...VENDOR_SCRIPT_ORDER])
 })
 

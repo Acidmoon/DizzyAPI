@@ -24,6 +24,8 @@
  * 为什么仍是一个文件发出去：站点只引一个 `/assets/app.js`（多一个 `<script>` 就多一次
  * 请求与一次版本串维护），但**源码按职责拆开**，谁改 tooltip 不用读这一段。
  */
+import { BOOST_JS } from './client-boost.ts'
+import { NAV_ORDER_JS } from './client-nav-order.ts'
 import { TOAST_JS } from './client-toast.ts'
 import { TOOLTIP_JS } from './client-tooltip.ts'
 
@@ -44,6 +46,19 @@ const CLIENT_CORE_JS = `
   // undefined，配置设不进去，htmx 就会按默认值注入（实测那才是唯一会出违规的写法）。
   if (window.htmx && window.htmx.config) {
     window.htmx.config.includeIndicatorStyles = false;
+    // ── 局部刷新的两个配置（第 4 批）────────────────────────────────────
+    // 1) **不缓存历史**：htmx 的 history 缓存会把**整页 HTML** 写进 sessionStorage，
+    //    而「新建 API key 之后那一次渲染」的明文就在主列里 —— 秘密纪律不允许它落到
+    //    sessionStorage（与 localStorage / URL / 日志同级）。
+    // 2) **后退 / 前进 = 整页重载**：关了缓存之后，popstate 找不到缓存项时会走
+    //    『refreshOnHistoryMiss』。设成 true 就是整页 reload——侧栏高亮与内容由服务端
+    //    一起重新渲染，天然一致，不必在客户端手工回放状态（那才是错位的来源）。
+    //    代价是后退那一下是全量请求；换来的是「绝不错位」。
+    window.htmx.config.historyCacheSize = 0;
+    window.htmx.config.refreshOnHistoryMiss = true;
+    // 3) 关掉 eval：全站不用 hx-on: / js: 表达式，而 CSP 没有 'unsafe-eval'，
+    //    留着它只会在别人将来写 hx-on 时静默失效。
+    window.htmx.config.allowEval = false;
   }
 
   function closeAll(except) {
@@ -273,10 +288,14 @@ const CLIENT_CORE_JS = `
 `
 
 /**
- * 站点脚本全文：核心段 + 悬浮提示 + 轻提示。
+ * 站点脚本全文：核心段 + 悬浮提示 + 轻提示 + 局部刷新 + 侧栏拖动排序。
  *
- * 顺序不影响正确性（三个 IIFE 各管各的），但按「页面骨架 → 交互辅助」排更好读。
+ * 顺序不影响正确性（每段各管各的），但按「页面骨架 → 交互辅助」排更好读。
+ * `BOOST_JS` 要在 `CLIENT_CORE_JS` 之后（它读 htmx 的 afterSwap，前提是 htmx 已配好）；
+ * `NAV_ORDER_JS` 放在最后（它只碰侧栏，与其它段无耦合）。
  */
 export const CLIENT_JS = `${CLIENT_CORE_JS}
 ${TOOLTIP_JS}
-${TOAST_JS}`
+${TOAST_JS}
+${BOOST_JS}
+${NAV_ORDER_JS}`

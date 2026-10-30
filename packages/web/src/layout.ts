@@ -6,6 +6,7 @@ import { needsTooltips, vendorHref, vendorScriptsFor } from '@dizzyapi/plugin-pa
 import { APP_JS_HREF, appCssHref, themeCssHref } from './asset-version.ts'
 import type { SessionView, WebRuntime } from './runtime.ts'
 import { formatYuan } from './forms.ts'
+import { applyNavOrder } from './nav-order.ts'
 
 export interface PageContext {
   readonly path: string
@@ -23,6 +24,13 @@ export interface PageContext {
    * 未登录 / 没设过偏好时是空串——那种情况下页面**不引用**主题表，等于站 defaults。
    */
   readonly themeCss: string
+  /**
+   * 当前用户的侧栏顺序（`ui_preferences.navOrder`）。
+   *
+   * 由 `web` 构建上下文时读一次，渲染层保持纯同步；空数组 = 站默认顺序。
+   * 「未知路径丢弃 + 缺的补到末尾」在 `applyNavOrder` 里做（`nav-order.ts`）。
+   */
+  readonly navOrder: readonly string[]
   /** 一次性 secret：创建 key 后第一次渲染可取出，之后拿不到。 */
   takeSecret(): string | undefined
 }
@@ -52,7 +60,8 @@ export interface PageModule {
   readonly actions?: Readonly<Record<string, PageAction>>
 }
 
-const CONSOLE_NAV: readonly { label: string; path: string; icon: NavItem['icon'] }[] = [
+/** 用户站侧栏的**站默认顺序**（`navOrder` 的唯一真相；新加页面改这里就自动出现）。 */
+export const CONSOLE_NAV: readonly { label: string; path: string; icon: NavItem['icon'] }[] = [
   { label: '用量信息', path: '/console/usage', icon: 'bars' },
   { label: '模型广场', path: '/console/models', icon: 'tag' },
   { label: 'API 文档', path: '/console/api-docs', icon: 'doc' },
@@ -63,7 +72,8 @@ const CONSOLE_NAV: readonly { label: string; path: string; icon: NavItem['icon']
   { label: '个人资料', path: '/console/profile', icon: 'tag' },
 ]
 
-const ADMIN_NAV: readonly { label: string; path: string; icon: NavItem['icon'] }[] = [
+/** 管理台侧栏的站默认顺序。 */
+export const ADMIN_NAV: readonly { label: string; path: string; icon: NavItem['icon'] }[] = [
   { label: '用户', path: '/admin/users', icon: 'search' },
   { label: '上游账号', path: '/admin/accounts', icon: 'doc' },
   { label: '插件目录', path: '/admin/catalog', icon: 'tag' },
@@ -78,14 +88,21 @@ const ADMIN_NAV: readonly { label: string; path: string; icon: NavItem['icon'] }
   { label: '运维总览', path: '/admin/observability', icon: 'bars' },
 ]
 
-function navFor(area: 'console' | 'admin', current: string, isAdmin: boolean): NavItem[] {
-  const items = (area === 'console' ? CONSOLE_NAV : ADMIN_NAV).map((item) => ({
+/** 侧栏顺序的落库地址（`profile` 页面的动作）。 */
+export const NAV_ORDER_ACTION = '/console/profile?action=nav-order'
+
+function navFor(
+  area: 'console' | 'admin',
+  current: string,
+  navOrder: readonly string[],
+): NavItem[] {
+  const defaults = area === 'console' ? CONSOLE_NAV : ADMIN_NAV
+  return applyNavOrder(defaults, navOrder).map((item) => ({
     label: item.label,
     href: item.path,
     icon: item.icon,
     current: current === item.path,
   }))
-  return items
 }
 
 function userLine(t: PageTemplateService, user: SessionView): string {
@@ -105,12 +122,12 @@ export const ASSET_JS = APP_JS_HREF
 /**
  * 脚本顺序**是契约**（见 `DocumentOptions.assets.jsHrefs` 的注释）：
  * 1. vendor 库按 `VENDOR_SCRIPT_ORDER`（顺序只有那一个源），**只放这一页真的用到的**：
- *    `vendorScriptsFor({ tooltips })` 会把 floating-ui 过滤掉——没有提示的页面
- *    （登录 / 注册 / 大部分管理页）不该为它下 22 KB；
+ *    - `boost`：整页外壳（有侧栏）= htmx 的局部刷新；登录 / 注册卡没有侧栏，不引；
+ *    - `tooltips`：主列里真有 `data-tooltip` 才引 floating-ui（22 KB）。
  * 2. `/assets/app.js` **必须最后**：它初始化控件，并在 htmx 已加载的前提下把
  *    `htmx.config.includeIndicatorStyles` 关掉。顺序反过来 htmx 会注入内联 `<style>`（被 CSP 拦）。
  */
-function docScripts(options: { readonly tooltips?: boolean }): readonly string[] {
+function docScripts(options: { readonly boost?: boolean; readonly tooltips?: boolean }): readonly string[] {
   return [
     ...vendorScriptsFor(options).map((name) => vendorHref(name)),
     ASSET_JS,
@@ -124,10 +141,15 @@ function docScripts(options: { readonly tooltips?: boolean }): readonly string[]
  * `fontSmiley.css()`，字体块一变（改 `scope` / 换字体字节）地址就得变，否则 `immutable`
  * 缓存会让回访浏览器一直用旧 CSS。脚本地址是常量（正文不含运行时内容）。
  *
+ * @param options.boost 这一页有没有侧栏（决定要不要引 htmx）。
  * @param options.tooltips 这一页里有没有 `data-tooltip`（决定要不要引 Floating UI）。
  *        调用方用 `needsTooltips(body)` 从**已渲染的 HTML** 判，不靠页面清单。
  */
-export function documentAssets(fontCss: string, themeCss = '', options: { readonly tooltips?: boolean } = {}): {
+export function documentAssets(
+  fontCss: string,
+  themeCss = '',
+  options: { readonly boost?: boolean; readonly tooltips?: boolean } = {},
+): {
   cssHref: string
   themeCssHref?: string
   jsHrefs: readonly string[]
@@ -150,38 +172,50 @@ export function fontCssOf(ctx: PageContext): string {
 /** 用户站外壳。 */
 export function renderConsoleShell(ctx: PageContext, content: string): string {
   const isAdmin = ctx.user.user.role === 'admin'
+  const title = `${ctx.title} · DizzyAPI`
   return ctx.t.renderDocument({
-    title: `${ctx.title} · DizzyAPI`,
-    // Tooltip 只有带图表 / 带 data-tooltip 的页面才有，按**主列内容**判：
-    // 漏判只是那段提示退回浏览器原生（有 <title> 兜底），多判才是白下载 22 KB。
-    assets: documentAssets(fontCssOf(ctx), ctx.themeCss, { tooltips: needsTooltips(content) }),
+    title,
+    // htmx 跟着侧栏走：这一页有侧栏，就有 `hx-boost` 的链接。
+    assets: documentAssets(fontCssOf(ctx), ctx.themeCss, { boost: true, tooltips: needsTooltips(content) }),
     body: ctx.t.renderShell({
       brand: { word: 'Dizzy', badge: 'API', href: '/console/usage' },
-      nav: navFor('console', ctx.path, isAdmin),
+      nav: navFor('console', ctx.path, ctx.navOrder),
       foot: [
         ...(isAdmin ? [{ label: '管理台', href: '/admin/users', icon: 'doc' as const }] : []),
         { label: '退出登录', href: '/logout', icon: 'help' as const },
       ],
       user: { name: userLine(ctx.t, ctx.user), href: '/console/profile', avatarUrl: ctx.user.user.avatar },
       content,
+      // 与 `<title>` 同一个 `title` 变量：片段里的 data-page-title 必然是整页标题。
+      pageTitle: title,
+      pagePath: ctx.path,
+      navArea: 'console',
+      navOrderAction: NAV_ORDER_ACTION,
     }),
   })
 }
 
 /** 管理台外壳。 */
 export function renderAdminShell(ctx: PageContext, content: string): string {
+  // 标题带上页面名：否则管理台 12 个页面在标签栏 / 历史里全都叫「管理台 · DizzyAPI」，
+  // 局部刷新后 `document.title` 也不会变（第 4 批的标题同步就失去意义了）。
+  const title = `${ctx.title} · 管理台 · DizzyAPI`
   return ctx.t.renderDocument({
-    title: `管理台 · DizzyAPI`,
-    assets: documentAssets(fontCssOf(ctx), ctx.themeCss, { tooltips: needsTooltips(content) }),
+    title,
+    assets: documentAssets(fontCssOf(ctx), ctx.themeCss, { boost: true, tooltips: needsTooltips(content) }),
     body: ctx.t.renderShell({
       brand: { word: 'Dizzy', badge: '管理台', href: '/admin/users' },
-      nav: navFor('admin', ctx.path, true),
+      nav: navFor('admin', ctx.path, ctx.navOrder),
       foot: [
         { label: '返回用户站', href: '/console/usage', icon: 'chat' as const },
         { label: '退出登录', href: '/logout', icon: 'help' as const },
       ],
       user: { name: userLine(ctx.t, ctx.user), href: '/console/profile', avatarUrl: ctx.user.user.avatar },
       content,
+      pageTitle: title,
+      pagePath: ctx.path,
+      navArea: 'admin',
+      navOrderAction: NAV_ORDER_ACTION,
     }),
   })
 }

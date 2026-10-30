@@ -71,7 +71,7 @@ function pageContext(
     t: template,
     services,
     notice: null,
-  themeCss: '',
+  themeCss: '',  navOrder: [],
     takeSecret: () => options.secret,
   }
 }

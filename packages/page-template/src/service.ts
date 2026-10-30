@@ -54,24 +54,26 @@ import {
   renderNotice,
   renderPageHeader,
   renderSectionTitle,
-  renderShell,
-  renderSidebar,
   renderStatCards,
   renderTable,
-  type BrandOptions,
   type ChartCardOptions,
   type FilterPill,
   type FilterPillItem,
   type ModelBlock,
   type ModelBlockItem,
-  type NavIconName,
-  type NavItem,
   type PageHeaderOptions,
-  type ShellOptions,
   type StatCard,
   type TableColumn,
-  type UserOptions,
 } from './shell.ts'
+import {
+  renderShell,
+  renderSidebar,
+  type BrandOptions,
+  type NavIconName,
+  type NavItem,
+  type ShellOptions,
+  type UserOptions,
+} from './sidebar.ts'
 import { renderDocument, type DocumentOptions } from './document.ts'
 import { tooltipAttr } from './tooltip.ts'
 

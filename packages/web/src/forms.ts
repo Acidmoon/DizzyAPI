@@ -25,6 +25,42 @@ export async function readForm(req: IncomingMessage): Promise<URLSearchParams> {
   return new URLSearchParams(text)
 }
 
+/**
+ * 业务错误 → 给人看的一句话。
+ *
+ * 带稳定 code 的错误（`WebError`，或下游插件抛的 `USER_…` / `API_KEY_…`）显示它自己的
+ * 中文消息；其余一律兜底，**不泄露内部细节**（堆栈、SQL、上游响应都不该出现在页面上）。
+ * 放在 `forms.ts`：`WebError` 定义在这，判断「什么算可展示的业务错误」与它同源。
+ */
+export function describeError(error: unknown): string {
+  if (error instanceof WebError) return error.message
+  if (error instanceof Error) {
+    const code = (error as { code?: unknown }).code
+    if (
+      typeof code === 'string' &&
+      /^[A-Z][A-Z0-9_]+$/.test(code) &&
+      error.message.length > 0 &&
+      error.message.length <= 160 &&
+      !error.message.includes('\n')
+    ) {
+      return error.message
+    }
+  }
+  return '操作失败，请稍后再试'
+}
+
+/**
+ * 这条动作请求是不是 `fetch` 发起的（不要 303 重定向）。
+ *
+ * 判据是 `X-Requested-With: dizzyapi`：自定义头**跨站表单加不了**（跨站 fetch 想加
+ * 就得过 CORS 预检，而我们不放行），所以它和 `assertSameOrigin` 一起用很安全。
+ * 用法只有一处：侧栏拖动排序落库（`client-nav-order.ts`）——它只关心成没成，
+ * 跟着 303 把整页 HTML 再拉一遍是纯浪费。
+ */
+export function wantsNoRedirect(req: IncomingMessage): boolean {
+  return req.headers['x-requested-with'] === 'dizzyapi'
+}
+
 /** 表单 POST 必须是同源：浏览器会带 Origin，跨站表单会被 SameSite 与这里一起拦住。 */
 export function assertSameOrigin(req: IncomingMessage): void {
   const origin = req.headers.origin

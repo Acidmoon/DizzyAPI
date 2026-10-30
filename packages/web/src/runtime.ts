@@ -78,11 +78,9 @@ export interface UserLike {
   setUiPreferences(id: UserId, patch: unknown): Promise<UiPreferencesView>
 }
 
-/** 界面偏好（与 `user` 插件的 `UiPreferences` 同形；这里只描述 web 用到的字段）。 */
-export interface UiPreferencesView {
-  readonly fontScale: number
-  readonly letterSpacing: string
-}
+// `UiPreferencesView` 搬去 `preferences.ts`（与本文件只许净减有关，见 AGENTS.md §5.6）；原样再导出。
+export type { UiPreferencesView } from './preferences.ts'
+
 
 export interface ApiKeyView {
   readonly id: string
@@ -127,6 +125,7 @@ export interface ApiKeyLike {
 }
 
 import type { UsageLike } from './usage-types.ts'
+import type { UiPreferencesView } from './preferences.ts'
 
 // 用量相关类型搬到了 `usage-types.ts`（`runtime.ts` 只许净减，见 AGENTS.md §5.6）；
 // 这里**原样再导出**，既有 `from '../runtime.ts'` 的导入不受影响。

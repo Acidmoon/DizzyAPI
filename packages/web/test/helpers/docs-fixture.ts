@@ -144,7 +144,7 @@ export async function renderDocs(query = ''): Promise<string> {
     t: template,
     services: EMPTY_SERVICES,
     notice: null,
-  themeCss: '',
+  themeCss: '',  navOrder: [],
     takeSecret: () => undefined,
   }
   return apiDocsPage.render(pageContext)

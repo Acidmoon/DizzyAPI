@@ -71,9 +71,17 @@ export {
 export { VENDOR_THEME_CSS } from './vendor-theme.ts'
 
 export {
+  MAIN_COLUMN_OPEN,
+  extractMainColumn,
+  renderMainColumn,
+  type MainColumnOptions,
+} from './main-column.ts'
+
+export {
   VENDOR_ASSET_PREFIX,
   VENDOR_CSS_ORDER,
   VENDOR_SCRIPT_ORDER,
+  BOOST_VENDOR_FILES,
   TOOLTIP_VENDOR_FILES,
   vendorHash,
   vendorHref,
@@ -110,24 +118,26 @@ export {
   renderBadge,
   renderNotice,
   renderSectionTitle,
-  renderShell,
-  renderSidebar,
   renderStatCards,
   renderTable,
-  type BrandOptions,
+  type StatCard,
+  type TableColumn,
   type ChartCardOptions,
   type FilterPill,
   type FilterPillItem,
   type ModelBlock,
   type ModelBlockItem,
+  type PageHeaderOptions,
+} from './shell.ts'
+export {
+  renderShell,
+  renderSidebar,
+  type BrandOptions,
   type NavIconName,
   type NavItem,
-  type PageHeaderOptions,
   type ShellOptions,
-  type StatCard,
-  type TableColumn,
   type UserOptions,
-} from './shell.ts'
+} from './sidebar.ts'
 export { renderDocument, type DocumentOptions } from './document.ts'
 export {
   DEFAULT_THEME_PREFERENCES,
