@@ -120,6 +120,7 @@ export {
   renderSectionTitle,
   renderStatCards,
   renderTable,
+  statCardHtml,
   type StatCard,
   type TableColumn,
   type ChartCardOptions,
@@ -149,3 +150,7 @@ export {
   type ThemeLetterSpacing,
   type ThemePreferences,
 } from './theme.ts'
+
+// 布局层级组件：指标分组（主次）与分组键值对（详情页 / 详情弹窗）。
+export { renderMetricGroups, type MetricGroup } from './metric-groups.ts'
+export { renderKeyValueGroups, type KeyValueGroup, type KeyValueItem } from './kv-groups.ts'

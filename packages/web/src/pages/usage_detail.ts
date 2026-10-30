@@ -12,10 +12,6 @@ import { formatYuan } from '../forms.ts'
 import {
   CHART_SAMPLE_LIMIT,
   DETAIL_PAGE_SIZE,
-  detailBody,
-  detailModal,
-  detailTrigger,
-  dialogIdOf,
   filtersForm,
   formatClock,
   formatMs,
@@ -25,6 +21,7 @@ import {
   queryOf,
   rangeOnlyQuery,
 } from '../usage-view.ts'
+import { detailBody, detailModal, detailTrigger, dialogIdOf } from '../usage-detail-view.ts'
 import { exportHref } from '../usage-export.ts'
 
 const DETAIL_PATH = '/console/usage/detail'

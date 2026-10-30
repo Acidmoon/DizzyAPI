@@ -178,16 +178,36 @@ export const adminUsagePage: PageModule = {
 
     return renderAdminShell(ctx, [
       pageHeader(ctx, '全站用量'),
-      t.renderStatCards([
-        { label: '今日请求', value: t.formatThousands(stats.today.requests) },
-        { label: '今日 Tokens', value: t.formatThousands(stats.today.totalTokens) },
-        { label: '今日费用', value: formatYuan(stats.today.costMicros), unit: 'CNY' },
-        { label: '累计请求', value: t.formatThousands(stats.total.requests) },
-        { label: '累计 Tokens', value: t.formatThousands(stats.total.totalTokens) },
-        { label: '累计费用', value: formatYuan(stats.total.costMicros), unit: 'CNY' },
-        { label: '待处理隔离', value: t.formatThousands(rejected?.pending ?? 0) },
-        { label: '累计隔离', value: t.formatThousands(rejected?.total ?? 0) },
-      ], 'metrics'),
+      // 改前是 8 张等权卡片挤成一行（`.metrics` 的 flex + `flex:1 1 0`），
+      // 「今日请求 … 累计隔离」全糊在一起。现在按时间口径分三组，每组给「费用」主指标：
+      // 读的人先看今天花了多少，再看累计，最后才看数据质量。
+      t.renderMetricGroups([
+        {
+          title: '今日',
+          note: '本地时区当天 00:00 起',
+          cards: [
+            { label: '今日费用', value: formatYuan(stats.today.costMicros), unit: 'CNY', emphasis: 'primary' },
+            { label: '今日请求', value: t.formatThousands(stats.today.requests) },
+            { label: '今日 Tokens', value: t.formatThousands(stats.today.totalTokens) },
+          ],
+        },
+        {
+          title: '累计',
+          cards: [
+            { label: '累计费用', value: formatYuan(stats.total.costMicros), unit: 'CNY', emphasis: 'primary' },
+            { label: '累计请求', value: t.formatThousands(stats.total.requests) },
+            { label: '累计 Tokens', value: t.formatThousands(stats.total.totalTokens) },
+          ],
+        },
+        {
+          title: '坏记录隔离',
+          note: '被隔离的记录不结算、不扣钱',
+          cards: [
+            { label: '待处理隔离', value: t.formatThousands(rejected?.pending ?? 0) },
+            { label: '累计隔离', value: t.formatThousands(rejected?.total ?? 0) },
+          ],
+        },
+      ]),
       t.renderSectionTitle('按模型'),
       t.renderTable({
         columns: [

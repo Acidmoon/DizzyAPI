@@ -89,13 +89,16 @@ export const adminObservabilityPage: PageModule = {
       return `${heading}${detail}`
     }
 
-    /** 一个「项目 / 值」两列表格；值可以是已经渲染好的 HTML。 */
+    /**
+     * 一组「项目 / 值」键值对；值可以是已经渲染好的 HTML。
+     *
+     * 改前是一张 `项目 | 值` 两列表格（一行一个字段，跟详情页的老毛病一样）；
+     * 现在用分组键值对：label 定宽、值右对齐、长值换行，读起来是「一块信息」而不是表格。
+     */
     const facts = (rows: readonly (readonly [string, string])[], empty = '暂时没有数据'): string =>
-      t.renderTable({
-        columns: [{ label: '项目' }, { label: '值' }],
-        rows: rows.map(([label, value]) => [t.escapeText(label), value]),
-        empty,
-      })
+      rows.length === 0
+        ? t.renderEmpty(empty)
+        : t.renderKeyValueGroups([{ items: rows.map(([label, value]) => ({ label, value })) }])
 
     const count = (value: number | null | undefined): string =>
       value === null || value === undefined ? '—' : t.formatThousands(value)
@@ -247,18 +250,27 @@ export const adminObservabilityPage: PageModule = {
           '全部只读、不落盘：用量链路、结算、额度快照、账号运行时、审计与账号池健康聚到一屏。' +
             '每个数据源单独标健康度，缺一个只降级那一块，不影响其它块。',
         ),
-        t.renderStatCards(
-          [
-            { label: '生成时间（UTC）', value: shortTime(report.generatedAt) },
-            { label: '异常项', value: t.formatThousands(report.warnings.length) },
-            { label: '整体', value: report.degraded ? '有降级' : '正常' },
-            { label: '用量缺口', value: t.formatThousands(usage.service?.gapRecords ?? 0) },
-            { label: '待核查结算', value: t.formatThousands(billing.totals?.review ?? 0) },
-            { label: '冷却账号', value: runtime.cooling === null ? '—' : t.formatThousands(runtime.cooling) },
-            { label: '自动停用账号', value: t.formatThousands(accounts.autoDisabled) },
-          ],
-          'metrics',
-        ),
+        // 改前 7 张等权卡片平铺，看不出「哪几个数字需要立刻处理」。
+        // 现在分「状态」与「需要处理」两组，异常项是主指标。
+        t.renderMetricGroups([
+          {
+            title: '状态',
+            cards: [
+              { label: '异常项', value: t.formatThousands(report.warnings.length), emphasis: 'primary' },
+              { label: '整体', value: report.degraded ? '有降级' : '正常' },
+              { label: '生成时间（UTC）', value: shortTime(report.generatedAt) },
+            ],
+          },
+          {
+            title: '需要处理',
+            cards: [
+              { label: '用量缺口', value: t.formatThousands(usage.service?.gapRecords ?? 0) },
+              { label: '待核查结算', value: t.formatThousands(billing.totals?.review ?? 0) },
+              { label: '冷却账号', value: runtime.cooling === null ? '—' : t.formatThousands(runtime.cooling) },
+              { label: '自动停用账号', value: t.formatThousands(accounts.autoDisabled) },
+            ],
+          },
+        ]),
         report.degraded
           ? t.renderNotice({
               kind: 'err',

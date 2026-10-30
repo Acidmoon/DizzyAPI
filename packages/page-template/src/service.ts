@@ -65,6 +65,8 @@ import {
   type StatCard,
   type TableColumn,
 } from './shell.ts'
+import { renderMetricGroups, type MetricGroup } from './metric-groups.ts'
+import { renderKeyValueGroups, type KeyValueGroup, type KeyValueItem } from './kv-groups.ts'
 import {
   renderShell,
   renderSidebar,
@@ -124,6 +126,24 @@ export class PageTemplateService extends Service {
 
   renderStatCards(cards: readonly StatCard[], layout: 'balances' | 'metrics' = 'metrics'): string {
     return renderStatCards(cards, layout)
+  }
+
+  /**
+   * 分组指标区：组小标题 + 组内网格 + 主指标卡。
+   *
+   * 需要「主次」的页面（全站用量、运维总览、结算…）用它，别再拿一排等权卡片平铺。
+   */
+  renderMetricGroups(groups: readonly MetricGroup[]): string {
+    return renderMetricGroups(groups)
+  }
+
+  /**
+   * 分组键值对：`请求 / 令牌 / 费用 / 时间` 这种小节 + label-value 对。
+   *
+   * 详情页与详情弹窗用它替掉「字段一行行排成表格」。
+   */
+  renderKeyValueGroups(groups: readonly KeyValueGroup[]): string {
+    return renderKeyValueGroups(groups)
   }
 
   renderFilterBar(pills: readonly FilterPill[], right?: string): string {
@@ -324,6 +344,9 @@ export type {
   DocumentOptions,
   FilterPill,
   FilterPillItem,
+  KeyValueGroup,
+  KeyValueItem,
+  MetricGroup,
   ModelBlock,
   ModelBlockItem,
   NavIconName,

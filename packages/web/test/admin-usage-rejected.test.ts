@@ -320,3 +320,18 @@ test('全站用量页：最近请求表带首字延迟列，非流式 / 历史�
   // 非 200 的状态用错误徽标，不混在正常状态里。
   assert.match(html, /500/)
 })
+
+test('全站用量：8 个指标分成「今日 / 累计 / 坏记录隔离」三组，费用是主指标', async (t) => {
+  // owner 的原话：「全站用量这些指标全部挤在一起，谁能看得清楚？」
+  // 改前是 8 张等权卡片平铺在一个 `.metrics` 里；这条钉住「分组 + 主次」不许退回去。
+  const app = await boot(t)
+  const html = await (await get(app, '/admin/usage')).text()
+
+  for (const title of ['今日', '累计', '坏记录隔离']) {
+    assert.match(html, new RegExp(`<h2 class="metric-group-title">${title}</h2>`), `缺少指标分组：${title}`)
+  }
+  assert.ok(html.includes('class="metric-groups"'), '指标区必须是分组结构（不是一排平铺卡片）')
+  // 每组一张主指标卡（今日费用 / 累计费用），其余是次级指标：8 个指标 → 2 个主指标。
+  assert.equal((html.match(/card--primary/g) ?? []).length, 2, '应当只有两个主指标卡')
+  assert.match(html, /class="card card--primary card--metric"/)
+})
