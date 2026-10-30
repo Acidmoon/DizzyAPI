@@ -114,6 +114,19 @@ test('CSV：逗号 / 引号 / 换行按 RFC 4180 转义', () => {
   assert.ok(body.includes('"line\nbreak"'), '换行要包引号')
 })
 
+test('CSV：`client_ip` 列真的填值，没采集到才是空单元格', () => {
+  // 这条护栏对着一个真实踩过的坑：`web` 当年自己拼 CSV，表头写了 `client_ip`，
+  // 而它的行类型里没有 `clientIp`，于是**每一行都有一个永远空的 `client_ip` 列**——
+  // 表头承诺了却不给数据，比不给这列更糟。现在列只由这里出，所以钉在这里。
+  const withIp = linesOf(usageCsv([row({ clientIp: '203.0.113.9' })]))[1]!.split(',')
+  assert.equal(withIp.at(-1), '203.0.113.9')
+
+  // 没采集到（NULL）→ 空单元格，不能写出字面量 "null" / "undefined"。
+  const withoutIp = linesOf(usageCsv([row({ clientIp: null })]))[1]!.split(',')
+  assert.equal(withoutIp.at(-1), '')
+  assert.equal(withoutIp.length, 12)
+})
+
 test('CSV：API key 名为空回落 key id；空结果仍带表头', () => {
   const csv = usageCsv([row({ apiKeyName: '', apiKeyId: 'key-raw' })])
   assert.ok(linesOf(csv)[1]!.includes('key-raw'))
