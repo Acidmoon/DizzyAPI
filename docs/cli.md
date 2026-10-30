@@ -370,7 +370,7 @@ node cmd/dizzy/testdata/e2e-full/run.mjs
   `/` → `/console/usage`（`packages/api/src/http.ts:171-175`），那是给浏览器点的入口页，
   CLI 从不请求它（`cmd/dizzy` 里没有发往 `/` 的调用）。
 - CLI 的 20 个 `/api/*` 调用全部期望 **200 + JSON**，逐条清单（带行号）见
-  [`docs/验收/08-cli-api-依赖清单.md`](验收/08-cli-api-依赖清单.md)。
+  [`docs/验收/11-cli-api-依赖清单.md`](验收/11-cli-api-依赖清单.md)。
 - 旧 SSR `web` 插件的「表单 POST + 303」写在**页面路由**上
   （`packages/web/src/service.ts:264-274` 的 `/logout`、`:303` 的 `handleAction`），
   CLI 一个都不碰。谁把这些改成 JSON，与 CLI 无关。
