@@ -148,6 +148,7 @@ export class WebService extends Service {
       observability: get<ObservabilityLike>('observability'),
       contentAudit: get<ContentAuditLike>('contentAudit'),
       fontSmiley: get<FontLike>('fontSmiley'),
+      gateFeed: get<import('./gate-types.ts').GateFeedLike>('gateFeed'),
     }
   }
 
@@ -164,10 +165,8 @@ export class WebService extends Service {
       if (path === '/assets/app.css') {
         const font = this.runtime().fontSmiley
         const fontCss = font === undefined ? '' : font.css()
-        // 正文由 `asset-version.ts` 装配：那份正文的哈希就是页面里 `<link>` 的 `?v=`
-        // （逐字节同源的唯一办法——两边各拼一次迟早会漂）。
-        // 字体 CSS 要运行时才有（font-smiley 可能没装载），所以不进哈希；它自己的
-        // URL 版本问题见 AGENTS.md 的「静态资源缓存」。
+        // 正文由 `asset-version.ts` 装配：那份正文的哈希就是页面里 `<link>` 的 `?v=`。
+        // 字体 CSS 要运行时才有（font-smiley 可能没装载），所以不进哈希；见 AGENTS.md §5.5。
         this.send(res, 200, 'text/css; charset=utf-8', `${APP_CSS_BODY}${fontCss}`, true)
         return
       }

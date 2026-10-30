@@ -50,6 +50,7 @@ const EMPTY_SERVICES: WebRuntime = {
   audit: undefined,
   observability: undefined,
   contentAudit: undefined,
+  gateFeed: undefined,
 }
 
 function pageContext(

@@ -778,10 +778,8 @@ export interface FontLike {
   file(): { readonly name: string; readonly contentType: string; readonly body: Buffer }
 }
 
-/** 页面能看到的全部控制面服务；缺哪个页面就降级哪块。 */
 // ───────────────────────────────── 运维总览 ─────────────────────────────────
-// 视图类型在 runtime_observability.ts（本文件只放「页面能用哪些服务」的端口）；
-// 这里 re-export，页面的 import 一个字不用改。
+// 视图类型在 runtime_observability.ts，这里 re-export：页面的 import 一个字不用改。
 export type {
   AccountsView,
   AuditItemView,
@@ -813,6 +811,8 @@ export interface WebRuntime {
   readonly observability: ObservabilityLike | undefined
   readonly contentAudit: ContentAuditLike | undefined
   readonly fontSmiley: FontLike | undefined
+  /** 闸门快照推送（`gateFeed`）：价格页用它说明「未定价现在到底会不会被拒」。 */
+  readonly gateFeed: import('./gate-types.ts').GateFeedLike | undefined
 }
 
 /** 写入时用的 actor 名（app.yml 白名单里登记同一字符串）。 */

@@ -45,6 +45,8 @@ class FakeGateway extends Service {
   pricingStale = false
   spendStale = false
   goTtlMs = 200_000
+  /** 定价闸门阶段装没装（真 Go 是 `-pricing-gate`；装了才在 pricing.status 里出现 gate）。 */
+  pricingGateInstalled = false
 
   constructor(ctx: Context) {
     super(ctx, 'accountPriority')
@@ -73,6 +75,8 @@ class FakeGateway extends Service {
       size: 0,
       ageMs: this.pricingStale ? 60_000 : 0,
       ttlMs: this.goTtlMs,
+      // 与真 Go 同形：闸门没装时 gate 键**整个不出现**（omitempty）。
+      ...(this.pricingGateInstalled ? { gate: {} } : {}),
     }
   }
 
@@ -333,4 +337,34 @@ test('Go 侧 stale / ageMs 暴露到 status()（闸门开着但快照旧 = 全�
   assert.equal(status.goPricing?.ttlMs, 15_000)
   assert.equal(status.goSpend?.stale, true)
   assert.equal(status.goTtlMs, 15_000)
+})
+
+test('定价闸门装没装要如实报：gate 键在 = 装了，不在 = 没装，读不到 = null', async (t) => {
+  const world = await boot(t, { pollIntervalMs: 60_000 })
+  world.pricing.prices = [price('deepseek-flash')]
+
+  // ① 还没读过 Go 状态：是「不知道」，不是「没装」。
+  assert.equal(world.feed.status().pricingGateEnabled, null)
+
+  // ② 闸门没装（-pricing-gate 关）：pricing.status 里没有 gate 键。
+  await world.feed.pushNow()
+  assert.equal(world.feed.status().pricingGateEnabled, false)
+
+  // ③ 闸门装了（-pricing-gate 开）：gate 键出现，哪怕计数全 0。
+  world.gateway.pricingGateInstalled = true
+  await world.feed.pushNow()
+  assert.equal(world.feed.status().pricingGateEnabled, true)
+})
+
+test('桥读不到时保留上一次的闸门状态，不退回 null（一次抖动不该让页面翻成「不知道」）', async (t) => {
+  const world = await boot(t, { pollIntervalMs: 60_000 })
+  world.pricing.prices = [price('deepseek-flash')]
+  world.gateway.pricingGateInstalled = true
+  await world.feed.pushNow()
+  assert.equal(world.feed.status().pricingGateEnabled, true)
+
+  // 让下一轮推送失败（桥断）：inspectGoState 也读不到，但状态不能被清空。
+  world.gateway.failures = 1
+  await world.feed.pushNow()
+  assert.equal(world.feed.status().pricingGateEnabled, true, '读失败保持上一次的已知状态')
 })

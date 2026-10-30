@@ -35,6 +35,36 @@ function microsToYuanInput(micros: string | null): string {
   return `${whole.toString()}.${fraction.toString().padStart(6, '0').replace(/0+$/, '')}`
 }
 
+/**
+ * 每个**配了金额上限**的 key 已消费多少（整数微元十进制字符串）。
+ *
+ * 为什么口径必须与闸门一模一样：Go 的 key-gate 判「超没超上限」用的是
+ * `gate-feed` 推过去的 `usage.summary({apiKeyId})` —— 也就是**读取时按当前价格表算**。
+ * 页面若换一个口径（例如 billing 已结算额）就会出现「页面显示 8 元、闸门按 10 元拦」，
+ * 用户永远算不明白。所以这里调同一个方法。
+ *
+ * 成本：只查**有上限**的 key（没上限的 Go 侧根本不判金额），且按 api_key_id 走索引。
+ * 读不到 / 抛错一律按 null（显示「—」），绝不因为一块附加信息把整页打挂。
+ */
+function spentOfKeys(
+  usage: PageContext['services']['usage'],
+  items: readonly ApiKeyView[],
+): Map<string, string> {
+  const result = new Map<string, string>()
+  if (usage === undefined) return result
+  for (const key of items) {
+    if (key.spendingLimitMicros === null) continue
+    try {
+      const summary = usage.summary({ fromMs: 0, toMs: Number.MAX_SAFE_INTEGER, apiKeyId: key.id })
+      const spent = summary.totals.costMicros
+      if (typeof spent === 'string' && /^[0-9]+$/.test(spent)) result.set(key.id, spent)
+    } catch {
+      // 单条算不出来只少一个数，不影响页面。
+    }
+  }
+  return result
+}
+
 /** `YYYY-MM-DD`（UTC 当天 00:00）或空。日期控件给的是日期，服务端要 ISO。 */
 function dateToIso(value: string): string | null {
   if (value === '') return null
@@ -130,6 +160,7 @@ export const keysPage: PageModule = {
       return renderConsoleShell(ctx, pageHeader(ctx, 'API keys') + t.renderNotice({ kind: 'err', text: 'API key 服务未运行' }))
     }
     const items = await keys.list(ctx.user.userId)
+    const spentByKey = spentOfKeys(ctx.services.usage, items)
     const secret = ctx.query.get('new') === undefined ? undefined : ctx.takeSecret()
     // 无脚本降级：`?edit=<id>` 时把那张表单整页渲染在列表上方。
     const editing = ctx.query.get('edit')
@@ -155,12 +186,15 @@ export const keysPage: PageModule = {
       const limitCell = key.spendingLimitMicros === null
         ? '—'
         : formatYuan(key.spendingLimitMicros)
+      const spent = spentByKey.get(key.id)
+      const spentCell = spent === undefined ? '—' : formatYuan(spent)
       const expiryCell = key.expiresAt === null ? '永不' : t.escapeText(key.expiresAt.slice(0, 10))
       return [
         t.escapeText(key.name),
         `<code class="mono">${t.escapeText(key.maskedKey)}</code>`,
         key.enabled ? t.renderBadge('启用', 'ok') : t.renderBadge('停用'),
         expiryCell,
+        t.escapeText(spentCell),
         t.escapeText(limitCell),
         key.concurrencyLimit === null ? '—' : String(key.concurrencyLimit),
         t.escapeText(key.createdAt.slice(0, 10)),
@@ -201,6 +235,7 @@ ${t.renderField({ label: '名称', name: 'name', required: true, placeholder: '�
           { label: 'Key' },
           { label: '状态' },
           { label: '过期' },
+          { label: '已消费', align: 'right' },
           { label: '金额上限', align: 'right' },
           { label: '并发', align: 'right' },
           { label: '创建' },
