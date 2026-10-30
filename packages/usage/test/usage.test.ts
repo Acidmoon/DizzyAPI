@@ -7,6 +7,7 @@ import { test, type TestContext } from 'node:test'
 import { Context, FiberState, type Fiber } from 'cordis'
 import { isIssueList } from '@dizzyapi/plugin-kit'
 import UsageService, {
+  USAGE_CSV_HEADER,
   USAGE_DEFAULTS,
   USAGE_SCHEMA,
   openUsageDatabase,
@@ -418,6 +419,67 @@ test('exportRows：过滤 + 上限', async (t) => {
     [4, 3, 2, 1],
   )
 })
+
+test('exportCsv：行数与导出 / 表格同口径（每一种筛选都一致）', async (t) => {
+  const { service } = await boot(t)
+  service.ingest(entry({ userId: '1', keyId: 'key-1', keyName: 'main', model: 'model-a' }))
+  service.ingest(entry({ userId: '1', keyId: 'key-2', keyName: '副号', model: 'model-b' }))
+  service.ingest(entry({ userId: '2', keyId: 'key-9', keyName: '别人的 key', model: '别人的模型' }))
+
+  // 真实窗口（导出要拿它拼文件名；`ALL_TIME` 那种无穷上界不是真实调用形态）。
+  const RANGE = { fromMs: Date.parse('2026-10-01T00:00:00.000Z'), toMs: Date.parse('2026-10-31T00:00:00.000Z') }
+
+  // 导出与表格（明细页读 `list`）必须同口径：同一组筛选，同一个 reqId 序列。
+  const cases = [
+    { name: '全站口径', query: { ...RANGE } },
+    { name: '按用户', query: { ...RANGE, userId: 1 } },
+    { name: '按模型', query: { ...RANGE, model: 'model-b' } },
+    { name: '按用户 + 按 key', query: { ...RANGE, userId: 1, apiKeyId: 'key-2' } },
+  ] as const
+
+  for (const item of cases) {
+    const rows = service.exportRows(item.query)
+    const listed = service.list(item.query).items
+    assert.deepEqual(
+      rows.map((row) => row.reqId),
+      listed.map((row) => row.reqId),
+      `${item.name}：导出的行与表格的行必须逐条相同`,
+    )
+
+    const exported = service.exportCsv(item.query)
+    const lines = exported.content.replace(/^\uFEFF/, '').split('\r\n')
+    assert.equal(lines[0], USAGE_CSV_HEADER.join(','), `${item.name}：表头`)
+    assert.equal(lines.length, rows.length + 1, `${item.name}：表头 + ${rows.length} 条记录，没有多余空行`)
+  }
+
+  // 越权面：别人的模型名 / key 名一个字都不许进用户 1 的导出（与页面同一条纪律）。
+  const mine = service.exportCsv({ ...RANGE, userId: 1 }).content
+  assert.equal(mine.includes('别人的模型'), false)
+  assert.equal(mine.includes('别人的 key'), false)
+})
+
+test('exportCsv：client_ip 列走真实入库路径也真的带值（不是永远空的那一列）', async (t) => {
+  const { service } = await boot(t)
+  service.ingest(entry({ requestId: 'with-ip', clientIp: '203.0.113.9' }))
+  service.ingest(entry({ requestId: 'no-ip', clientIp: '' }))
+  const range = { fromMs: Date.parse('2026-10-01T00:00:00.000Z'), toMs: Date.parse('2026-10-31T00:00:00.000Z') }
+
+  // 表头承诺了 `client_ip`，就必须真的填值：这一列曾经在 `web` 侧硬编码成 `''`，
+  // 结果是每行都有一个永远空的列（见 `csv.test.ts` 的同名护栏）。
+  const column = USAGE_CSV_HEADER.indexOf('client_ip')
+  assert.ok(column >= 0, 'client_ip 必须在表头里（/api/usage/export 的既有契约）')
+  const cells = service
+    .exportCsv(range)
+    .content.replace(/^\uFEFF/, '')
+    .split('\r\n')
+    .slice(1)
+    .map((line) => line.split(',')[column])
+
+  // 顺序是 id 倒序：后 ingest 的 no-ip 在第一行。
+  assert.equal(cells[0], '', '没采集到 IP 时是空单元格，不是字面量 null')
+  assert.equal(cells[1], '203.0.113.9', '采集到的 IP 必须真的写进 client_ip 列')
+})
+
 
 test('保留期：过期记录分批删除', async (t) => {
   const { service } = await boot(t, { retentionDays: 90 })
