@@ -478,6 +478,7 @@ function describeError(error: unknown): string {
       role: 'user',
       balance: 0n,
       balanceEnabled: false,
+      concurrencyLimit: null,
       avatar: null,
       createdAt: '',
       updatedAt: '',

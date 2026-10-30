@@ -11,11 +11,13 @@ import { usageCsv, usageDetailOf, usageRowOf, usageTotalsOf } from '../views/usa
 import { parseUserId, roleOf } from '../views/session.ts'
 import { USAGE_RANGE_DAYS } from '../constants.ts'
 import { ApiError, badRequest, notFound, unauthorized } from '../errors.ts'
-import { type IncomingMessage, type ServerResponse } from 'node:http'
+import { IncomingMessage, ServerResponse } from 'node:http'
 import type { UsageQueryLike } from '../types.ts'
+import { requireSession } from '../http_session.ts'
+import { sendJson } from '../http_respond.ts'
 
 export async function usage(host: ApiServer, req: IncomingMessage, url: URL): Promise<unknown> {
-  const view = await host.requireSession(req)
+  const view = await requireSession(host, req)
   const usage = host.runtime.usage()
   if (usage === undefined) {
     throw new ApiError('API_USAGE_UNAVAILABLE', 503, '用量插件不在运行，暂时无法查询用量')
@@ -90,7 +92,7 @@ export async function usage(host: ApiServer, req: IncomingMessage, url: URL): Pr
  * 这样不用在 HTTP 层区分下载 / 错误信封，也不会把 CSV 当 JSON 解析。
  */
 export async function usageExport(host: ApiServer, req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
-  const view = await host.requireSession(req)
+  const view = await requireSession(host, req)
   const usage = host.runtime.usage()
   if (usage === undefined) {
     throw new ApiError('API_USAGE_UNAVAILABLE', 503, '用量插件不在运行，暂时无法导出用量')
@@ -130,7 +132,7 @@ export async function usageExport(host: ApiServer, req: IncomingMessage, res: Se
   })
   const from = dateOf(new Date(fromMs)).replaceAll('-', '')
   const to = dateOf(new Date(toMs - 86_400_000)).replaceAll('-', '')
-  host.sendJson(req, res, 200, {
+  sendJson(host, req, res, 200, {
     filename: `usage-${from}-${to}.csv`,
     content: usageCsv(rows),
   })
@@ -147,7 +149,7 @@ export async function usageExport(host: ApiServer, req: IncomingMessage, res: Se
  * （库里一直有、列表接口没出）与 `ttftMs`（首字延迟，旧记录是 null）。
  */
 export async function usageDetail(host: ApiServer, req: IncomingMessage, res: ServerResponse, reqId: string): Promise<void> {
-  const view = await host.requireSession(req)
+  const view = await requireSession(host, req)
   const usage = host.runtime.usage()
   if (usage === undefined) {
     throw new ApiError('API_USAGE_UNAVAILABLE', 503, '用量插件不在运行，暂时无法查询用量')
@@ -158,5 +160,5 @@ export async function usageDetail(host: ApiServer, req: IncomingMessage, res: Se
   if (row === null || (roleOf(view.user) !== 'admin' && row.userId !== view.userId)) {
     throw new ApiError('USAGE_RECORD_NOT_FOUND', 404, '没有这条用量记录')
   }
-  host.sendJson(req, res, 200, { record: usageDetailOf(row) })
+  sendJson(host, req, res, 200, { record: usageDetailOf(row) })
 }

@@ -8,7 +8,9 @@ import type { ApiServer } from '../http.ts'
 import { assertOnlyKeys, parseIntegerParam, requiredString } from '../params.ts'
 import { redeemResultOf, redemptionOf } from '../views/commerce.ts'
 import { notFound } from '../errors.ts'
-import { type IncomingMessage, type ServerResponse } from 'node:http'
+import { IncomingMessage, ServerResponse } from 'node:http'
+import { requireSession } from '../http_session.ts'
+import { jsonBody, sendJson, sendMethodNotAllowed } from '../http_respond.ts'
 
 // ───────────────────────────────── 兑换码 ─────────────────────────────────
 
@@ -25,23 +27,23 @@ res: ServerResponse,
 parts: readonly string[],
 url: URL,
 ): Promise<void> {
-  const view = await host.requireSession(req)
+  const view = await requireSession(host, req)
   if (parts.length !== 1) throw notFound('没有这个兑换接口')
   const redeem = host.requireRedeem()
 
   if (req.method === 'GET' || req.method === 'HEAD') {
     const limit = parseIntegerParam(url.searchParams.get('limit'), 'limit', 20, 1, 100)
     const items = await redeem.listMyRedemptions(view.userId, limit)
-    host.sendJson(req, res, 200, { items: items.map(redemptionOf) })
+    sendJson(host, req, res, 200, { items: items.map(redemptionOf) })
     return
   }
   if (req.method === 'POST') {
-    const body = await host.jsonBody(req)
+    const body = await jsonBody(host, req)
     assertOnlyKeys(body, ['code'])
     const code = requiredString(body, 'code')
     const result = await redeem.redeemCode({ userId: view.userId, code })
-    host.sendJson(req, res, 200, redeemResultOf(result))
+    sendJson(host, req, res, 200, redeemResultOf(result))
     return
   }
-  host.sendMethodNotAllowed(req, res, ['GET', 'HEAD', 'POST'])
+  sendMethodNotAllowed(host, req, res, ['GET', 'HEAD', 'POST'])
 }

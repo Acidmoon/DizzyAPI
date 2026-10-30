@@ -2,17 +2,18 @@
  * http_static.ts：从 http.ts 的 ApiServer 搬出来的 http_static 相关成员（行为逐字未改）。
  *
  * 纯搬移：方法体逐字未改，只把 this. 换成 host.、签名前面加 host: ApiServer；
- * http.ts 里留同名薄委派，所以类内部与 routes/* 的调用点一个都没动。
+ * 导出的是 `(host, …)` 形式的自由函数，http.ts 与 routes/* 直接调用（没有委派层）。
  */
 import type { ApiServer } from './http.ts'
 import { isPlainObject } from './params.ts'
 import { contentTypeOf, decodeSegment } from './http_io.ts'
 import { CONTENT_SECURITY_POLICY, IMMUTABLE, NO_STORE } from './constants.ts'
 import { notFound } from './errors.ts'
-import { type IncomingMessage, type ServerResponse } from 'node:http'
+import { IncomingMessage, ServerResponse } from 'node:http'
 import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { FrontendPort } from './types.ts'
+import { sendBody } from './http_respond.ts'
 
 // ───────────────────────────────── 静态 ─────────────────────────────────
 
@@ -24,7 +25,7 @@ export function assetPrefix(host: ApiServer, ): string {
 
 export function isAssetPath(host: ApiServer, pathname: string): boolean {
   try {
-    return pathname.startsWith(host.assetPrefix())
+    return pathname.startsWith(assetPrefix(host))
   } catch {
     return false
   }
@@ -32,9 +33,9 @@ export function isAssetPath(host: ApiServer, pathname: string): boolean {
 
 export async function serveAsset(host: ApiServer, req: IncomingMessage, res: ServerResponse, pathname: string): Promise<void> {
   const frontend = host.requireFrontend()
-  if (!(await host.frontendEnabled(frontend))) throw notFound('前端资源已停用')
+  if (!(await frontendEnabled(host, frontend))) throw notFound('前端资源已停用')
 
-  const prefix = host.assetPrefix()
+  const prefix = assetPrefix(host)
   const rest = pathname.slice(prefix.length)
   const slash = rest.indexOf('/')
   if (slash <= 0 || slash === rest.length - 1) throw notFound('资源路径不完整')
@@ -58,7 +59,7 @@ export async function serveAsset(host: ApiServer, req: IncomingMessage, res: Ser
     throw notFound('没有这个前端资源')
   }
 
-  host.sendBody(req, res, 200, contentTypeOf(relative), body, {
+  sendBody(host, req, res, 200, contentTypeOf(relative), body, {
     'Cache-Control': IMMUTABLE,
     'X-Content-Type-Options': 'nosniff',
   })
@@ -66,7 +67,7 @@ export async function serveAsset(host: ApiServer, req: IncomingMessage, res: Ser
 
 export async function serveIndex(host: ApiServer, req: IncomingMessage, res: ServerResponse): Promise<void> {
   const frontend = host.requireFrontend()
-  if (!(await host.frontendEnabled(frontend))) throw notFound('前端资源已停用')
+  if (!(await frontendEnabled(host, frontend))) throw notFound('前端资源已停用')
 
   let file: string | null
   try {
@@ -85,7 +86,7 @@ export async function serveIndex(host: ApiServer, req: IncomingMessage, res: Ser
     throw notFound('还没有安装前端资源')
   }
 
-  host.sendBody(req, res, 200, 'text/html; charset=utf-8', body, {
+  sendBody(host, req, res, 200, 'text/html; charset=utf-8', body, {
     'Cache-Control': NO_STORE,
     'Content-Security-Policy': CONTENT_SECURITY_POLICY,
     'Referrer-Policy': 'no-referrer',

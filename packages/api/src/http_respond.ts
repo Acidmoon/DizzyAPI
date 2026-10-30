@@ -2,24 +2,24 @@
  * http_respond.ts：从 http.ts 的 ApiServer 搬出来的 http_respond 相关成员（行为逐字未改）。
  *
  * 纯搬移：方法体逐字未改，只把 this. 换成 host.、签名前面加 host: ApiServer；
- * http.ts 里留同名薄委派，所以类内部与 routes/* 的调用点一个都没动。
+ * 导出的是 `(host, …)` 形式的自由函数，http.ts 与 routes/* 直接调用（没有委派层）。
  */
 import type { ApiServer } from './http.ts'
 import { isPlainObject, safeJson } from './params.ts'
 import { readBody, requestIdOf } from './http_io.ts'
 import { NO_STORE } from './constants.ts'
 import { ApiError, badRequest, isApiError, toApiError } from './errors.ts'
-import { type IncomingMessage, type ServerResponse } from 'node:http'
+import { IncomingMessage, ServerResponse } from 'node:http'
 
 export function allowRead(host: ApiServer, req: IncomingMessage, res: ServerResponse): boolean {
   if (req.method === 'GET' || req.method === 'HEAD') return true
-  host.sendMethodNotAllowed(req, res, ['GET', 'HEAD'])
+  sendMethodNotAllowed(host, req, res, ['GET', 'HEAD'])
   return false
 }
 
 export function allowMethod(host: ApiServer, req: IncomingMessage, res: ServerResponse, allowed: readonly string[]): boolean {
   if (req.method !== undefined && allowed.includes(req.method)) return true
-  host.sendMethodNotAllowed(req, res, allowed)
+  sendMethodNotAllowed(host, req, res, allowed)
   return false
 }
 
@@ -45,7 +45,7 @@ value: unknown,
 headers: Readonly<Record<string, string>> = {},
 ): void {
   const body = Buffer.from(safeJson(value), 'utf8')
-  host.sendBody(req, res, status, 'application/json; charset=utf-8', body, {
+  sendBody(host, req, res, status, 'application/json; charset=utf-8', body, {
     'Cache-Control': NO_STORE,
     'X-Content-Type-Options': 'nosniff',
     ...headers,
@@ -76,7 +76,7 @@ headers: Readonly<Record<string, string>> = {},
 
 export function sendMethodNotAllowed(host: ApiServer, req: IncomingMessage, res: ServerResponse, allowed: readonly string[]): void {
   res.setHeader('Allow', allowed.join(', '))
-  host.sendJson(req, res, 405, {
+  sendJson(host, req, res, 405, {
     error: {
       code: 'API_METHOD_NOT_ALLOWED',
       message: `不支持 ${req.method ?? '未知方法'}；允许：${allowed.join(', ')}`,
@@ -97,7 +97,7 @@ export function respondError(host: ApiServer, req: IncomingMessage, res: ServerR
     }
   }
   try {
-    host.sendJson(req, res, apiError.status, {
+    sendJson(host, req, res, apiError.status, {
       error: {
         code: apiError.code,
         message: apiError.message,

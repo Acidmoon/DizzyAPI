@@ -248,7 +248,7 @@ export default FooService
   状态 / 客户端 IP」，经控制桥 `usage.since` 由 TS 轮询落 SQLite；`/api/usage`（用户）与
   `/api/admin/usage`（全站）提供明细、汇总、按天/按模型/按用户聚合与 CSV 导出；
   `GET /api/usage/:reqId` 是**单条详情**（详情弹窗用，普通用户只能查自己的、管理员查全部，
-  查不到与「不是自己的」统一 404）；`/console/usage` 只加明细表，`/admin/usage` 是独立页面
+  查不到与「不是自己的」统一 404）；用户侧页面分**概览** `/console/usage`（指标卡 + 恒定 7 个时间点的图 + 最近 10 条）与**明细** `/console/usage/detail`（完整列表 + 分页 + 筛选 + 详情弹窗），`/admin/usage` 是独立的管理页
 - 模型价格：`/api/pricing` 读、`/api/pricing/:model` 读写（写需管理员），`/admin/pricing` 页面；
   用量费用在**读取时**按价格表计算（整数微元，1 元 = 1_000_000 微元）
 - **真实扣费（`billing`，后付费）**：`usage` 每轮 `usage.since` 拉到用量后，按
@@ -373,7 +373,7 @@ pnpm test:go
 
 - 新增插件必须有 `test/*.test.ts`；新增 Go 模块必须有单测。
 - 测试失败先修实现，不允许删断言或放宽断言来变绿。
-- 当前基线（2026-10-30 实测）：`pnpm test` 820 个用例（819 通过 / 1 跳过），`pnpm typecheck` 干净，
+- 当前基线（2026-10-30 实测）：`pnpm test` 855 个用例（854 通过 / 1 跳过），`pnpm typecheck` 干净，
   `go test ./...` **26 包**全 ok，`gofmt -l .` 与 `go vet ./...` 无输出。
   这个数字会变，以实际输出为准。
 - **验收任何分支前先 `pnpm build:go`**（不只是改过 Go 的分支）：`pnpm test` 里有真进程用例会
@@ -381,6 +381,11 @@ pnpm test:go
   改动的 main 之后，旧二进制不认识新 flag，`api-key/test/gateway-gates-pricing.test.ts` 会直接红
   （2026-10-30 实测：`优化` 首次 793 通过 / 1 失败，`pnpm build:go` 之后 5/5 全绿）。
   这不是回归，但**不 build 就分不清是不是回归**。
+- **主仓库也一样要 build**（2026-10-30 实测踩坑）：合完一个分支直接跑 `pnpm test`，
+  主仓库的 `bin/gatewayd.exe` 还是合并前的旧二进制 → **8 条真进程用例全红**，报
+  `BRIDGE_BAD_REQUEST: API key 快照参数不合法：json: unknown field "expiresAt"`。
+  这不是代码回归，是旧二进制不认识新快照字段；`pnpm build:go` 之后 840 / 839 / 1 / 0 全绿。
+  **凡是 `pnpm test` 报 `BRIDGE_BAD_REQUEST` 或「参数不合法」，第一件事是 build，不是改代码**。
 - **多 worktree 并行跑测试会互相抢端口**：`pnpm test` 里有多条**真进程用例**（`content-audit`
   的 `gateway-smoke`、`account-priority` 的子进程），它们用 `freePort()` 拿临时端口再 spawn
   `bin/gatewayd`。几个 worktree 同时跑全量时，A 释放的端口可能被 B 抢到，表现是
@@ -403,20 +408,33 @@ pnpm test:go
 - 站点字体是 `font-smiley` 插件：自托管 Smiley Sans（得意黑）v2.0.1（OFL-1.1），
   字体与 LICENSE 在 `packages/font-smiley/assets/`；`scope` 默认 `headings`（只换标题与品牌），
   改 `all` 才换正文。web 负责把 `@font-face` 追加进 `/assets/app.css` 并发送 woff2 字节。
-- 用量页时间维度只有 **今天 / 昨天 / 近 7 天**：单日（今天、昨天）的柱状图看最近 7 个小时
-  （小时桶，标签 `HH:00`），近 7 天按天绘制；图表固定 7 根柱、7 个标签。
+- **用量页分两页**：`/console/usage` 是**概览**（指标卡 + 恒定 7 个时间点的消费图 + 按模型 + 最近
+  10 条请求），`/console/usage/detail` 是**明细**（完整列表 + keyset 分页 + 筛选 + 每行详情）。
+  时间维度是**显式下拉**（今天 / 昨天 / 近 7 天 / 近 30 天，`renderSelect`），查看维度是图卡里的
+  分段控件（总量 / 按模型 / 按 API key）。单日（今天、昨天）的图看最近 7 个整点小时（`HH:00`），
+  多日按天边界把窗口均分成 7 段——**恒定 7 个时间点，空桶补 0**，与库里有多少天数据无关。
+  注意图表实现（`charts.ts`）对**全零的桶不画柱子**，所以「7 根柱」在视觉上是有数据才出柱，
+  恒 7 的是**时间点（X 轴标签）**；用例断言的是 7 个居中轴标签。
+- **详情弹窗是服务端预渲染的**（`usage-view.ts` 的 `detailModal`）：每行一个 `<dialog>`，数据直接取
+  当前行（与表格逐字段一致），不需要客户端 fetch、也不依赖任何脚本；「详情」按钮同时带
+  `data-dialog-open` 与指向明细页 `?reqId=` 的普通链接——**没有 JS 时退化成整页详情**，这是
+  `renderModal` 要求的「别把唯一入口放进弹窗」的落地方式。明细页的 `?reqId=` **必须在页面层判
+  归属**（`record.userId === ctx.user.userId`），服务层 `usage.get` 不判权限。
+- **已知缺口（第 3 批没做）**：明细页的「导出 CSV」按钮没接。`renderExportButton` 输出的
+  `data-export` 钩子**在 `CLIENT_JS` 里没有处理器**（没有 fetch→Blob），而 `/api/usage/export`
+  只返回 JSON `{filename, content}`；要让浏览器真的下载，要么在设计线的 `client-extras.ts`
+  加 ~15 行并用 `asset-version.ts` 拼进 `app.js`，要么把导出接口改成 `text/csv` 契约。
 - **静态资源一律带内容哈希，`immutable` 才成立**（2026-10-30）：`/assets/app.css?v=…`、
   `/assets/app.js?v=…`、`/assets/vendor/<name>?v=…` 的 `?v=` 是**正文的 sha256 前 8 位**，
   装配点只有 `packages/web/src/asset-version.ts`（`APP_CSS_BODY` / `APP_JS_BODY`）与
   `page-template/src/vendor.ts`（`vendorHref()`）。页面里**不许手拼** `/assets/vendor/...`。
   这些字节发的是 `Cache-Control: public, max-age=31536000, immutable`（一年、不重新验证），
   没有版本串就等于「改了样式用户看不到」。
-- **已知债：`app.css` 的哈希不含 `font-smiley` 追加的 `@font-face` 块**。那一块要运行时才有
-  （服务端渲染 `<link>` 时 font 插件还没注入），所以改字体 `scope` 或换字体版本时，
-  `app.css` 的 URL 哈希不变 → 回访浏览器一年内还在用旧 CSS。
-  `/assets/fonts/*.woff2` 本身也是固定路径 + `immutable`。**两者要一起修**（把 href 改成
-  由 `web` 在拿到 `fontCss()` 之后惰性算，或让 `font-smiley` 给自己的字体 URL 带版本串），
-  别只修一半。
+- **`app.css` 的地址不能是常量**：实际发出去的正文是 `APP_CSS_BODY + fontSmiley.css()`，
+  字体块要运行时才有，所以地址走 `appCssHref(fontCss)` / `documentAssets(fontCss)`，
+  页面渲染用 `fontCssOf(ctx)`；字体 URL 自己也带 `?v=<字体字节哈希>`。
+  **改回常量就是 2026-10-30 修掉的那个洞**（改字体 scope 后 URL 不变 → 回访浏览器一年用旧 CSS）。
+  具体规则与护栏见 §7「前端」。
 
 ### 5.6 文件粒度与耦合（owner 2026-10-29 追加）
 
@@ -441,22 +459,25 @@ pnpm test:go
   `packages/account-priority/src/service.ts` 1238、`packages/identity/src/service.ts` 1132、
   `packages/api/src/types.ts` 1054、`modules/protoconv/codec_anthropic.go` 1034、
   `packages/web/src/runtime.ts` 977、`modules/protoconv/codec_responses.go` 974、
-  `packages/api/src/http.ts` 873、`internal/httpapi/server.go` 843、
+  `internal/httpapi/server.go` 843、
   `modules/protoconv/codec_gemini.go` 705、`modules/protoconv/codec_chat.go` 697；
-  400～500 的次级面：`packages/web/src/pages/admin_account_detail.ts` 440、
+  400～500 的次级面：`packages/api/src/http.ts` 465、`packages/web/src/pages/admin_account_detail.ts` 440、
   `packages/web/src/service.ts` 449、`packages/page-template/src/shell.ts` 447。
   往这些文件里加东西时，**顺手把同一职责搬进新的小文件**，让净增行数尽量小。
-- **`packages/api/src` 的路由布局（2026-10-30 拆完，4241 → 873）**：新增 `/api/*` 路由**一律**
+- **`packages/api/src` 的路由布局（2026-10-30 拆完，4241 → 465）**：新增 `/api/*` 路由**一律**
   写进 `routes/<前缀>.ts`，不再进 `http.ts`：
   - `routes/*.ts`：一前缀一个文件（`keys` / `usage` / `admin_usage` / `admin_accounts` …），
     导出一个 `routeXxx(host, req, res, parts, url)`；每个管理面文件**自己先调
-    `host.requireAdmin(req)` 再干活**（不要假设上游已经鉴权过）。
+    `requireAdmin(host, req)` 再干活**（不要假设上游已经鉴权过）。
   - `views/*.ts`：DTO 的纯函数映射（`usage` / `commerce` / `account` / `audit` …），不碰 IO。
-  - `http.ts`：只留类字段、生命周期、`dispatch`、`routeApi` 分发与 51 个同名薄委派。
-    **`routeApi` 的判定顺序是不变量**，它有 `/api/usage/export` 必须早于 `/api/usage/:reqId`
-    这类先后依赖；动它之前先看顺序表，改完用全量测试验。
-  - 拆文件时 `routeApi` 的委派层是刻意留的：调用点一个字不改，风险最小。要压掉委派层
-    （能再省约 400 行）属于单独一批，需要同时改所有 `this.xxx` 调用点，不能顺手做。
+  - `http_static.ts` / `http_session.ts` / `http_respond.ts`：静态资源、会话与 cookie、
+    响应 / 错误渲染 / 入参，都是 `(host, …)` 形式的导出函数。
+  - `http.ts`：只剩**类字段 + 生命周期 + `dispatch` + `routeApi` + 各端口的 `requireXxx()`
+    访问器**；路由函数一律从 `routes/*` 直接 import，**没有委派层**（2026-10-30 分 5 批删掉，
+    873 → 465）。**`routeApi` 的判定顺序是不变量**，它有 `/api/usage/export` 必须早于
+    `/api/usage/:reqId` 这类先后依赖；动它之前先看顺序表，改完用全量测试验。
+  - 这套 `(host, …)` 自由函数风格是刻意的：拆文件时先在类上留同名薄委派、调用点一个字不改，
+    分 5 批把调用点改成直接函数调用再删委派，每批独立跑绿、出问题能二分。
 - **低耦合的执行标准**：插件之间只经服务接口 / 进程内事件（§2.2 已有）；插件内部
   不跨层直连别人的存储；Go 侧 `modules/*` 只 import `contracts/`（§2.3 已有）；
   传输层 / 渲染层 / 存储层不互相 import 实现文件。

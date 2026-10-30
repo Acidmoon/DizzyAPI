@@ -5,17 +5,33 @@
  * 判定顺序与分发在 http.ts 的 routeApi，本文件不自行分发。
  */
 import type { ApiServer } from '../http.ts'
-import { accountCredentialOf, assertOnlyKeys, isPlainObject, nullableString, nullableStringArray, nullableStringMap, optionalInteger, optionalString, optionalStringArray, optionalStringMap, parseIntegerParam, requiredBoolean, requiredString } from '../params.ts'
+import {
+  accountCredentialOf,
+  assertOnlyKeys,
+  isPlainObject,
+  nullableString,
+  nullableStringArray,
+  nullableStringMap,
+  optionalInteger,
+  optionalString,
+  optionalStringArray,
+  optionalStringMap,
+  parseIntegerParam,
+  requiredBoolean,
+  requiredString,
+} from '../params.ts'
 import { accountOf, normalizeBulkImport } from '../views/account.ts'
 import { auditActorOf, audited } from '../audit.ts'
 import { API_ACTOR } from '../constants.ts'
 import { ApiError, badRequest, notFound } from '../errors.ts'
-import { type IncomingMessage, type ServerResponse } from 'node:http'
+import { IncomingMessage, ServerResponse } from 'node:http'
+import { requireAdmin } from '../http_session.ts'
+import { allowMethod, jsonBody, sendJson, sendMethodNotAllowed } from '../http_respond.ts'
 
 // ───────────────────────────────── 管理员：上游账号 ─────────────────────────────────
 
 export async function routeAccounts(host: ApiServer, req: IncomingMessage, res: ServerResponse, parts: readonly string[]): Promise<void> {
-  const { view: adminView } = await host.requireAdmin(req)
+  const { view: adminView } = await requireAdmin(host, req)
   const identity = { actor: auditActorOf(adminView), actorPlugin: API_ACTOR }
   const accountAdmin = host.requireAccountAdmin()
 
@@ -25,7 +41,7 @@ export async function routeAccounts(host: ApiServer, req: IncomingMessage, res: 
       if (typeof create !== 'function') {
         throw new ApiError('API_ACCOUNT_CREATE_UNAVAILABLE', 503, '账号管理服务不支持新建账号')
       }
-      const body = await host.jsonBody(req)
+      const body = await jsonBody(host, req)
       assertOnlyKeys(body, [
         'provider',
         'kind',
@@ -66,7 +82,7 @@ export async function routeAccounts(host: ApiServer, req: IncomingMessage, res: 
         ...(enabled === undefined ? {} : { enabled }),
         ...(credential === undefined ? {} : { credential }),
       }
-      host.sendJson(
+      sendJson(host, 
         req,
         res,
         200,
@@ -88,7 +104,7 @@ export async function routeAccounts(host: ApiServer, req: IncomingMessage, res: 
       return
     }
     if (req.method !== 'GET' && req.method !== 'HEAD') {
-      host.sendMethodNotAllowed(req, res, ['GET', 'HEAD', 'POST'])
+      sendMethodNotAllowed(host, req, res, ['GET', 'HEAD', 'POST'])
       return
     }
     const url = new URL(req.url ?? '/', 'http://127.0.0.1')
@@ -103,7 +119,7 @@ export async function routeAccounts(host: ApiServer, req: IncomingMessage, res: 
     const offset = cursor ?? 0
     const size = limit ?? 50
     const page = all.slice(offset, offset + size)
-    host.sendJson(req, res, 200, {
+    sendJson(host, req, res, 200, {
       items: page.map(accountOf),
       nextCursor: offset + size < all.length ? String(offset + size) : null,
     })
@@ -111,8 +127,8 @@ export async function routeAccounts(host: ApiServer, req: IncomingMessage, res: 
   }
 
   if (parts.length === 2 && parts[1] === 'import') {
-    if (!host.allowMethod(req, res, ['POST'])) return
-    const body = await host.jsonBody(req)
+    if (!allowMethod(host, req, res, ['POST'])) return
+    const body = await jsonBody(host, req)
     // body 里有 `source` 时按 new-api / sub2api / 纯 key 的来源格式导入；否则沿用逐项格式。
     if (Object.hasOwn(body, 'source')) {
       const importSource = accountAdmin.importSource
@@ -124,7 +140,7 @@ export async function routeAccounts(host: ApiServer, req: IncomingMessage, res: 
       const payload = requiredString(body, 'payload')
       const defaults = Object.hasOwn(body, 'defaults') ? body.defaults : undefined
       const input = { source, payload, ...(defaults === undefined ? {} : { defaults }) }
-      host.sendJson(
+      sendJson(host, 
         req,
         res,
         200,
@@ -149,7 +165,7 @@ export async function routeAccounts(host: ApiServer, req: IncomingMessage, res: 
     if (typeof bulk !== 'function') {
       throw new ApiError('API_ACCOUNT_IMPORT_UNAVAILABLE', 503, '账号管理服务不支持批量导入')
     }
-    host.sendJson(
+    sendJson(host, 
       req,
       res,
       200,
@@ -170,8 +186,8 @@ export async function routeAccounts(host: ApiServer, req: IncomingMessage, res: 
   }
 
   if (parts.length === 3 && parts[1] === 'import' && parts[2] === 'preview') {
-    if (!host.allowMethod(req, res, ['POST'])) return
-    const body = await host.jsonBody(req)
+    if (!allowMethod(host, req, res, ['POST'])) return
+    const body = await jsonBody(host, req)
     if (Object.hasOwn(body, 'source')) {
       const previewSource = accountAdmin.previewImportSource
       if (typeof previewSource !== 'function') {
@@ -182,25 +198,25 @@ export async function routeAccounts(host: ApiServer, req: IncomingMessage, res: 
       const payload = requiredString(body, 'payload')
       const defaults = Object.hasOwn(body, 'defaults') ? body.defaults : undefined
       const input = { source, payload, ...(defaults === undefined ? {} : { defaults }) }
-      host.sendJson(req, res, 200, previewSource.call(accountAdmin, input))
+      sendJson(host, req, res, 200, previewSource.call(accountAdmin, input))
       return
     }
     const preview = accountAdmin.previewImport
     if (typeof preview !== 'function') {
       throw new ApiError('API_ACCOUNT_IMPORT_UNAVAILABLE', 503, '账号管理服务不支持导入预检')
     }
-    host.sendJson(req, res, 200, preview.call(accountAdmin, body))
+    sendJson(host, req, res, 200, preview.call(accountAdmin, body))
     return
   }
 
   const id = parts[1] as string
   if (parts.length === 2) {
     if (req.method === 'GET' || req.method === 'HEAD') {
-      host.sendJson(req, res, 200, accountOf(await accountAdmin.get(id)))
+      sendJson(host, req, res, 200, accountOf(await accountAdmin.get(id)))
       return
     }
     if (req.method === 'PATCH') {
-      const body = await host.jsonBody(req)
+      const body = await jsonBody(host, req)
       assertOnlyKeys(body, [
         'label',
         'email',
@@ -271,7 +287,7 @@ export async function routeAccounts(host: ApiServer, req: IncomingMessage, res: 
           () => (enabled ? accountAdmin.enable(API_ACTOR, id) : accountAdmin.disable(API_ACTOR, id)),
         )
       }
-      host.sendJson(req, res, 200, accountOf(await accountAdmin.get(id)))
+      sendJson(host, req, res, 200, accountOf(await accountAdmin.get(id)))
       return
     }
     if (req.method === 'DELETE') {
@@ -286,20 +302,20 @@ export async function routeAccounts(host: ApiServer, req: IncomingMessage, res: 
         },
         () => accountAdmin.remove(API_ACTOR, id),
       )
-      host.sendJson(req, res, 200, { removed: true })
+      sendJson(host, req, res, 200, { removed: true })
       return
     }
-    host.sendMethodNotAllowed(req, res, ['GET', 'HEAD', 'PATCH', 'DELETE'])
+    sendMethodNotAllowed(host, req, res, ['GET', 'HEAD', 'PATCH', 'DELETE'])
     return
   }
 
   if (parts.length === 3 && parts[2] === 'test') {
-    if (!host.allowMethod(req, res, ['POST'])) return
+    if (!allowMethod(host, req, res, ['POST'])) return
     const testConnection = accountAdmin.testConnection
     if (typeof testConnection !== 'function') {
       throw new ApiError('API_ACCOUNT_TEST_UNAVAILABLE', 503, '账号管理服务不支持连通性测试')
     }
-    const body = await host.jsonBody(req)
+    const body = await jsonBody(host, req)
     assertOnlyKeys(body, ['model', 'protocol'])
     const model = optionalString(body, 'model')
     const protocol = optionalString(body, 'protocol')
@@ -307,24 +323,24 @@ export async function routeAccounts(host: ApiServer, req: IncomingMessage, res: 
       ...(model === undefined ? {} : { model }),
       ...(protocol === undefined ? {} : { protocol }),
     }
-    host.sendJson(req, res, 200, await testConnection.call(accountAdmin, id, input))
+    sendJson(host, req, res, 200, await testConnection.call(accountAdmin, id, input))
     return
   }
 
   if (parts.length === 3 && parts[2] === 'credentials') {
-    if (!host.allowMethod(req, res, ['POST'])) return
+    if (!allowMethod(host, req, res, ['POST'])) return
     const importCredentials = accountAdmin.importCredentials
     if (typeof importCredentials !== 'function') {
       throw new ApiError('API_ACCOUNT_IMPORT_UNAVAILABLE', 503, '账号管理服务不支持导入凭据')
     }
-    const body = await host.jsonBody(req)
+    const body = await jsonBody(host, req)
     const payload = body.payload
     if (typeof payload !== 'string' && !isPlainObject(payload)) {
       throw badRequest('payload 必须是字符串或 JSON 对象')
     }
     const format = optionalString(body, 'format')
     const input = { payload, ...(format === undefined ? {} : { format }) }
-    host.sendJson(
+    sendJson(host, 
       req,
       res,
       200,

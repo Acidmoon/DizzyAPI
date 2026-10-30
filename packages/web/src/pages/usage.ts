@@ -1,30 +1,36 @@
-/** 用量信息：指标卡 + 按天成本图 + 模型明细。 */
+/**
+ * 用量概览（`/console/usage`）：指标卡 + 恒定 7 个时间点的消费图 + 按模型 + 最近 10 条请求。
+ *
+ * owner 的口径：
+ * - 概览页「最近请求」**只留最近 10 条**，完整列表在 `/console/usage/detail`；
+ * - 柱状图**恒 7 个时间点**（空桶补 0），支持「按模型 / 按 API key」两种查看维度；
+ * - 时间维度是显式下拉（今天 / 昨天 / 近 7 天 / 近 30 天）；
+ * - 每行「详情」→ 自绘弹窗：模型 / 总耗时 / TTFT / 四桶 token / 金额。
+ */
 import { pageHeader, renderConsoleShell, type PageModule } from '../layout.ts'
-import { formatYuan, microsToYuan } from '../forms.ts'
-import { bucketDaily, hourlyBuckets } from '../series.ts'
+import { formatYuan } from '../forms.ts'
+import {
+  CHART_SAMPLE_LIMIT,
+  DIMENSIONS,
+  RECENT_LIMIT,
+  USAGE_RANGES,
+  averageTtft,
+  buildChart,
+  chartSlots,
+  detailModal,
+  detailTrigger,
+  dialogIdOf,
+  filtersForm,
+  formatClock,
+  formatMs,
+  hrefOf,
+  keyOptions,
+  parseFilters,
+  queryOf,
+  rangeOnlyQuery,
+} from '../usage-view.ts'
 
-const DAY_MS = 24 * 60 * 60 * 1000
-
-/** 本地时区当天 0 点；`offsetDays = 1` 是昨天 0 点。 */
-function startOfLocalDay(offsetDays = 0): number {
-  const date = new Date()
-  date.setHours(0, 0, 0, 0)
-  date.setDate(date.getDate() - offsetDays)
-  return date.getTime()
-}
-
-interface RangeOption {
-  readonly key: string
-  readonly label: string
-  from(): number
-  to(): number
-}
-
-const RANGES: readonly RangeOption[] = [
-  { key: 'today', label: '今天', from: () => startOfLocalDay(0), to: () => Date.now() },
-  { key: 'yesterday', label: '昨天', from: () => startOfLocalDay(1), to: () => startOfLocalDay(0) },
-  { key: '7d', label: '近 7 天', from: () => Date.now() - 7 * DAY_MS, to: () => Date.now() },
-]
+const DETAIL_PATH = '/console/usage/detail'
 
 export const usagePage: PageModule = {
   path: '/console/usage',
@@ -39,39 +45,44 @@ export const usagePage: PageModule = {
       return renderConsoleShell(ctx, pageHeader(ctx, '用量信息') + t.renderNotice({ kind: 'err', text: '用量服务未运行' }))
     }
 
-    const rangeKey = ctx.query.get('range') ?? '7d'
-    const range = RANGES.find((item) => item.key === rangeKey) ?? RANGES[2]
-    const fromMs = range.from()
-    const toMs = range.to()
-    const query = { fromMs, toMs, userId: ctx.user.userId }
+    const filters = parseFilters(ctx.query)
+    const query = queryOf(filters)
+    // 两个汇总：一个**不受 model / API key 筛选影响**（给下拉选项用），一个按当前筛选（给数字用）。
+    const optionSummary = usage.summary(rangeOnlyQuery(filters))
     const summary = usage.summary(query)
-    const page = usage.list({ ...query, limit: 20 })
+    const page = usage.list({ ...query, limit: RECENT_LIMIT })
+    const rows = usage.exportRows(query, CHART_SAMPLE_LIMIT)
+    const keyRows =
+      filters.model === '' && filters.apiKeyId === ''
+        ? rows
+        : usage.exportRows(rangeOnlyQuery(filters), CHART_SAMPLE_LIMIT)
 
-    const stats = t.renderStatCards([
-      { label: '消费金额', value: formatYuan(summary.totals.costMicros), unit: 'CNY' },
-      { label: 'API 请求次数', value: t.formatThousands(summary.totals.requests) },
-      { label: 'Tokens', value: t.formatThousands(summary.totals.totalTokens) },
-    ], 'metrics')
+    const singleDay = filters.range.key === 'today' || filters.range.key === 'yesterday'
+    const slots = chartSlots(filters.range)
+    const view = buildChart(rows, slots, filters.dim)
+    const chart = t.renderStackedBarChart(view.data, view.groups, view.theme, 'currency', 'usage')
+    const chartCard = t.renderChartCard({
+      title: singleDay ? '消费金额（CNY，最近 7 小时）' : '消费金额（CNY，7 个时间点）',
+      total: formatYuan(summary.totals.costMicros),
+      // 查看维度放图卡里：它是「这张图怎么分组」的属性，跟筛选条件不是一回事。
+      segments: DIMENSIONS.map((item) => ({
+        label: item.label,
+        href: hrefOf('/console/usage', filters, { dim: item.key }),
+        selected: item.key === filters.dim,
+      })),
+      chart,
+    })
 
-    // 单日（今天 / 昨天）：柱状图只看最近 7 个小时；七天及以上：按天绘制。
-    const singleDay = range.key === 'today' || range.key === 'yesterday'
-    const chartTitle = singleDay ? '消费金额（CNY，最近 7 小时）' : '消费金额（CNY）'
-    let chartData: { date: string; label?: string; series: Record<string, number> }[]
-    if (singleDay) {
-      const rows = usage.exportRows(query, 5000)
-      chartData = hourlyBuckets(rows, toMs, 7).map((bucket) => ({
-        date: bucket.label,
-        label: bucket.label,
-        series: { 消费金额: microsToYuan(bucket.costMicros) },
-      }))
-    } else {
-      chartData = bucketDaily(summary.daily).map((point) => ({
-        date: point.date,
-        series: { 消费金额: microsToYuan(point.costMicros) },
-      }))
-    }
-    const chart = t.renderStackedBarChart(chartData, ['消费金额'], undefined, 'currency', 'usage')
-    const chartCard = t.renderChartCard({ title: chartTitle, total: formatYuan(summary.totals.costMicros), chart })
+    const stats = t.renderStatCards(
+      [
+        { label: '消费金额', value: formatYuan(summary.totals.costMicros), unit: 'CNY' },
+        { label: 'API 请求次数', value: t.formatThousands(summary.totals.requests) },
+        { label: 'Tokens', value: t.formatThousands(summary.totals.totalTokens) },
+        // 首字延迟：只统计采集到的（流式）请求；一条都没有时显示「—」。
+        { label: '平均首字延迟', value: formatMs(averageTtft(rows)) },
+      ],
+      'metrics',
+    )
 
     const modelRows = summary.models.map((model) => [
       t.escapeText(model.model),
@@ -90,44 +101,66 @@ export const usagePage: PageModule = {
       empty: '当前范围内没有用量记录',
     })
 
-    const detailRows = page.items.map((row) => [
-      t.escapeText(row.startedAt.slice(0, 16).replace('T', ' ')),
+    const recentRows = page.items.map((row) => [
+      t.escapeText(formatClock(row.startedAt)),
       t.escapeText(row.model),
-      t.escapeText(row.apiKeyName),
+      t.escapeText(row.apiKeyName === '' ? '—' : row.apiKeyName),
       t.escapeText(t.formatThousands(row.totalTokens)),
       t.escapeText(formatYuan(row.costMicros)),
+      t.escapeText(formatMs(row.durationMs)),
+      t.escapeText(formatMs(row.ttftMs)),
+      row.status === 200 ? t.escapeText('200') : t.renderBadge(String(row.status), 'err'),
+      detailTrigger(
+        t,
+        row,
+        dialogIdOf(row),
+        hrefOf(DETAIL_PATH, filters, { reqId: row.reqId, cursor: undefined }),
+      ),
     ])
-    const detailTable = t.renderTable({
+    const recentTable = t.renderTable({
       columns: [
         { label: '时间' },
         { label: '模型' },
         { label: 'API key' },
         { label: 'Tokens', align: 'right' },
         { label: '消费', align: 'right' },
+        { label: '耗时', align: 'right' },
+        { label: '首字延迟', align: 'right' },
+        { label: '状态', align: 'right' },
+        { label: '操作' },
       ],
-      rows: detailRows,
+      rows: recentRows,
       empty: '还没有请求记录',
     })
 
-    const pills = [{
-      label: '时间维度',
-      value: range.label,
-      items: RANGES.map((item) => ({
-        label: item.label,
-        href: `/console/usage?range=${item.key}`,
-        selected: item.key === range.key,
-      })),
-    }]
-
     return renderConsoleShell(ctx, [
-      pageHeader(ctx, '用量信息', '所有日期均按 GMT+8 显示，数据可能有几分钟延迟。'),
+      pageHeader(ctx, '用量信息', '所有日期按本地时区显示；数据可能有几分钟延迟。'),
+      filtersForm(
+        t,
+        '/console/usage',
+        filters,
+        optionSummary.models.map((model) => model.model),
+        keyOptions(keyRows, filters.apiKeyId),
+      ),
       stats,
-      t.renderFilterBar(pills),
       chartCard,
       t.renderSectionTitle('按模型'),
       modelTable,
       t.renderSectionTitle('最近请求'),
-      detailTable,
+      t.renderNotice({
+        kind: 'info',
+        text: '概览只保留最近 10 条；完整列表、分页与筛选在「用量明细」页。首字延迟只有流式请求才有值。',
+      }),
+      recentTable,
+      `<div class="actions"><a class="btn" href="${t.escapeAttr(
+        hrefOf(DETAIL_PATH, filters, { cursor: undefined, reqId: undefined }),
+      )}">查看全部明细</a></div>`,
+      // 每条记录的详情弹窗（服务端预渲染）。JS 在时由 data-dialog-open 打开；
+      // 没有 JS 时「详情」是普通链接，跳到明细页并直接渲染该条记录。
+      page.items.map((row) => detailModal(t, row)).join('\n'),
     ].join('\n'))
   },
 }
+
+/** 时间档位在页面里只读一次，导出给测试断言「四档都在」。 */
+export const USAGE_RANGE_KEYS = USAGE_RANGES.map((item) => item.key)

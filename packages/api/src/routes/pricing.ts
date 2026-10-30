@@ -9,8 +9,10 @@ import { assertOnlyKeys } from '../params.ts'
 import { auditActorOf, audited } from '../audit.ts'
 import { API_ACTOR } from '../constants.ts'
 import { ApiError, notFound } from '../errors.ts'
-import { type IncomingMessage, type ServerResponse } from 'node:http'
+import { IncomingMessage, ServerResponse } from 'node:http'
 import type { ModelPriceInputLike, ModelPriceLike, PricingPort } from '../types.ts'
+import { allowRead, jsonBody, sendJson, sendMethodNotAllowed } from '../http_respond.ts'
+import { requireAdmin, requireSession } from '../http_session.ts'
 
 /**
  * `/api/pricing`：读价格表（会话）与改价格（管理员）。
@@ -62,10 +64,10 @@ parts: readonly string[],
   }
 
   if (parts.length === 1) {
-    if (!host.allowRead(req, res)) return
-    await host.requireSession(req)
+    if (!allowRead(host, req, res)) return
+    await requireSession(host, req)
     const pricing = requirePricing()
-    host.sendJson(req, res, 200, { items: pricing.list().map(viewOf) })
+    sendJson(host, req, res, 200, { items: pricing.list().map(viewOf) })
     return
   }
   if (parts.length > 2) throw notFound('没有这个价格接口')
@@ -73,18 +75,18 @@ parts: readonly string[],
   const model = parts[1] as string
 
   if (req.method === 'GET' || req.method === 'HEAD') {
-    await host.requireSession(req)
+    await requireSession(host, req)
     const pricing = requirePricing()
     const price = pricing.get(model)
     if (price === null) throw new ApiError('PRICING_NOT_FOUND', 404, `没有模型 ${model} 的价格`)
-    host.sendJson(req, res, 200, viewOf(price))
+    sendJson(host, req, res, 200, viewOf(price))
     return
   }
 
   if (req.method === 'PUT') {
-    const { view } = await host.requireAdmin(req)
+    const { view } = await requireAdmin(host, req)
     const pricing = requirePricing()
-    const body = await host.jsonBody(req)
+    const body = await jsonBody(host, req)
     assertOnlyKeys(body, [
       'inputPerMillion',
       'outputPerMillion',
@@ -114,12 +116,12 @@ parts: readonly string[],
       },
       () => pricing.set(API_ACTOR, model, input),
     )
-    host.sendJson(req, res, 200, viewOf(written))
+    sendJson(host, req, res, 200, viewOf(written))
     return
   }
 
   if (req.method === 'DELETE') {
-    const { view } = await host.requireAdmin(req)
+    const { view } = await requireAdmin(host, req)
     const pricing = requirePricing()
     const removed = await audited(
       host.runtime,
@@ -133,9 +135,9 @@ parts: readonly string[],
       },
       () => pricing.remove(API_ACTOR, model),
     )
-    host.sendJson(req, res, 200, { removed })
+    sendJson(host, req, res, 200, { removed })
     return
   }
 
-  host.sendMethodNotAllowed(req, res, ['GET', 'HEAD', 'PUT', 'DELETE'])
+  sendMethodNotAllowed(host, req, res, ['GET', 'HEAD', 'PUT', 'DELETE'])
 }

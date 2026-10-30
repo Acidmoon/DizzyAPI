@@ -8,7 +8,9 @@ import type { ApiServer } from '../http.ts'
 import { assertOnlyKeys, nullableString, optionalString, parseIntegerParam, requiredString } from '../params.ts'
 import { topupOptionsOf, topupOrderOf } from '../views/commerce.ts'
 import { notFound } from '../errors.ts'
-import { type IncomingMessage, type ServerResponse } from 'node:http'
+import { IncomingMessage, ServerResponse } from 'node:http'
+import { requireSession } from '../http_session.ts'
+import { allowMethod, allowRead, jsonBody, sendJson, sendMethodNotAllowed } from '../http_respond.ts'
 
 /**
  * 用户面：`GET /api/topup/options`、`GET/POST /api/topup/orders`、
@@ -24,12 +26,12 @@ res: ServerResponse,
 parts: readonly string[],
 url: URL,
 ): Promise<void> {
-  const view = await host.requireSession(req)
+  const view = await requireSession(host, req)
   const topup = host.requireTopup()
 
   if (parts.length === 2 && parts[1] === 'options') {
-    if (!host.allowRead(req, res)) return
-    host.sendJson(req, res, 200, topupOptionsOf(topup.options()))
+    if (!allowRead(host, req, res)) return
+    sendJson(host, req, res, 200, topupOptionsOf(topup.options()))
     return
   }
 
@@ -37,14 +39,14 @@ url: URL,
     if (req.method === 'GET' || req.method === 'HEAD') {
       const limit = parseIntegerParam(url.searchParams.get('limit'), 'limit', 20, 1, 100)
       const page = topup.listMine(view.userId, limit)
-      host.sendJson(req, res, 200, {
+      sendJson(host, req, res, 200, {
         items: page.items.map(topupOrderOf),
         total: page.total,
       })
       return
     }
     if (req.method === 'POST') {
-      const body = await host.jsonBody(req)
+      const body = await jsonBody(host, req)
       assertOnlyKeys(body, ['amountYuan', 'provider', 'note'])
       const amountYuan = requiredString(body, 'amountYuan')
       const provider = optionalString(body, 'provider')
@@ -55,26 +57,26 @@ url: URL,
         ...(provider === undefined ? {} : { provider }),
         ...(note === undefined ? {} : { note }),
       })
-      host.sendJson(req, res, 200, {
+      sendJson(host, req, res, 200, {
         order: topupOrderOf(created.order),
         instructions: created.order.instructions,
       })
       return
     }
-    host.sendMethodNotAllowed(req, res, ['GET', 'HEAD', 'POST'])
+    sendMethodNotAllowed(host, req, res, ['GET', 'HEAD', 'POST'])
     return
   }
 
   if (parts.length === 3 && parts[1] === 'orders') {
-    if (!host.allowRead(req, res)) return
-    host.sendJson(req, res, 200, topupOrderOf(topup.getMine(view.userId, parts[2] as string)))
+    if (!allowRead(host, req, res)) return
+    sendJson(host, req, res, 200, topupOrderOf(topup.getMine(view.userId, parts[2] as string)))
     return
   }
 
   if (parts.length === 4 && parts[1] === 'orders' && parts[3] === 'cancel') {
-    if (!host.allowMethod(req, res, ['POST'])) return
+    if (!allowMethod(host, req, res, ['POST'])) return
     const canceled = topup.cancelMine(view.userId, parts[2] as string)
-    host.sendJson(req, res, 200, topupOrderOf(canceled))
+    sendJson(host, req, res, 200, topupOrderOf(canceled))
     return
   }
 

@@ -1,7 +1,26 @@
-/** 管理台 · 上游账号：列表、启停、删除、连通性测试、批量操作。 */
+/**
+ * 管理台 · 上游账号：**筛选在上、列表在下**，操作收进「编辑」。
+ *
+ * owner 第 9 条要的是 sub2api 的信息架构：先条件、后结果。服务层早就支持
+ * `search` / `labels` / `health` 过滤（`AccountListQuery`），但页面原来一律
+ * `admin.list({}, {view:'lite'})`——筛选条件根本没被读过。这里把三个条件接上，
+ * 条件放查询串（可分享、可刷新、可后退），与站内其它筛选页同一套交互。
+ *
+ * 「编辑」直接跳详情页（`/admin/accounts/detail`）：账号的字段多（baseUrl / models /
+ * modelMap / 凭据 / 健康 / 调度），塞进弹窗会变成第二张详情页。行上只留
+ * 「详情」这一个入口 + 批量勾选框，停用 / 删除 / 测试/ 批量都在详情页与批量区。
+ *
+ * 无 JS 降级：筛选是普通 GET 表单、编辑是普通链接，不依赖脚本。
+ */
 import { pageHeader, renderAdminShell, type PageModule } from '../layout.ts'
-import { requiredString, WebError } from '../forms.ts'
-import { WEB_ACTOR, type AccountListItem, type AccountUpdatePatch, type WebRuntime } from '../runtime.ts'
+import { optionalString, WebError } from '../forms.ts'
+import {
+  WEB_ACTOR,
+  type AccountBulkResult,
+  type AccountListItem,
+  type AccountListQuery,
+  type WebRuntime,
+} from '../runtime.ts'
 import { auditedAction } from '../audit.ts'
 import {
   errorText,
@@ -19,6 +38,62 @@ import {
 /** 批量表单的 id：行内复选框用 `form=` 属性挂到它上面（表单不能嵌套）。 */
 const BULK_FORM_ID = 'accounts-bulk'
 
+/** 健康状态的可选值（与服务层同一套枚举）。 */
+const HEALTH_OPTIONS = ['healthy', 'degraded', 'unhealthy', 'unknown'] as const
+
+/** 从查询串读筛选条件；空串一律当「不筛」。只有非法的 health 会被忽略（不报错）。 */
+function readQuery(query: URLSearchParams): AccountListQuery {
+  const search = optionalString(query, 'search')
+  const labelsText = optionalString(query, 'labels')
+  const health = optionalString(query, 'health')
+  const enabled = optionalString(query, 'enabled')
+  return {
+    ...(search === undefined ? {} : { search }),
+    ...(labelsText === undefined ? {} : { labels: parseLabels(labelsText) }),
+    ...(health !== undefined && (HEALTH_OPTIONS as readonly string[]).includes(health)
+      ? { health }
+      : {}),
+    ...(enabled === '1' ? { enabled: true } : enabled === '0' ? { enabled: false } : {}),
+  }
+}
+
+/** 筛选条：GET 表单（条件进查询串，可分享 / 可刷新 / 可后退）。 */
+function renderFilters(
+  t: import('@dizzyapi/plugin-page-template').PageTemplateService,
+  query: URLSearchParams,
+): string {
+  const search = query.get('search') ?? ''
+  const labels = query.get('labels') ?? ''
+  const health = query.get('health') ?? ''
+  const enabled = query.get('enabled') ?? ''
+  const enabledOptions = [
+    { value: '1', label: '仅启用', selected: enabled === '1' },
+    { value: '0', label: '仅停用', selected: enabled === '0' },
+  ]
+  const healthSelect = [
+    { value: 'all', label: '全部健康状态', selected: health === '' },
+    ...HEALTH_OPTIONS.map((value) => ({ value, label: value, selected: health === value })),
+  ]
+  return `<form class="form form--wide form--spaced" method="get" action="/admin/accounts">
+<div class="row">
+${t.renderField({ label: '搜索（id / 名称 / 邮箱）', name: 'search', value: search, placeholder: '留空 = 不筛' })}
+${t.renderField({ label: '标签（逗号分隔，AND）', name: 'labels', value: labels, placeholder: 'tier:pro, team:ops' })}
+<div class="field">
+<label for="f-health">健康状态</label>
+${t.renderSelect({ name: 'health', id: 'f-health', allowEmpty: false, options: healthSelect })}
+</div>
+<div class="field">
+<label for="f-enabled">启用状态</label>
+${t.renderSelect({ name: 'enabled', id: 'f-enabled', options: enabledOptions })}
+</div>
+<div class="actions">
+<button class="btn" type="submit">筛选</button>
+<a class="btn btn--ghost" href="/admin/accounts">重置</a>
+</div>
+</div>
+</form>`
+}
+
 export const adminAccountsPage: PageModule = {
   path: '/admin/accounts',
   area: 'admin',
@@ -33,10 +108,13 @@ export const adminAccountsPage: PageModule = {
       return renderAdminShell(ctx, pageHeader(ctx, '上游账号') + t.renderNotice({ kind: 'err', text: '账号服务未运行' }))
     }
 
+    const query = readQuery(ctx.query)
+    const allCount = safeCount(admin)
+
     let accounts: AccountListItem[]
     try {
       // 列表页只需精简字段；详情（baseUrl / models / 凭据时间线）在详情页。
-      accounts = admin.list({}, { view: 'lite' })
+      accounts = admin.list(query, { view: 'lite' })
     } catch (error) {
       return renderAdminShell(
         ctx,
@@ -46,22 +124,16 @@ export const adminAccountsPage: PageModule = {
 
     const rows = accounts.map((account) => {
       const checkbox = `<input type="checkbox" form="${BULK_FORM_ID}" name="ids" value="${t.escapeAttr(account.id)}" aria-label="选择 ${t.escapeAttr(account.label)}">`
-      const toggle = `<form class="inline-form" method="post" action="/admin/accounts?action=${account.enabled ? 'disable' : 'enable'}">
-<input type="hidden" name="id" value="${t.escapeAttr(account.id)}">
-<button class="btn small" type="submit">${account.enabled ? '停用' : '启用'}</button></form>`
-      const test = `<form class="inline-form" method="post" action="/admin/accounts?action=test">
-<input type="hidden" name="id" value="${t.escapeAttr(account.id)}">
-<button class="btn small" type="submit">测试连接</button></form>`
-      const testState = account.lastTestOk === null
-        ? '未测试'
-        : account.lastTestOk
-          ? `成功 ${account.lastTestLatencyMs ?? 0}ms`
-          : `失败：${account.lastTestError ?? '未知错误'}`
       const statusCell =
         `${account.enabled ? t.renderBadge('启用', 'ok') : t.renderBadge('停用')} ${statusBadge(t, account.status)}` +
         (account.status === 'auto_disabled' && account.autoDisabledReason !== null
           ? `<div class="hint">${t.escapeText(account.autoDisabledReason)}</div>`
           : '')
+      const testState = account.lastTestOk === null
+        ? '未测试'
+        : account.lastTestOk
+          ? `成功 ${String(account.lastTestLatencyMs ?? 0)}ms`
+          : `失败：${account.lastTestError ?? '未知错误'}`
       return [
         checkbox,
         `<a href="/admin/accounts/detail?id=${encodeURIComponent(account.id)}">${t.escapeText(account.label)}</a>`,
@@ -74,9 +146,14 @@ export const adminAccountsPage: PageModule = {
         String(account.priority),
         t.escapeText(formatTime(account.lastUsedAt)),
         t.escapeText(testState),
-        `<div class="actions"><a class="btn small" href="/admin/accounts/detail?id=${encodeURIComponent(account.id)}">详情</a>${toggle}${test}</div>`,
+        `<div class="actions"><a class="btn small" href="/admin/accounts/detail?id=${encodeURIComponent(account.id)}">编辑</a></div>`,
       ]
     })
+
+    const filtered = Object.keys(query).length > 0
+    const note = filtered
+      ? `筛选出 ${String(accounts.length)} 个账号（共 ${String(allCount)} 个）。`
+      : `共 ${String(accounts.length)} 个上游账号。`
 
     return renderAdminShell(ctx, [
       pageHeader(
@@ -84,6 +161,8 @@ export const adminAccountsPage: PageModule = {
         '上游账号',
         '测试会向上游发一条最小真实请求，结果写回账号；自动停用由健康检查维护，一次成功即恢复。',
       ),
+      renderFilters(t, ctx.query),
+      `<p class="hint p--spaced">${t.escapeText(note)}</p>`,
       t.renderTable({
         columns: [
           { label: '选择' },
@@ -100,7 +179,7 @@ export const adminAccountsPage: PageModule = {
           { label: '操作' },
         ],
         rows,
-        empty: '还没有上游账号',
+        empty: filtered ? '没有符合条件的账号' : '还没有上游账号',
       }),
       t.renderSectionTitle('批量操作'),
       renderBulkForm(t, accounts.length),
@@ -108,77 +187,18 @@ export const adminAccountsPage: PageModule = {
   },
 
   actions: {
-    async enable(ctx) {
-      const admin = requireAdmin(ctx)
-      const id = requiredString(ctx.form, 'id', '账号')
-      await auditedAction(
-        ctx,
-        {
-          action: 'account.enable',
-          targetType: 'account',
-          targetId: id,
-          summary: `启用上游账号 ${id}`,
-          metadata: { enabled: true },
-        },
-        () => admin.enable(WEB_ACTOR, id),
-      )
-      return '/admin/accounts?ok=' + encodeURIComponent('账号已启用')
-    },
-
-    async disable(ctx) {
-      const admin = requireAdmin(ctx)
-      const id = requiredString(ctx.form, 'id', '账号')
-      await auditedAction(
-        ctx,
-        {
-          action: 'account.disable',
-          targetType: 'account',
-          targetId: id,
-          summary: `停用上游账号 ${id}`,
-          metadata: { enabled: false },
-        },
-        () => admin.disable(WEB_ACTOR, id),
-      )
-      return '/admin/accounts?ok=' + encodeURIComponent('账号已停用')
-    },
-
-    async remove(ctx) {
-      const admin = requireAdmin(ctx)
-      const id = requiredString(ctx.form, 'id', '账号')
-      await auditedAction(
-        ctx,
-        {
-          action: 'account.remove',
-          targetType: 'account',
-          targetId: id,
-          summary: `删除上游账号 ${id}`,
-        },
-        () => admin.remove(WEB_ACTOR, id),
-      )
-      return '/admin/accounts?ok=' + encodeURIComponent('账号已删除')
-    },
-
-    async test(ctx) {
-      const admin = requireAdmin(ctx)
-      const id = requiredString(ctx.form, 'id', '账号')
-      // 连通性测试不改状态，不记审计。
-      const result = await admin.testConnection(id)
-      const message = result.ok ? `连接成功（${result.latencyMs}ms）` : `连接失败：${result.error ?? '未知错误'}`
-      return `/admin/accounts?${result.ok ? 'ok' : 'err'}=${encodeURIComponent(message)}`
-    },
-
     async bulk(ctx) {
       const admin = requireAdmin(ctx)
       const ids = parseIds(ctx.form)
       const op = ctx.form.get('op') ?? 'update'
 
       if (op === 'enable' || op === 'disable') {
-        const result = await auditedAction(
+        const result = await auditedAction<AccountBulkResult>(
           ctx,
           {
             action: op === 'enable' ? 'account.bulk_enable' : 'account.bulk_disable',
             targetType: 'account',
-            summary: `批量${op === 'enable' ? '启用' : '停用'} ${ids.length} 个上游账号`,
+            summary: `批量${op === 'enable' ? '启用' : '停用'} ${String(ids.length)} 个上游账号`,
             metadata: { ids },
             metadataOf: (out) => ({ succeeded: out.succeeded, failed: out.failed }),
           },
@@ -189,12 +209,12 @@ export const adminAccountsPage: PageModule = {
       if (op !== 'update') throw new WebError('WEB_ACCOUNT_BULK_OP', '不认识的批量操作')
 
       const patch = bulkPatch(ctx.form)
-      const result = await auditedAction(
+      const result = await auditedAction<AccountBulkResult>(
         ctx,
         {
           action: 'account.bulk_update',
           targetType: 'account',
-          summary: `批量修改 ${ids.length} 个上游账号的字段：${Object.keys(patch).join(' / ')}`,
+          summary: `批量修改 ${String(ids.length)} 个上游账号的字段：${Object.keys(patch).join(' / ')}`,
           metadata: { ids, fields: Object.keys(patch) },
           metadataOf: (out) => ({ succeeded: out.succeeded, failed: out.failed }),
         },
@@ -203,6 +223,15 @@ export const adminAccountsPage: PageModule = {
       return '/admin/accounts?' + bulkNotice('改字段', result)
     },
   },
+}
+
+/** 总数：`list()` 不带条件时拿一次，用于「筛选出 3 / 共 12」的说明。 */
+function safeCount(admin: NonNullable<WebRuntime['accountAdmin']>): number {
+  try {
+    return admin.list({}, { view: 'lite' }).length
+  } catch {
+    return 0
+  }
 }
 
 function requireAdmin(ctx: { services: WebRuntime }) {
@@ -215,8 +244,8 @@ function requireAdmin(ctx: { services: WebRuntime }) {
 function bulkNotice(action: string, result: { readonly total: number; readonly succeeded: number; readonly failed: number }): string {
   const text =
     result.failed === 0
-      ? `已${action} ${result.succeeded} 个账号`
-      : `${action}：成功 ${result.succeeded} 个，失败 ${result.failed} 个（共 ${result.total} 个）`
+      ? `已${action} ${String(result.succeeded)} 个账号`
+      : `${action}：成功 ${String(result.succeeded)} 个，失败 ${String(result.failed)} 个（共 ${String(result.total)} 个）`
   return `${result.failed === 0 ? 'ok' : 'err'}=${encodeURIComponent(text)}`
 }
 
@@ -227,8 +256,8 @@ function bulkNotice(action: string, result: { readonly total: number; readonly s
  * 关闭类取值用显式空值（标签空文本、权重空文本 = 清空为未声明），而不是省略键。
  */
 function renderBulkForm(t: import('@dizzyapi/plugin-page-template').PageTemplateService, total: number): string {
-  return `<form class="form" id="${BULK_FORM_ID}" method="post" action="/admin/accounts?action=bulk">
-<p class="hint">先在上表勾选账号（共 ${total} 个），再选择动作。勾选「启用 / 停用」时下面的字段不生效。</p>
+  return `<form class="form form--wide" id="${BULK_FORM_ID}" method="post" action="/admin/accounts?action=bulk">
+<p class="hint">先在上表勾选账号（当前列表 ${String(total)} 个），再选择动作。勾选「启用 / 停用」时下面的字段不生效。</p>
 <div class="row">
 <div class="field"><label for="f-op">动作</label>${t.renderSelect({
   name: 'op',
@@ -262,7 +291,7 @@ ${t.renderField({ label: '优先级（0–1000）', name: 'priority', placeholde
 }
 
 /** 表单 → patch：只收勾了开关的字段；空值表示清空。 */
-function bulkPatch(form: URLSearchParams): AccountUpdatePatch {
+function bulkPatch(form: URLSearchParams): import('../runtime.ts').AccountUpdatePatch {
   const patch: Record<string, unknown> = {}
   if (form.get('useLabels') === '1') {
     const text = form.get('labels')?.trim() ?? ''
@@ -284,5 +313,5 @@ function bulkPatch(form: URLSearchParams): AccountUpdatePatch {
   if (Object.keys(patch).length === 0) {
     throw new WebError('WEB_ACCOUNT_BULK_EMPTY', '先勾选至少一个要修改的字段')
   }
-  return patch as AccountUpdatePatch
+  return patch as import('../runtime.ts').AccountUpdatePatch
 }

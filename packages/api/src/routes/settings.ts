@@ -10,15 +10,17 @@ import { catalogState } from '../views/catalog.ts'
 import { auditActorOf, audited } from '../audit.ts'
 import { API_ACTOR } from '../constants.ts'
 import { ApiError, badRequest, notFound } from '../errors.ts'
-import { type IncomingMessage, type ServerResponse } from 'node:http'
+import { IncomingMessage, ServerResponse } from 'node:http'
 import type { CatalogModuleView, CatalogPort, FrontendPageLike } from '../types.ts'
+import { requireAdmin } from '../http_session.ts'
+import { allowRead, jsonBody, sendJson, sendMethodNotAllowed } from '../http_respond.ts'
 
 export async function routeSettings(host: ApiServer, req: IncomingMessage, res: ServerResponse, parts: readonly string[]): Promise<void> {
-  const { view: adminView } = await host.requireAdmin(req)
+  const { view: adminView } = await requireAdmin(host, req)
   const identity = { actor: auditActorOf(adminView), actorPlugin: API_ACTOR }
 
   if (parts.length === 1) {
-    if (!host.allowRead(req, res)) return
+    if (!allowRead(host, req, res)) return
     const settings = host.requireSettings()
     const described = await settings.describe()
     // 新 settings 直接返回 `{ namespaces }`；旧实现返回数组。两种都接住。
@@ -30,7 +32,7 @@ export async function routeSettings(host: ApiServer, req: IncomingMessage, res: 
     if (namespaces === null) {
       throw new ApiError('API_RESPONSE_INVALID', 502, '设置服务返回了无法识别的描述')
     }
-    host.sendJson(req, res, 200, { namespaces })
+    sendJson(host, req, res, 200, { namespaces })
     return
   }
 
@@ -38,7 +40,7 @@ export async function routeSettings(host: ApiServer, req: IncomingMessage, res: 
   if (parts.length === 2) {
     if (req.method === 'POST') {
       const settings = host.requireSettings()
-      const body = await host.jsonBody(req)
+      const body = await jsonBody(host, req)
       assertOnlyKeys(body, ['patch', 'expectedRevision'])
       if (!isPlainObject(body.patch)) throw badRequest('patch 必须是对象')
       const expectedRevision = optionalString(body, 'expectedRevision')
@@ -56,7 +58,7 @@ export async function routeSettings(host: ApiServer, req: IncomingMessage, res: 
         },
         () => settings.update(API_ACTOR, ns, patch, expectedRevision),
       )
-      host.sendJson(req, res, 200, updated)
+      sendJson(host, req, res, 200, updated)
       return
     }
     if (req.method === 'DELETE') {
@@ -72,10 +74,10 @@ export async function routeSettings(host: ApiServer, req: IncomingMessage, res: 
         },
         () => settings.reset(API_ACTOR, ns),
       )
-      host.sendJson(req, res, 200, reset)
+      sendJson(host, req, res, 200, reset)
       return
     }
-    host.sendMethodNotAllowed(req, res, ['POST', 'DELETE'])
+    sendMethodNotAllowed(host, req, res, ['POST', 'DELETE'])
     return
   }
 

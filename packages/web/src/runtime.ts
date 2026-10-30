@@ -5,6 +5,9 @@
  * 运行期用 `ctx.get(name, false)` 解析；服务不在时页面明确降级，不 PENDING。
  */
 
+/** 运维总览的视图类型在单独文件里（本文件只放端口），这里引入给 `WebRuntime` 用。 */
+import type { ObservabilityLike } from './runtime_observability.ts'
+
 export type UserId = number
 
 export interface UserView {
@@ -15,6 +18,8 @@ export interface UserView {
   readonly balance: bigint
   readonly balanceEnabled: boolean
   readonly avatar: string | null
+  /** 并发上限（owner 第 8 条）；null = 不限。由 Go 的 key-gate 在 pre 相位执行。 */
+  readonly concurrencyLimit: number | null
   readonly createdAt: string
   readonly updatedAt: string
 }
@@ -62,6 +67,10 @@ export interface UserLike {
   setBalanceEnabled(actor: string, id: UserId, enabled: boolean): Promise<UserView>
   adjustBalance(actor: string, id: UserId, delta: bigint, reason: string): Promise<bigint>
   updateProfile(id: UserId, patch: { name?: string; avatar?: string | null }): Promise<UserView>
+  /** 管理员改名（走 actor 白名单、记审计）。与 `updateProfile` 分开：后者是自助面。 */
+  rename(actor: string, id: UserId, name: string): Promise<UserView>
+  /** 用户级并发上限；null = 不限。 */
+  setConcurrencyLimit(actor: string, id: UserId, limit: number | null): Promise<UserView>
   remove(actor: string, id: UserId): Promise<UserView>
   /** 界面偏好：**永不抛错**（坏数据回落默认），所以调用方不需要 try。 */
   getUiPreferences(id: UserId): Promise<UiPreferencesView>
@@ -88,111 +97,52 @@ export interface ApiKeyView {
   readonly createdAt: string
   readonly lastUsedAt: string | null
   readonly rotatedAt: string | null
+  /** 过期时间（ISO 8601）；null = 永不过期（owner 第 6 条）。 */
+  readonly expiresAt: string | null
+  /** 金额上限（整数微元，十进制字符串）；null = 不限。 */
+  readonly spendingLimitMicros: string | null
+  /** 并发上限；null = 不限。 */
+  readonly concurrencyLimit: number | null
+}
+
+/** 编辑弹窗提交的三条执行面上限（都是可选：不传 = 不改）。 */
+export interface ApiKeyGatePatch {
+  readonly name?: string
+  readonly enabled?: boolean
+  /** ISO 8601；null = 永不过期。 */
+  readonly expiresAt?: string | null
+  /** 整数微元十进制字符串；null = 不限。 */
+  readonly spendingLimitMicros?: string | null
+  /** 并发上限；null = 不限。 */
+  readonly concurrencyLimit?: number | null
 }
 
 export interface ApiKeyLike {
   list(userId: UserId): Promise<ApiKeyView[]>
   listAll(): Promise<ApiKeyView[]>
   create(userId: UserId, input: { name: string }): Promise<{ readonly key: ApiKeyView; readonly secret: string }>
-  update(userId: UserId, id: string, patch: { name?: string; enabled?: boolean }): Promise<ApiKeyView>
+  update(userId: UserId, id: string, patch: ApiKeyGatePatch): Promise<ApiKeyView>
   rotate(userId: UserId, id: string): Promise<{ readonly key: ApiKeyView; readonly secret: string }>
   remove(userId: UserId, id: string): Promise<unknown>
 }
 
-export interface UsageQuery {
-  readonly fromMs: number
-  readonly toMs: number
-  readonly userId?: number
-  readonly apiKeyId?: string
-}
+import type { UsageLike } from './usage-types.ts'
 
-export interface UsageTotals {
-  readonly inputTokens: number
-  readonly outputTokens: number
-  readonly cacheReadTokens: number
-  readonly cacheWriteTokens: number
-  readonly totalTokens: number
-  readonly requests: number
-  readonly costMicros: string
-}
-
-export interface UsageDailyPoint {
-  readonly date: string
-  readonly inputTokens: number
-  readonly outputTokens: number
-  readonly cacheReadTokens: number
-  readonly cacheWriteTokens: number
-  readonly totalTokens: number
-  readonly requests: number
-  readonly costMicros: string
-}
-
-export interface UsageSummary {
-  readonly totals: UsageTotals
-  readonly daily: readonly UsageDailyPoint[]
-  readonly models: readonly { readonly model: string; readonly requests: number; readonly totalTokens: number; readonly costMicros: string }[]
-}
-
-export interface UsageRow {
-  readonly startedAt: string
-  readonly model: string
-  readonly apiKeyName: string
-  readonly totalTokens: number
-  readonly costMicros: string
-  readonly durationMs: number
-  /** 首字延迟（毫秒）；null = 没采集到（非流式请求 / 历史记录），页面显示「—」。 */
-  readonly ttftMs: number | null
-  readonly status: number
-}
-
-export interface UsageListPage {
-  readonly items: readonly UsageRow[]
-  readonly nextCursor: number | null
-}
-
-export interface UsageStats {
-  readonly today: UsageTotals
-  readonly total: UsageTotals
-  readonly models: readonly { readonly model: string; readonly requests: number; readonly totalTokens: number; readonly costMicros: string }[]
-}
-
-export interface UsageLike {
-  summary(query: UsageQuery): UsageSummary
-  list(query: UsageQuery & { cursor?: number; limit?: number }): UsageListPage
-  exportRows(query: UsageQuery, limit?: number): readonly UsageRow[]
-  stats(nowMs?: number): UsageStats
-  /** 坏记录隔离区（分页 + 计数）；这些记录没有进明细、也不会结算。 */
-  listRejected(query?: UsageRejectedQuery): UsageRejectedPage
-  /** 把 pending 的隔离记录标记为 ignored（= 明确放弃这笔未结算用量）。 */
-  ignoreRejected(reqId: string): void
-  /** 按 req_id 重放隔离记录；重复重放不会重复插入。 */
-  replayRejected(reqId: string): Promise<{ readonly status: string; readonly inserted: boolean }>
-}
-
-export interface UsageRejectedRow {
-  readonly reqId: string
-  readonly epoch: string
-  readonly seq: number
-  readonly payload: string
-  readonly error: string
-  readonly failures: number
-  readonly status: string
-  readonly firstFailedAt: string
-  readonly updatedAt: string
-}
-
-export interface UsageRejectedQuery {
-  readonly status?: string
-  readonly limit?: number
-  readonly offset?: number
-}
-
-export interface UsageRejectedPage {
-  readonly items: readonly UsageRejectedRow[]
-  readonly total: number
-  readonly pending: number
-}
-
+// 用量相关类型搬到了 `usage-types.ts`（`runtime.ts` 只许净减，见 AGENTS.md §5.6）；
+// 这里**原样再导出**，既有 `from '../runtime.ts'` 的导入不受影响。
+export type {
+  UsageDailyPoint,
+  UsageLike,
+  UsageListPage,
+  UsageQuery,
+  UsageRejectedPage,
+  UsageRejectedQuery,
+  UsageRejectedRow,
+  UsageRow,
+  UsageStats,
+  UsageSummary,
+  UsageTotals,
+} from './usage-types.ts'
 export interface ModelPrice {
   readonly model: string
   readonly inputPerMillion: string
@@ -830,139 +780,21 @@ export interface FontLike {
 
 /** 页面能看到的全部控制面服务；缺哪个页面就降级哪块。 */
 // ───────────────────────────────── 运维总览 ─────────────────────────────────
-
-/** 单个数据源的健康度（与 observability 插件同一套取值）。 */
-export type SourceStateView = 'ok' | 'degraded' | 'unavailable'
-
-export interface SourceHealthView {
-  readonly state: SourceStateView
-  readonly detail: string
-}
-
-export interface UsageChainView {
-  readonly health: SourceHealthView
-  readonly service: {
-    readonly records: number
-    readonly polling: boolean
-    readonly consecutiveFailures: number
-    readonly lastError: string | null
-    readonly gapRecords: number
-    readonly rejectedCount: number
-    readonly rejectedPending: number
-    readonly pricingAvailable: boolean
-    readonly epoch: string | null
-    readonly lastSeq: number
-  } | null
-  readonly gateway: {
-    readonly epoch: string
-    readonly capacity: number
-    readonly size: number
-    readonly firstSeq: number
-    readonly lastSeq: number
-    readonly dropped: number
-    readonly gap: number
-  } | null
-  readonly gatewayHealth: SourceHealthView
-}
-
-export interface BillingView {
-  readonly health: SourceHealthView
-  readonly totals: {
-    readonly records: number
-    readonly settled: number
-    readonly pending: number
-    readonly settling: number
-    readonly noPrice: number
-    readonly noUser: number
-    readonly failed: number
-    readonly review: number
-    readonly overdrawn: number
-  } | null
-  /** 整数微元字符串（页面用 formatYuan 渲染，不经浮点）。 */
-  readonly chargedMicros: string | null
-  readonly today: {
-    readonly date: string
-    readonly settled: number
-    readonly chargedMicros: string
-  } | null
-}
-
-export interface QuotaView {
-  readonly health: SourceHealthView
-  readonly ready: boolean | null
-  readonly revision: string | null
-  readonly generation: number | null
-  readonly size: number | null
-  readonly ageMs: number | null
-  readonly ttlMs: number | null
-  readonly stale: boolean | null
-}
-
-export interface RuntimeView {
-  readonly health: SourceHealthView
-  readonly active: number | null
-  readonly cooling: number | null
-}
-
-export interface AuditItemView {
-  readonly at: string
-  readonly actor: string
-  readonly action: string
-  readonly targetType: string
-  readonly targetId: string
-  readonly summary: string
-  readonly result: 'ok' | 'failed'
-  readonly errorCode: string | null
-}
-
-export interface AuditView {
-  readonly health: SourceHealthView
-  readonly total: number
-  readonly failed: number
-  readonly lastAt: string | null
-  readonly recentActions: readonly { readonly action: string; readonly count: number }[]
-  readonly windowLimit: number
-  readonly windowTruncated: boolean
-  readonly latest: readonly AuditItemView[]
-}
-
-export interface AccountsView {
-  readonly health: SourceHealthView
-  readonly total: number
-  readonly enabled: number
-  readonly unknown: number
-  readonly healthy: number
-  readonly degraded: number
-  readonly unhealthy: number
-  readonly autoDisabled: number
-  readonly lastPass: {
-    readonly checked: number
-    readonly healthy: number
-    readonly failed: number
-    readonly autoDisabled: number
-    readonly autoEnabled: number
-  } | null
-  readonly lastPassAt: string | null
-  readonly running: boolean | null
-}
-
-/** 运维总览报告（observability 插件现算的同一份事实；金额是字符串、无账号明细）。 */
-export interface ObservabilityReportView {
-  readonly generatedAt: string
-  readonly usage: UsageChainView
-  readonly billing: BillingView
-  readonly quota: QuotaView
-  readonly runtime: RuntimeView
-  readonly audit: AuditView
-  readonly accounts: AccountsView
-  readonly warnings: readonly string[]
-  readonly degraded: boolean
-}
-
-/** 运维总览服务：只有现算这一个方法（没有任何写入口）。 */
-export interface ObservabilityLike {
-  observe(nowMs?: number): Promise<ObservabilityReportView>
-}
+// 视图类型在 runtime_observability.ts（本文件只放「页面能用哪些服务」的端口）；
+// 这里 re-export，页面的 import 一个字不用改。
+export type {
+  AccountsView,
+  AuditItemView,
+  AuditView,
+  BillingView,
+  ObservabilityLike,
+  ObservabilityReportView,
+  QuotaView,
+  RuntimeView,
+  SourceHealthView,
+  SourceStateView,
+  UsageChainView,
+} from './runtime_observability.ts'
 
 export interface WebRuntime {
   readonly user: UserLike | undefined
