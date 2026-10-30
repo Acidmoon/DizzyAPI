@@ -1,19 +1,18 @@
 /**
  * 用量页（概览 `/console/usage` + 明细 `/console/usage/detail`）共用的视图层工具。
  *
- * 为什么不放进 `pages/`：那个目录是「一页一个文件」，这里没有路由，只有两页共用的
- * 时间档位、7 个固定时间点、堆叠维度、筛选表单与详情弹窗片段。放进去会让
- * 「一页一文件」的约定失真，也会被 `pages-guards` 当成页面扫描。
+ * 为什么不放进 `pages/`：那里是「一页一个文件」，而这里是两页共用的时间档位、
+ * 7 个固定时间点、堆叠维度、筛选表单与详情弹窗片段；放进去会被 `pages-guards` 当页面扫。
  *
  * 两条硬口径：
  * - **柱状图恒定 7 个时间点**（空桶补 0），不随数据多少变；
  * - **首字延迟（TTFT）为 null 一律显示「—」**，绝不显示 0 ms（0 与「没采集」是两件事）。
  */
-import type { PageTemplateService } from '@dizzyapi/plugin-page-template'
 import {
   COST_KEY_COLORS,
   COST_THEME,
   type ChartTheme,
+  type PageTemplateService,
   type SelectOption,
 } from '@dizzyapi/plugin-page-template'
 import { formatYuan, microsToYuan } from './forms.ts'
@@ -100,11 +99,18 @@ export function parseFilters(query: URLSearchParams): UsageFilters {
   }
 }
 
-/** 换成 `usage` 服务的查询参数（`model` / `apiKeyId` 只在非空时带）。 */
-export function queryOf(filters: UsageFilters): UsageQuery & { cursor?: number } {
+/**
+ * 换成 `usage` 服务的查询参数（`model` / `apiKeyId` 只在非空时带）。
+ *
+ * **`userId` 是必填位**：`usage.list` / `summary` / `exportRows` 不给 userId 就是
+ * **全站口径**（管理面语义）。用户侧页面漏传 = 把所有人的用量摊给任意登录用户看；
+ * 做成必填参数后，新页面忘了传会**编译失败**，而不是静默越权。
+ */
+export function queryOf(filters: UsageFilters, userId: number): UsageQuery & { cursor?: number } {
   const query: UsageQuery & { cursor?: number } = {
     fromMs: filters.range.from(),
     toMs: filters.range.to(),
+    userId,
     ...(filters.model === '' ? {} : { model: filters.model }),
     ...(filters.apiKeyId === '' ? {} : { apiKeyId: filters.apiKeyId }),
     ...(filters.cursor === undefined ? {} : { cursor: filters.cursor }),
@@ -112,9 +118,9 @@ export function queryOf(filters: UsageFilters): UsageQuery & { cursor?: number }
   return query
 }
 
-/** 只要时间窗口的查询（给「选项列表」与「不受筛选影响的汇总」用）。 */
-export function rangeOnlyQuery(filters: UsageFilters): UsageQuery {
-  return { fromMs: filters.range.from(), toMs: filters.range.to() }
+/** 只要时间窗口的查询（下拉选项与不受筛选影响的汇总用）；`userId` 同上，漏传会列出别人的 key。 */
+export function rangeOnlyQuery(filters: UsageFilters, userId: number): UsageQuery {
+  return { fromMs: filters.range.from(), toMs: filters.range.to(), userId }
 }
 
 /** 把当前筛选拼成 URL（分页链接、详情链接都基于它）。 */

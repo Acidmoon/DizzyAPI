@@ -12,7 +12,7 @@ import { APP_CSS_BODY, APP_JS_BODY } from './asset-version.ts'
 import { validateWebConfig, type ResolvedWebConfig, type WebConfig } from './config.ts'
 import { apiDocsResource } from './content/api_docs.ts'
 import { assertSameOrigin, readForm, WebError } from './forms.ts'
-import { clearSessionCookie, isSecureRequest, readCookie, sessionCookie } from './session.ts'
+import { clearSessionCookie, isSecureRequest, placeholderSession, readCookie, sessionCookie } from './session.ts'
 import { documentAssets, readNotice, type ActionContext, type PageContext, type PageModule } from './layout.ts'
 import type {
   AccountAdminLike,
@@ -35,6 +35,7 @@ import type {
   WebRuntime,
 } from './runtime.ts'
 import { PAGES } from './pages/index.ts'
+import { usageExportResource, USAGE_EXPORT_PATH } from './usage-export.ts'
 
 const SECURITY_HEADERS: Readonly<Record<string, string>> = {
   'X-Content-Type-Options': 'nosniff',
@@ -248,6 +249,16 @@ export class WebService extends Service {
         return
       }
 
+      // 用量 CSV 导出：`web` 自己发 `text/csv`（理由见 `usage-export.ts` 顶部）。
+      // 放在页面查找之前（它不是页面，走不到 `PAGES`）；**先判路径再取会话**——
+      // 否则每个普通页面请求都要多跑一次 `sessionOf`（一次会话校验的查库）。
+      if (path === USAGE_EXPORT_PATH) {
+        const session = (await this.sessionOf(req))?.session ?? null
+        const resource = usageExportResource(url.searchParams, session, this.runtime().usage)
+        res.writeHead(resource.status, { ...SECURITY_HEADERS, ...resource.headers })
+        res.end(resource.body)
+        return
+      }
       const page = PAGES.find((item) => item.path === path)
       if (page === undefined) {
         this.send(res, 404, 'text/html; charset=utf-8', this.renderNotFound())
@@ -464,24 +475,4 @@ function describeError(error: unknown): string {
     }
   }
   return '操作失败，请稍后再试'
-}
-
-/** 未登录时占位：auth=false 的页面不解引用用户字段。 */function placeholderSession(): SessionView {
-  return {
-    sessionId: '',
-    userId: 0,
-    user: {
-      id: 0,
-      name: '',
-      status: 'enabled',
-      role: 'user',
-      balance: 0n,
-      balanceEnabled: false,
-      concurrencyLimit: null,
-      avatar: null,
-      createdAt: '',
-      updatedAt: '',
-    },
-    expiresAt: '',
-  }
 }
