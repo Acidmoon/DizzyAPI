@@ -24,6 +24,8 @@ declare module 'cordis' {
 
 export { ModelProbeService } from './service.ts'
 export { MODEL_PROBE_ACTOR, PROBE_KEY_NAME, PROBE_KEY_NAME_PREFIX } from './service.ts'
+export { ProbeKeyKeeper, ModelProbeKeyError, PROBE_KEY_RETRY_MS, type ProbeKeyIdentity } from './key-lifecycle.ts'
+export { createSingleFlight, type SingleFlight } from './single-flight.ts'
 export { deriveHealth, passIsUntrustworthy } from './health.ts'
 export { extractErrorCode, runProbe } from './probe-client.ts'
 export { ensureProbeKey } from './probe-key.ts'

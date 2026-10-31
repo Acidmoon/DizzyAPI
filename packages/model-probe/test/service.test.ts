@@ -79,6 +79,16 @@ const REF = 'dizzyapi/model-probe/key'
 /** 固定门面地址：fetch 是被注入的桩，不会真的发请求。 */
 const GATEWAY = 'http://127.0.0.1:65535'
 
+/** 等一个条件成立（**不猜时钟**：补建走的是真定时器，用例只等结果）。 */
+async function waitFor(predicate: () => boolean, timeoutMs = 3_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    if (predicate()) return
+    await new Promise((resolve) => setTimeout(resolve, 10))
+  }
+  assert.ok(predicate(), `等待超时（${String(timeoutMs)}ms）`)
+}
+
 interface World {
   readonly ctx: Context
   readonly probe: ModelProbeService
@@ -88,6 +98,8 @@ interface World {
   readonly fiber: { dispose(): Promise<void> | void }
   /** 记录每次探测请求的 URL 与 body。 */
   readonly requests: { url: string; body: string; auth: string }[]
+  /** `boot({ withoutApiKey: true })` 之后用它把 `api-key` 补上（模拟竞态消失）。 */
+  readonly plugApiKey: () => Promise<FakeApiKey>
 }
 
 async function boot(
@@ -96,18 +108,31 @@ async function boot(
     readonly config?: ModelProbeConfig
     readonly respond?: (model: string) => { status: number; body: string }
     readonly models?: CatalogEntry[]
+    /**
+     * 不装 `api-key` 服务，模拟**启动竞态**：cordis 不保证 `api-key` 先于本插件到 ACTIVE，
+     * 生产日志里就是 `model-probe` 先 apply、`api-key` 后 apply。
+     */
+    readonly withoutApiKey?: boolean
   } = {},
 ): Promise<World> {
   const ctx = new Context()
   await ctx.plugin(TimerService)
   await ctx.plugin(FakeModelHub)
-  await ctx.plugin(FakeApiKey)
+  if (options.withoutApiKey !== true) await ctx.plugin(FakeApiKey)
   await ctx.plugin(FakeCredentials)
 
   const hub = ctx.get('modelhub') as unknown as FakeModelHub
   hub.available = options.models ?? [{ model: 'model-a', accountCount: 1 }]
-  const keys = ctx.get('apiKey') as unknown as FakeApiKey
+  let keys = ctx.get('apiKey') as unknown as FakeApiKey | undefined
   const credentials = ctx.get('credentials') as unknown as FakeCredentials
+  /** 把 `api-key` 迟一点装上：seam 从「拿不到」变成「拿得到」，就是自愈要过的那个坎。 */
+  const plugApiKey = async (): Promise<FakeApiKey> => {
+    if (keys === undefined) {
+      await ctx.plugin(FakeApiKey)
+      keys = ctx.get('apiKey') as unknown as FakeApiKey
+    }
+    return keys
+  }
 
   const requests: { url: string; body: string; auth: string }[] = []
   const respond = options.respond ?? (() => ({ status: 200, body: '{"choices":[]}' }))
@@ -131,7 +156,20 @@ async function boot(
     return new Response(reply.body, { status: reply.status })
   }) as unknown as typeof fetch
 
-  const world = { ctx, probe, hub, keys, credentials, fiber, requests }
+  const world = {
+    ctx,
+    probe,
+    hub,
+    credentials,
+    fiber,
+    requests,
+    // `withoutApiKey` 的用例里 keys 在 `plugApiKey()` 之后才有，所以用 getter 拿。
+    get keys(): FakeApiKey {
+      if (keys === undefined) throw new Error('用例还没装 api-key：先调用 plugApiKey()')
+      return keys
+    },
+    plugApiKey,
+  }
   t.after(async () => {
     try {
       await fiber.dispose()
@@ -242,15 +280,73 @@ test('探针恢复后清掉停摆原因', async (t) => {
   assert.equal(world.probe.history('model-a').health, 'up')
 })
 
-test('探测 key 明文缺失时一条请求都不发', async (t) => {
-  const world = await boot(t)
-  // 不往 credentials 里塞明文。
-  const pass = await world.probe.runPass()
+/**
+ * 2026-10-31 生产事故的回归用例。
+ *
+ * 事故现象：`model-probe` 先 apply、`api-key` 后 apply（cordis **不保证**装载顺序跟
+ * `app.yml` 一致），于是 `[Service.init]` 里那次 `ensureKey()` 拿到的是「apiKey 服务不可用」，
+ * 记成停摆后**再也不会重试** —— 插件装上了却一次都没探测过，页面永远显示「探测已停摆」，
+ * 只能重启。
+ *
+ * 这里把两个时间点分开验：**竞态期间一条请求都不发**（不假装探测过），
+ * **seam 迟到之后下一轮自己好起来**（不用重启）。
+ */
+test('【启动竞态】apiKey 还没到 ACTIVE：只记停摆，一条请求都不发', async (t) => {
+  const world = await boot(t, { withoutApiKey: true, config: { enabled: true } })
 
+  // 生产日志就是这个状态：init 里建 key 失败 → block → 定时器照常注册。
+  assert.equal(world.probe.status().blockedReason, 'probe_key_secret_missing')
+
+  const pass = await world.probe.runPass()
   assert.equal(pass.probed, 0)
   assert.equal(pass.skippedReason, 'probe_key_secret_missing')
-  assert.equal(world.requests.length, 0)
+  assert.equal(world.requests.length, 0, '没有 key 就绝不发请求')
+  assert.equal(world.credentials.values.size, 0, '没建成 key，credentials 里不该有东西')
+  assert.equal(world.probe.status().samples, 0)
+})
+
+test('【自愈】apiKey 迟到后下一轮自己建 key 并真的探测（不用重启）', async (t) => {
+  const world = await boot(t, { withoutApiKey: true, config: { enabled: true } })
+  assert.equal(world.probe.status().probeKeyConfigured, false)
+
+  // `api-key` 到 ACTIVE 了（事故里它只是比本插件晚）。
+  const keys = await world.plugApiKey()
+  const pass = await world.probe.runPass()
+
+  assert.equal(keys.created.length, 1, '只该建一把探测 key')
+  assert.equal(keys.created[0]?.name, '__probe__dizzy')
+  assert.equal(keys.created[0]?.appManaged, true, '必须是应用托管（用户不能误删）')
+  assert.equal(world.credentials.values.get(REF), 'sk-dz-probe', '明文必须落进 credentials')
+  assert.equal(pass.probed, 1)
+  assert.equal(world.requests.length, 1, '自愈之后要真的发探测请求')
+  assert.equal(world.probe.status().samples, 1)
+  assert.equal(world.probe.status().probeKeyConfigured, true)
+  assert.equal(world.probe.status().blockedReason, null, '自愈成功后停摆原因必须清掉')
+  assert.equal(world.probe.history('model-a').health, 'up')
+})
+
+test('【自愈·快路径】init 建 key 失败后一秒内自动补建，不用等下一轮（5 分钟）', async (t) => {
+  const world = await boot(t, { withoutApiKey: true, config: { enabled: true } })
   assert.equal(world.probe.status().blockedReason, 'probe_key_secret_missing')
+
+  const keys = await world.plugApiKey()
+  await waitFor(() => keys.created.length === 1)
+
+  assert.equal(world.credentials.values.get(REF), 'sk-dz-probe', '明文必须落进 credentials')
+  assert.equal(world.probe.status().probeKeyConfigured, true)
+  assert.equal(world.probe.status().blockedReason, null, '补建成功后这条停摆原因要清掉')
+  assert.equal(world.requests.length, 0, '补建只建 key，探测仍在下一轮')
+})
+
+test('【并发】seam 刚可用时两轮并发也只会创建一把 key', async (t) => {
+  const world = await boot(t, { withoutApiKey: true })
+  await world.probe.runPass()
+  const keys = await world.plugApiKey()
+
+  const [first, second] = await Promise.all([world.probe.runPass(), world.probe.runPass()])
+  assert.equal(keys.created.length, 1, '并发两条路径各建一把 key 是必须防住的事故')
+  assert.equal(first, second, 'runPass 本身单飞，两个调用者共享同一轮')
+  assert.equal(world.requests.length, 1)
 })
 
 test('模型目录为空时跳过，不把「没模型」当成「全挂了」', async (t) => {

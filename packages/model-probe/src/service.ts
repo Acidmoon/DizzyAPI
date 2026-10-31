@@ -23,7 +23,7 @@
  * 那比不监测更糟，因为它会让人去查一个根本不存在的故障。
  *
  * 本文件只放**编排**：目标挑选在 `targets.ts`、结果分类在 `probe-client.ts`、
- * 健康度派生在 `health.ts`、SQL 在 `store.ts`、服务解析在 `seams.ts`。
+ * 健康度派生在 `health.ts`、SQL 在 `store.ts`、服务解析在 `seams.ts`、探测 key 的建/轮换在 `key-lifecycle.ts`。
  */
 import { Service, type Context, type Logger } from 'cordis'
 // 只为了类型：@cordisjs/plugin-timer 往 Context 上 mixin 了 setInterval。
@@ -49,8 +49,10 @@ import {
   summarize,
 } from './pass-summary.ts'
 import { runProbe } from './probe-client.ts'
-import { PROBE_KEY_NAME, PROBE_KEY_NAME_PREFIX, ensureProbeKey } from './probe-key.ts'
-import { apiKeySeam, credentialsSeam, modelHubSeam } from './seams.ts'
+import { PROBE_KEY_NAME, PROBE_KEY_NAME_PREFIX } from './probe-key.ts'
+import { ProbeKeyKeeper } from './key-lifecycle.ts'
+import { probeStateOf } from './probe-status.ts'
+import { credentialsSeam, modelHubSeam } from './seams.ts'
 import { ModelProbeStore } from './store.ts'
 import { decideBlocked, pickTargets } from './targets.ts'
 import type {
@@ -64,6 +66,13 @@ import type {
 
 /** 本插件作为写者 / 调用方时用的 actor 名。 */
 export const MODEL_PROBE_ACTOR = '@dizzyapi/plugin-model-probe'
+
+/**
+ * 启动竞态下**一次性补建探测 key** 的延迟（毫秒）。
+ *
+ * 装载那一瞬 `api-key` 可能还没到 ACTIVE（cordis 不保证装载顺序），而它通常几百毫秒内
+ * 就绪，所以 1 秒足够；再长就等于白停摆一轮。补建只做一次，真正的兜底是
+ */
 
 export class ModelProbeService extends Service {
   static Config = MODEL_PROBE_CONFIG_SCHEMA
@@ -119,6 +128,8 @@ export class ModelProbeService extends Service {
   private ready = false
   private disposed = false
   private running: Promise<ModelProbePass> | undefined
+  /** 探测 key 的建 / 轮换 / 补建（单飞 + 自愈在其中，见 `key-lifecycle.ts`）。 */
+  private readonly keyKeeper: ProbeKeyKeeper
   private lastPass: ModelProbePass | null = null
   private lastPassAt: string | null = null
   private lastPrunedAt: string | null = null
@@ -142,6 +153,24 @@ export class ModelProbeService extends Service {
     this.adminPlugins = resolved.adminPlugins
     this.logger = ctx.logger('model-probe')
     this.fetchImpl = fetch
+    this.keyKeeper = new ProbeKeyKeeper({
+      ctx,
+      userId: resolved.probeUserId,
+      ref: resolved.probeKeyRef,
+      logger: this.logger,
+      rememberKeyId: (keyId) => {
+        this.probeKeyId = keyId
+        this.storeOf().setMeta('probeKeyId', keyId)
+      },
+      recallKeyId: () => this.probeKeyId ?? undefined,
+      remember: (identity) => {
+        this.probeKeyId = identity.keyId
+        this.probeKeyName = identity.keyName
+      },
+      isDisposed: () => this.disposed,
+      blockedReason: () => this.blockedReason,
+      clearBlock: (reason) => this.clearBlock(reason),
+    })
   }
 
   async *[Service.init](): AsyncGenerator<() => void> {
@@ -174,11 +203,15 @@ export class ModelProbeService extends Service {
     }
 
     // 探测 key 必须在第一轮之前就绪；建不出来就记下停摆原因，而不是让整轮探测假装跑过。
+    // **失败不是终点**：一秒后还有一次补建（`scheduleRetry`），之后每轮探测也会再补
+    // —— cordis 不保证 `api-key` 先于本插件到 ACTIVE（2026-10-31 生产事故）。
     try {
-      await this.ensureKey()
+      await this.keyKeeper.ensureLocked()
     } catch (error) {
       this.block('probe_key_secret_missing', describeError(error))
       this.logger.warn(`探测 key 未就绪，第一轮探测将不会发请求：${describeError(error)}`)
+      // 竞态一般几百毫秒就消失；等下一轮（默认 5 分钟）才补建，页面上会白停摆一轮。
+      this.keyKeeper.scheduleRetry()
     }
 
     const stop = this.ctx.effect(
@@ -223,22 +256,11 @@ export class ModelProbeService extends Service {
     return this.storeOf().daily(name, take)
   }
 
+  /** 对外状态。字段拼装搬到了 `probe-status.ts`（纯函数，且好审「暴露了什么」）。 */
   status(): ModelProbeState {
-    const credentials = credentialsSeam(this.ctx)
-    return {
-      enabled: this.config.enabled,
-      intervalMs: this.config.intervalMs,
-      timeoutMs: this.config.timeoutMs,
-      degradedThresholdMs: this.config.degradedThresholdMs,
-      maxConcurrent: this.config.maxConcurrent,
-      failureThreshold: this.config.failureThreshold,
-      historyPoints: this.config.historyPoints,
-      retentionDays: this.config.retentionDays,
-      probeModels: this.config.probeModels,
-      gatewayBaseUrl: this.config.gatewayBaseUrl,
-      probeUserId: this.config.probeUserId,
-      probeKeyRef: this.config.probeKeyRef,
-      probeKeyConfigured: credentials?.describe(this.config.probeKeyRef).configured ?? false,
+    return probeStateOf({
+      config: this.config,
+      probeKeyConfigured: credentialsSeam(this.ctx)?.describe(this.config.probeKeyRef).configured ?? false,
       probeKeyId: this.probeKeyId,
       probeKeyName: this.probeKeyName,
       running: this.running !== undefined,
@@ -248,7 +270,7 @@ export class ModelProbeService extends Service {
       blockedDetail: this.blockedDetail,
       samples: this.store?.count() ?? 0,
       lastPrunedAt: this.lastPrunedAt,
-    }
+    })
   }
 
   // ───────────────────────────────── 写面（探测）
@@ -287,8 +309,16 @@ export class ModelProbeService extends Service {
       return empty
     }
 
-    // 每轮都从 credentials 解析明文：轮换之后不用重启就能用上新值。
-    const token = credentialsSeam(this.ctx)?.resolve(this.config.probeKeyRef)
+    /**
+     * 每轮都从 credentials 解析明文（轮换后不用重启）：解析不到就**先补建一次 key**。
+     *
+     * 起因是 2026-10-31 的生产事故：建 key 原来只在 `[Service.init]` 里做一次，失败就
+     * 永久停摆，必须重启才恢复 —— 而 cordis 不保证 `api-key` 先于本插件到 ACTIVE。
+     * 自愈逻辑在 `ProbeKeyKeeper.resolveToken()`：补建成功就继续探，补不出来就照旧
+     * 走下面的 `block()`（**不静默**，页面上看得见停摆原因）。
+     */
+    const token = await this.keyKeeper.resolveToken()
+    if (this.disposed) return emptyPass('disposed')
     if (token === undefined || token === '') {
       const skipped = emptyPass('probe_key_secret_missing')
       this.block(
@@ -414,38 +444,23 @@ export class ModelProbeService extends Service {
     }
   }
 
-  private async ensureKey(): Promise<void> {
-    const apiKey = apiKeySeam(this.ctx)
-    const credentials = credentialsSeam(this.ctx)
-    if (apiKey === undefined) {
-      throw new ModelProbeError('MODEL_PROBE_DEPENDENCY_UNAVAILABLE', 'apiKey 服务不可用，无法创建探测 key')
-    }
-    if (credentials === undefined) {
-      throw new ModelProbeError(
-        'MODEL_PROBE_DEPENDENCY_UNAVAILABLE',
-        'credentials 服务不可用，无法保存探测 key 的明文',
-      )
-    }
-    const state = await ensureProbeKey({
-      apiKey,
-      credentials,
-      userId: this.config.probeUserId,
-      ref: this.config.probeKeyRef,
-      rememberKeyId: (keyId) => {
-        this.probeKeyId = keyId
-        this.storeOf().setMeta('probeKeyId', keyId)
-      },
-      recallKeyId: () => this.probeKeyId ?? undefined,
-      log: (message) => this.logger.info(message),
-    })
-    this.probeKeyId = state.keyId
-    this.probeKeyName = state.keyName
-  }
-
   private block(reason: ModelProbeBlockedReason, detail: string): void {
     if (this.blockedReason !== reason) this.logger.warn(`探测停摆（${reason}）：${detail}`)
     this.blockedReason = reason
     this.blockedDetail = detail
+  }
+
+  /**
+   * 清掉某条停摆原因（**只在原因确实被解决了**时调）。
+   *
+   * 目前只有一个调用点：探测 key 补建成功（那条原因的字面意思就是「明文不在 credentials
+   * 里」，现在在了）。其余原因不在这里清 —— 余额耗尽、网关打不通那些得等一轮真探测有结果
+   * 才算好。传 `reason` 而不是无参清空，是为了防止「顺手清掉别人的原因」。
+   */
+  private clearBlock(reason: ModelProbeBlockedReason): void {
+    if (this.blockedReason !== reason) return
+    this.blockedReason = null
+    this.blockedDetail = null
   }
 
   /** 卸载 / 关闭连接。幂等：关两次不报错。 */
@@ -480,3 +495,4 @@ export class ModelProbeService extends Service {
 
 export { MODEL_PROBE_DEFAULTS, PROBE_KEY_NAME, PROBE_KEY_NAME_PREFIX, HEALTH_WINDOW_MIN }
 export type { ModelProbeConfig, ResolvedModelProbeConfig }
+
