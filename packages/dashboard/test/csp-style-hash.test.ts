@@ -6,7 +6,7 @@
  * 因此掉样式。修法不是放开 `unsafe-inline`，而是给那一段算 sha256 写进 `style-src`。
  *
  * 这里的断言钉三件事：
- * 1. `style-src` 里**只有一个 sha256**（就是 sonner 那段），**不许出现 `unsafe-inline`**；
+ * 1. `style-src` 里**只有两个 sha256**（空字符串 + sonner 那段正文），**不许出现 `unsafe-inline`**；
  * 2. `style-src-attr` 仍是 `'unsafe-inline'`（Radix 浮层定位 / 侧栏宽度 / recharts 尺寸
  *    靠 React 的 `style` 属性，owner 2026-10-31 拍板按上游模版走）；
  * 3. `script-src` 仍是 `'self' + nonce`，没有 `unsafe-inline` / `unsafe-eval`。
@@ -40,7 +40,7 @@ test('CSP：style-src 只放行一个 sha256，且不含 unsafe-inline', () => {
   assert.ok(styleSrc !== undefined, 'CSP 必须有 style-src')
 
   const hashes = styleSrc.match(/'sha256-[A-Za-z0-9+/]+=*'/g) ?? []
-  assert.equal(hashes.length, 1, `style-src 只应有 sonner 那一个 sha256，实际：${hashes.join(', ')}`)
+  assert.equal(hashes.length, 2, `style-src 应有 2 个 sha256（空串 + sonner 正文），实际：${hashes.join(', ')}`)
   assert.match(styleSrc, /'self'/)
   assert.doesNotMatch(styleSrc, /unsafe-inline/)
   assert.doesNotMatch(styleSrc, /unsafe-eval/)

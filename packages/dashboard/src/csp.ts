@@ -66,7 +66,11 @@ export function contentSecurityPolicy(nonce: string): string {
     "default-src 'self'",
     `script-src 'self' 'nonce-${nonce}'`,
     // `'self'` 管外部样式表；`sha256-…` 只放行 sonner 注入的那一段内联 <style>。
-    "style-src 'self' 'sha256-StEaX+se6YS7pqjzrzMIA0KaX9zF/8zAhvQXZAe5epY='",
+    // 两个 hash 缺一不可：
+    // - `47DEQ…` = 空字符串（sonner 先插入一个空 <style>、再往里写内容，插入那一步就会被拦）；
+    // - `StEaX…`  = sonner 那段 CSS 正文（14916 字节，light/dark 实测一致）。
+    // 两个都放行之后，`style-src` 里仍然**没有 unsafe-inline**。
+    "style-src 'self' 'sha256-StEaX+se6YS7pqjzrzMIA0KaX9zF/8zAhvQXZAe5epY=' 'sha256-47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU='",
     "style-src-attr 'unsafe-inline'",
     "img-src 'self' data: blob:",
     "font-src 'self'",
