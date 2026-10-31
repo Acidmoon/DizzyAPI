@@ -106,7 +106,6 @@ export function UsageBoard() {
       <Card>
         <CardHeader>
           <CardTitle className="text-base">筛选条件</CardTitle>
-          <CardDescription>时间窗与用户侧同口径（按天边界，UTC 起算）。</CardDescription>
         </CardHeader>
         <CardContent>
           <div className="flex flex-wrap items-end gap-3">
@@ -225,7 +224,7 @@ export function UsageBoard() {
               <CardTitle className="text-sm text-muted-foreground">价表</CardTitle>
             </CardHeader>
             <CardContent className="text-sm">
-              {data.pricingAvailable ? "可用（费用按当前价表算）" : "不可用：费用显示为 0"}
+              {data.pricingAvailable ? "可用" : "不可用：费用显示为 0"}
             </CardContent>
           </Card>
         </div>

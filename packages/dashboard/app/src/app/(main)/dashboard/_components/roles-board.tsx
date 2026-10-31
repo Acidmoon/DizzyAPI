@@ -116,10 +116,6 @@ export function RolesBoard() {
       <Card>
         <CardHeader>
           <CardTitle className="text-base">用户与角色</CardTitle>
-          <CardDescription>
-            注意：这里的角色筛选是**对本页 {all.length} 条数据过滤**，不是服务端筛选（`/api/users` 没有 role 参数）。
-            要全站口径请翻页看完或直接用用户管理页。
-          </CardDescription>
         </CardHeader>
         <CardContent className="px-0">
           <DataState

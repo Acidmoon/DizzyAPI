@@ -17,10 +17,9 @@ import { Activity, AlertTriangle, KeyRound, Server, Users } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Separator } from "@/components/ui/separator";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { api, adminOps } from "@/lib/api";
-import { formatDateTime, formatMicrosAsYuan, formatTokens } from "@/lib/format";
+import { formatMicrosAsYuan, formatTokens } from "@/lib/format";
 
 import { DataState } from "./data-state";
 import { useResource } from "./use-resource";
@@ -137,11 +136,9 @@ export function DashboardOverview() {
             <Card>
               <CardHeader>
                 <CardTitle className="text-base">累计用量</CardTitle>
-                <CardDescription>
-                  {data.stats.usage === null
-                    ? "用量插件不在运行：这块暂时没有数据（其余块照常）。"
-                    : `token 四桶合计 · 费用按当前价表读取时计算 · 生成于 ${formatDateTime(data.stats.generatedAt)}`}
-                </CardDescription>
+                {data.stats.usage === null ? (
+                  <CardDescription>用量插件不在运行：这块暂时没有数据（其余块照常）。</CardDescription>
+                ) : null}
               </CardHeader>
               <CardContent>
                 {data.stats.usage === null ? (
@@ -179,7 +176,6 @@ export function DashboardOverview() {
               <Card>
                 <CardHeader>
                   <CardTitle className="text-base">数据源健康度</CardTitle>
-                  <CardDescription>任一块缺失只降级那一块，不会让整页失败。</CardDescription>
                 </CardHeader>
                 <CardContent className="flex flex-col gap-2">
                   {(
@@ -211,7 +207,6 @@ export function DashboardOverview() {
               <Card>
                 <CardHeader>
                   <CardTitle className="text-base">费用最高的模型（累计）</CardTitle>
-                  <CardDescription>按费用降序，取前 8 个。</CardDescription>
                 </CardHeader>
                 <CardContent className="px-0">
                   {data.stats.usage === null || data.stats.usage.models.length === 0 ? (
@@ -252,7 +247,6 @@ export function DashboardOverview() {
             <Card>
               <CardHeader>
                 <CardTitle className="text-base">消费最高的用户（累计）</CardTitle>
-                <CardDescription>按费用降序，取前 8 个；只显示名字，不显示邮箱。</CardDescription>
               </CardHeader>
               <CardContent className="px-0">
                 {data.stats.usage === null || data.stats.usage.topUsers.length === 0 ? (
@@ -289,12 +283,6 @@ export function DashboardOverview() {
                 )}
               </CardContent>
             </Card>
-
-            <Separator />
-            <p className="text-xs text-muted-foreground">
-              金额一律是整数微元（1 元 = 1,000,000 微元）换算出来的展示值；累计费用按**当前价表**在读取时计算，
-              改价会让历史金额跟着变——这是刻意与扣费口径保持同一个数字。
-            </p>
           </>
         )}
       </DataState>

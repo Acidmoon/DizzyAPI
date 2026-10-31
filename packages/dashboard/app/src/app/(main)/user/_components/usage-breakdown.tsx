@@ -41,7 +41,7 @@ export function UsageBreakdown({ models, rangeLabel }: UsageBreakdownProps) {
     <Card className="min-w-0">
       <CardHeader>
         <CardTitle>按模型</CardTitle>
-        <CardDescription>{rangeLabel} · 按消费金额排序，最多 8 行</CardDescription>
+        <CardDescription>{rangeLabel}</CardDescription>
       </CardHeader>
       <CardContent className="flex flex-col gap-3">
         {rows.map((row) => {

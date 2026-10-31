@@ -67,7 +67,7 @@ export function PricingBoard() {
       <Card>
         <CardHeader>
           <CardTitle className="text-base">价表</CardTitle>
-          <CardDescription>共 {items.length} 个模型。金额只透传与展示，页面不做任何算术。</CardDescription>
+          <CardDescription>共 {items.length} 个模型。</CardDescription>
         </CardHeader>
         <CardContent className="px-0">
           <DataState

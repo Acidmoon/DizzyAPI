@@ -237,7 +237,6 @@ export function BillingBoard() {
         <Card>
           <CardHeader>
             <CardTitle className="text-base">按天汇总</CardTitle>
-            <CardDescription>最近 30 天，按请求发生日（UTC）分桶。</CardDescription>
           </CardHeader>
           <CardContent className="px-0">
             <div className="overflow-x-auto">
@@ -276,7 +275,6 @@ export function BillingBoard() {
         <Card>
           <CardHeader>
             <CardTitle className="text-base">按模型</CardTitle>
-            <CardDescription>累计扣费最高的模型。</CardDescription>
           </CardHeader>
           <CardContent className="px-0">
             <div className="overflow-x-auto">

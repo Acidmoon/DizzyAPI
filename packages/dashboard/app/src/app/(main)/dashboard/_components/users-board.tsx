@@ -103,9 +103,7 @@ export function UsersBoard() {
       <Card>
         <CardHeader>
           <CardTitle className="text-base">用户列表</CardTitle>
-          <CardDescription>
-            共 {items.length} 条（本页）。余额是整数微元（1 元 = 1,000,000 微元），允许为负表示后付费欠款。
-          </CardDescription>
+          <CardDescription>共 {items.length} 条（本页）。</CardDescription>
         </CardHeader>
         <CardContent className="px-0">
           <DataState

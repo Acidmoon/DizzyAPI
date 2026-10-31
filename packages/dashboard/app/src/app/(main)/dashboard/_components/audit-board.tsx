@@ -211,7 +211,7 @@ export function AuditBoard() {
         <CardHeader>
           <CardTitle className="text-base">审计记录</CardTitle>
           <CardDescription>
-            本页 {items.length} 条 / 共 {formatTokens(data?.total ?? 0)} 条。保留期由 audit 插件配置，过期自动清理。
+            本页 {items.length} 条 / 共 {formatTokens(data?.total ?? 0)} 条。
           </CardDescription>
         </CardHeader>
         <CardContent className="px-0">

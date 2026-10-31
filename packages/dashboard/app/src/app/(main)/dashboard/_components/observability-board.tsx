@@ -117,10 +117,6 @@ export function ObservabilityBoard() {
                     <AlertTriangle className="size-4 text-amber-600" />
                     <CardTitle className="text-base">部分数据源不完整</CardTitle>
                   </div>
-                  <CardDescription>
-                    下面的每一块都标了自己的健康度。降级与不可用的处置方式不同：
-                    降级是「这一块数据不全」，不可用是「这一块整块读不到」。
-                  </CardDescription>
                 </CardHeader>
               </Card>
             ) : null}
@@ -129,9 +125,6 @@ export function ObservabilityBoard() {
               <Card className="border-destructive/40">
                 <CardHeader>
                   <CardTitle className="text-base">异常摘要（{report.warnings.length}）</CardTitle>
-                  <CardDescription>
-                    稳定英文码，中文只是给人看的；排障按码查。
-                  </CardDescription>
                 </CardHeader>
                 <CardContent>
                   <ul className="flex flex-col gap-1.5">

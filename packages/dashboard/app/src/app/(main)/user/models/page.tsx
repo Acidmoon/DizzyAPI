@@ -158,7 +158,6 @@ export default function UserModelsPage() {
           <Card className="min-w-0 overflow-hidden">
             <CardHeader>
               <CardTitle>可用模型</CardTitle>
-              <CardDescription>至少一个账号当前能提供该模型（启用、凭据已配、未过期、健康）</CardDescription>
             </CardHeader>
             <CardContent>
               {available.length === 0 ? (
@@ -218,7 +217,6 @@ export default function UserModelsPage() {
                 <XCircle className="size-4" />
                 暂不可用
               </CardTitle>
-              <CardDescription>原因来自服务端聚合，不是前端猜的</CardDescription>
             </CardHeader>
             <CardContent>
               {unavailable.length === 0 ? (
