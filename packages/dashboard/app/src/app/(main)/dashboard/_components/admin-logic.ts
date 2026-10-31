@@ -98,6 +98,128 @@ export function balanceDelta(direction: "add" | "subtract", yuanText: string): s
   return direction === "add" ? micros : negateMicros(micros);
 }
 
+// ───────────────────────────── 日期范围（毫秒区间）─────────────────────────────
+
+const DAY_MS = 86_400_000
+
+/**
+ * `YYYY-MM-DD` → 当天零点（**UTC**）的毫秒时间戳。
+ *
+ * 为什么用 UTC 而不是本地时区：审计服务的时间窗是毫秒时间戳，SSR 旧版页面
+ * （`packages/web/src/pages/admin_audit.ts`）也是按 UTC 切天的，两边口径必须一致，
+ * 否则同一条记录在两个页面上会落在不同的天里。
+ *
+ * 非法日期返回 `null`（不猜、不取 0）。
+ */
+export function utcDayStartMs(text: string): number | null {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(text.trim());
+  if (match === null) return null;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  if (month < 1 || month > 12 || day < 1 || day > 31) return null;
+  const ms = Date.UTC(year, month - 1, day);
+  const date = new Date(ms);
+  // `Date.UTC(2026, 1, 30)` 会滚到 3 月 2 日；这里要的是「这个日子不存在就判非法」。
+  if (date.getUTCMonth() !== month - 1 || date.getUTCDate() !== day) return null;
+  return ms;
+}
+
+/**
+ * 日期范围 → 审计接口要的毫秒区间。
+ *
+ * - 结束日**含当天**，所以右端是「当天零点 + 1 天」；
+ * - 服务端的区间是**左闭右开** `[fromMs, toMs)`；
+ * - 空串 = 不限（返回 `undefined`，调用方就不带这个键）；
+ * - 非法日期按「不限」处理，但 `from > to` 时返回 `null`（区间反了，要报错而不是静默查空）。
+ */
+export function dateRangeMs(
+  from: string,
+  to: string,
+): { readonly fromMs?: number; readonly toMs?: number } | null {
+  const range: { fromMs?: number; toMs?: number } = {};
+  if (from.trim() !== "") {
+    const fromMs = utcDayStartMs(from);
+    if (fromMs === null) return null;
+    range.fromMs = fromMs;
+  }
+  if (to.trim() !== "") {
+    const toMs = utcDayStartMs(to);
+    if (toMs === null) return null;
+    range.toMs = toMs + DAY_MS;
+  }
+  if (range.fromMs !== undefined && range.toMs !== undefined && range.fromMs >= range.toMs) {
+    return null;
+  }
+  return range;
+}
+
+// ───────────────────────────── 结算状态 ─────────────────────────────
+
+/**
+ * 结算状态 → 人话（来源：`packages/billing/src/types.ts` 的 `SettleStatus`）。
+ *
+ * **未知值原样返回**：结算状态机以后加新状态时，页面不能把新状态显示成空。
+ */
+export function settleStatusLabel(status: string): string {
+  if (status === "pending") return "待结算";
+  if (status === "settling") return "结算中";
+  if (status === "settled") return "已结算";
+  if (status === "no-price") return "无价格";
+  if (status === "no-user") return "无用户";
+  if (status === "failed") return "失败";
+  if (status === "review") return "待核查";
+  return status;
+}
+
+/**
+ * 结算状态是不是「需要人看一眼」的。
+ *
+ * `problem` 筛选（服务端一次拿到失败 / 待核查 / 结算中残留）就是按这个集合划的，
+ * 页面上的「待处理」指标卡也用它——两处口径必须一致，否则数字对不上。
+ */
+export function isProblemSettleStatus(status: string): boolean {
+  return status === "failed" || status === "review" || status === "settling";
+}
+
+
+// ───────────────────────────── 数据源健康度与告警 ─────────────────────────────
+
+/**
+ * 数据源健康度 → 人话（`ok` / `degraded` / `unavailable`）。
+ *
+ * `degraded` 与 `unavailable` 必须分开说：`degraded` 是「这一块的数据不全」，
+ * `unavailable` 是「这一块整块读不到」——运维处置方式不同。
+ */
+export function sourceHealthLabel(state: string): string {
+  if (state === "ok") return "正常";
+  if (state === "degraded") return "降级";
+  if (state === "unavailable") return "不可用";
+  return state;
+}
+
+/**
+ * 运维告警码 → 人话（来源：`packages/observability/src/service.ts` 的 `warningsOf`）。
+ *
+ * 告警码是**稳定英文码**（页面据此高亮），中文标签只是给人看的；
+ * 没映射的码原样返回——宁可露出英文码，也不要让人以为「这条没事」。
+ */
+export function warningLabel(code: string): string {
+  if (code === "USAGE_GAP") return "用量链路有缺口（记录被跳过）";
+  if (code === "USAGE_POLL_FAILING") return "用量轮询连续失败";
+  if (code === "USAGE_REJECTED_PENDING") return "有被隔离的用量待处理";
+  if (code === "USAGE_RING_DROPPED") return "Go 环形缓冲丢过记录";
+  if (code === "BILLING_REVIEW") return "有结算待人工核查";
+  if (code === "BILLING_FAILED") return "有结算失败";
+  if (code === "BILLING_OVERDRAWN") return "有账户透支";
+  if (code === "QUOTA_SNAPSHOT_STALE") return "余额快照已过期";
+  if (code === "ACCOUNTS_COOLING") return "有账号正在冷却";
+  if (code === "AUDIT_FAILED_ACTIONS") return "有失败的管理操作";
+  if (code === "ACCOUNTS_UNHEALTHY") return "有账号健康异常";
+  if (code === "ACCOUNTS_AUTO_DISABLED") return "有账号被系统自动停用";
+  return code;
+}
+
 /**
  * 用户编辑弹窗要提交的 patch：**只放真正改了的字段**。
  *
