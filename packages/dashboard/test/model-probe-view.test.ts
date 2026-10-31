@@ -108,7 +108,7 @@ describe('probeBars：最右是「现在」，左侧补灰', () => {
   })
 })
 
-describe('四态：高度与颜色双编码，且不制造假红', () => {
+describe('四态：高度 + 形态 + 颜色三层编码，且不制造假红', () => {
   const heights = ['ok', 'degraded', 'probe-error', 'failed'].map((status) => {
     const bars = probeBars([point(status, 1000)], 8)
     assert.equal(bars.length, 8)
@@ -129,12 +129,38 @@ describe('四态：高度与颜色双编码，且不制造假红', () => {
     const [ok, degraded, probeError, failed] = heights
     assert.equal((ok as { color: string }).color, 'var(--chart-3)')
     assert.equal((degraded as { color: string }).color, 'var(--chart-2)')
-    assert.equal((probeError as { color: string }).color, 'var(--chart-1)')
+    assert.equal((probeError as { color: string }).color, 'var(--muted-foreground)')
     assert.equal((failed as { color: string }).color, 'var(--destructive)')
     assert.notEqual(
       (probeError as { color: string }).color,
       (failed as { color: string }).color,
       'probe-error 与 failed 同色就是假红',
+    )
+  })
+
+  /**
+   * 2026-10-31 真机验收抓到的回归：`probe-error` 原来用 `--chart-1`，灰阶主题下
+   * 白底对比度 1.3:1，和 `--muted` 的补灰占位肉眼分不开 —— 状态**隐身**。
+   * 修法不是换一档颜色（配色一改又失效），而是加**形态编码**：空心描边。
+   */
+  it('探测自身异常是空心描边，占位与其余三态都是实心（形状与配色无关）', () => {
+    const [ok, degraded, probeError, failed] = heights
+    assert.equal((probeError as { shape: string }).shape, 'hollow')
+    for (const bar of [ok, degraded, failed]) {
+      assert.equal((bar as { shape: string }).shape, 'solid')
+    }
+    const placeholder = probeBars([], 8)[0]
+    assert.ok(placeholder !== undefined)
+    assert.equal(placeholder.shape, 'solid', '补灰占位必须是实心，否则和空心柱撞形状')
+    assert.notEqual(
+      (probeError as { color: string }).color,
+      placeholder.color,
+      'probe-error 与占位不能同色（那就又分不开了）',
+    )
+    assert.notEqual(
+      (probeError as { color: string }).color,
+      'var(--chart-1)',
+      '--chart-1 在灰阶主题里几乎不可见，不许再用于这一档',
     )
   })
 
@@ -270,6 +296,15 @@ describe('源码护栏：CSP 与配色', () => {
       assert.equal(/#[0-9a-fA-F]{3,8}\b/.test(code), false, `${file} 里有十六进制颜色`)
       assert.equal(/rgb\(|rgba\(|hsl\(/.test(code), false, `${file} 里有字面量颜色函数`)
     }
+  })
+
+  it('空心柱真的画了描边（形态编码不许被当成装饰删掉）', () => {
+    const code = readCode('_components/model-probe-bars.tsx')
+    for (const token of ['bar.shape === "hollow"', 'borderColor', 'borderWidth', 'transparent']) {
+      assert.ok(code.includes(token), `柱状图没把空心形态画出来：${token}`)
+    }
+    // 反向：不许在组件里按状态名写死颜色（配色只许来自 lib 里的样式表）。
+    assert.ok(!code.includes('--destructive'), '组件里不该出现具体颜色变量，配色只在 lib/model-probe.ts')
   })
 
   it('柱状图组件不自己算钱、不自己格式化时间', () => {

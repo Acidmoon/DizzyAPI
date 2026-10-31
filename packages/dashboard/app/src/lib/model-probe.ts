@@ -71,6 +71,9 @@ export const PROBE_BAR_MIN_SLOTS = 8
 /** 槽位上限：防止服务端某个配置把一屏画成几百根柱子。 */
 export const PROBE_BAR_MAX_SLOTS = 60
 
+/** 柱子的「形态」：实心 / 空心描边。**这是编码的一部分，不是装饰。** */
+export type ProbeBarShape = 'solid' | 'hollow'
+
 /** 一根柱子的完整描述。 */
 export interface ProbeBar {
   /** React key（`t<毫秒>` 或 `empty<n>`）。 */
@@ -81,25 +84,51 @@ export interface ProbeBar {
   readonly heightPercent: number
   /** 颜色（CSS 变量表达式，随主题变）。 */
   readonly color: string
+  /** **形态编码**：`hollow` = 只描边不填充（表示「这次没测出结论」）。 */
+  readonly shape: ProbeBarShape
   /** 是不是「左侧补灰」的占位（当时还没开始探测）。 */
   readonly placeholder: boolean
   /** 悬停文案（`<title>`）：时间 + 结论 + 耗时。 */
   readonly label: string
 }
 
-/** 一个槽位的样式表：高度是**健康序**（越高越健康），颜色是**同一件事的第二编码**。 */
+/**
+ * 一个槽位的样式表。
+ *
+ * 三层编码，**从强到弱**：
+ * 1. **高度**按健康序（越高越健康）—— 灰度打印、色盲、随便换主题都还在；
+ * 2. **形态**（实心 / 空心）—— 主题配色变了也不失效，见下面 `probe-error` 的说明；
+ * 3. **颜色**（`--chart-N` / `--destructive`）—— 只当第三层，别把判断压在它身上。
+ */
 const BAR_STYLES: Readonly<
-  Record<ProbePointStatus, { readonly heightPercent: number; readonly color: string; readonly text: string }>
+  Record<
+    ProbePointStatus,
+    { readonly heightPercent: number; readonly color: string; readonly shape: ProbeBarShape; readonly text: string }
+  >
 > = {
-  ok: { heightPercent: 100, color: 'var(--chart-3)', text: '正常' },
-  degraded: { heightPercent: 65, color: 'var(--chart-2)', text: '偏慢' },
-  // 「没结论」不等于「坏了」：淡色 + 中等高度，一眼能看出和红色不是一回事。
-  'probe-error': { heightPercent: 35, color: 'var(--chart-1)', text: '探测自身异常' },
-  failed: { heightPercent: 15, color: 'var(--destructive)', text: '失败' },
+  ok: { heightPercent: 100, color: 'var(--chart-3)', shape: 'solid', text: '正常' },
+  degraded: { heightPercent: 65, color: 'var(--chart-2)', shape: 'solid', text: '偏慢' },
+  /**
+   * 「没结论」≠「坏了」：
+   * - 不用红色（那就是假红：余额不足会让所有模型都变成红的，而模型其实没挂）；
+   * - **用空心描边，不用填充**。2026-10-31 真机验收抓到的真问题：这一档原来用
+   *   `--chart-1`，而灰阶主题里 `--chart-1` 是 `oklch(0.87 0 0)`，白底对比度约 1.3:1，
+   *   和「左侧补灰」的 `--muted` 占位肉眼分不开 —— 等于这个状态**隐身**。
+   *
+   * **描边是承重的，不是装饰**：靠颜色区分四态，主题配色一换（或用了灰阶预设）编码就失效；
+   * 形状（实心 / 空心）与填充（有 / 无）跟配色无关。删掉 `border` 之前先看这段。
+   */
+  'probe-error': {
+    heightPercent: 35,
+    color: 'var(--muted-foreground)',
+    shape: 'hollow',
+    text: '探测自身异常',
+  },
+  failed: { heightPercent: 15, color: 'var(--destructive)', shape: 'solid', text: '失败' },
 }
 
-/** 空占位（左侧补灰）的样式：最矮、最淡。 */
-const PLACEHOLDER_STYLE = { heightPercent: 15, color: 'var(--muted)' } as const
+/** 空占位（左侧补灰）的样式：最矮、最淡、**实心**（这样和空心的 `probe-error` 一眼分得开）。 */
+const PLACEHOLDER_STYLE = { heightPercent: 15, color: 'var(--muted)', shape: 'solid' } as const
 
 /** 轨道高度（px）。**固定值**：柱子高度用百分比，所以容器必须有确定高度。 */
 export const PROBE_BAR_TRACK_PX = 28
@@ -182,6 +211,7 @@ export function probeBars(points: readonly ProbePointLike[], slots?: number): Pr
       status: null,
       heightPercent: PLACEHOLDER_STYLE.heightPercent,
       color: PLACEHOLDER_STYLE.color,
+      shape: PLACEHOLDER_STYLE.shape,
       placeholder: true,
       label: '（还没有这一次探测）',
     })
@@ -194,6 +224,7 @@ export function probeBars(points: readonly ProbePointLike[], slots?: number): Pr
       status,
       heightPercent: style.heightPercent,
       color: style.color,
+      shape: style.shape,
       placeholder: false,
       label: `${style.text} · 耗时 ${Math.max(0, Math.trunc(point.latencyMs))} 毫秒${
         point.errorCode === null ? '' : ` · ${point.errorCode}`

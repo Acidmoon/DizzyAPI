@@ -4,7 +4,9 @@
  * 模型广场每行的**可用性小柱状图**（owner 要的那一列）。
  *
  * 纪律（与 `总工` 对齐的口径）：
- * 1. **4 级高度 + 颜色双编码**，最右是「现在」，左侧不足补灰占位；
+ * 1. **三层编码**：高度（健康序）→ **形态**（实心 / 空心描边）→ 颜色（`--chart-N`）；
+ *    最右是「现在」，左侧不足补灰占位。**形态这一层是 2026-10-31 真机验收加的**：
+ *    只靠颜色的话，灰阶主题下「探测自身异常」白底对比度 1.3:1，等于没画；
  * 2. **不注入 `<style>`**：颜色是行内 `style` 里的 CSS 变量（走 `style-src-attr`），
  *    新前端 CSP 的 `style-src` 只放行两个 sha256，注入样式表会被拦；
  * 3. **不显示刻度**：窄屏只显示形状，靠 `title` 与读屏文案补细节 ——
@@ -57,14 +59,27 @@ export function ModelProbeBars({ probe, slots }: ModelProbeBarsProps) {
       {/* 轨道：`aria-hidden` —— 被读的是外面那一整句统计，不是一根根柱子。 */}
       <div aria-hidden className="flex h-full w-[118px] items-end gap-[2px]">
         {bars.map((bar) => {
-          const style: CSSProperties = {
-            height: `${bar.heightPercent}%`,
-            backgroundColor: bar.color,
-          };
+          /**
+           * **形态是编码的一部分，别当装饰删掉**：`hollow`（只描边不填充）专门表示
+           * 「这次探测自己没测出结论」（`probe-error`）。原来这一档只靠颜色区分，
+           * 灰阶主题下 `--chart-1` 白底对比度只有 1.3:1，和「左侧补灰」的占位肉眼分不开，
+           * 等于隐身。形状与填充跟主题无关，所以这一层必须留着。
+           */
+          const style: CSSProperties =
+            bar.shape === "hollow"
+              ? {
+                  height: `${bar.heightPercent}%`,
+                  backgroundColor: "transparent",
+                  borderColor: bar.color,
+                  borderStyle: "solid",
+                  borderWidth: 1,
+                }
+              : { height: `${bar.heightPercent}%`, backgroundColor: bar.color };
           return (
             <span
               key={bar.key}
               data-probe-bar={bar.status ?? "empty"}
+              data-probe-shape={bar.shape}
               className="w-[3px] shrink-0 rounded-[1px]"
               style={style}
             />
