@@ -49,7 +49,9 @@ export {
   usageCsvFilename,
   type UsageCsvExport,
 } from './csv.ts'
-export { clampLimit, queryWhere } from './query.ts'
+export { clampLimit, queryWhere, PROBE_KEY_PREFIX } from './query.ts'
+export { PIE_MAX_NAMED, PIE_MAX_SLICES, PIE_OTHER_LABEL, topWithOther, sumTotals } from './breakdown.ts'
+export type { BreakdownTotals } from './breakdown.ts'
 export type { UsagePollOutcome } from './service.ts'
 export type {
   BillingPort,
@@ -57,6 +59,7 @@ export type {
   SettleBatchOutcomeLike,
   SettleCandidateLike,
   TokenCountsLike,
+  UsageApiKeyBreakdown,
   UsageDailyPoint,
   UsageEntry,
   UsageListPage,

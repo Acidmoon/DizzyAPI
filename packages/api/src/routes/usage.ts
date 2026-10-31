@@ -7,7 +7,7 @@
 import type { ApiServer } from '../http.ts'
 import { parseIntegerParam } from '../params.ts'
 import { centsOf, dateOf } from '../views/common.ts'
-import { usageDetailOf, usageRowOf, usageTotalsOf } from '../views/usage.ts'
+import { usageApiKeyOf, usageDetailOf, usageModelOf, usageRowOf, usageTotalsOf } from '../views/usage.ts'
 import { parseUserId, roleOf } from '../views/session.ts'
 import { USAGE_RANGE_DAYS } from '../constants.ts'
 import { ApiError, badRequest, notFound, unauthorized } from '../errors.ts'
@@ -62,7 +62,7 @@ export async function usage(host: ApiServer, req: IncomingMessage, url: URL): Pr
     ...(apiKeyId === undefined ? {} : { apiKeyId }),
     ...(model === undefined ? {} : { model }),
   }
-  const summary = usage.summary(query)
+  const summary = usage.summary(query, { apiKeys: true })
   const page = usage.list({ ...query, ...(cursor === undefined ? {} : { cursor }), limit })
 
   return {
@@ -78,7 +78,9 @@ export async function usage(host: ApiServer, req: IncomingMessage, url: URL): Pr
     },
     totals: usageTotalsOf(summary.totals),
     daily: summary.daily.map((point) => ({ date: point.date, ...usageTotalsOf(point) })),
-    models: summary.models.map((item) => ({ model: item.model, ...usageTotalsOf(item) })),
+    models: summary.models.map(usageModelOf),
+    // 饼图「按接口」：服务端已按费用降序 + 尾部归并成「其他」，前端只画。
+    apiKeys: summary.apiKeys.map(usageApiKeyOf),
     records: { items: page.items.map(usageRowOf), nextCursor: page.nextCursor },
     pricingAvailable: host.runtime.pricing() !== undefined,
     generatedAt: now.toISOString(),

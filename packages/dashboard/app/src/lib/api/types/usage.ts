@@ -35,12 +35,24 @@ export interface UsageDailyView extends UsageTotalsView {
 /** 按模型聚合（`usageModelOf()`）。 */
 export interface UsageModelView extends UsageTotalsView {
   readonly model: string
+  /** 这是尾部归并出来的「其他」（`model` 字段内容是「其他」）。 */
+  readonly other?: boolean
 }
 
-/** 按用户聚合（`usageUserOf()`，只出现在管理概览的 Top 用户里）。 */
+/** 按 API key 聚合（`usageApiKeyOf()`，「按接口」饼图）。 */
+export interface UsageApiKeyView extends UsageTotalsView {
+  /** `''` = 归并出来的「其他」。 */
+  readonly apiKeyId: string
+  /** **展示名**（用户起的名字 / `key#<id 前 6 位>` / 「其他」），绝不是完整 key。 */
+  readonly apiKeyName: string
+  readonly other?: boolean
+}
+
+/** 按用户聚合（`usageUserOf()`；`other: true` 时 `userId` 是 -1）。 */
 export interface UsageUserView extends UsageTotalsView {
   readonly userId: number
   readonly name: string | null
+  readonly other?: boolean
 }
 
 /** 用户侧用量明细一行（`usageRowOf()`）。 */
@@ -99,6 +111,8 @@ export interface UsageView {
   readonly totals: UsageTotalsView
   readonly daily: readonly UsageDailyView[]
   readonly models: readonly UsageModelView[]
+  /** 「按接口」饼图：服务端已按费用降序、尾部归并成「其他」（最多 12 项含「其他」）。 */
+  readonly apiKeys: readonly UsageApiKeyView[]
   readonly records: {
     readonly items: readonly UsageRowView[]
     /** **keyset 游标**：下一页就把这个值当 `cursor` 传回去；`null` = 没有下一页。 */
@@ -142,6 +156,10 @@ export interface AdminUsageView {
   readonly totals: UsageTotalsView
   readonly daily: readonly UsageDailyView[]
   readonly models: readonly UsageModelView[]
+  /** 「按接口」饼图（同用户侧口径）。 */
+  readonly apiKeys: readonly UsageApiKeyView[]
+  /** 「按用户」饼图（只有管理面有）；`other: true` 时 `userId` 是 -1。 */
+  readonly users: readonly UsageUserView[]
   readonly records: {
     readonly items: readonly AdminUsageRowView[]
     readonly nextCursor: number | null

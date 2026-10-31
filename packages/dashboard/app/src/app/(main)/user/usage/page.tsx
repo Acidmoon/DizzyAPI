@@ -10,10 +10,11 @@
  * 阶段 0 定的口径是**不改 api 契约**，也不新开服务端路由。
  */
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { UsagePie } from "@/components/usage-pie";
 import { toast } from "sonner";
 
 import { formatTokens } from "@/lib/format";
@@ -40,6 +41,8 @@ export default function UserUsagePage() {
   const [model, setModel] = useState<string | null>(null);
   const [apiKeyId, setApiKeyId] = useState<string | null>(null);
   const [usage, setUsage] = useState<UsageView | null>(null);
+  /** 饼图专用的汇总：**只跟 range 走、不跟筛选走**，否则点了模型就只剩一个扇区。 */
+  const [breakdown, setBreakdown] = useState<UsageView | null>(null);
   const [records, setRecords] = useState<readonly UsageRowView[]>([]);
   const [cursor, setCursor] = useState<number | null>(null);
   const [keys, setKeys] = useState<readonly ApiKeySummaryView[]>([]);
@@ -58,6 +61,8 @@ export default function UserUsagePage() {
       setUsage(page);
       setRecords(page.records.items);
       setCursor(page.records.nextCursor);
+      // 没有筛选时，这一份就是全区间分布，饼图直接用它（省一次往返）。
+      if (model === null && apiKeyId === null) setBreakdown(page);
     } catch (caught) {
       if (isUnauthenticated(caught)) {
         redirectToLogin();
@@ -73,6 +78,55 @@ export default function UserUsagePage() {
   useEffect(() => {
     void loadFirstPage();
   }, [loadFirstPage]);
+
+  // 饼图要的是「整个区间」的分布，不能被「按模型筛选」自己收窄成一项
+  // （否则点一下模型，饼图就只剩一个 100% 的扇区，看着像筛选坏了）。
+  // 有筛选时才单独拉一次全区间分布；无筛选的情况由 `loadFirstPage` 顺手填好。
+  useEffect(() => {
+    if (model === null && apiKeyId === null) return;
+    let alive = true;
+    void (async () => {
+      try {
+        const page = await usageApi.fetchUsage(api, { range, limit: 1 });
+        if (alive) setBreakdown(page);
+      } catch {
+        // 饼图是辅助信息：取不到就保留上一次的分布，不打断列表。
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [range, model, apiKeyId]);
+
+  const modelGroups = useMemo(
+    () =>
+      (breakdown?.models ?? []).map((row) => ({
+        label: row.model,
+        costMicros: row.costMicros,
+        tokens: row.tokens,
+        requests: row.requests,
+        other: row.other === true,
+      })),
+    [breakdown],
+  );
+
+  const apiKeyGroups = useMemo(
+    () =>
+      (breakdown?.apiKeys ?? []).map((row) => ({
+        label: row.apiKeyName,
+        costMicros: row.costMicros,
+        tokens: row.tokens,
+        requests: row.requests,
+        other: row.other === true,
+      })),
+    [breakdown],
+  );
+
+  /** 当前选中的 API key 在饼图里的展示名（空 id = 没筛）。 */
+  const selectedKeyLabel = useMemo(() => {
+    if (apiKeyId === null) return null;
+    return (breakdown?.apiKeys ?? []).find((row) => row.apiKeyId === apiKeyId)?.apiKeyName ?? null;
+  }, [apiKeyId, breakdown]);
 
   useEffect(() => {
     void (async () => {
@@ -131,6 +185,33 @@ export default function UserUsagePage() {
         onApiKeyChange={setApiKeyId}
         onExport={() => void exportCsv()}
       />
+
+      {/* 两张饼图：按模型 / 按接口（API key）。点扇区或图例即联动上面的筛选。 */}
+      <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
+        <UsagePie
+          title="按模型"
+          description={`${RANGE_LABELS[range]} · 点一项按模型筛选`}
+          measure="cost"
+          groups={modelGroups}
+          total={usage?.totals}
+          selected={model}
+          onSelect={(label) => setModel(label)}
+          emptyText="本期还没有模型用量"
+        />
+        <UsagePie
+          title="按接口"
+          description={`${RANGE_LABELS[range]} · 按 API key 切分，点一项筛选`}
+          measure="cost"
+          groups={apiKeyGroups}
+          total={usage?.totals}
+          selected={selectedKeyLabel}
+          onSelect={(label) => {
+            const matched = (usage?.apiKeys ?? []).find((item) => item.apiKeyName === label);
+            setApiKeyId(matched === undefined || matched.apiKeyId === "" ? null : matched.apiKeyId);
+          }}
+          emptyText="本期还没有接口用量"
+        />
+      </div>
 
       <Card className="min-w-0 overflow-hidden">
         <CardHeader>

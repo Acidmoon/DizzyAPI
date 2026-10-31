@@ -19,6 +19,7 @@ import {
 } from "@/components/ui/select";
 
 import type { ApiKeySummaryView, UsageModelView } from "@/lib/api";
+import { isSelectable } from "@/lib/usage-pie";
 
 import { RANGE_LABELS, type UsageRange } from "../../_lib/labels";
 
@@ -70,7 +71,8 @@ export function UsageFilters({
         </SelectTrigger>
         <SelectContent>
           <SelectItem value={ALL}>全部模型</SelectItem>
-          {models.map((row) => (
+          {/* 「其他」是服务端归并出来的统计项，不是真实模型名：拿它当筛选值会查不到任何数据。 */}
+          {models.filter(isSelectable).map((row) => (
             <SelectItem key={row.model} value={row.model}>
               {row.model}
             </SelectItem>

@@ -6,7 +6,7 @@
 import { csvField } from '@dizzyapi/plugin-kit'
 import { costCentsOf } from '../views/common.ts'
 import { join } from 'node:path'
-import type { UsageDailyPointLike, UsageModelBreakdownLike, UsageRejectedRowLike, UsageRowLike, UsageTotalsLike, UsageUserBreakdownLike } from '../types.ts'
+import type { UsageApiKeyBreakdownLike, UsageDailyPointLike, UsageModelBreakdownLike, UsageRejectedRowLike, UsageRowLike, UsageTotalsLike, UsageUserBreakdownLike } from '../types.ts'
 
 
 /**
@@ -45,12 +45,31 @@ export function usageDailyOf(point: UsageDailyPointLike) {
 
 
 export function usageModelOf(item: UsageModelBreakdownLike) {
-  return { model: item.model, ...usageTotalsOf(item) }
+  return { model: item.model, ...usageTotalsOf(item), other: item.other === true }
 }
 
 
 export function usageUserOf(item: UsageUserBreakdownLike, name: string | null) {
-  return { userId: item.userId, name, ...usageTotalsOf(item) }
+  return { userId: item.userId, name, ...usageTotalsOf(item), other: item.other === true }
+}
+
+
+/**
+ * 按 API key 聚合的视图（饼图「按接口」维度）。
+ *
+ * `apiKeyName` 空时**不编名字**：给 `key#<id 前 6 位>` 作为可区分标签；
+ * id 也空（「其他」归并项）就留空，由前端显示「其他」。
+ */
+export function usageApiKeyOf(item: UsageApiKeyBreakdownLike) {
+  const name = item.apiKeyName.trim()
+  const id = item.apiKeyId.trim()
+  const label = item.other === true ? '' : name !== '' ? name : id !== '' ? `key#${id.slice(0, 6)}` : '未命名密钥'
+  return {
+    apiKeyId: id,
+    apiKeyName: label,
+    ...usageTotalsOf(item),
+    other: item.other === true,
+  }
 }
 
 

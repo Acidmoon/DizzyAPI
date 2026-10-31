@@ -11,7 +11,7 @@
  * - 分页是 **keyset**（`cursor` 是上一页最后一条的 id），不是 offset —— 用 offset 会漏行。
  * - 隔离区（`rejected`）里的记录**不结算、不扣钱**，页面必须明说，否则就是「静默免单」。
  */
-import { useCallback, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 
 import { Download, RefreshCw } from "lucide-react";
 import { toast } from "sonner";
@@ -23,6 +23,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { UsagePie } from "@/components/usage-pie";
 import { api, adminOps, ApiError } from "@/lib/api";
 import {
   formatDateTime,
@@ -70,6 +71,41 @@ export function UsageBoard() {
   );
   const { data, error, loading, reload } = useResource(load);
   const records = data?.records.items ?? [];
+
+  // 三张饼图的数据：服务端已按费用降序 + 尾部归并成「其他」，这里只做映射。
+  const modelGroups = useMemo(
+    () =>
+      (data?.models ?? []).map((row) => ({
+        label: row.model,
+        costMicros: row.costMicros,
+        tokens: row.tokens,
+        requests: row.requests,
+        other: row.other === true,
+      })),
+    [data],
+  );
+  const apiKeyGroups = useMemo(
+    () =>
+      (data?.apiKeys ?? []).map((row) => ({
+        label: row.apiKeyName,
+        costMicros: row.costMicros,
+        tokens: row.tokens,
+        requests: row.requests,
+        other: row.other === true,
+      })),
+    [data],
+  );
+  const userGroups = useMemo(
+    () =>
+      (data?.users ?? []).map((row) => ({
+        label: row.name ?? `用户 #${String(row.userId)}`,
+        costMicros: row.costMicros,
+        tokens: row.tokens,
+        requests: row.requests,
+        other: row.other === true,
+      })),
+    [data],
+  );
 
   async function exportCsv(): Promise<void> {
     setExporting(true);
@@ -225,6 +261,35 @@ export function UsageBoard() {
               {data.pricingAvailable ? "可用" : "不可用：费用显示为 0"}
             </CardContent>
           </Card>
+        </div>
+      )}
+
+      {data === null ? null : (
+        <div className="grid grid-cols-1 gap-4 xl:grid-cols-3">
+          <UsagePie
+            title="按模型"
+            description={`${data.from} ~ ${data.to}`}
+            measure="cost"
+            groups={modelGroups}
+            total={data.totals}
+            emptyText="这个窗口里还没有模型用量"
+          />
+          <UsagePie
+            title="按接口"
+            description="按 API key 切分"
+            measure="cost"
+            groups={apiKeyGroups}
+            total={data.totals}
+            emptyText="这个窗口里还没有接口用量"
+          />
+          <UsagePie
+            title="按用户"
+            description="按用户切分"
+            measure="cost"
+            groups={userGroups}
+            total={data.totals}
+            emptyText="这个窗口里还没有用户用量"
+          />
         </div>
       )}
 

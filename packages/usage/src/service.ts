@@ -32,14 +32,17 @@ import { openUsageDatabase } from './db.ts'
 import { UsageError } from './errors.ts'
 import { usageCsvExport, type UsageCsvExport } from './csv.ts'
 import { clampLimit, queryWhere } from './query.ts'
+import { compareByCostDesc, topWithOther, PIE_OTHER_LABEL } from './breakdown.ts'
+import { addAccumulator, emptyAccumulator, foldAggregates, quoteCostMicros, totalsOf } from './aggregate.ts'
 import type {
   BillingPort,
   PricingPort,
   SettleBatchOutcomeLike,
   SettleCandidateLike,
-  TokenCountsLike,
+  UsageApiKeyBreakdown,
   UsageEntry,
   UsageListPage,
+  UsageModelBreakdown,
   UsageQuery,
   UsageRejectedPage,
   UsageRejectedQuery,
@@ -51,7 +54,8 @@ import type {
   UsageStats,
   UsageStatus,
   UsageSummary,
-  UsageTokenTotals,
+  UsageSummaryOptions,
+  UsageUserBreakdown,
 } from './types.ts'
 
 const DAY_MS = 86_400_000
@@ -115,17 +119,6 @@ export interface UsagePollOutcome {
    * 否则被隔离的记录会被"静默扣钱"。
    */
   readonly persisted: readonly UsageEntry[]
-}
-
-interface TotalsAccumulator {
-  requests: bigint
-  inputTokens: bigint
-  outputTokens: bigint
-  cacheReadTokens: bigint
-  cacheWriteTokens: bigint
-  reasoningTokens: bigint
-  totalTokens: bigint
-  costMicros: bigint
 }
 
 const ROW_COLUMNS = `
@@ -563,26 +556,110 @@ export class UsageService extends Service implements UsageServiceLike {
     return withCost(rowOf(row), this.pricingSeam())
   }
 
-  summary(query: UsageQuery): UsageSummary {
+  /**
+   * 区间汇总 + 四个分组维度（饼图数据源）。
+   *
+   * **一条 SQL 出两个维度**：`totals` 与 `models` 是同一条 `GROUP BY model` 的两种折法
+   * （前者把全部行并成一个键，后者按模型名分键），所以只跑一次。
+   * 加上 `daily` / `apiKeys` / `users`，一共 4 条聚合查询。
+   *
+   * 三个分组都**按费用降序 + 尾部归并成「其他」**（`topWithOther`，12 项含「其他」）；
+   * 归并只在服务端做一次，前端两页吃同一份，口径不会漂。
+   *
+   * **探测流量已在 `queryWhere` 里排除**（`api_key_name` 的 `__probe__` 前缀），
+   * 所以列表、导出与这里的统计看到的是同一个口径。
+   */
+  summary(query: UsageQuery, options: UsageSummaryOptions = {}): UsageSummary {
     this.assertReady()
+    const db = this.requireDb()
     const pricing = this.pricingSeam()
-    const totalsAcc = this.foldAggregates(query, ['model'], pricing).get('') ?? emptyAccumulator()
 
-    const dailyAcc = this.foldAggregates(query, ['day', 'model'], pricing, (row) => String(row.day ?? ''))
+    // ① 一条 GROUP BY model：按模型名分键，再把各模型累加器相加得到 totals。
+    //    **必须传 keyOf**：不传的话所有行都折到键 `''` 上，`models` 会被过滤成空数组。
+    const modelFolds = foldAggregates(db, query, ['model'], pricing, (row) => String(row.model ?? ''))
+    const totalsAcc = emptyAccumulator()
+    for (const acc of modelFolds.values()) addAccumulator(totalsAcc, acc)
+    // 截断按**费用**取前 11（饼图的口径），但 `models` 的**返回顺序仍是按请求数降序** ——
+    // 那是既有契约（筛选下拉与老页面都吃这个顺序），不因为新增饼图而改。
+    const modelRows: UsageModelBreakdown[] = [...modelFolds.entries()]
+      .filter(([model]) => model !== '')
+      .map(([model, acc]) => ({ model, ...totalsOf(acc) }))
+      .sort((a, b) => compareByCostDesc(a, b) || a.model.localeCompare(b.model))
+    const modelsByCost = topWithOther(modelRows, (_tail, totals): UsageModelBreakdown => ({
+      model: PIE_OTHER_LABEL,
+      other: true,
+      ...totals,
+    }))
+    const models = [
+      ...modelsByCost.filter((item) => item.other !== true).sort((a, b) => b.requests - a.requests || a.model.localeCompare(b.model)),
+      ...modelsByCost.filter((item) => item.other === true),
+    ]
+
+    // ② 按天。
+    const dailyAcc = foldAggregates(db, query, ['day', 'model'], pricing, (row) => String(row.day ?? ''))
     const daily = [...dailyAcc.entries()]
       .sort(([a], [b]) => a.localeCompare(b))
       .map(([date, acc]) => ({ date, ...totalsOf(acc) }))
 
-    const modelAcc = this.foldAggregates(query, ['model'], pricing, (row) => String(row.model ?? ''))
-    const models = [...modelAcc.entries()]
-      .map(([model, acc]) => ({ model, ...totalsOf(acc) }))
-      .sort((a, b) => b.requests - a.requests || a.model.localeCompare(b.model))
+    // ③④ 只在调用方明确要时才跑：`gate-feed` 对每个受限 key 都会调 `summary()` 但**只要 totals**，
+    // 无条件多跑两条 GROUP BY 会把「按 key 限流」的快照计算拖慢一倍以上。
+    const apiKeys = options.apiKeys === true ? this.apiKeyBreakdown(db, query, pricing) : []
+    const users = options.users === true ? this.userBreakdown(db, query, pricing) : []
 
-    return { totals: totalsOf(totalsAcc), daily, models }
+    return { totals: totalsOf(totalsAcc), daily, models, apiKeys, users }
+  }
+
+  /** 「按接口」维度：按 `api_key_id + api_key_name` 聚合并归并成「其他」。 */
+  private apiKeyBreakdown(
+    db: DatabaseSync,
+    query: UsageQuery,
+    pricing: PricingPort | undefined,
+  ): readonly UsageApiKeyBreakdown[] {
+    const acc = foldAggregates(
+      db,
+      query,
+      ['api_key_id', 'api_key_name', 'model'],
+      pricing,
+      (row) => `${String(row.api_key_id ?? '')}\u0000${String(row.api_key_name ?? '')}`,
+    )
+    const rows: UsageApiKeyBreakdown[] = [...acc.entries()]
+      .map(([foldKey, totals]) => {
+        const separator = foldKey.indexOf('\u0000')
+        const apiKeyId = separator < 0 ? foldKey : foldKey.slice(0, separator)
+        const apiKeyName = separator < 0 ? '' : foldKey.slice(separator + 1)
+        return { apiKeyId, apiKeyName, ...totalsOf(totals) }
+      })
+      .sort((a, b) => compareByCostDesc(a, b) || a.apiKeyId.localeCompare(b.apiKeyId))
+    return topWithOther(rows, (_tail, totals): UsageApiKeyBreakdown => ({
+      apiKeyId: '',
+      apiKeyName: PIE_OTHER_LABEL,
+      other: true,
+      ...totals,
+    }))
+  }
+
+  /** 「按用户」维度：只有管理面用（用户页不展示别人的用量）。 */
+  private userBreakdown(
+    db: DatabaseSync,
+    query: UsageQuery,
+    pricing: PricingPort | undefined,
+  ): readonly UsageUserBreakdown[] {
+    const acc = foldAggregates(db, query, ['user_id', 'model'], pricing, (row) =>
+      String(row.user_id ?? '0'),
+    )
+    const rows: UsageUserBreakdown[] = [...acc.entries()]
+      .map(([userId, totals]) => ({ userId: Number(userId), ...totalsOf(totals) }))
+      .sort((a, b) => compareByCostDesc(a, b) || a.userId - b.userId)
+    return topWithOther(rows, (_tail, totals): UsageUserBreakdown => ({
+      userId: -1,
+      other: true,
+      ...totals,
+    }))
   }
 
   stats(nowMs: number = Date.now()): UsageStats {
     this.assertReady()
+    const db = this.requireDb()
     const pricing = this.pricingSeam()
     const now = new Date(nowMs)
     const todayStart = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate())
@@ -590,20 +667,20 @@ export class UsageService extends Service implements UsageServiceLike {
     const totalQuery: UsageQuery = { fromMs: 0, toMs: Number.MAX_SAFE_INTEGER }
     const seriesQuery: UsageQuery = { fromMs: todayStart - 29 * DAY_MS, toMs: todayStart + DAY_MS }
 
-    const todayAcc = this.foldAggregates(todayQuery, ['model'], pricing).get('') ?? emptyAccumulator()
-    const totalAcc = this.foldAggregates(totalQuery, ['model'], pricing).get('') ?? emptyAccumulator()
+    const todayAcc = foldAggregates(db, todayQuery, ['model'], pricing).get('') ?? emptyAccumulator()
+    const totalAcc = foldAggregates(db, totalQuery, ['model'], pricing).get('') ?? emptyAccumulator()
 
-    const seriesAcc = this.foldAggregates(seriesQuery, ['day', 'model'], pricing, (row) => String(row.day ?? ''))
+    const seriesAcc = foldAggregates(db, seriesQuery, ['day', 'model'], pricing, (row) => String(row.day ?? ''))
     const series = [...seriesAcc.entries()]
       .sort(([a], [b]) => a.localeCompare(b))
       .map(([date, acc]) => ({ date, ...totalsOf(acc) }))
 
-    const modelAcc = this.foldAggregates(totalQuery, ['model'], pricing, (row) => String(row.model ?? ''))
+    const modelAcc = foldAggregates(db, totalQuery, ['model'], pricing, (row) => String(row.model ?? ''))
     const models = [...modelAcc.entries()]
       .map(([model, acc]) => ({ model, ...totalsOf(acc) }))
       .sort((a, b) => b.requests - a.requests || a.model.localeCompare(b.model))
 
-    const userAcc = this.foldAggregates(totalQuery, ['user_id', 'model'], pricing, (row) =>
+    const userAcc = foldAggregates(db, totalQuery, ['user_id', 'model'], pricing, (row) =>
       String(row.user_id ?? '0'),
     )
     const topUsers = [...userAcc.entries()]
@@ -1054,66 +1131,6 @@ export class UsageService extends Service implements UsageServiceLike {
     return this.db
   }
 
-  // ───────────────────────────────── 内部：聚合与费用
-
-  /**
-   * 按指定维度（必须包含 model，费用要按模型单价算）聚合 token，再折成目标分组。
-   *
-   * `keyOf` 省略时结果只有 `''` 一个键（全量 totals）。分组费用是先把每个模型的
-   * 费用算出来再相加，不能拿混合了不同模型的 token 去套一个单价。
-   */
-  private foldAggregates(
-    query: UsageQuery,
-    dimensions: readonly string[],
-    pricing: PricingPort | undefined,
-    keyOf?: (row: Record<string, SQLOutputValue>) => string,
-  ): Map<string, TotalsAccumulator> {
-    const db = this.requireDb()
-    const where = queryWhere(query, false)
-    const statement = db.prepare(`
-      SELECT ${dimensions.join(', ')},
-             COUNT(*) AS requests,
-             COALESCE(SUM(input_tokens), 0) AS input_tokens,
-             COALESCE(SUM(output_tokens), 0) AS output_tokens,
-             COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens,
-             COALESCE(SUM(cache_write_tokens), 0) AS cache_write_tokens,
-             COALESCE(SUM(reasoning_tokens), 0) AS reasoning_tokens,
-             COALESCE(SUM(total_tokens), 0) AS total_tokens
-      FROM usage_records
-      WHERE ${where.sql}
-      GROUP BY ${dimensions.join(', ')}
-    `)
-    statement.setReadBigInts(true)
-    const rows = statement.all(...where.params) as Record<string, SQLOutputValue>[]
-
-    const groups = new Map<string, TotalsAccumulator>()
-    for (const row of rows) {
-      const model = String(row.model ?? '')
-      const inputTokens = toBigInt(row.input_tokens)
-      const outputTokens = toBigInt(row.output_tokens)
-      const cacheReadTokens = toBigInt(row.cache_read_tokens)
-      const cacheWriteTokens = toBigInt(row.cache_write_tokens)
-      const costMicros = quoteCostMicros(pricing, model, {
-        inputTokens: Number(inputTokens),
-        outputTokens: Number(outputTokens),
-        cacheReadTokens: Number(cacheReadTokens),
-        cacheWriteTokens: Number(cacheWriteTokens),
-      })
-      const key = keyOf === undefined ? '' : keyOf(row)
-      const acc = groups.get(key) ?? emptyAccumulator()
-      acc.requests += toBigInt(row.requests)
-      acc.inputTokens += inputTokens
-      acc.outputTokens += outputTokens
-      acc.cacheReadTokens += cacheReadTokens
-      acc.cacheWriteTokens += cacheWriteTokens
-      acc.reasoningTokens += toBigInt(row.reasoning_tokens)
-      acc.totalTokens += toBigInt(row.total_tokens)
-      acc.costMicros += costMicros
-      groups.set(key, acc)
-    }
-    return groups
-  }
-
   /** 运行期解析价格服务，不 inject（D5）。 */
   private pricingSeam(): PricingPort | undefined {
     const impl = this.ctx.root.reflect._getImpl('pricing', false)
@@ -1279,54 +1296,6 @@ function withCost(row: UsageRow, pricing: PricingPort | undefined): UsageRow {
   }
 }
 
-function quoteCostMicros(
-  pricing: PricingPort | undefined,
-  model: string,
-  tokens: TokenCountsLike,
-): bigint {
-  if (pricing === undefined) return 0n
-  try {
-    return BigInt(pricing.quote(model, tokens))
-  } catch {
-    // 价格表里没有这个模型 / 价格条目损坏时按 0 显示；不能让一条记录毁掉整页。
-    return 0n
-  }
-}
-
-function emptyAccumulator(): TotalsAccumulator {
-  return {
-    requests: 0n,
-    inputTokens: 0n,
-    outputTokens: 0n,
-    cacheReadTokens: 0n,
-    cacheWriteTokens: 0n,
-    reasoningTokens: 0n,
-    totalTokens: 0n,
-    costMicros: 0n,
-  }
-}
-
-function totalsOf(acc: TotalsAccumulator): UsageTokenTotals {
-  return {
-    // 正常 token 远小于 2^53；夹到安全整数边界只是防御坏数据。
-    requests: safeNumber(acc.requests),
-    inputTokens: safeNumber(acc.inputTokens),
-    outputTokens: safeNumber(acc.outputTokens),
-    cacheReadTokens: safeNumber(acc.cacheReadTokens),
-    cacheWriteTokens: safeNumber(acc.cacheWriteTokens),
-    reasoningTokens: safeNumber(acc.reasoningTokens),
-    totalTokens: safeNumber(acc.totalTokens),
-    costMicros: acc.costMicros.toString(),
-  }
-}
-
-function safeNumber(value: bigint): number {
-  const max = BigInt(Number.MAX_SAFE_INTEGER)
-  if (value > max) return Number.MAX_SAFE_INTEGER
-  if (value < -max) return Number.MIN_SAFE_INTEGER
-  return Number(value)
-}
-
 function integerOf(value: unknown): number {
   if (typeof value === 'bigint') {
     return value > BigInt(Number.MAX_SAFE_INTEGER) ? Number.MAX_SAFE_INTEGER : Number(value)
@@ -1334,13 +1303,6 @@ function integerOf(value: unknown): number {
   const parsed = typeof value === 'number' ? value : Number(value)
   if (!Number.isFinite(parsed)) return 0
   return Math.max(0, Math.trunc(parsed))
-}
-
-function toBigInt(value: unknown): bigint {
-  if (typeof value === 'bigint') return value
-  if (typeof value === 'number' && Number.isFinite(value)) return BigInt(Math.trunc(value))
-  if (typeof value === 'string' && /^-?\d+$/.test(value)) return BigInt(value)
-  return 0n
 }
 
 function optionalText(value: unknown): string | null {

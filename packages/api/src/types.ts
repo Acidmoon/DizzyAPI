@@ -250,146 +250,17 @@ export interface AccountTestResultLike {
   readonly testedAt: string
 }
 
-// ───────────────────────────── 用量与价格 ─────────────────────────────
+// ───────────────────────────── 用量 ─────────────────────────────
 
-export interface UsageRowLike {
-  readonly id: number
-  readonly reqId: string
-  readonly userId: number
-  readonly apiKeyId: string
-  readonly apiKeyName: string
-  readonly profile: string
-  readonly accountId: string
-  readonly model: string
-  readonly upstreamModel: string | null
-  readonly protocol: string
-  readonly upstreamProtocol: string | null
-  readonly stream: boolean
-  readonly status: number
-  readonly errorCode: string | null
-  readonly inputTokens: number
-  readonly outputTokens: number
-  readonly cacheReadTokens: number
-  readonly cacheWriteTokens: number
-  readonly reasoningTokens: number
-  readonly totalTokens: number
-  readonly usagePresent: boolean
-  readonly usageComplete: boolean
-  readonly durationMs: number
-  /** 首字延迟（毫秒）；null = 没采集到（非流式请求 / 历史记录）。 */
-  readonly ttftMs: number | null
-  readonly clientIp: string | null
-  readonly attempts: number
-  readonly startedAt: string
-  readonly costMicros: string
-}
+/**
+ * 用量的 DTO 与端口已拆到 `./types-usage.ts`：本文件超限，只许缩短（AGENTS.md §5.6）。
+ * 这里再导出一次，既有 `from './types.ts'` 的 import 全部不用改；
+ * `export *` 不会把名字带进**本文件**作用域，下面 `HostServices.usage()` 还要单独 import。
+ */
+export * from './types-usage.ts'
+import type { UsagePort } from './types-usage.ts'
 
-export interface UsageQueryLike {
-  readonly fromMs: number
-  readonly toMs: number
-  readonly userId?: number
-  readonly apiKeyId?: string
-  readonly model?: string
-  readonly status?: number
-  readonly cursor?: number
-  readonly limit?: number
-}
-
-export interface UsageTotalsLike {
-  readonly requests: number
-  readonly inputTokens: number
-  readonly outputTokens: number
-  readonly cacheReadTokens: number
-  readonly cacheWriteTokens: number
-  readonly reasoningTokens: number
-  readonly totalTokens: number
-  readonly costMicros: string
-}
-
-export interface UsageDailyPointLike extends UsageTotalsLike {
-  readonly date: string
-}
-
-export interface UsageModelBreakdownLike extends UsageTotalsLike {
-  readonly model: string
-}
-
-export interface UsageUserBreakdownLike extends UsageTotalsLike {
-  readonly userId: number
-}
-
-export interface UsageSummaryLike {
-  readonly totals: UsageTotalsLike
-  readonly daily: readonly UsageDailyPointLike[]
-  readonly models: readonly UsageModelBreakdownLike[]
-}
-
-export interface UsageListPageLike {
-  readonly items: readonly UsageRowLike[]
-  readonly nextCursor: number | null
-}
-
-export interface UsageStatsLike {
-  readonly today: UsageTotalsLike
-  readonly total: UsageTotalsLike
-  readonly series: readonly UsageDailyPointLike[]
-  readonly models: readonly UsageModelBreakdownLike[]
-  readonly topUsers: readonly UsageUserBreakdownLike[]
-}
-
-export interface UsageStatusLike {
-  readonly records: number
-  readonly epoch: string | null
-  readonly lastSeq: number
-  readonly polling: boolean
-  readonly pricingAvailable: boolean
-}
-
-/** 一条被隔离的坏记录（`usage_rejected`）；这些记录没有进明细、也不会结算。 */
-export interface UsageRejectedRowLike {
-  readonly reqId: string
-  readonly epoch: string
-  readonly seq: number
-  readonly payload: string
-  readonly error: string
-  readonly failures: number
-  readonly status: string
-  readonly firstFailedAt: string
-  readonly updatedAt: string
-}
-
-export interface UsageRejectedQueryLike {
-  readonly status?: string
-  readonly limit?: number
-  readonly offset?: number
-}
-
-export interface UsageRejectedPageLike {
-  readonly items: readonly UsageRejectedRowLike[]
-  readonly total: number
-  readonly pending: number
-}
-
-export interface UsageReplayResultLike {
-  readonly status: string
-  readonly inserted: boolean
-}
-
-export interface UsagePort {
-  list(query: UsageQueryLike): UsageListPageLike
-  /** 按 reqId 取单条明细；查不到返回 null。权限在 HTTP 层判。 */
-  get(reqId: string): UsageRowLike | null
-  summary(query: UsageQueryLike): UsageSummaryLike
-  stats(nowMs?: number): UsageStatsLike
-  exportRows(query: UsageQueryLike, limit?: number): readonly UsageRowLike[]
-  /** 导出 CSV：格式由 `usage` 插件唯一实现，api 与 web 都调它，不各拼一份。 */
-  exportCsv(query: UsageQueryLike, limit?: number): { readonly filename: string; readonly content: string }
-  status(): UsageStatusLike
-  listRejected(query?: UsageRejectedQueryLike): UsageRejectedPageLike
-  ignoreRejected(reqId: string): void
-  replayRejected(reqId: string): Promise<UsageReplayResultLike>
-}
-
+// ───────────────────────────── 价格 ─────────────────────────────
 export interface ModelPriceLike {
   readonly model: string
   readonly inputPerMillion: string

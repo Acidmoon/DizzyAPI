@@ -90,6 +90,13 @@ export interface UsageQuery {
   /** keyset 分页：只返回 id < cursor 的记录。 */
   readonly cursor?: number
   readonly limit?: number
+  /**
+   * 是否把**探测流量**（`api_key_name` 以 `__probe__` 开头）算进来。
+   *
+   * 默认 `false`：探测是 `model-probe` 主动发的，不是用户消费。只有需要
+   * 单独统计探测本身的场景才传 `true`。
+   */
+  readonly includeProbe?: boolean
 }
 
 export interface UsageTokenTotals {
@@ -113,16 +120,56 @@ export interface UsageDailyPoint extends UsageTokenTotals {
 
 export interface UsageModelBreakdown extends UsageTokenTotals {
   readonly model: string
+  /** 这一项是「其他」归并出来的（尾部合并），前端据此不显示具体名字。 */
+  readonly other?: boolean
 }
 
 export interface UsageUserBreakdown extends UsageTokenTotals {
   readonly userId: number
+  readonly other?: boolean
 }
 
+/**
+ * 按 API key 聚合（饼图「按接口」维度）。
+ *
+ * `apiKeyName` 是**展示名**：用户在页面上给 key 起的名字，可能是空串（老数据）；
+ * **绝不是完整 key**，也不是掩码 —— 完整 key 只在 `api_keys.secret` 里。
+ */
+export interface UsageApiKeyBreakdown extends UsageTokenTotals {
+  readonly apiKeyId: string
+  readonly apiKeyName: string
+  readonly other?: boolean
+}
+
+/**
+ * 一份用量汇总。
+ *
+ * `apiKeys` 与 `users` 是**按需维度**（`summary(query, { apiKeys: true, users: true })`）：
+ * - `apiKeys`：用户页与管理页都要（「按接口」饼图）；
+ * - `users`：**只有管理面用**（「按用户」饼图），用户页不需要也不该看别人的。
+ * 两者都已按金额降序、并已把尾部归并成「其他」（`other: true`）。
+ *
+ * 不开启时是空数组 —— 不是「没有数据」，是「这次没查」。
+ */
 export interface UsageSummary {
   readonly totals: UsageTotals
   readonly daily: readonly UsageDailyPoint[]
   readonly models: readonly UsageModelBreakdown[]
+  readonly apiKeys: readonly UsageApiKeyBreakdown[]
+  readonly users: readonly UsageUserBreakdown[]
+}
+
+/**
+ * `summary()` 的可选维度。
+ *
+ * 为什么按需而不是默认全出：`gate-feed` 对每个受限 key 都调一次 `summary()` 却只要
+ * `totals`；无条件多跑两条 GROUP BY 会让「按 key 限流」的快照计算明显变慢。
+ */
+export interface UsageSummaryOptions {
+  /** 要「按接口」维度（饼图）。 */
+  readonly apiKeys?: boolean
+  /** 要「按用户」维度（只有管理面用）。 */
+  readonly users?: boolean
 }
 
 export interface UsageListPage {
@@ -245,7 +292,7 @@ export interface UsageServiceLike {
   list(query: UsageQuery): UsageListPage
   /** 按 reqId 取单条明细；查不到返回 null（权限由 HTTP 层判）。 */
   get(reqId: string): UsageRow | null
-  summary(query: UsageQuery): UsageSummary
+  summary(query: UsageQuery, options?: UsageSummaryOptions): UsageSummary
   stats(nowMs?: number): UsageStats
   exportRows(query: UsageQuery, limit?: number): readonly UsageRow[]
   status(): UsageStatus

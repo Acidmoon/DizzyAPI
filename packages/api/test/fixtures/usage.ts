@@ -54,7 +54,8 @@ export class FakeUsage implements UsagePort {
   }
 
   summary(query: UsageQueryLike): UsageSummaryLike {
-    return { totals: totalsOf(this.filter(query)), daily: [], models: [] }
+    // `apiKeys` / `users` 两个维度在真实实现里是**按需**才跑，假端口一律给空数组。
+    return { totals: totalsOf(this.filter(query)), daily: [], models: [], apiKeys: [], users: [] }
   }
 
   stats(): UsageStatsLike {

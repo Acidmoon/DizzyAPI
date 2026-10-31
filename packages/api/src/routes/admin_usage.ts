@@ -11,9 +11,11 @@ import {
   adminUsageCsv,
   adminUsageRowOf,
   rejectedRowOf,
+  usageApiKeyOf,
   usageDailyOf,
   usageModelOf,
   usageTotalsOf,
+  usageUserOf,
 } from '../views/usage.ts'
 import { auditActorOf } from '../audit.ts'
 import { ADMIN_USAGE_EXPORT_LIMIT, USAGE_RANGE_DAYS, UsageRange } from '../constants.ts'
@@ -65,9 +67,18 @@ url: URL,
   }
 
   const page = usage.list(spec.query)
-  const summary = usage.summary(spec.query)
+  const summary = usage.summary(spec.query, { apiKeys: true, users: true })
   const items = await Promise.all(
     page.items.map(async (row) => adminUsageRowOf(row, await nameOf(row.userId))),
+  )
+  // 「按用户」饼图：userId → 名字走 user 服务（`user.get`，同一次请求内缓存），
+  // **不直连 user 的库**（一个数据一个写者）。拿不到名字就显示「用户 #<id>」。
+  const users = await Promise.all(
+    summary.users.map(async (item) =>
+      item.other === true
+        ? { ...usageUserOf(item, null), name: null }
+        : usageUserOf(item, await nameOf(item.userId)),
+    ),
   )
   // 隔离区：主接口给「第一页 + 计数」，完整分页在 `/api/admin/usage/rejected`。
   // 这些记录没有进明细、不会被结算；管理面必须能看见，否则就是静默免单。
@@ -79,6 +90,8 @@ url: URL,
     totals: usageTotalsOf(summary.totals),
     daily: summary.daily.map(usageDailyOf),
     models: summary.models.map(usageModelOf),
+    apiKeys: summary.apiKeys.map(usageApiKeyOf),
+    users,
     records: { items, nextCursor: page.nextCursor },
     rejected: {
       items: rejected.items.map(rejectedRowOf),
