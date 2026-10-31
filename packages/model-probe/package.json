@@ -1,0 +1,22 @@
+{
+  "name": "@dizzyapi/plugin-model-probe",
+  "version": "0.1.0",
+  "private": true,
+  "description": "DizzyAPI · 模型可用性探测：定时走真网关发最小请求，按模型记录探测历史；自己不判「不可用」，只提供事实",
+  "type": "module",
+  "license": "MIT",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./package.json": "./package.json"
+  },
+  "scripts": {
+    "test": "node --import tsx --test \"test/*.test.ts\""
+  },
+  "dependencies": {
+    "@cordisjs/plugin-timer": "^1.1.4",
+    "@dizzyapi/plugin-kit": "workspace:*",
+    "cordis": "^4.0.0-rc.11"
+  }
+}

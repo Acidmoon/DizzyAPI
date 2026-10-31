@@ -258,6 +258,53 @@
     # 没有精确价格的模型也列出来（用户想知道自己能调什么）。
     includeUnpriced: true
 
+# 模型可用性探测：定时**走真网关**（/v1/chat/completions + 真探测 key）对每个模型发一条
+# 最小请求，按模型把结果落 SQLite（明细 + 日汇总），模型广场页的小柱状图与
+# 「这个模型现在能不能用」都读它。
+#
+# 为什么不复用 account-health：那是**账号**维度（连不连得通），而且它自己一个字节都不存；
+# 探测是**模型**维度、要历史、要保留期。为什么不用 usage 被动统计：
+# 那样测不出「没人用但其实挂了」的模型。
+#
+# 数据归属：`data/model-probe.db` **只有本插件写**；「模型不可用」的判定仍归 `modelhub`
+# （它只读本插件的视图，自己不写）。一个数据一个写者。
+#
+# 秘密边界：探测 key 是 `appManaged` 的 API key，**明文只在创建那一刻出现**
+# → 立刻写进 `credentials`（引用名见 probeKeyRef）→ 本插件之后只持引用名。
+# 明文永不进 model-probe.db、日志与探测记录。
+#
+# **假红防线**：探测走真链路就会受额度闸门约束。探测用户余额耗尽时所有模型都会 402，
+# 但那不是模型挂了。本插件把 402 / 401 / 定价闸门拒绝一律记成 `probe-error`
+# （与 `failed` 分开），并把「探测已停摆」挂到 status() 上，页面必须显示它。
+- id: model-probe
+  name: '@dizzyapi/plugin-model-probe'
+  config:
+    dataPath: ./data/model-probe.db
+    enabled: true
+    # 5 分钟一轮：几十个模型 × 一条 max_tokens=1 的请求，成本在几分钱量级。
+    intervalMs: 300000
+    timeoutMs: 15000
+    # 成功但超过 6 秒算「慢」（degraded），不是失败。
+    degradedThresholdMs: 6000
+    maxConcurrent: 2
+    # 连续 3 条 failed 才判「不可用」：单条抖动不该把模型打成红的。
+    failureThreshold: 3
+    historyPoints: 60
+    retentionDays: 7
+    # 空数组 = 探测目录里全部有账号声明的模型。想省钱就填白名单。
+    probeModels: []
+    # 本地 gatewayd 的 HTTP 入口；生产是 127.0.0.1:18080（与 account-priority 一致）。
+    gatewayBaseUrl: http://127.0.0.1:8080
+    # 探测 key 的明文存放处（只在 credentials 里）。
+    probeKeyRef: dizzyapi/model-probe/key
+    # **探测花谁的钱**：必须是已存在、启用、有余额的用户。#1 是本机管理员。
+    # 换机器 / 换账号时这一行必须跟着改，否则探测会因 402 全部停摆（会显示成 probe-error，
+    # 不会伪装成「模型挂了」）。
+    probeUserId: 1
+    adminPlugins:
+      - '@dizzyapi/plugin-api'
+      - '@dizzyapi/plugin-dashboard'
+
 # 用量明细：接收 Go 经控制桥送来的请求用量（轮询 `usage.since`），落 SQLite。
 # 只存 token 事实，不存费用；费用由读取方按 pricing 的当前价格表计算。
 # 一轮的顺序是「拉取 → 落库 → 结算（billing）→ 推进游标」；结算失败不推进游标。

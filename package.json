@@ -51,6 +51,7 @@
     "@dizzyapi/plugin-identity": "workspace:*",
     "@dizzyapi/plugin-kit": "workspace:*",
     "@dizzyapi/plugin-mailer": "workspace:*",
+    "@dizzyapi/plugin-model-probe": "workspace:*",
     "@dizzyapi/plugin-modelhub": "workspace:*",
     "@dizzyapi/plugin-observability": "workspace:*",
     "@dizzyapi/plugin-page-template": "workspace:*",
