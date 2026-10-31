@@ -26,6 +26,14 @@
  * 所以本文件的口径是：`style-src 'self'`（`<style>` 元素仍受约束）+
  * `style-src-attr 'unsafe-inline'`（只放开 style 属性）。这比
  * `style-src 'unsafe-inline'` 严格得多：后者会连 `<style>` 元素一起放开。
+ * 另外还有一段**上游组件库自己注入**的 `<style>`：sonner（轻提示）在运行时把一整段 CSS
+ * 塞进 `<head>`。它没有「不注入」的开关（`sonner/dist/styles.css` 与它运行时那段内容并不相同），
+ * 所以按 CSP 允许的另一种做法：**给那一段算 sha256，写进 `style-src`**，不开 `unsafe-inline`。
+ *
+ * 实测（Edge 156，light / dark 各取一次）：textContent 逐字节相同、长度 14916、
+ * sha256 的 base64 就是 `sha256-StEaX+se6YS7pqjzrzMIA0KaX9zF/8zAhvQXZAe5epY=`。
+ * **升级 sonner 之后必须重新量**（量法见 README 的「CSP」一节），否则轻提示会掉样式。
+ *
  * 证据与实测见 `packages/dashboard/README.md`。
  */
 import { randomBytes } from 'node:crypto'
@@ -57,7 +65,8 @@ export function contentSecurityPolicy(nonce: string): string {
   return [
     "default-src 'self'",
     `script-src 'self' 'nonce-${nonce}'`,
-    "style-src 'self'",
+    // `'self'` 管外部样式表；`sha256-…` 只放行 sonner 注入的那一段内联 <style>。
+    "style-src 'self' 'sha256-StEaX+se6YS7pqjzrzMIA0KaX9zF/8zAhvQXZAe5epY='",
     "style-src-attr 'unsafe-inline'",
     "img-src 'self' data: blob:",
     "font-src 'self'",
