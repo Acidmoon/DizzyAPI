@@ -19,14 +19,18 @@ import { toast } from "sonner";
 import { formatTokens } from "@/lib/format";
 
 import {
-  RANGE_LABELS,
-  downloadUsageCsv,
-  fetchKeys,
-  fetchUsage,
-  messageOfError,
-  redirectToLogin,
-} from "../_lib/api";
-import type { ApiKeySummary, UsageRange, UsageRecord, UsageResponse } from "../_lib/types";
+  api,
+  errorMessage,
+  keys as keysApi,
+  usage as usageApi,
+  type ApiKeySummaryView,
+  type UsageRowView,
+  type UsageView,
+} from "@/lib/api";
+
+import { RANGE_LABELS, type UsageRange } from "../_lib/labels";
+import { isUnauthenticated, redirectToLogin } from "../_lib/session";
+import { downloadUsageCsv } from "../_lib/usage-download";
 import { EmptyBlock, ErrorBlock, LoadingBlock } from "../_components/page-states";
 import { UsageTable } from "../_components/usage-table";
 import { UsageFilters } from "./_components/usage-filters";
@@ -35,10 +39,10 @@ export default function UserUsagePage() {
   const [range, setRange] = useState<UsageRange>("7d");
   const [model, setModel] = useState<string | null>(null);
   const [apiKeyId, setApiKeyId] = useState<string | null>(null);
-  const [usage, setUsage] = useState<UsageResponse | null>(null);
-  const [records, setRecords] = useState<readonly UsageRecord[]>([]);
+  const [usage, setUsage] = useState<UsageView | null>(null);
+  const [records, setRecords] = useState<readonly UsageRowView[]>([]);
   const [cursor, setCursor] = useState<number | null>(null);
-  const [keys, setKeys] = useState<readonly ApiKeySummary[]>([]);
+  const [keys, setKeys] = useState<readonly ApiKeySummaryView[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const [exporting, setExporting] = useState(false);
@@ -50,16 +54,16 @@ export default function UserUsagePage() {
     setLoading(true);
     setError(null);
     try {
-      const page = await fetchUsage(query);
+      const page = await usageApi.fetchUsage(api, query);
       setUsage(page);
       setRecords(page.records.items);
       setCursor(page.records.nextCursor);
     } catch (caught) {
-      if ((caught as { unauthenticated?: boolean }).unauthenticated === true) {
+      if (isUnauthenticated(caught)) {
         redirectToLogin();
         return;
       }
-      setError(messageOfError(caught));
+      setError(errorMessage(caught));
     } finally {
       setLoading(false);
     }
@@ -73,7 +77,7 @@ export default function UserUsagePage() {
   useEffect(() => {
     void (async () => {
       try {
-        setKeys(await fetchKeys());
+        setKeys((await keysApi.listKeys(api)).items);
       } catch {
         // 密钥列表只用于筛选下拉，取不到就退化成「全部密钥」，不打断页面。
         setKeys([]);
@@ -85,11 +89,11 @@ export default function UserUsagePage() {
     if (cursor === null || loadingMore) return;
     setLoadingMore(true);
     try {
-      const page = await fetchUsage({ ...query, cursor });
+      const page = await usageApi.fetchUsage(api, { ...query, cursor });
       setRecords((current) => [...current, ...page.records.items]);
       setCursor(page.records.nextCursor);
     } catch (caught) {
-      toast.error(messageOfError(caught));
+      toast.error(errorMessage(caught));
     } finally {
       setLoadingMore(false);
     }
@@ -101,7 +105,7 @@ export default function UserUsagePage() {
       await downloadUsageCsv(query);
       toast.success("已开始下载 CSV");
     } catch (caught) {
-      toast.error(messageOfError(caught));
+      toast.error(errorMessage(caught));
     } finally {
       setExporting(false);
     }

@@ -10,12 +10,12 @@
 
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { formatPercent, formatTokens, formatYuan } from "@/lib/format";
+import type { UsageModelView } from "@/lib/api";
 
-import type { UsageModelRow } from "../_lib/types";
 import { EmptyBlock } from "./page-states";
 
 export interface UsageBreakdownProps {
-  readonly models: readonly UsageModelRow[];
+  readonly models: readonly UsageModelView[];
   readonly rangeLabel: string;
 }
 

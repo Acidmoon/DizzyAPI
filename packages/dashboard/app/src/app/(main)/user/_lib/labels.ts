@@ -5,7 +5,7 @@
  * - 这些是**契约翻译**（服务端的英文状态码 → 中文标签），要能被 node 测试逐字断言；
  * - `.tsx` 里写纯函数会拖 React 进类型检查，根仓库的 `tsc` 没有 DOM lib。
  *
- * 金额口径：**一律走 `@/lib/api` 的 `formatMicrosYuan` / `formatCentsYuan`**（整数微元，
+ * 金额口径：**一律走 `@/lib/format` 的 `formatYuan` / `formatCentsAsYuan`**（整数微元，
  * 字符串上做除法，不经浮点）。本文件**不自己算钱**，只决定「哪个字段用哪个函数」。
  */
 
@@ -68,6 +68,21 @@ export const REDEEM_ERROR_LABELS: Readonly<Record<string, string>> = {
 /** 兑换码错误码 → 人话（服务端不把码本身放进消息里，前端也不回显用户输入）。 */
 export function redeemErrorMessage(code: string, fallback: string): string {
   return REDEEM_ERROR_LABELS[code] ?? fallback
+}
+
+/** 用量时间维度：`/api/usage` 的 `range` 只有这三档（更细的「今天 / 昨天」不在 API 里）。 */
+export type UsageRange = '7d' | '30d' | '90d'
+
+/** 时间维度 → 人话（下拉与图卡标题共用，别在两处各写一份）。 */
+export const RANGE_LABELS: Readonly<Record<UsageRange, string>> = {
+  '7d': '近 7 天',
+  '30d': '近 30 天',
+  '90d': '近 90 天',
+}
+
+/** `usage.range` 在服务端是 `string`：认识就翻译，不认识就显示原文（不猜）。 */
+export function rangeLabel(range: string): string {
+  return RANGE_LABELS[range as UsageRange] ?? range
 }
 
 /** 未知状态码 → 显示原文（不猜、不吞）。 */

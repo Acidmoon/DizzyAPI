@@ -27,8 +27,9 @@ import {
 } from "@/components/ui/table";
 import { formatDateTime } from "@/lib/format";
 
-import { fetchPricing, messageOfError, redirectToLogin } from "../_lib/api";
-import type { ModelPrice } from "../_lib/types";
+import { api, errorMessage, pricing as pricingApi, type ModelPriceView } from "@/lib/api";
+
+import { isUnauthenticated, redirectToLogin } from "../_lib/session";
 import { EmptyBlock, ErrorBlock, LoadingBlock } from "../_components/page-states";
 
 /** 价格字段可能是字符串（正常）或数字（旧数据）；展示一律按原文，不做数值换算。 */
@@ -37,7 +38,7 @@ function priceText(value: string | number): string {
 }
 
 export default function UserPricingPage() {
-  const [items, setItems] = useState<readonly ModelPrice[]>([]);
+  const [items, setItems] = useState<readonly ModelPriceView[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [keyword, setKeyword] = useState("");
@@ -46,13 +47,13 @@ export default function UserPricingPage() {
     setLoading(true);
     setError(null);
     try {
-      setItems(await fetchPricing());
+      setItems((await pricingApi.fetchPricing(api)).items);
     } catch (caught) {
-      if ((caught as { unauthenticated?: boolean }).unauthenticated === true) {
+      if (isUnauthenticated(caught)) {
         redirectToLogin();
         return;
       }
-      setError(messageOfError(caught));
+      setError(errorMessage(caught));
     } finally {
       setLoading(false);
     }

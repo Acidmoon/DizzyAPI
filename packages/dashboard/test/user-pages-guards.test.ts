@@ -13,7 +13,7 @@
  * 这种说明性注释会把护栏自己绊倒——护栏要约束的是代码，不是文案。
  */
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { describe, it } from 'node:test'
 import { fileURLToPath } from 'node:url'
@@ -36,12 +36,32 @@ const COMPONENT_FILES = [
   'keys/_components/key-secret-dialog.tsx',
 ] as const
 
-const LIB_FILES = ['_lib/api.ts', '_lib/paths.ts', '_lib/seven-points.ts', '_lib/types.ts'] as const
+const LIB_FILES = [
+  '_lib/labels.ts',
+  '_lib/markdown.ts',
+  '_lib/session.ts',
+  '_lib/seven-points.ts',
+  '_lib/usage-download.ts',
+] as const
 
 const ALL_FILES = [...PAGE_FILES, ...COMPONENT_FILES, ...LIB_FILES]
 
 function read(relative: string): string {
   return readFileSync(join(userRoot, relative), 'utf8')
+}
+
+/** 用户侧整棵树里的 `.ts` / `.tsx`（相对 `user/`），用来做「传输层只有一份」的全量扫描。 */
+function userSourceFiles(): string[] {
+  const collected: string[] = []
+  const walk = (dir: string, prefix: string): void => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const relative = prefix === '' ? entry.name : `${prefix}/${entry.name}`
+      if (entry.isDirectory()) walk(join(dir, entry.name), relative)
+      else if (/\.(ts|tsx)$/.test(entry.name)) collected.push(relative)
+    }
+  }
+  walk(userRoot, '')
+  return collected.sort()
 }
 
 /** 去掉块注释与行注释（保留 `http://` 这类冒号后的双斜杠）。 */
@@ -60,13 +80,48 @@ describe('越权：用户侧不碰管理面接口', () => {
     })
   }
 
-  it('数据层只用 session / usage / keys / pricing 四个域', () => {
-    const api = readCode('_lib/api.ts')
-    const domains = new Set([...api.matchAll(/['"`]\/api\/([a-z-]+)/g)].map((match) => match[1]))
-    assert.ok(domains.size > 0, '没匹配到任何接口域，护栏本身失效了')
-    for (const domain of domains) {
-      assert.ok(['session', 'usage', 'keys', 'pricing'].includes(domain ?? ''), `意外的接口域：${domain}`)
+  it('用户侧源码里没有第二套接口路径（传输层只在 @/lib/api）', () => {
+    for (const file of userSourceFiles()) {
+      // 只看「以 /api/ 开头的字符串字面量」：文档页正文里写 `docs/api/*.md` 是内容，不是路径拼接。
+      const literals = [...readCode(file).matchAll(/['"`]\/api\/[^'"`]*/g)].map((match) => match[0])
+      assert.equal(literals.length, 0, `${file} 自己拼了接口路径：${literals[0] ?? ''}`)
     }
+  })
+})
+
+describe('传输层只有一份（2026-10-31 收敛）', () => {
+  it('页面私有的传输层文件已删除，不许回潮', () => {
+    for (const gone of ['_lib/api.ts', '_lib/paths.ts', '_lib/types.ts']) {
+      assert.ok(!existsSync(join(userRoot, gone)), `${gone} 又出现了：传输层只能有 @/lib/api 一份`)
+    }
+  })
+
+  it('请求头与 cookie 只在 @/lib/api 里出现', () => {
+    for (const file of userSourceFiles()) {
+      const code = readCode(file)
+      for (const forbidden of ['X-Requested-With', 'credentials:']) {
+        assert.ok(!code.includes(forbidden), `${file} 里出现了 ${forbidden}：传输层只许走 @/lib/api`)
+      }
+    }
+  })
+
+  it('唯一允许自己 fetch 的是文档页，且只取静态 Markdown', () => {
+    for (const file of userSourceFiles()) {
+      const code = readCode(file)
+      if (!code.includes('fetch(')) continue
+      assert.equal(file, 'docs/page.tsx', `${file} 自己发了请求：数据一律走 @/lib/api`)
+      assert.ok(code.includes('`/docs/${doc.slug}.md`'), '文档页只许取构建期同步的静态副本')
+    }
+  })
+
+  it('四个数据页都从 @/lib/api 取数', () => {
+    for (const file of PAGE_FILES) {
+      assert.ok(readCode(file).includes('@/lib/api'), `${file} 没走共享客户端层`)
+    }
+  })
+
+  it('未登录落点是静态导出的登录页（带尾斜杠，与 trailingSlash 一致）', () => {
+    assert.match(readCode('_lib/session.ts'), /["']\/auth\/v2\/login\/["']/)
   })
 })
 
@@ -80,14 +135,22 @@ describe('价格表只读（owner 明确要求）', () => {
   })
 
   it('不引入任何写接口', () => {
-    for (const forbidden of ['createKey', 'updateKey', 'removeKey', 'rotateKey', 'apiRequest', 'toast']) {
+    for (const forbidden of [
+      'createKey',
+      'updateKey',
+      'deleteKey',
+      'rotateKey',
+      'setModelPrice',
+      'deleteModelPrice',
+      'toast',
+    ]) {
       assert.ok(!pricing.includes(forbidden), `价格表引用了写接口：${forbidden}`)
     }
   })
 
-  it('明确标出「只读」，且只 import 了读接口', () => {
+  it('明确标出「只读」，且只调共享客户端层的读函数', () => {
     assert.ok(pricing.includes('只读'))
-    assert.ok(pricing.includes('fetchPricing'))
+    assert.ok(pricing.includes('pricingApi.fetchPricing(api)'))
   })
 })
 

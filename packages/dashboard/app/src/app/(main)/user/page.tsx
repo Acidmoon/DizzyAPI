@@ -21,8 +21,10 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 
-import { RANGE_LABELS, fetchSession, fetchUsage, messageOfError, redirectToLogin } from "./_lib/api";
-import type { SessionResponse, UsageRange, UsageResponse } from "./_lib/types";
+import { api, auth, errorMessage, usage as usageApi, type SessionView, type UsageView } from "@/lib/api";
+
+import { RANGE_LABELS, rangeLabel, type UsageRange } from "./_lib/labels";
+import { isUnauthenticated, redirectToLogin } from "./_lib/session";
 import { EmptyBlock, ErrorBlock, LoadingBlock } from "./_components/page-states";
 import { UsageBreakdown } from "./_components/usage-breakdown";
 import { UsageChart } from "./_components/usage-chart";
@@ -34,8 +36,8 @@ const RECENT_LIMIT = 10;
 
 export default function UserOverviewPage() {
   const [range, setRange] = useState<UsageRange>("7d");
-  const [session, setSession] = useState<SessionResponse | null>(null);
-  const [usage, setUsage] = useState<UsageResponse | null>(null);
+  const [session, setSession] = useState<SessionView | null>(null);
+  const [usage, setUsage] = useState<UsageView | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [reload, setReload] = useState(0);
@@ -45,18 +47,17 @@ export default function UserOverviewPage() {
     setError(null);
     try {
       const [nextSession, nextUsage] = await Promise.all([
-        fetchSession(),
-        fetchUsage({ range, limit: RECENT_LIMIT }),
+        auth.fetchSession(api),
+        usageApi.fetchUsage(api, { range, limit: RECENT_LIMIT }),
       ]);
       setSession(nextSession);
       setUsage(nextUsage);
     } catch (caught) {
-      const failure = caught as { unauthenticated?: boolean };
-      if (failure.unauthenticated === true) {
+      if (isUnauthenticated(caught)) {
         redirectToLogin();
         return;
       }
-      setError(messageOfError(caught));
+      setError(errorMessage(caught));
     } finally {
       setLoading(false);
     }
@@ -110,12 +111,12 @@ export default function UserOverviewPage() {
         <>
           <UsageMetrics
             totals={usage.totals}
-            rangeLabel={RANGE_LABELS[usage.range]}
+            rangeLabel={rangeLabel(usage.range)}
             balanceCents={session?.user.balanceCents ?? null}
           />
-          <UsageChart daily={usage.daily} rangeLabel={RANGE_LABELS[usage.range]} />
+          <UsageChart daily={usage.daily} rangeLabel={rangeLabel(usage.range)} />
           <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
-            <UsageBreakdown models={usage.models} rangeLabel={RANGE_LABELS[usage.range]} />
+            <UsageBreakdown models={usage.models} rangeLabel={rangeLabel(usage.range)} />
             <Card className="min-w-0 overflow-hidden">
               <CardHeader>
                 <CardTitle>最近请求</CardTitle>

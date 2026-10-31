@@ -21,9 +21,8 @@ import {
 } from "@/components/ui/dialog";
 import { Skeleton } from "@/components/ui/skeleton";
 import { formatDateTime, formatDurationMs, formatTokens, formatTtftMs, formatYuan } from "@/lib/format";
+import { api, errorMessage, usage as usageApi, type UsageDetailRowView } from "@/lib/api";
 
-import { messageOfError } from "../_lib/api";
-import type { UsageDetail } from "../_lib/types";
 import { ErrorBlock } from "./page-states";
 
 interface DetailRowProps {
@@ -50,7 +49,7 @@ export interface UsageDetailDialogProps {
 }
 
 export function UsageDetailDialog({ reqId, onOpenChange }: UsageDetailDialogProps) {
-  const [record, setRecord] = useState<UsageDetail | null>(null);
+  const [record, setRecord] = useState<UsageDetailRowView | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const open = reqId !== null;
@@ -63,11 +62,10 @@ export function UsageDetailDialog({ reqId, onOpenChange }: UsageDetailDialogProp
     setRecord(null);
     void (async () => {
       try {
-        const { fetchUsageDetail } = await import("../_lib/api");
-        const detail = await fetchUsageDetail(reqId);
-        if (alive) setRecord(detail);
+        const detail = await usageApi.fetchUsageDetail(api, reqId);
+        if (alive) setRecord(detail.record);
       } catch (caught) {
-        if (alive) setError(messageOfError(caught));
+        if (alive) setError(errorMessage(caught));
       } finally {
         if (alive) setLoading(false);
       }

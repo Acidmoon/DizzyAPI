@@ -12,8 +12,7 @@ import { Coins, Hash, Receipt, Waves } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { formatCentsAsYuan, formatTokens, formatYuan } from "@/lib/format";
-
-import type { UsageTotals } from "../_lib/types";
+import type { UsageTotalsView } from "@/lib/api";
 
 interface MetricCardProps {
   icon: typeof Coins;
@@ -46,7 +45,7 @@ function MetricCard({ icon: Icon, title, value, hint, badge }: MetricCardProps) 
 }
 
 export interface UsageMetricsProps {
-  readonly totals: UsageTotals;
+  readonly totals: UsageTotalsView;
   readonly rangeLabel: string;
   /** `null` = 后台没开余额（不是 0）。 */
   readonly balanceCents: number | null;

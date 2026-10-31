@@ -39,47 +39,40 @@ import {
 } from "@/components/ui/table";
 import { formatDateTime } from "@/lib/format";
 
-import {
-  createKey,
-  fetchKeys,
-  messageOfError,
-  redirectToLogin,
-  removeKey,
-  rotateKey,
-  updateKey,
-} from "../_lib/api";
-import type { ApiKeySummary } from "../_lib/types";
+import { api, errorMessage, keys as keysApi, type ApiKeySummaryView } from "@/lib/api";
+
+import { isUnauthenticated, redirectToLogin } from "../_lib/session";
 import { EmptyBlock, ErrorBlock, LoadingBlock } from "../_components/page-states";
 import { KeyNameDialog } from "./_components/key-name-dialog";
 import { KeySecretDialog } from "./_components/key-secret-dialog";
 
 type NameDialogState =
   | { readonly mode: "create" }
-  | { readonly mode: "rename"; readonly key: ApiKeySummary }
+  | { readonly mode: "rename"; readonly key: ApiKeySummaryView }
   | null;
 
 export default function UserKeysPage() {
-  const [keys, setKeys] = useState<readonly ApiKeySummary[]>([]);
+  const [keys, setKeys] = useState<readonly ApiKeySummaryView[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [nameDialog, setNameDialog] = useState<NameDialogState>(null);
   const [pending, setPending] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
   const [secret, setSecret] = useState<{ name: string; secret: string } | null>(null);
-  const [deleteTarget, setDeleteTarget] = useState<ApiKeySummary | null>(null);
-  const [rotateTarget, setRotateTarget] = useState<ApiKeySummary | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<ApiKeySummaryView | null>(null);
+  const [rotateTarget, setRotateTarget] = useState<ApiKeySummaryView | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      setKeys(await fetchKeys());
+      setKeys((await keysApi.listKeys(api)).items);
     } catch (caught) {
-      if ((caught as { unauthenticated?: boolean }).unauthenticated === true) {
+      if (isUnauthenticated(caught)) {
         redirectToLogin();
         return;
       }
-      setError(messageOfError(caught));
+      setError(errorMessage(caught));
     } finally {
       setLoading(false);
     }
@@ -95,32 +88,32 @@ export default function UserKeysPage() {
     setFormError(null);
     try {
       if (nameDialog.mode === "create") {
-        const created = await createKey(name);
+        const created = await keysApi.createKey(api, { name });
         setNameDialog(null);
         setSecret({ name: created.name, secret: created.secret });
         await load();
       } else {
-        const updated = await updateKey(nameDialog.key.id, { name });
+        const updated = await keysApi.updateKey(api, nameDialog.key.id, { name });
         setNameDialog(null);
         setKeys((current) => current.map((item) => (item.id === updated.id ? updated : item)));
         toast.success("名称已更新");
       }
     } catch (caught) {
-      setFormError(messageOfError(caught));
+      setFormError(errorMessage(caught));
     } finally {
       setPending(false);
     }
   };
 
-  const toggleEnabled = async (key: ApiKeySummary, enabled: boolean) => {
+  const toggleEnabled = async (key: ApiKeySummaryView, enabled: boolean) => {
     // 乐观更新：先动 UI，失败回滚成原值并提示。
     setKeys((current) => current.map((item) => (item.id === key.id ? { ...item, enabled } : item)));
     try {
-      const updated = await updateKey(key.id, { enabled });
+      const updated = await keysApi.updateKey(api, key.id, { enabled });
       setKeys((current) => current.map((item) => (item.id === updated.id ? updated : item)));
     } catch (caught) {
       setKeys((current) => current.map((item) => (item.id === key.id ? key : item)));
-      toast.error(messageOfError(caught));
+      toast.error(errorMessage(caught));
     }
   };
 
@@ -129,11 +122,11 @@ export default function UserKeysPage() {
     const target = deleteTarget;
     setDeleteTarget(null);
     try {
-      await removeKey(target.id);
+      await keysApi.deleteKey(api, target.id);
       setKeys((current) => current.filter((item) => item.id !== target.id));
       toast.success("已删除");
     } catch (caught) {
-      toast.error(messageOfError(caught));
+      toast.error(errorMessage(caught));
     }
   };
 
@@ -142,11 +135,11 @@ export default function UserKeysPage() {
     const target = rotateTarget;
     setRotateTarget(null);
     try {
-      const rotated = await rotateKey(target.id);
+      const rotated = await keysApi.rotateKey(api, target.id);
       setSecret({ name: rotated.name, secret: rotated.secret });
       await load();
     } catch (caught) {
-      toast.error(messageOfError(caught));
+      toast.error(errorMessage(caught));
     }
   };
 

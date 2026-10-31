@@ -6,11 +6,11 @@
  * - 充值必须明说「不会自动到账」（下单成功 ≠ 到账）；
  * - 兑换码是凭据：不进 URL / storage / console，失败提示不回显码；
  * - 模型广场与文档**只读**（没有写入口）；
- * - 文档内容必须与仓库 `docs/api/*.md` 逐字一致（防止文档改了前端不跟）；
+ * - 文档内容的唯一源是仓库 `docs/api/*.md`，`public/docs/` 由构建期同步生成（不入库，防漂移）；
  * - 个人资料的密码只走 body、提交后清空。
  */
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { describe, it } from 'node:test'
 import { fileURLToPath } from 'node:url'
@@ -87,19 +87,27 @@ describe('兑换码：凭据纪律', () => {
   })
 })
 
-describe('文档：内容必须与仓库 docs/api 逐字一致', () => {
+describe('文档：唯一源是 docs/api，副本由构建期同步', () => {
   const repoDocs = resolve(app, '../../../docs/api')
-  const shipped = join(app, 'public/docs')
+  const gitignore = resolve(app, '../../../.gitignore')
 
   const DOCS = ['01-overview.md', '02-endpoints.md', '03-errors.md', '04-examples.md', '05-limits-billing.md']
 
-  for (const name of DOCS) {
-    it(`${name} 的副本与 docs/api 版本逐字相同`, () => {
-      const source = readFileSync(join(repoDocs, name))
-      const copy = readFileSync(join(shipped, name))
-      assert.deepEqual(copy, source, `${name} 不一致：改了 docs/api 要同步 app/public/docs（否则文档页显示旧内容）`)
-    })
-  }
+  it('5 个源文件都在仓库根 docs/api（唯一源）', () => {
+    for (const name of DOCS) assert.ok(readFileSync(join(repoDocs, name)).length > 0, `docs/api/${name} 不存在`)
+  })
+
+  it('构建期同步：public/docs 不入库，由 scripts/sync-docs.mjs 生成', () => {
+    assert.ok(existsSync(join(app, 'scripts/sync-docs.mjs')), '缺构建期同步脚本 sync-docs.mjs')
+    assert.ok(
+      readFileSync(gitignore, 'utf8').includes('/packages/dashboard/app/public/docs'),
+      'public/docs 必须被 gitignore —— 提交副本就会漂移（改了 docs/api 页面还显示旧内容）',
+    )
+    const pkg = JSON.parse(readFileSync(join(app, 'package.json'), 'utf8')) as {
+      scripts?: Record<string, string>
+    }
+    assert.ok((pkg.scripts?.build ?? '').includes('sync-docs'), 'build 必须先跑 sync-docs')
+  })
 
   it('文档清单里的 5 个 slug 与仓库文件一一对应', () => {
     const page = readCode('docs/page.tsx')

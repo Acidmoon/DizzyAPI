@@ -18,8 +18,9 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 
-import { RANGE_LABELS } from "../../_lib/api";
-import type { ApiKeySummary, UsageModelRow, UsageRange } from "../../_lib/types";
+import type { ApiKeySummaryView, UsageModelView } from "@/lib/api";
+
+import { RANGE_LABELS, type UsageRange } from "../../_lib/labels";
 
 const ALL = "__all__";
 
@@ -27,8 +28,8 @@ export interface UsageFiltersProps {
   readonly range: UsageRange;
   readonly model: string | null;
   readonly apiKeyId: string | null;
-  readonly models: readonly UsageModelRow[];
-  readonly keys: readonly ApiKeySummary[];
+  readonly models: readonly UsageModelView[];
+  readonly keys: readonly ApiKeySummaryView[];
   readonly exporting: boolean;
   readonly onRangeChange: (range: UsageRange) => void;
   readonly onModelChange: (model: string | null) => void;

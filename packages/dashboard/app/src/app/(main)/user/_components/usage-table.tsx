@@ -22,12 +22,12 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { formatDateTime, formatDurationMs, formatTokens, formatYuan } from "@/lib/format";
+import type { UsageRowView } from "@/lib/api";
 
-import type { UsageRecord } from "../_lib/types";
 import { EmptyBlock } from "./page-states";
 import { UsageDetailDialog } from "./usage-detail-dialog";
 
-function StatusBadge({ record }: { record: UsageRecord }) {
+function StatusBadge({ record }: { record: UsageRowView }) {
   const ok = record.status === 200;
   return (
     <span
@@ -42,7 +42,7 @@ function StatusBadge({ record }: { record: UsageRecord }) {
 }
 
 export interface UsageTableProps {
-  readonly records: readonly UsageRecord[];
+  readonly records: readonly UsageRowView[];
   readonly emptyTitle: string;
   readonly emptyDescription?: string;
   /** 最近请求传 true：列更少（时间 / 模型 / 状态 / 金额 / 详情）。 */
