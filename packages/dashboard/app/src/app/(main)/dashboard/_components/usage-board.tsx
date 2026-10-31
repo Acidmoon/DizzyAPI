@@ -25,6 +25,7 @@ import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectVa
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { UsagePie } from "@/components/usage-pie";
 import { api, adminOps, ApiError } from "@/lib/api";
+import { userPieLabel } from "@/lib/usage-pie";
 import {
   formatDateTime,
   formatDurationMs,
@@ -98,7 +99,7 @@ export function UsageBoard() {
   const userGroups = useMemo(
     () =>
       (data?.users ?? []).map((row) => ({
-        label: row.name ?? `用户 #${String(row.userId)}`,
+        label: userPieLabel(row),
         costMicros: row.costMicros,
         tokens: row.tokens,
         requests: row.requests,

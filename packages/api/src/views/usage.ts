@@ -57,8 +57,11 @@ export function usageUserOf(item: UsageUserBreakdownLike, name: string | null) {
 /**
  * 按 API key 聚合的视图（饼图「按接口」维度）。
  *
- * `apiKeyName` 空时**不编名字**：给 `key#<id 前 6 位>` 作为可区分标签；
- * id 也空（「其他」归并项）就留空，由前端显示「其他」。
+ * `apiKeyName` 空时**不编名字**：给 `key#<id 前 6 位>` 作为可区分标签。
+ *
+ * **「其他」归并项给「空名 + `other: true`」**：中文「其他」由前端渲染，视图层不写中文。
+ * 判据是 `other` 标志，**不是 label 是否为空** —— 前端若按「空 label」丢弃，
+ * 按接口那张饼图会整个少掉归并项、占比凑不到 100%（2026-10-31 真浏览器抓到的 bug）。
  */
 export function usageApiKeyOf(item: UsageApiKeyBreakdownLike) {
   const name = item.apiKeyName.trim()

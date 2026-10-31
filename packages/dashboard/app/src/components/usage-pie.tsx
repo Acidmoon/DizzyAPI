@@ -88,7 +88,9 @@ export function UsagePie({
         {slices.length === 0 ? (
           <p className="py-8 text-center text-sm text-muted-foreground">{emptyText}</p>
         ) : (
-          <div className="flex flex-col gap-3 md:flex-row md:items-center">
+          // 断点用 `xl` 而不是 `md`：管理页外层就是 `xl:grid-cols-3`（每列约 350px），
+          // 卡内断点比卡外还宽会让「饼图 + 图例」强行横排、图例被压到 190px 折行。
+          <div className="flex flex-col gap-3 xl:flex-row xl:items-center">
             <ChartContainer config={chartConfig} className="mx-auto aspect-square h-48 w-48 shrink-0">
               <PieChart>
                 <Pie

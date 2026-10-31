@@ -107,7 +107,11 @@ export function toPieSlices(
   total?: PieTotal,
 ): readonly PieSlice[] {
   const usable = groups
-    .filter((group) => group.label !== "" && measureOf(group, measure) > 0n)
+    // **「其他」按 `other` 标志判定，不看 label 是否为空**。
+    // 视图层对归并项只给「空名 + other 标志」（`usageApiKeyOf` 等不写中文），
+    // 若在这里按「空 label」丢弃，按接口那张图就会少掉整个归并项 —— 占比只剩 88%，是假数据。
+    .filter((group) => (group.other === true || group.label !== "") && measureOf(group, measure) > 0n)
+    .map((group) => (group.other === true && group.label === "" ? { ...group, label: OTHER_LABEL } : group))
     // 展示顺序按度量从大到小（扇区与图例一致）；同值按名字，保证渲染稳定不闪。
     .sort((a, b) => {
       const left = measureOf(a, measure);
@@ -170,5 +174,22 @@ export function shareText(share: number): string {
  */
 export function isSelectable(item: { readonly other?: boolean }): boolean {
   return item.other !== true;
+}
+
+/**
+ * 「按用户」维度的展示名。
+ *
+ * 服务端用 `userId: -1` **加** `other: true` 两个信号表示归并项，所以**两个条件都要判**：
+ * 只看 `other`，字段缺失时会漏出「用户 #-1」；只看负数，服务端哪天换个哨兵值又漏。
+ * 用户看到「用户 #-1」只会当成脏数据 —— 归并项在任何维度都必须叫「其他」。
+ */
+export function userPieLabel(row: {
+  readonly userId: number;
+  readonly name?: string | null;
+  readonly other?: boolean;
+}): string {
+  if (row.other === true || row.userId < 0) return OTHER_LABEL;
+  const name = (row.name ?? "").trim();
+  return name === "" ? `用户 #${String(row.userId)}` : name;
 }
 

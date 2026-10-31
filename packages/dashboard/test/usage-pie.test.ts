@@ -11,6 +11,7 @@ import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 
 import * as pieModule from '../app/src/lib/usage-pie.ts'
+import type { PieGroup } from '../app/src/lib/usage-pie.ts'
 import { unwrap } from './helpers/module-interop.ts'
 
 const {
@@ -21,6 +22,7 @@ const {
   microsOf,
   shareText,
   toPieSlices,
+  userPieLabel,
 } = unwrap<typeof pieModule>(pieModule)
 
 function group(label: string, costMicros: string, tokens: number, requests = 1) {
@@ -167,5 +169,63 @@ describe('isSelectable：只有真实值能当筛选目标', () => {
   it('普通项可选；没有 other 标记的（老数据 / 别的来源）也当可选', () => {
     assert.equal(isSelectable({ other: false }), true)
     assert.equal(isSelectable({}), true)
+  })
+})
+
+/**
+ * 归并项的口径护栏（2026-10-31 真浏览器抓到的两个 bug 的回归用例）。
+ *
+ * 根因都是「用 label 是否为空判断归并项」：服务端对归并项只给**空名 + other 标志**，
+ * 前端按空 label 丢弃 → 按接口饼图少一项、占比只剩 88%；按用户则漏出「用户 #-1」。
+ */
+describe('归并项：以 other 标志为准，不以「label 为空」为准', () => {
+  /** 服务端 `topWithOther` 的超限产物：12 具名 + 1 归并项。 */
+  function overflowGroups(otherLabel: string): readonly PieGroup[] {
+    return [
+      ...Array.from({ length: 12 }, (_, index) => group(`named-${String(index)}`, String(900 - index * 10), 90 - index)),
+      { ...group(otherLabel, '80', 8), other: true },
+    ]
+  }
+
+  it('空 label + other: true 的项必须保留，并渲染成「其他」', () => {
+    const slices = toPieSlices(overflowGroups(''), 'cost')
+    assert.equal(slices.length, 13, '归并项被空 label 丢掉了')
+    const other = slices.filter((slice) => slice.other)
+    assert.equal(other.length, 1)
+    assert.equal(other[0]?.label, OTHER_LABEL)
+    assert.equal(slices.some((slice) => slice.label === ''), false, '出现了空 label 的扇区')
+  })
+
+  it('三个维度超限归并后，占比合计正好 100.00%', () => {
+    // 按模型：服务端标签就是「其他」；按接口：空名；按用户：userId -1 的归并项。
+    const dimensions: Array<[string, readonly PieGroup[]]> = [
+      ['按模型', overflowGroups(OTHER_LABEL)],
+      ['按接口', overflowGroups('')],
+    ]
+    for (const [name, groups] of dimensions) {
+      const slices = toPieSlices(groups, 'cost')
+      assert.equal(slices.length, 13, `${name}：应有 12 具名 + 1 归并`)
+      assert.equal(
+        slices.reduce((sum, slice) => sum + slice.share, 0),
+        10000,
+        `${name}：占比合计不是 100%`,
+      )
+    }
+  })
+})
+
+describe('userPieLabel：任何维度都不许出现「用户 #-1」', () => {
+  it('other 标志 / 负 userId 都渲染成「其他」', () => {
+    assert.equal(userPieLabel({ userId: -1, name: null, other: true }), OTHER_LABEL)
+    // 只给负 id、没给标志也不能漏出去（防服务端字段缺失）
+    assert.equal(userPieLabel({ userId: -1, name: null }), OTHER_LABEL)
+    // 只给标志、id 是别的哨兵值同样不能漏
+    assert.equal(userPieLabel({ userId: 999, name: null, other: true }), OTHER_LABEL)
+  })
+
+  it('正常用户用名字；没有名字才回落到「用户 #id」', () => {
+    assert.equal(userPieLabel({ userId: 7, name: 'alice' }), 'alice')
+    assert.equal(userPieLabel({ userId: 7, name: null }), '用户 #7')
+    assert.equal(userPieLabel({ userId: 7, name: '   ' }), '用户 #7')
   })
 })
