@@ -56,8 +56,16 @@ export function UsageBoard() {
     };
   }, [range, model, statusText, userIdText]);
 
+  // `cursor` 是 keyset 分页的「上一页最后一条 id」，**服务端合法区间是 [1, MAX]**（`admin_usage.ts`
+  // 的 `parseIntegerParam(cursor, 'cursor', 0, 1, MAX)`）。首页不能发 `cursor=0` —— 那会直接 400，
+  // 表现就是「用量明细页第一次打开永远是错误态，翻一页才出数据」。所以首屏整条不传。
   const load = useCallback(
-    () => adminOps.fetchAdminUsage(api, { ...filters(), cursor, limit: PAGE_SIZE }),
+    () =>
+      adminOps.fetchAdminUsage(api, {
+        ...filters(),
+        ...(cursor > 0 ? { cursor } : {}),
+        limit: PAGE_SIZE,
+      }),
     [filters, cursor],
   );
   const { data, error, loading, reload } = useResource(load);
