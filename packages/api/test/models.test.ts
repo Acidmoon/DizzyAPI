@@ -210,3 +210,63 @@ test('错误码 → HTTP 状态码', async (t) => {
     assert.equal(reply.json.error.code, item.code)
   }
 })
+
+// ───────────────────────────────── 探测（增量字段） ─────────────────────────────────
+
+test('探测字段是纯增量：服务端给了就透出，形状逐字对应', async (t) => {
+  const app = await setup(t)
+  app.modelhub.withProbe = true
+  const reply = await call(app.server, '/api/models', { cookie: sessionCookie(app, 2) })
+  assert.equal(reply.status, 200, reply.text)
+
+  const entry = reply.json.available[0]
+  assert.equal(entry.probe.probed, true)
+  assert.equal(entry.probe.health, 'degraded')
+  assert.equal(entry.probe.consecutiveFailures, 1)
+  assert.equal(entry.probe.points.length, 2)
+  assert.deepEqual(entry.probe.points[0], {
+    status: 'failed',
+    latencyMs: 2_400,
+    httpStatus: 503,
+    errorCode: 'MODEL_NOT_SERVED',
+    testedAtMs: 1_700_000_100_000,
+  })
+  // 点的键集合固定：**没有响应正文**这类字段。
+  assert.deepEqual(Object.keys(entry.probe.points[0]).sort(), [
+    'errorCode',
+    'httpStatus',
+    'latencyMs',
+    'status',
+    'testedAtMs',
+  ])
+
+  // 探测总体状态必须带 blockedReason 键（页面靠它说「停摆不是模型故障」）。
+  assert.equal(reply.json.probe.enabled, true)
+  assert.equal(reply.json.probe.blockedReason, null)
+  assert.equal(reply.json.probe.failureThreshold, 3)
+  assert.equal(reply.json.probe.downCount, 0)
+})
+
+test('探测停摆时 blockedReason 原样透出（页面必须能看见）', async (t) => {
+  const app = await setup(t)
+  app.modelhub.withProbe = true
+  app.modelhub.blockedReason = 'probe_user_balance_exhausted'
+  app.modelhub.blockedDetail = '探测用户 #1 余额不足，探测已停摆；这不是模型故障'
+
+  const reply = await call(app.server, '/api/models', { cookie: sessionCookie(app, 2) })
+  assert.equal(reply.status, 200, reply.text)
+  assert.equal(reply.json.probe.blockedReason, 'probe_user_balance_exhausted')
+  assert.match(reply.json.probe.blockedDetail, /这不是模型故障/)
+})
+
+test('服务端没给探测字段时，响应里没有 probe 键（既有形状不变）', async (t) => {
+  const app = await setup(t)
+  const reply = await call(app.server, '/api/models', { cookie: sessionCookie(app, 2) })
+  assert.equal(reply.status, 200, reply.text)
+
+  assert.equal('probe' in reply.json.available[0], false)
+  assert.equal('probe' in reply.json.unavailable[0], false)
+  assert.equal('probe' in reply.json, false)
+  // 既有字段一个不少。
+  assert.deepEqual(Object.keys(reply.json).sort(), ['available', 'summary', 'unavailable'])
+})

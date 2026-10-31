@@ -34,8 +34,14 @@ export type {
   ModelEntry,
   ModelHubServiceLike,
   ModelPriceView,
+  ModelProbeHealth,
+  ModelProbePointView,
+  ModelProbeSummaryView,
+  ModelProbeView,
   ModelUnavailableEntry,
   ModelUnavailableReason,
 } from './types.ts'
+export { NO_PROBE_FACTS, collectProbeFacts, judgeHealth, probeViewOf } from './probe-facts.ts'
+export type { ModelProbeSeam, ProbeFacts } from './probe-facts.ts'
 
 export default ModelHubService

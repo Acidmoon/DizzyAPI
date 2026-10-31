@@ -26,11 +26,18 @@ import {
   type ResolvedModelHubConfig,
 } from './config.ts'
 import { ModelHubError } from './errors.ts'
+import {
+  NO_PROBE_FACTS,
+  collectProbeFacts,
+  type ModelProbeSeam,
+  type ProbeFacts,
+} from './probe-facts.ts'
 import type {
   ModelCatalog,
   ModelCatalogQuery,
   ModelCatalogSummary,
   ModelEntry,
+  ModelProbeView,
   ModelPriceView,
   ModelUnavailableEntry,
 } from './types.ts'
@@ -213,6 +220,9 @@ export class ModelHubService extends Service {
     // 兜底价 `'*'`：没有精确价格的模型按它计价，但**不**把它当成一个模型列出来。
     const fallback = prices.get('*')
 
+    // 探测事实算一次，全表复用（每个模型一次 status() 会很浪费）。
+    const probe = this.probeFacts()
+
     const available: ModelEntry[] = []
     const unavailable: ModelUnavailableEntry[] = []
 
@@ -221,6 +231,9 @@ export class ModelHubService extends Service {
       const price = exact ?? fallback
       const priced = exact !== undefined
       if (!priced && !this.config.includeUnpriced) continue
+
+      // 没有探测数据时**整个键不出现**：`/api/models` 的既有形状一个字节都不变。
+      const probeView = probe.byModel.get(entry.model)
 
       if (entry.healthyAccountCount > 0) {
         available.push({
@@ -232,6 +245,7 @@ export class ModelHubService extends Service {
           protocols: [...entry.protocols].sort(),
           upstreamModels: [...entry.upstreamModels].sort(),
           mapped: entry.upstreamModels.size > 0,
+          ...(probeView === undefined ? {} : { probe: probeView }),
         })
         continue
       }
@@ -247,6 +261,7 @@ export class ModelHubService extends Service {
         accountCount: entry.accountCount,
         price: price === undefined ? null : toPriceView(price),
         priced,
+        ...(probeView === undefined ? {} : { probe: probeView }),
       })
     }
 
@@ -266,10 +281,38 @@ export class ModelHubService extends Service {
       available: filtered.available,
       unavailable: filtered.unavailable,
       summary,
+      probe: probe.summary,
     }
   }
 
   // ───────────────────────────────── 内部
+
+  /**
+   * 读一次探测事实。**运行期解析**（不 inject，D5）：`modelProbe` 被禁用时目录照常出，
+   * 只是每条都没有探测字段 —— 而不是整个模型广场 PENDING。
+   *
+   * 停摆（`blockedReason !== null`）时**不做任何「挂了」的判断**，全部降级成 `unknown`：
+   * 探测没在跑却让模型显示成红的，比不显示探测更糟。
+   */
+  private probeFacts(): ProbeFacts {
+    const probe = this.probeSeam()
+    if (probe === undefined) return NO_PROBE_FACTS
+    return collectProbeFacts({
+      probe,
+      historyPoints: this.config.probeHistoryPoints,
+      failureThreshold: this.config.probeFailureThreshold,
+    })
+  }
+
+  /** 运行期解析探测服务（不 inject，D5）。 */
+  private probeSeam(): ModelProbeSeam | undefined {
+    const impl = this.ctx.root.reflect._getImpl('modelProbe', false)
+    if (impl === undefined || impl.ctx.fiber.state !== FiberState.ACTIVE) return undefined
+    const value = impl.value as Partial<ModelProbeSeam> | undefined
+    return typeof value?.histories === 'function' && typeof value?.status === 'function'
+      ? (value as ModelProbeSeam)
+      : undefined
+  }
 
   /** 运行期解析价格服务（不 inject，D5）。 */
   private pricingSeam(): PricingSeam | undefined {
