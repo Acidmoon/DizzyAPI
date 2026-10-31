@@ -62,14 +62,42 @@ DizzyAPI，页面里不出现 Next.js 品牌。
 - 带 `src` 的同源外部脚本不加 nonce（它靠 `'self'` 过）；
 - **不放开** `script-src 'unsafe-inline'` / `'unsafe-eval'`；nonce 不固定成常量。
 
-一处**必须说明的最小放开**：`style-src-attr 'unsafe-inline'`，而 `style-src` 仍是 `'self'`。
+### `style-src-attr 'unsafe-inline'`（owner 2026-10-31 拍板「都按照模版来」）
+
+口径是**照上游 next-shadcn-admin-dashboard 的原样**，不自创一套更严的规则：
+
+| 指令 | 值 | 约束的东西 |
+|---|---|---|
+| `style-src` | `'self'` | **`<style>` 元素**仍受约束 |
+| `style-src-attr` | `'unsafe-inline'` | **style 属性**（React 的 `style={…}`）放开 |
 
 理由（实测证据，不是图省事）：shadcn / Radix 的浮层定位（`DropdownMenu`、`Command`、
 `Tooltip`、`Dialog`）与侧栏宽度是靠 React 的 `style` 属性写进内联 style 属性的
 （`components/ui/sidebar.tsx` 里 `--sidebar-width` 就在 `style` 上；`recharts` 的 svg 同理）。
 `style-src 'self'` 会把内联 style 属性全部丢弃 —— 表现是侧栏宽度塌陷、弹窗定位错乱、
 图表尺寸为 0。只放开 **属性**、不放开 `<style>` 元素，是能做到的最小放开；
-要彻底去掉它，得把上游所有组件的 `style` 用法改成 CSS 变量 + 类，那是重写组件库，不在本批次。
+要彻底去掉它，得把上游所有组件的 `style` 用法改成 CSS 变量 + 类，那是重写组件库。
+
+### 构建戳 `dist/build-info.json`
+
+`dist/` 是 gitignored 的构建产物，插件读的是**磁盘上当前那一份**，**它不认 git commit**。
+所以「代码已经合进 main、但服务器上的 dist/ 还是上一版」这个状态在服务器上是
+**完全静默**的 —— 页面照常 200，只是内容是旧的。
+
+`app/scripts/export-dist.mjs` 因此在导出后写一份 `dist/build-info.json`：
+
+```json
+{ "commit": "e17336c", "dirty": false, "builtAt": "2026-10-31T01:22:33.000Z", "files": 134, "bytes": 4172719 }
+```
+
+- `commit`：`git rev-parse --short HEAD`；`dirty`：工作区有未提交改动时为 `true`
+  （**`dirty: true` 的产物不许上服务器** —— 那种产物「发的是哪个 commit」没有答案）；
+- `files` / `bytes`：统计的是**导出的内容本身**，不含 `build-info.json` 自己；
+- git 不可用时落到 `commit: "unknown"` / `dirty: null`，**不让构建因此失败**。
+
+它是**公开**的（owner 定）：部署验收直接 `curl -s https://<站点域名>/build-info.json`
+就知道发上去的是哪个 commit，不必 ssh 上服务器。仓库不公开，风险为零。
+插件按普通静态文件发它（`application/json` + `no-store`，所以不会读到旧值）。
 
 ## 对上游做了哪些改动
 
@@ -118,6 +146,17 @@ DizzyAPI，页面里不出现 Next.js 品牌。
     构建不联网、产物不变大。`globals.css` 的 `[data-font=…]` 规则同步砍到 3 条，
     并给 `--font-sans` 接上中文字体栈 `--font-cjk`（自带字体只有拉丁字形）。
 
+### owner 拍板的两条（2026-10-31）
+
+16. **CSP 按模版走**：`style-src-attr 'unsafe-inline'` **接受**（owner 拍板「都按照模版来」）。
+    `src/csp.ts` 的注释已改成「已定」语气，不再是悬案。**行为没变**，只改注释。
+17. **字体按模版走**：`font-smiley` 插件（得意黑子集）**不再进新前端的产物**。
+    旧前端下线时**整个 `packages/font-smiley/` 包删掉**（连同 `assets/smiley-sans.woff2`
+    那 1.15 MB 原字体）—— 这条要写进下线清单。
+    **合规上没有新义务**：不再分发字体文件 = 不再触发 OFL 的随分发义务，
+    所以 `assets/LICENSE`（OFL 全文）不必带走；只有**分发**时才需要带 LICENSE。
+    仓库里也不会再有「改名后的子集」。
+
 ### 外壳
 
 14. `(main)/dashboard/layout.tsx`：去掉 `cookies()` / `getPreference()` / `users` 演示数据 /
@@ -125,6 +164,8 @@ DizzyAPI，页面里不出现 Next.js 品牌。
     改用组件默认宽度 —— 内联 style 在 `style-src 'self'` 下会被丢，而且它本来就是硬编码值。
 15. `(main)/dashboard/page.tsx`：上游是 `permanentRedirect("/dashboard/default")`（静态导出下
     构建即失败），改成真正的「仪表盘」占位页；`/dashboard` 从此是落地页而不是跳转。
+18. `app/scripts/export-dist.mjs`：导出后写 `dist/build-info.json` 构建戳
+    （`{ commit, dirty, builtAt, files, bytes }`），见上面「构建戳」一节。
 
 ## 信息架构（侧栏唯一源）
 
@@ -135,8 +176,13 @@ DizzyAPI，页面里不出现 Next.js 品牌。
 
 | 分组 | 前缀 | 页面 |
 |---|---|---|
-| 管理员 | `/dashboard` | 仪表盘（`/dashboard` 本身）、用户、角色、上游账号、模型价格、兑换码、充值订单、用量明细、结算、审计、内容审核、运维总览、设置 |
-| 用户 | `/dashboard/me` | 概览（`/dashboard/me`）、用量、API 密钥、充值、兑换码、模型广场、价格表（只读）、API 文档、个人资料 |
+| 管理员 | `/dashboard/*` | 仪表盘（`/dashboard` 本身）、用户、角色、上游账号、模型价格、兑换码、充值订单、用量明细、结算、审计、内容审核、运维总览、设置 |
+| 用户 | `/user/*` | 概览（`/user`）、用量、API 密钥、充值、兑换码、模型广场、价格表（只读）、API 文档、个人资料 |
+
+**但「唯一源」只覆盖页面路由**：账户操作类链接（个人资料 / API 密钥 / 退出登录）
+在 `nav-user.tsx` 里，不进侧栏数据源 —— 那是账户操作，不是导航项。
+写新页面时**不许在组件里手写 `href="/xxx"`**（页脚菜单那两处是已知的例外，
+它绕过了唯一源，改路由时最容易漏）。
 
 ## 构建
 
@@ -153,10 +199,18 @@ node --import tsx --test "packages/dashboard/test/*.test.ts"
 
 `dist/` 是构建产物，**不进 git**（根 `.gitignore` 已忽略）。要让控制台跑起来，必须先构建。
 
+**部署口径**（owner 已定死）：
+
+1. **本地** `pnpm build:dashboard` → 产物在 `packages/dashboard/dist/`；
+2. **scp** 整份 `dist/` 到服务器 → 再启动插件（顺序反了插件会发上一版产物）；
+3. **绝不在服务器上跑 `next build`**（`app/` 是独立 npm 工程、523 个包，服务器走网络会卡；
+   与 `bin/gatewayd` 从来不在服务器上编是同一纪律）；
+4. **验收**：服务器上 `cat dist/build-info.json`，`commit` 必须等于要发的 main commit、
+   `dirty` 必须是 `false`；
+5. **回滚**：保留上一份 `dist` 改名 `dist.prev`，回滚就是换名 + 重启，不用重新 build。
+
 ## 已知限制（本批次收尾时仍然存在）
 
-- 侧栏里除 `/dashboard` 之外的页面还没写（本批次只交付外壳），链接会落到 SPA 的
-  「页面不存在」页。页面在后续批次按上表的路由前缀补齐。
 - 登录 / 注册表单还没接 `/api/auth/*`，`NavUser` 的用户信息、登出也是占位。
 - `robots.txt` 仍是上游那份（`app/src/app/robots.txt`）：只是爬虫指令，不影响运行；
-  要不要改由 owner 定。
+  owner 已定「先保持上游那份不动」，等新前端全部接上再统一处理。
