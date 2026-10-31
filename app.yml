@@ -36,7 +36,7 @@
       - '@dizzyapi/plugin-admin'
       - '@dizzyapi/plugin-auth'
       - '@dizzyapi/plugin-api'
-      - '@dizzyapi/plugin-web'
+      - '@dizzyapi/plugin-dashboard'
     # 余额写入白名单：结算扣费（billing）、充值到账（topup）、兑换码加额（redeem）、
     # 管理员改余额（api / web）是仅有的合法写者。不配 = 任何插件都能改余额；
     # 配了就把范围收窄到这几个人。读取始终不限。
@@ -45,7 +45,7 @@
       - '@dizzyapi/plugin-topup'
       - '@dizzyapi/plugin-redeem'
       - '@dizzyapi/plugin-api'
-      - '@dizzyapi/plugin-web'
+      - '@dizzyapi/plugin-dashboard'
 
 # 余额只读快照推送（服务名 quota）：把 user 的全量余额周期推给 Go 的额度闸门
 # （桥命令 quota.replace），余额变更后 debounce 补推。它自己不存数据、不做判断，
@@ -75,7 +75,7 @@
     adminPlugins:
       - '@dizzyapi/plugin-admin'
       - '@dizzyapi/plugin-api'
-      - '@dizzyapi/plugin-web'
+      - '@dizzyapi/plugin-dashboard'
       # 运维总览要读结算汇总与各状态计数（只读，具体金额仍只在管理面）。
       - '@dizzyapi/plugin-observability'
 
@@ -97,7 +97,7 @@
     adminPlugins:
       - '@dizzyapi/plugin-admin'
       - '@dizzyapi/plugin-api'
-      - '@dizzyapi/plugin-web'
+      - '@dizzyapi/plugin-dashboard'
 
 # 兑换码插件：批次与兑换码的唯一写者（生成 / 启停 / 删除 / 兑换状态流转）。
 # 存储是 SQLite（Node 24 内置 node:sqlite），只落 sha256 哈希与末 4 位掩码，
@@ -111,7 +111,7 @@
     adminPlugins:
       - '@dizzyapi/plugin-admin'
       - '@dizzyapi/plugin-api'
-      - '@dizzyapi/plugin-web'
+      - '@dizzyapi/plugin-dashboard'
 
 # API key 插件：用户 API key 的唯一写者（签发 / 改名 / 启停 / 轮换 / 删除）。
 # 存储是 SQLite（Node 24 内置 node:sqlite），只落 sha256 哈希与掩码，永不落明文；
@@ -186,7 +186,7 @@
     adminPlugins:
       - '@dizzyapi/plugin-admin'
       - '@dizzyapi/plugin-api'
-      - '@dizzyapi/plugin-web'
+      - '@dizzyapi/plugin-dashboard'
       # 健康检查要经门面写状态（setHealth / autoDisable / autoEnable）。
       - '@dizzyapi/plugin-account-health'
     maxBatchSize: 100
@@ -207,7 +207,7 @@
     adminPlugins:
       - '@dizzyapi/plugin-admin'
       - '@dizzyapi/plugin-api'
-      - '@dizzyapi/plugin-web'
+      - '@dizzyapi/plugin-dashboard'
 
 # 账号请求优先级：策略组的唯一写者 + gatewayd 的监管者。
 # 打分与排序发生在 Go 侧（modules/accountpriority）；本插件只持有策略、拉起进程、
@@ -242,7 +242,7 @@
     dataPath: ./data/pricing.json
     adminPlugins:
       - '@dizzyapi/plugin-api'
-      - '@dizzyapi/plugin-web'
+      - '@dizzyapi/plugin-dashboard'
 
 # 模型广场：**纯只读聚合**，不落盘、不写任何数据。
 # 它把「价格表（pricing）」+「账号声明的 models / modelMap（accountAdmin 门面）」
@@ -283,54 +283,22 @@
   config:
     includeUnavailable: true
 
-# 前端宿主：SPA 静态资源的版本化安装、原子切换与回滚，以及页面 / 设置卡 / 插槽清单。
-# 它不监听 HTTP：manifest.json 与版本目录由未来的 Go httpapi 或反向代理直接读盘发出去。
-# 开发时用 `pnpm preview:console` 看 mock 数据的预览（只绑 127.0.0.1，不经过这个 entry）。
-- id: frontend
-  name: '@dizzyapi/plugin-frontend'
-  # 旧 SPA 已由 `web`（服务端渲染，一页一文件）取代；宿主暂时保留，禁用后页面清单与
-  # 静态资源版本管理都不再运行，`/assets/frontend/*` 与 SPA 路由会 404。
-  disabled: true
-  config:
-    dataPath: ./data/frontend
-    publicBase: /assets/frontend
-    apiBase: /api
-    mode: rest
-
-# 页面模板：从 deepseek-usage 抽出的像素级外壳、卡片、过滤行、图表与设计 token。
-# 它是纯服务（pageTemplate）：不起 HTTP、不读写存储、不依赖别的插件；
-# 页面插件经服务拿同一套 DOM 与样式，避免每个新页面重抄一遍视觉规格。
-- id: page-template
-  name: '@dizzyapi/plugin-page-template'
-
-# 站点字体：得意黑子集（SIL OFL-1.1，因 OFL 保留字体名而改名 Dizzy Sans）。
-# 上游 Smiley Sans v2.0.1 全量 1.15 MB / 9497 字形，本站只用到 4156 个字形；
-# 发的是子集（~508 KB），生成脚本 packages/font-smiley/tools/build-subset.py。
-# 纯资源服务：web 把它的 @font-face 追加进 /assets/app.css，并从
-# /assets/fonts/dizzy-sans.woff2 发字体字节；scope 决定只换标题还是全站。
-- id: font-smiley
-  name: '@dizzyapi/plugin-font-smiley'
-  config:
-    scope: all
-
-# 服务端渲染前端：一页一个文件（packages/web/src/pages），数据走进程内服务。
-# 写操作是表单 POST + 303；样式与脚本由 /assets/app.* 外链，CSP 保持 'self'。
-- id: web
-  name: '@dizzyapi/plugin-web'
+# 控制台前端（服务名 dashboard）：next-shadcn-admin-dashboard（MIT，commit feba5423）的
+# **静态导出托管**。只做三件事：发 `packages/dashboard/dist/` 的静态字节、把 SPA 路由回退到
+# index.html、给 HTML 注入 CSP nonce（`script-src 'self' 'nonce-…'`，style 侧的放行见
+# packages/dashboard/src/csp.ts 的注释）。
+#
+# 产物 `dist/` **不进 git**：本地 `pnpm build:dashboard` 生成后 scp 上去；服务器上缺产物时
+# 插件照常起来，但页面 503「静态产物不存在」，且 `dist/build-info.json` 是唯一可信的版本戳
+# （`commit` + `dirty`，`dirty:true` 的产物不许上服务器）。
+#
+# 本次换装同时下线了五个旧前端插件（`frontend` 旧 SPA、`page-template` 页面模板、
+# `font-smiley` 字体、`web` 服务端渲染、`deepseek-usage` 参考页）：字体改走 Geist + 中文系统
+# 字体栈，不再分发自托管字体，OFL 的随分发义务也随之消失。
+- id: dashboard
+  name: '@dizzyapi/plugin-dashboard'
   config:
     port: 7792
-    sessionCookieName: dizzyapi_session
-
-# 「用量信息」页：DeepSeek 开放平台用量页的像素级复刻，独立成页，不改 packages/console 的控制台。
-# 页面模板已抽成 page-template 插件；本插件保留为像素级参考，默认禁用（web 已接管 /console/usage）。
-- id: deepseek-usage
-  name: '@dizzyapi/plugin-deepseek-usage'
-  disabled: true
-  config:
-    port: 7793
-    basePath: /console/usage
-    enabled: true
-    sessionCookieName: dizzyapi_session
 
 # 产品 HTTP 入口：同源提供 SPA 静态资源与 /api/*（界面请求）。
 # 静态字节从 frontend 的版本目录读盘；/api/* 在进程内调用控制面服务，不走控制桥。
@@ -352,7 +320,7 @@
     adminPlugins:
       - '@dizzyapi/plugin-admin'
       - '@dizzyapi/plugin-api'
-      - '@dizzyapi/plugin-web'
+      - '@dizzyapi/plugin-dashboard'
 
 # 审计插件：管理员高危写操作的**唯一记录者**（服务名 audit，存储 data/audit.db）。
 # 记的是「谁（人类管理员 / 系统）、经哪个插件、对谁、做了什么、结果如何」，落库前统一脱敏
@@ -368,7 +336,7 @@
     adminPlugins:
       - '@dizzyapi/plugin-admin'
       - '@dizzyapi/plugin-api'
-      - '@dizzyapi/plugin-web'
+      - '@dizzyapi/plugin-dashboard'
       # 运维总览要读「最近 24 小时按动作分组 + 最近几条」与总量。
       - '@dizzyapi/plugin-observability'
 
@@ -400,7 +368,7 @@
     adminPlugins:
       - '@dizzyapi/plugin-admin'
       - '@dizzyapi/plugin-api'
-      - '@dizzyapi/plugin-web'
+      - '@dizzyapi/plugin-dashboard'
 
 # 闸门快照推送（服务名 gateFeed）：把「价格表」与「每个 API key 的累计消费」
 # **心跳式**推给 Go 的两条 pre 相位闸门（桥命令 pricing.replace / keyspend.replace；

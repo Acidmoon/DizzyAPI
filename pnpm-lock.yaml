@@ -71,6 +71,9 @@ importers:
       '@dizzyapi/plugin-credentials':
         specifier: workspace:*
         version: link:packages/credentials
+      '@dizzyapi/plugin-dashboard':
+        specifier: workspace:*
+        version: link:packages/dashboard
       '@dizzyapi/plugin-deepseek-usage':
         specifier: workspace:*
         version: link:packages/deepseek-usage
