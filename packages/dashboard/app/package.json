@@ -5,7 +5,8 @@
   "description": "DizzyAPI 控制台（Next.js 静态导出 SPA，vendor 自 arhamkhnz/next-shadcn-admin-dashboard）",
   "scripts": {
     "dev": "next dev",
-    "build": "next build && node scripts/export-dist.mjs",
+    "build": "node scripts/sync-docs.mjs && next build && node scripts/export-dist.mjs",
+    "sync:docs": "node scripts/sync-docs.mjs",
     "typecheck": "tsc --noEmit",
     "lint": "biome lint",
     "format": "biome format --write"

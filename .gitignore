@@ -40,3 +40,7 @@ tsconfig.tsbuildinfo
 
 # 控制台静态产物（Next 静态导出的 out/ 拷到这里，构建产物不进库）
 /packages/dashboard/dist
+
+# 文档页的 Markdown 副本：唯一源是仓库根 docs/api/*.md，构建前由
+# app/scripts/sync-docs.mjs 同步进 public/docs/。提交副本会漂移，所以不入库。
+/packages/dashboard/app/public/docs
