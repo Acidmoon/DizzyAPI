@@ -192,7 +192,6 @@ export function TopupBoard() {
           <CardTitle className="text-base">订单列表</CardTitle>
           <CardDescription>
             本页 {orders.length} 条 / 共 {formatTokens(data?.list.total ?? 0)} 条。
-            金额是整数微元换算出来的展示值。
           </CardDescription>
         </CardHeader>
         <CardContent className="px-0">
