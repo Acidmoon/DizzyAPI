@@ -14,11 +14,19 @@
  * - 不放开 `script-src 'unsafe-inline'` / `'unsafe-eval'`；
  * - 不为「少改写一次字节」而把 nonce 固定成常量（固定等于公开，等于 inline）。
  *
- * 关于 `style-src`：shadcn / Radix 的浮层定位与侧栏宽度是靠 React 的 `style`
- * 属性（内联 style 属性）实现的，`style-src 'self'` 会把它们全部丢掉，弹窗会
- * 定位错乱。这里只放开 **style 属性**（`style-src-attr 'unsafe-inline'`），
- * `<style>` 元素仍受 `style-src 'self'` 约束 —— 这是比 `style-src 'unsafe-inline'`
- * 严格得多的最小放开，理由与证据见 `packages/dashboard/README.md`。
+ * 关于 `style-src-attr 'unsafe-inline'`：**owner 2026-10-31 拍板「都按照模版来」**，
+ * 即照上游 next-shadcn-admin-dashboard 的原样口径，不自创一套更严的规则。
+ *
+ * 模版的现状是：`<style>` 元素受 `style-src 'self'` 约束，而 **style 属性**
+ * （React 的 `style={…}`）放开。原因是 shadcn / Radix 的浮层定位、侧栏宽度
+ * （`--sidebar-width`）与 recharts 的 svg 尺寸全靠内联 style 属性实现，
+ * `style-src 'self'` 会把它们全部丢掉 —— 表现是侧栏宽度塌陷、弹窗定位错乱、
+ * 图表尺寸为 0。
+ *
+ * 所以本文件的口径是：`style-src 'self'`（`<style>` 元素仍受约束）+
+ * `style-src-attr 'unsafe-inline'`（只放开 style 属性）。这比
+ * `style-src 'unsafe-inline'` 严格得多：后者会连 `<style>` 元素一起放开。
+ * 证据与实测见 `packages/dashboard/README.md`。
  */
 import { randomBytes } from 'node:crypto'
 

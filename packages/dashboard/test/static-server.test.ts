@@ -49,6 +49,11 @@ async function fixture(t: TestContext): Promise<Fixture> {
   await writeFile(join(dir, '_next', 'static', 'chunk-a1b2c3.js'), 'self.x=1;', 'utf8')
   await writeFile(join(dir, '_next', 'static', 'app-a1b2c3.css'), 'body{color:#000}', 'utf8')
   await writeFile(join(dir, 'favicon.ico'), Buffer.from([0, 0, 1, 0]))
+  await writeFile(
+    join(dir, 'build-info.json'),
+    JSON.stringify({ commit: 'abc1234', dirty: false, builtAt: '2026-10-31T00:00:00.000Z', files: 2, bytes: 35 }),
+    'utf8',
+  )
 
   const server = new StaticServer({ distDir: dir })
   await server.start(0)
@@ -159,6 +164,14 @@ test('静态资源：存在的 ico 照常发，未知类型不瞎猜', async (t)
   const res = await send(base, '/favicon.ico')
   assert.equal(res.status, 200)
   assert.equal(res.headers['content-type'], 'image/x-icon')
+})
+
+test('构建戳：build-info.json 按 JSON 发且不缓存（部署验收要 curl 它）', async (t) => {
+  const { base } = await fixture(t)
+  const res = await send(base, '/build-info.json')
+  assert.equal(res.status, 200)
+  assert.equal(res.headers['content-type'], 'application/json; charset=utf-8')
+  assert.equal(res.headers['cache-control'], 'no-store')
 })
 
 // ───────────────────────────── CSP ─────────────────────────────
