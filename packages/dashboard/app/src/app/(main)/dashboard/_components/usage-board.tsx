@@ -95,9 +95,7 @@ export function UsageBoard() {
   return (
     <div className="flex flex-col gap-4">
       <div className="flex flex-wrap items-end justify-between gap-3">
-        <div>
-          <h1 className="text-xl font-semibold">用量明细</h1>
-          </div>
+        <h1 className="text-xl font-semibold">用量明细</h1>
         <Button variant="outline" onClick={() => void exportCsv()} disabled={exporting}>
           <Download /> {exporting ? "导出中…" : "导出 CSV"}
         </Button>

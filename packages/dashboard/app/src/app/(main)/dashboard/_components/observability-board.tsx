@@ -45,15 +45,7 @@ function HealthBadge({ health }: { health: SourceHealthView | undefined }) {
 }
 
 /** 一块数据的标题 + 健康度 + 说明。`hint` 可选：它只是口径解释，删掉不影响读数。 */
-function BlockHeader({
-  title,
-  health,
-  hint,
-}: {
-  title: string;
-  health: SourceHealthView | undefined;
-  hint?: string;
-}) {
+function BlockHeader({ title, health, hint }: { title: string; health: SourceHealthView | undefined; hint?: string }) {
   return (
     <CardHeader>
       <div className="flex items-center justify-between gap-2">
@@ -92,9 +84,7 @@ export function ObservabilityBoard() {
   return (
     <div className="flex flex-col gap-4">
       <div className="flex flex-wrap items-end justify-between gap-3">
-        <div>
-          <h1 className="text-xl font-semibold">运维总览</h1>
-                  </div>
+        <h1 className="text-xl font-semibold">运维总览</h1>
         <Button variant="outline" onClick={reload}>
           <RefreshCw /> 刷新
         </Button>
@@ -143,33 +133,21 @@ export function ObservabilityBoard() {
 
             <div className="grid gap-4 lg:grid-cols-2">
               <Card>
-                <BlockHeader
-                  title="用量链路"
-                  health={report.usage.health}
-                          />
+                <BlockHeader title="用量链路" health={report.usage.health} />
                 <CardContent>
                   {report.usage.service === null ? (
                     <p className="text-sm text-muted-foreground">用量服务不在运行，读不到轮询状态。</p>
                   ) : (
                     <div className="flex flex-col">
                       <Metric label="已落库记录" value={formatTokens(report.usage.service.records)} />
-                      <Metric
-                        label="轮询中"
-                        value={report.usage.service.polling ? "是" : "否"}
-                      />
-                      <Metric
-                        label="连续失败"
-                        value={formatTokens(report.usage.service.consecutiveFailures)}
-                      />
+                      <Metric label="轮询中" value={report.usage.service.polling ? "是" : "否"} />
+                      <Metric label="连续失败" value={formatTokens(report.usage.service.consecutiveFailures)} />
                       <Metric label="缺口记录" value={formatTokens(report.usage.service.gapRecords)} />
                       <Metric
                         label="隔离区（待处理 / 总）"
                         value={`${formatTokens(report.usage.service.rejectedPending)} / ${formatTokens(report.usage.service.rejectedCount)}`}
                       />
-                      <Metric
-                        label="价目表可用"
-                        value={report.usage.service.pricingAvailable ? "是" : "否"}
-                      />
+                      <Metric label="价目表可用" value={report.usage.service.pricingAvailable ? "是" : "否"} />
                       {report.usage.gateway === null ? null : (
                         <>
                           <Metric
@@ -188,19 +166,13 @@ export function ObservabilityBoard() {
               </Card>
 
               <Card>
-                <BlockHeader
-                  title="结算"
-                  health={report.billing.health}
-                          />
+                <BlockHeader title="结算" health={report.billing.health} />
                 <CardContent>
                   {report.billing.totals === null ? (
                     <p className="text-sm text-muted-foreground">结算服务不在运行，读不到状态计数。</p>
                   ) : (
                     <div className="flex flex-col">
-                      <Metric
-                        label="累计扣费"
-                        value={`${formatMicrosAsYuan(report.billing.chargedMicros)} 元`}
-                      />
+                      <Metric label="累计扣费" value={`${formatMicrosAsYuan(report.billing.chargedMicros)} 元`} />
                       <Metric label="已结算" value={formatTokens(report.billing.totals.settled)} />
                       <Metric label="待结算" value={formatTokens(report.billing.totals.pending)} />
                       <Metric label="结算中" value={formatTokens(report.billing.totals.settling)} />
@@ -215,16 +187,10 @@ export function ObservabilityBoard() {
               </Card>
 
               <Card>
-                <BlockHeader
-                  title="额度快照"
-                  health={report.quota.health}
-                          />
+                <BlockHeader title="额度快照" health={report.quota.health} />
                 <CardContent>
                   <div className="flex flex-col">
-                    <Metric
-                      label="就绪"
-                      value={report.quota.ready === null ? "—" : report.quota.ready ? "是" : "否"}
-                    />
+                    <Metric label="就绪" value={report.quota.ready === null ? "—" : report.quota.ready ? "是" : "否"} />
                     <Metric
                       label="快照年龄"
                       value={report.quota.ageMs === null ? "—" : formatDurationMs(report.quota.ageMs)}
@@ -233,21 +199,18 @@ export function ObservabilityBoard() {
                       label="TTL"
                       value={report.quota.ttlMs === null ? "—" : formatDurationMs(report.quota.ttlMs)}
                     />
-                    <Metric
-                      label="过期"
-                      value={report.quota.stale === null ? "—" : report.quota.stale ? "是" : "否"}
-                    />
+                    <Metric label="过期" value={report.quota.stale === null ? "—" : report.quota.stale ? "是" : "否"} />
                     <Metric label="条目数" value={formatTokens(report.quota.size ?? 0)} />
-                    <Metric label="代次" value={report.quota.generation === null ? "—" : String(report.quota.generation)} />
+                    <Metric
+                      label="代次"
+                      value={report.quota.generation === null ? "—" : String(report.quota.generation)}
+                    />
                   </div>
                 </CardContent>
               </Card>
 
               <Card>
-                <BlockHeader
-                  title="账号运行时"
-                  health={report.runtime.health}
-                          />
+                <BlockHeader title="账号运行时" health={report.runtime.health} />
                 <CardContent>
                   <div className="flex flex-col">
                     <Metric
@@ -263,10 +226,7 @@ export function ObservabilityBoard() {
               </Card>
 
               <Card>
-                <BlockHeader
-                  title="审计"
-                  health={report.audit.health}
-                          />
+                <BlockHeader title="审计" health={report.audit.health} />
                 <CardContent>
                   <div className="flex flex-col">
                     <Metric label="记录总数" value={formatTokens(report.audit.total)} />
@@ -282,9 +242,7 @@ export function ObservabilityBoard() {
                         {report.audit.recentActions.slice(0, 6).map((item) => (
                           <li key={item.action} className="flex items-center justify-between gap-2 text-xs">
                             <code className="font-mono">{item.action}</code>
-                            <span className="tabular-nums text-muted-foreground">
-                              {formatTokens(item.count)}
-                            </span>
+                            <span className="tabular-nums text-muted-foreground">{formatTokens(item.count)}</span>
                           </li>
                         ))}
                       </ul>
@@ -307,10 +265,7 @@ export function ObservabilityBoard() {
                     <Metric label="降级" value={formatTokens(report.accounts.degraded)} />
                     <Metric label="异常" value={formatTokens(report.accounts.unhealthy)} />
                     <Metric label="未检查" value={formatTokens(report.accounts.unknown)} />
-                    <Metric
-                      label="系统自动停用"
-                      value={formatTokens(report.accounts.autoDisabled)}
-                    />
+                    <Metric label="系统自动停用" value={formatTokens(report.accounts.autoDisabled)} />
                     <Metric label="最近一轮检查" value={formatDateTime(report.accounts.lastPassAt)} />
                     {report.accounts.lastPass === null ? null : (
                       <>

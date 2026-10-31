@@ -102,9 +102,7 @@ export function SettingsBoard() {
   return (
     <div className="flex flex-col gap-4">
       <div className="flex flex-wrap items-end justify-between gap-3">
-        <div>
-          <h1 className="text-xl font-semibold">设置</h1>
-                  </div>
+        <h1 className="text-xl font-semibold">设置</h1>
         <Button variant="outline" onClick={reload}>
           <RefreshCw /> 刷新
         </Button>

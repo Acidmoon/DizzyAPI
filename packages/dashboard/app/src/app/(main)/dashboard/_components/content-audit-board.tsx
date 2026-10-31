@@ -81,9 +81,7 @@ export function ContentAuditBoard() {
   return (
     <div className="flex flex-col gap-4">
       <div className="flex flex-wrap items-end justify-between gap-3">
-        <div>
-          <h1 className="text-xl font-semibold">内容审核</h1>
-                  </div>
+        <h1 className="text-xl font-semibold">内容审核</h1>
         <div className="flex gap-2">
           <Button variant="outline" onClick={() => void pushNow()}>
             <Send /> 立刻推送

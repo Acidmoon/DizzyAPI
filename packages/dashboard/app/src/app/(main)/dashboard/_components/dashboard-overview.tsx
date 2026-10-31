@@ -83,9 +83,7 @@ export function DashboardOverview() {
 
   return (
     <div className="flex flex-col gap-4">
-      <div>
-        <h1 className="text-xl font-semibold">仪表盘</h1>
-      </div>
+      <h1 className="text-xl font-semibold">仪表盘</h1>
 
       <DataState loading={loading} error={error} empty={data === null} onRetry={reload} emptyTitle="暂时没有概览数据">
         {data === null ? null : (
@@ -145,11 +143,7 @@ export function DashboardOverview() {
                   <p className="text-sm text-muted-foreground">—</p>
                 ) : (
                   <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-                    <Metric
-                      title="累计请求"
-                      value={formatTokens(data.stats.usage.total.requests)}
-                      icon={Activity}
-                    />
+                    <Metric title="累计请求" value={formatTokens(data.stats.usage.total.requests)} icon={Activity} />
                     <Metric
                       title="累计 token"
                       value={formatTokens(data.stats.usage.total.tokens)}
@@ -159,7 +153,6 @@ export function DashboardOverview() {
                     <Metric
                       title="累计费用"
                       value={`${formatMicrosAsYuan(data.stats.usage.total.costMicros)} 元`}
-                      hint={undefined}
                       icon={Activity}
                     />
                     <Metric
@@ -269,9 +262,7 @@ export function DashboardOverview() {
                         .slice(0, 8)
                         .map((user) => (
                           <TableRow key={user.userId}>
-                            <TableCell className="pl-4">
-                              {user.name ?? `用户 #${String(user.userId)}`}
-                            </TableCell>
+                            <TableCell className="pl-4">{user.name ?? `用户 #${String(user.userId)}`}</TableCell>
                             <TableCell className="text-right tabular-nums">{formatTokens(user.requests)}</TableCell>
                             <TableCell className="pr-4 text-right tabular-nums">
                               {formatMicrosAsYuan(user.costMicros)}

@@ -74,9 +74,7 @@ export function AuditBoard() {
 
   return (
     <div className="flex flex-col gap-4">
-      <div>
-        <h1 className="text-xl font-semibold">操作审计</h1>
-      </div>
+      <h1 className="text-xl font-semibold">操作审计</h1>
 
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
         <Card>

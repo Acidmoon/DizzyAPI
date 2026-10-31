@@ -73,9 +73,7 @@ export function BillingBoard() {
   return (
     <div className="flex flex-col gap-4">
       <div className="flex flex-wrap items-end justify-between gap-3">
-        <div>
-          <h1 className="text-xl font-semibold">结算</h1>
-                  </div>
+        <h1 className="text-xl font-semibold">结算</h1>
         <div className="flex items-center gap-2">
           <Select
             value={status}
