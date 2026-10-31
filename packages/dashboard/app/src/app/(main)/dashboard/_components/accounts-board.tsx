@@ -14,7 +14,7 @@
  */
 import { useCallback, useState } from "react";
 
-import { RefreshCw, Search } from "lucide-react";
+import { Plus, RefreshCw, Search, Upload } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -26,6 +26,8 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { api, adminUsers } from "@/lib/api";
 import { formatDateTime, formatDurationMs } from "@/lib/format";
 
+import { AccountCreateDialog } from "./account-create-dialog";
+import { AccountImportDialog } from "./account-import-dialog";
 import { accountStateLabel } from "./admin-logic";
 import { DataState } from "./data-state";
 import { useResource } from "./use-resource";
@@ -62,6 +64,8 @@ export function AccountsBoard() {
   const [provider, setProvider] = useState("");
   const [status, setStatus] = useState<"all" | "active" | "needs_reauth" | "auto_disabled">("all");
   const [offset, setOffset] = useState(0);
+  const [creating, setCreating] = useState(false);
+  const [importing, setImporting] = useState(false);
 
   const load = useCallback(
     () =>
@@ -78,9 +82,19 @@ export function AccountsBoard() {
 
   return (
     <div className="flex flex-col gap-4">
-      <div>
-        <h1 className="text-xl font-semibold">上游账号池</h1>
-        <p className="text-sm text-muted-foreground">先筛条件，再看列表。凭据与令牌一律不回显。</p>
+      <div className="flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <h1 className="text-xl font-semibold">上游账号池</h1>
+          <p className="text-sm text-muted-foreground">先筛条件，再看列表。凭据与令牌一律不回显。</p>
+        </div>
+        <div className="flex gap-2">
+          <Button variant="outline" onClick={() => setImporting(true)}>
+            <Upload /> 批量导入
+          </Button>
+          <Button onClick={() => setCreating(true)}>
+            <Plus /> 新建账号
+          </Button>
+        </div>
       </div>
 
       <Card>
@@ -235,6 +249,23 @@ export function AccountsBoard() {
           </DataState>
         </CardContent>
       </Card>
+
+      <AccountCreateDialog
+        open={creating}
+        onClose={() => setCreating(false)}
+        onCreated={() => {
+          setCreating(false);
+          reload();
+        }}
+      />
+
+      <AccountImportDialog
+        open={importing}
+        onClose={() => setImporting(false)}
+        onImported={() => {
+          reload();
+        }}
+      />
     </div>
   );
 }

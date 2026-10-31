@@ -86,3 +86,36 @@ test('每个管理页目录都在 sidebar-items.ts 里登记了', () => {
     `这些页面目录没在 sidebar-items.ts 登记（用户只能手输 URL 进来）：\n${offenders.join('\n')}`,
   )
 })
+
+/**
+ * 第四条：**每个页面私有弹窗都必须被某个组件挂上**。
+ *
+ * 这条是 2026-10-31 补的：owner 提「管理员的上游账号页必须能添加账号」，
+ * 结果服务端 `POST /api/accounts` 与客户端 `createAccount()` **早就有**，
+ * 缺的是页面上的入口——弹窗写完没接到 board 上，管理员照样没法建账号。
+ *
+ * 与第 2 条的区别：第 2 条管「正文组件被 page 挂上」，这条管「弹窗被 board 挂上」。
+ * 两者都是「东西写了但没人用」——`pnpm test` 与 `next build` **都不会报**，
+ * 只有真浏览器点一下才发现。
+ *
+ * **范围只限页面私有弹窗**：`_components/` 根下的 `*-dialog.tsx`。
+ * `header/` `sidebar/` 这些**站点外壳**目录里的弹窗（`search-dialog` 等）
+ * 由外壳自己用，不受这条约束——把它们算进来会误报。
+ */
+test('每个页面私有弹窗（*-dialog.tsx）都必须被某个组件挂上', () => {
+  const dialogs = componentFiles.filter(
+    (file) => file.endsWith('-dialog.tsx') && relative(join(DASHBOARD_ROOT, '_components'), file).split(sep).length === 1,
+  )
+  assert.ok(dialogs.length >= 4, `弹窗太少（${String(dialogs.length)}），命名约定可能变了`)
+  const componentSources = componentFiles.map((file) => readFileSync(file, 'utf8')).join('\n')
+  const orphans: string[] = []
+  for (const dialog of dialogs) {
+    const base = (dialog.split(sep).pop() ?? '').replace(/\.tsx$/, '')
+    if (!componentSources.includes(`./${base}"`)) orphans.push(`${base}.tsx`)
+  }
+  assert.deepEqual(
+    orphans,
+    [],
+    `这些弹窗没有任何组件挂上（写完忘了接）：\n${orphans.join('\n')}`,
+  )
+})
