@@ -3,6 +3,7 @@ import type { ReactNode } from "react";
 import { cn } from "cn";
 
 import { AppSidebar } from "@/app/(main)/dashboard/_components/sidebar/app-sidebar";
+import { SessionGuard } from "@/app/(main)/auth/_components/session-guard";
 import { Separator } from "@/components/ui/separator";
 import { SidebarInset, SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
 
@@ -16,10 +17,16 @@ import { ThemeSwitcher } from "./_components/header/theme-switcher";
  * 静态导出没有服务端运行时，所以这里**不读 cookie、不读服务端偏好**：
  * 首帧的 `data-*` 属性由 `RootLayout` 的默认值给出，`ThemeBootScript` 在
  * hydration 前按 cookie 覆盖，`usePreferencesStore` 之后同步。
+ *
+ * **会话闸门在最外层**（`SessionGuard`）：静态页先回 200 + 外壳，浏览器里调
+ * `GET /api/session`，401 就跳登录页并带上 `?next=`；`/dashboard/**` 还要求管理员角色，
+ * 普通用户会被送回 `/user`。`/user` 段的布局直接转接本文件（见 `user/layout.tsx`），
+ * 所以两段共用同一个闸门，**没有第二份实现**。
  */
 export default function Layout({ children }: Readonly<{ children: ReactNode }>) {
   return (
-    <SidebarProvider>
+    <SessionGuard>
+      <SidebarProvider>
       <AppSidebar />
       <SidebarInset
         className={cn(
@@ -58,6 +65,7 @@ export default function Layout({ children }: Readonly<{ children: ReactNode }>) 
           {children}
         </div>
       </SidebarInset>
-    </SidebarProvider>
+      </SidebarProvider>
+    </SessionGuard>
   );
 }
