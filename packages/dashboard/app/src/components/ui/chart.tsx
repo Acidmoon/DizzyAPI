@@ -63,13 +63,16 @@ function ChartContainer({
       <div
         data-slot="chart"
         data-chart={chartId}
+        data-chart-vars="inline"
         className={cn(
           "flex aspect-video justify-center text-xs [&_.recharts-cartesian-axis-tick_text]:fill-muted-foreground [&_.recharts-cartesian-grid_line[stroke='#ccc']]:stroke-border/50 [&_.recharts-curve.recharts-tooltip-cursor]:stroke-border [&_.recharts-dot[stroke='#fff']]:stroke-transparent [&_.recharts-layer]:outline-hidden [&_.recharts-polar-grid_[stroke='#ccc']]:stroke-border [&_.recharts-radial-bar-background-sector]:fill-muted [&_.recharts-rectangle.recharts-tooltip-cursor]:fill-muted [&_.recharts-reference-line_[stroke='#ccc']]:stroke-border [&_.recharts-sector]:outline-hidden [&_.recharts-sector[stroke='#fff']]:stroke-transparent [&_.recharts-surface]:outline-hidden",
           className
         )}
         {...props}
+        style={{ ...chartVars(config), ...props.style }}
+
       >
-        <ChartStyle id={chartId} config={config} />
+
         <RechartsPrimitive.ResponsiveContainer
           initialDimension={initialDimension}
         >
@@ -78,6 +81,28 @@ function ChartContainer({
       </div>
     </ChartContext.Provider>
   )
+}
+
+
+/**
+ * 把 chart config 的颜色摊成 CSS 自定义属性，挂到容器上。
+ *
+ * 为什么不用 `<style>` 注入（上游的 `ChartStyle` 做法）：那段 CSS 里带 React 的
+ * `useId`，内容每次渲染都可能不同，既没法用 CSP 的 sha256 白名单放行，也会被
+ * `style-src 'self'` 直接拦掉。挂在容器的 `style` 属性上等价（变量对子元素同样可见），
+ * 而 style 属性是按上游模版放行的（`style-src-attr 'unsafe-inline'`）。
+ *
+ * 只认 `color`：项目里 chart config 全部用 `color: "var(--chart-N)"`（0 处用 `theme:`），
+ * 而 `--chart-N` 本身随主题变化，所以浅色/深色都对。真要用 `theme:` 再单独处理。
+ */
+function chartVars(config: ChartConfig): React.CSSProperties {
+  const vars: Record<string, string> = {}
+  for (const [key, itemConfig] of Object.entries(config)) {
+    const color = itemConfig.color ?? itemConfig.theme?.light
+    if (color === undefined) continue
+    vars[`--color-${key}`] = color
+  }
+  return vars as React.CSSProperties
 }
 
 const ChartStyle = ({ id, config }: { id: string; config: ChartConfig }) => {
