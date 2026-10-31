@@ -84,13 +84,16 @@ export function UsagePie({
         <CardTitle>{title}</CardTitle>
         {description === undefined ? null : <CardDescription>{description}</CardDescription>}
       </CardHeader>
-      <CardContent className="min-w-0">
+      {/* `@container`：卡内要不要横排，取决于**卡自己的宽度**，不是视口宽度。
+          用视口断点会两头打架 —— 管理页外层 `xl:grid-cols-3`（1280px）把卡压到约 430px，
+          而卡内 `xl:flex-row` 也是 1280px，1440 下同时生效 → 图例只剩 190px、折行。 */}
+      <CardContent className="@container min-w-0">
         {slices.length === 0 ? (
           <p className="py-8 text-center text-sm text-muted-foreground">{emptyText}</p>
         ) : (
-          // 断点用 `xl` 而不是 `md`：管理页外层就是 `xl:grid-cols-3`（每列约 350px），
-          // 卡内断点比卡外还宽会让「饼图 + 图例」强行横排、图例被压到 190px 折行。
-          <div className="flex flex-col gap-3 xl:flex-row xl:items-center">
+          // 544px 以上才横排：1440 管理页卡约 430px → 竖排（图例占满卡宽，一行放得下）；
+          // 1440 用户页卡约 700px → 横排（保持原高度）。
+          <div className="flex flex-col gap-3 @[34rem]:flex-row @[34rem]:items-center">
             <ChartContainer config={chartConfig} className="mx-auto aspect-square h-48 w-48 shrink-0">
               <PieChart>
                 <Pie
