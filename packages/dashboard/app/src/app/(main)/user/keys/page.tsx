@@ -148,8 +148,7 @@ export default function UserKeysPage() {
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div className="flex flex-col gap-1">
           <h1 className="font-heading text-xl font-semibold tracking-tight">API 密钥</h1>
-          <p className="text-sm text-muted-foreground">密钥等同于密码，请只放在服务端环境变量里</p>
-        </div>
+          </div>
         <Button
           size="sm"
           onClick={() => {

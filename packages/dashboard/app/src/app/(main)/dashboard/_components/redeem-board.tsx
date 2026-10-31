@@ -108,10 +108,7 @@ export function RedeemBoard() {
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
           <h1 className="text-xl font-semibold">兑换码</h1>
-          <p className="text-sm text-muted-foreground">
-            列表只有掩码（服务端只存 sha256 与末 4 位）。明文只在生成后出现一次。
-          </p>
-        </div>
+                  </div>
         <div className="flex gap-2">
           <Select
             value={status}

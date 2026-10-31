@@ -18,7 +18,8 @@ interface MetricCardProps {
   icon: typeof Coins;
   title: string;
   value: string;
-  hint: string;
+  /** 可选：只放「数字本身」或「状态本身」，不放口径解释。 */
+  hint?: string;
   badge?: string;
 }
 
@@ -38,7 +39,7 @@ function MetricCard({ icon: Icon, title, value, hint, badge }: MetricCardProps) 
           <div className="text-2xl leading-none font-medium tracking-tight tabular-nums">{value}</div>
           {badge === undefined ? null : <Badge variant="secondary">{badge}</Badge>}
         </div>
-        <p className="text-sm text-muted-foreground">{hint}</p>
+        {hint === undefined ? null : <p className="text-sm text-muted-foreground">{hint}</p>}
       </CardContent>
     </Card>
   );
@@ -58,13 +59,11 @@ export function UsageMetrics({ totals, rangeLabel, balanceCents }: UsageMetricsP
         icon={Receipt}
         title={`${rangeLabel}消费`}
         value={formatYuan(totals.costMicros)}
-        hint={`${formatTokens(totals.requests)} 次请求的合计金额`}
       />
       <MetricCard
         icon={Hash}
         title={`${rangeLabel}请求数`}
         value={formatTokens(totals.requests)}
-        hint="含失败请求（失败也计数，金额为 0）"
       />
       <MetricCard
         icon={Waves}
@@ -76,7 +75,7 @@ export function UsageMetrics({ totals, rangeLabel, balanceCents }: UsageMetricsP
         icon={Coins}
         title="账户余额"
         value={balanceCents === null ? "未启用" : `${formatCentsAsYuan(balanceCents)} 元`}
-        hint={balanceCents === null ? "管理员关闭了余额显示" : "余额为负表示后付费欠费"}
+        hint={balanceCents === null ? "管理员关闭了余额显示" : undefined}
       />
     </div>
   );

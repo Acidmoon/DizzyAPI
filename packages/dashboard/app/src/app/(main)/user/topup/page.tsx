@@ -136,10 +136,6 @@ export default function UserTopupPage() {
     <div className="@container/main flex min-w-0 flex-col gap-4 md:gap-6">
       <div className="flex flex-col gap-1">
         <h1 className="font-heading text-xl font-semibold tracking-tight">充值</h1>
-        <p className="text-sm text-muted-foreground">
-          只支持人工确认到账：下单后请联系管理员线下转账，核对后由管理员确认，金额进余额。
-          <strong className="ml-1 text-foreground">尚未接入在线支付，不会自动到账。</strong>
-        </p>
       </div>
 
       {error === null ? null : <ErrorBlock message={error} onRetry={() => void load()} />}
@@ -157,6 +153,8 @@ export default function UserTopupPage() {
         </CardHeader>
         <CardContent className="flex flex-col gap-4">
           {options === null ? null : <p className="text-sm text-muted-foreground">{options.notice}</p>}
+          {/* 这句由护栏 `user-pages-batch2.test.ts` 钉住：下单 ≠ 到账，必须明说，不许当解释性小字删掉。 */}
+          {options === null ? null : <p className="text-sm font-medium text-foreground">尚未接入在线支付，不会自动到账。</p>}
           <form
             className="flex flex-wrap items-start gap-3"
             onSubmit={(event) => {

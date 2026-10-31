@@ -76,10 +76,6 @@ export function AuditBoard() {
     <div className="flex flex-col gap-4">
       <div>
         <h1 className="text-xl font-semibold">操作审计</h1>
-        <p className="text-sm text-muted-foreground">
-          记录管理员高危写操作（改余额 / 改角色 / 账号增删改 / 生成兑换码 / 确认到账 / 改价格与设置）。
-          审计是旁路：它挂掉不影响业务写操作；记录已脱敏，不含密码、密钥与凭据明文。
-        </p>
       </div>
 
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">

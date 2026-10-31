@@ -158,10 +158,7 @@ export function SettingsEditDialog({
       <DialogContent className="sm:max-w-lg">
         <DialogHeader>
           <DialogTitle>编辑设置「{namespace.ns}」</DialogTitle>
-          <DialogDescription>
-            只提交改动的字段；每项改动服务端都会记一条审计（只记字段名，不记值）。
-            保存后目标插件会**软重启**以应用新配置。
-          </DialogDescription>
+          <DialogDescription>保存后目标插件会软重启以应用新配置。</DialogDescription>
         </DialogHeader>
 
         <div className="grid gap-4">

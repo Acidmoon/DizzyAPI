@@ -68,10 +68,7 @@ export function RolesBoard() {
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
           <h1 className="text-xl font-semibold">角色权限</h1>
-          <p className="text-sm text-muted-foreground">
-            角色只有「管理员 / 普通用户」两种。改角色会记一条审计；把自己降权会立刻失去管理台权限。
-          </p>
-        </div>
+                  </div>
         <div className="flex gap-2">
           <Select
             value={roleFilter}

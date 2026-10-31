@@ -75,11 +75,7 @@ export function BillingBoard() {
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
           <h1 className="text-xl font-semibold">结算</h1>
-          <p className="text-sm text-muted-foreground">
-            真实扣费：拉取 → 落库 → 结算 → 推进游标，同一 reqId 只扣一次。
-            本页只读，扣费由后台按真实用量自动执行；日期按 UTC。
-          </p>
-        </div>
+                  </div>
         <div className="flex items-center gap-2">
           <Select
             value={status}

@@ -116,8 +116,7 @@ export default function UserUsagePage() {
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div className="flex flex-col gap-1">
           <h1 className="font-heading text-xl font-semibold tracking-tight">用量明细</h1>
-          <p className="text-sm text-muted-foreground">按请求逐条列出，所有日期按本地时区显示</p>
-        </div>
+          </div>
       </div>
 
       <UsageFilters

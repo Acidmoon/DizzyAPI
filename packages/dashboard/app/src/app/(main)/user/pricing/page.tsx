@@ -74,10 +74,7 @@ export default function UserPricingPage() {
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div className="flex flex-col gap-1">
           <h1 className="font-heading text-xl font-semibold tracking-tight">价格表</h1>
-          <p className="text-sm text-muted-foreground">
-            单价单位：元 / 百万 token。本页只读，需要调整价格请联系管理员。
-          </p>
-        </div>
+                  </div>
         <div className="relative">
           <Search className="pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-muted-foreground" />
           <Input

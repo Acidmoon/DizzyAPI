@@ -74,9 +74,7 @@ export default function UserOverviewPage() {
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div className="flex flex-col gap-1">
           <h1 className="font-heading text-xl font-semibold tracking-tight">概览</h1>
-          <p className="text-sm text-muted-foreground">
-            {session === null ? "正在读取账户…" : `${session.user.name} · 所有日期按本地时区显示`}
-          </p>
+          {session === null ? <p className="text-sm text-muted-foreground">正在读取账户…</p> : null}
         </div>
         <div className="flex items-center gap-2">
           <Select value={range} onValueChange={(value) => setRange(value as UsageRange)}>

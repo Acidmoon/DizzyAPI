@@ -44,7 +44,7 @@ function HealthBadge({ health }: { health: SourceHealthView | undefined }) {
   );
 }
 
-/** 一块数据的标题 + 健康度 + 说明。 */
+/** 一块数据的标题 + 健康度 + 说明。`hint` 可选：它只是口径解释，删掉不影响读数。 */
 function BlockHeader({
   title,
   health,
@@ -52,7 +52,7 @@ function BlockHeader({
 }: {
   title: string;
   health: SourceHealthView | undefined;
-  hint: string;
+  hint?: string;
 }) {
   return (
     <CardHeader>
@@ -61,7 +61,7 @@ function BlockHeader({
         <HealthBadge health={health} />
       </div>
       <CardDescription>
-        {hint}
+        {hint === undefined ? null : hint}
         {health !== undefined && health.detail !== "" ? ` · ${health.detail}` : ""}
       </CardDescription>
     </CardHeader>
@@ -94,11 +94,7 @@ export function ObservabilityBoard() {
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
           <h1 className="text-xl font-semibold">运维总览</h1>
-          <p className="text-sm text-muted-foreground">
-            用量链路 / 结算 / 额度快照 / 账号运行时 / 审计 / 账号池健康，一屏看完。
-            任何一块数据源缺席只降级那一块，接口照常返回。
-          </p>
-        </div>
+                  </div>
         <Button variant="outline" onClick={reload}>
           <RefreshCw /> 刷新
         </Button>
@@ -157,8 +153,7 @@ export function ObservabilityBoard() {
                 <BlockHeader
                   title="用量链路"
                   health={report.usage.health}
-                  hint="TS 侧轮询状态与 Go 环形缓冲健康度"
-                />
+                          />
                 <CardContent>
                   {report.usage.service === null ? (
                     <p className="text-sm text-muted-foreground">用量服务不在运行，读不到轮询状态。</p>
@@ -203,8 +198,7 @@ export function ObservabilityBoard() {
                 <BlockHeader
                   title="结算"
                   health={report.billing.health}
-                  hint="各状态计数与扣费额；「今天」按 UTC 请求发生日分桶"
-                />
+                          />
                 <CardContent>
                   {report.billing.totals === null ? (
                     <p className="text-sm text-muted-foreground">结算服务不在运行，读不到状态计数。</p>
@@ -231,8 +225,7 @@ export function ObservabilityBoard() {
                 <BlockHeader
                   title="额度快照"
                   health={report.quota.health}
-                  hint="Go 侧余额只读快照；过期在严格模式下会 503"
-                />
+                          />
                 <CardContent>
                   <div className="flex flex-col">
                     <Metric
@@ -261,8 +254,7 @@ export function ObservabilityBoard() {
                 <BlockHeader
                   title="账号运行时"
                   health={report.runtime.health}
-                  hint="Go 侧全站聚合：在途请求数与冷却中的账号数"
-                />
+                          />
                 <CardContent>
                   <div className="flex flex-col">
                     <Metric
@@ -281,8 +273,7 @@ export function ObservabilityBoard() {
                 <BlockHeader
                   title="审计"
                   health={report.audit.health}
-                  hint="最近窗口按动作分组"
-                />
+                          />
                 <CardContent>
                   <div className="flex flex-col">
                     <Metric label="记录总数" value={formatTokens(report.audit.total)} />

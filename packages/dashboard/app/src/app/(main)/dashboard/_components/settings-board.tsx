@@ -104,11 +104,7 @@ export function SettingsBoard() {
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
           <h1 className="text-xl font-semibold">设置</h1>
-          <p className="text-sm text-muted-foreground">
-            运行期配置覆盖。<code className="font-mono">app.yml</code> 是人写的基线，这里改的是覆盖层；
-            秘密字段只显示「配没配」，值一律不回显。
-          </p>
-        </div>
+                  </div>
         <Button variant="outline" onClick={reload}>
           <RefreshCw /> 刷新
         </Button>

@@ -159,9 +159,7 @@ function BlockView({ block }: { block: Block }) {
         <div className="rounded-lg border border-dashed border-amber-500/50 bg-amber-500/5 p-3 text-xs leading-relaxed">
           <p className="font-medium">这张表这一版没有生成（`{block.id}`）</p>
           <p className="mt-1 text-muted-foreground">
-            旧版文档页是在渲染时从 Go / TS 源码实时派生这张表（入口表 / 错误码表），所以永远不会过期。
-            新版前端是静态导出，构建期不读源码，因此这里**不做手抄**——手抄必腐烂。
-            要恢复这张表需要一条构建期派生步骤，已作为缺口上报。
+            旧版文档页从 Go / TS 源码实时派生这张表；静态导出读不到源码，所以这里不手抄。
           </p>
         </div>
       );
@@ -241,10 +239,7 @@ export default function UserDocsPage() {
             <BookOpen className="size-5" />
             API 文档
           </h1>
-          <p className="text-sm text-muted-foreground">
-            内容取自仓库 `docs/api/*.md`；复制出来就是 Markdown 原文，可以直接投喂给 agent。
-          </p>
-        </div>
+                  </div>
         <Button size="sm" variant="outline" onClick={() => void copyCurrent()} disabled={body === undefined}>
           <Copy className="size-3.5" />
           复制本篇 Markdown

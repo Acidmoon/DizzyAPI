@@ -118,9 +118,6 @@ export default function UserProfilePage() {
     <div className="@container/main flex min-w-0 flex-col gap-4 md:gap-6">
       <div className="flex flex-col gap-1">
         <h1 className="font-heading text-xl font-semibold tracking-tight">个人资料</h1>
-        <p className="text-sm text-muted-foreground">
-          用户名与头像会显示在页头；密码是登录凭据，改完请更新所有使用它的地方。
-        </p>
       </div>
 
       {error === null ? null : <ErrorBlock message={error} onRetry={() => void load()} />}

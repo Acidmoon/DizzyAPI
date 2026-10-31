@@ -99,9 +99,6 @@ export function PriceDialog({
       <DialogContent className="sm:max-w-lg">
         <DialogHeader>
           <DialogTitle>{isNew ? "添加模型价格" : `编辑 ${(target as ModelPriceView).model}`}</DialogTitle>
-          <DialogDescription>
-            单价是**每百万 token 的元数**，写成十进制字符串（例：`2` / `0.5`）。页面不做算术语义校验。
-          </DialogDescription>
         </DialogHeader>
 
         <div className="grid gap-4">

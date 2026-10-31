@@ -97,9 +97,6 @@ export function ContentAuditRuleDialog({
       <DialogContent className="sm:max-w-lg">
         <DialogHeader>
           <DialogTitle>{isNew ? "新增内容审核规则" : "编辑内容审核规则"}</DialogTitle>
-          <DialogDescription>
-            关键词是**子串匹配**（大小写不敏感），不是正则表达式；命中规则里的任何一段即算命中。
-          </DialogDescription>
         </DialogHeader>
 
         <div className="grid gap-4">

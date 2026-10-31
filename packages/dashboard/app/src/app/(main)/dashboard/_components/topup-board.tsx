@@ -113,10 +113,7 @@ export function TopupBoard() {
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
           <h1 className="text-xl font-semibold">充值订单</h1>
-          <p className="text-sm text-muted-foreground">
-            当前只有人工到账通道（线下转账后由管理员确认）。确认会真的加余额，且是幂等的。
-          </p>
-        </div>
+                  </div>
         <div className="flex gap-2">
           <Select
             value={status}

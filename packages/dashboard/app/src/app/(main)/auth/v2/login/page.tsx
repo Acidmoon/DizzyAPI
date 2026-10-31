@@ -20,7 +20,6 @@ export default function LoginV2() {
       <div className="mx-auto flex w-full flex-col justify-center space-y-8 sm:w-[350px]">
         <div className="space-y-2 text-center">
           <h1 className="text-3xl font-medium">登录账号</h1>
-          <p className="text-muted-foreground text-sm">请输入邮箱与密码。</p>
         </div>
         <div className="space-y-4">
           <LoginForm />

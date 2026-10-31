@@ -53,10 +53,7 @@ export function PricingBoard() {
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
           <h1 className="text-xl font-semibold">模型价格</h1>
-          <p className="text-sm text-muted-foreground">
-            单价是每百万 token 的元数。没配价的模型在定价闸门打开后会被拒绝（403 MODEL_NOT_PRICED）。
-          </p>
-        </div>
+                  </div>
         <div className="flex gap-2">
           <Button variant="outline" onClick={reload}>
             <RefreshCw /> 刷新

@@ -94,9 +94,6 @@ export default function UserModelsPage() {
     <div className="@container/main flex min-w-0 flex-col gap-4 md:gap-6">
       <div className="flex flex-col gap-1">
         <h1 className="font-heading text-xl font-semibold tracking-tight">模型广场</h1>
-        <p className="text-sm text-muted-foreground">
-          当前可供调用的模型、单价与可用性。单价单位是「元 / 每百万 token」，实际扣费按请求的真实 token 用量计算（后付费）。
-        </p>
       </div>
 
       {error === null ? null : <ErrorBlock message={error} onRetry={() => void load()} />}

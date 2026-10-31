@@ -84,9 +84,7 @@ export function BalanceDialog({
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
           <DialogTitle>调整「{user.name}」的余额</DialogTitle>
-          <DialogDescription>
-            当前余额 {formatMicrosAsYuan(user.balanceMinor)} 元（整数微元）。余额允许为负，表示后付费欠款。
-          </DialogDescription>
+          <DialogDescription>当前余额 {formatMicrosAsYuan(user.balanceMinor)} 元</DialogDescription>
         </DialogHeader>
 
         <div className="grid gap-4">

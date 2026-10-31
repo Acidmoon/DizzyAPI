@@ -97,8 +97,7 @@ export function UsageBoard() {
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
           <h1 className="text-xl font-semibold">用量明细</h1>
-          <p className="text-sm text-muted-foreground">全站请求明细；费用按当前价表在读取时计算。</p>
-        </div>
+          </div>
         <Button variant="outline" onClick={() => void exportCsv()} disabled={exporting}>
           <Download /> {exporting ? "导出中…" : "导出 CSV"}
         </Button>

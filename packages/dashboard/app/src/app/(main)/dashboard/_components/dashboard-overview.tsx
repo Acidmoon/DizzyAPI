@@ -46,7 +46,7 @@ function HealthBadge({ health }: { health: { readonly state: string; readonly de
   );
 }
 
-/** 一张指标卡。`hint` 是口径说明（金额一定要写清单位，避免被当成「分」）。 */
+/** 一张指标卡。`hint` 只放「数字本身」或「状态本身」，不放口径解释。 */
 function Metric({
   title,
   value,
@@ -86,7 +86,6 @@ export function DashboardOverview() {
     <div className="flex flex-col gap-4">
       <div>
         <h1 className="text-xl font-semibold">仪表盘</h1>
-        <p className="text-sm text-muted-foreground">全站规模、今日与累计用量、各数据源健康度。</p>
       </div>
 
       <DataState loading={loading} error={error} empty={data === null} onRetry={reload} emptyTitle="暂时没有概览数据">
@@ -163,7 +162,7 @@ export function DashboardOverview() {
                     <Metric
                       title="累计费用"
                       value={`${formatMicrosAsYuan(data.stats.usage.total.costMicros)} 元`}
-                      hint="整数微元换算，不经浮点"
+                      hint={undefined}
                       icon={Activity}
                     />
                     <Metric

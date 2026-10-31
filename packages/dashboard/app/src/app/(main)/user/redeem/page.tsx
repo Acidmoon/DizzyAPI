@@ -89,9 +89,6 @@ export default function UserRedeemPage() {
     <div className="@container/main flex min-w-0 flex-col gap-4 md:gap-6">
       <div className="flex flex-col gap-1">
         <h1 className="font-heading text-xl font-semibold tracking-tight">兑换码</h1>
-        <p className="text-sm text-muted-foreground">
-          兑换成功后额度直接进余额；兑换码不区分大小写，分隔符可以省略。
-        </p>
       </div>
 
       {error === null ? null : <ErrorBlock message={error} onRetry={() => void load()} />}

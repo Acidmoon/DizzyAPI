@@ -93,7 +93,6 @@ export function UserEditDialog({
       <DialogContent className="sm:max-w-lg">
         <DialogHeader>
           <DialogTitle>编辑用户「{user.name}」</DialogTitle>
-          <DialogDescription>只提交改动的字段；每项改动服务端都会记一条审计。</DialogDescription>
         </DialogHeader>
 
         <div className="grid gap-4">

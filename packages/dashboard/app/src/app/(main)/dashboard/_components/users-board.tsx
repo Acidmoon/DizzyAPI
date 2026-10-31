@@ -73,8 +73,7 @@ export function UsersBoard() {
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
           <h1 className="text-xl font-semibold">用户管理</h1>
-          <p className="text-sm text-muted-foreground">全站用户；点「编辑」改资料与并发上限，「余额」调整金额。</p>
-        </div>
+          </div>
         <div className="flex flex-wrap items-center gap-2">
           <Select
             value={status}

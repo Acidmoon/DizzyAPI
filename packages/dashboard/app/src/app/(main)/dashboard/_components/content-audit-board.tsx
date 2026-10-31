@@ -83,11 +83,7 @@ export function ContentAuditBoard() {
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
           <h1 className="text-xl font-semibold">内容审核</h1>
-          <p className="text-sm text-muted-foreground">
-            关键词规则只做**大小写不敏感子串匹配**，不是正则。命中 block 规则会 403 拒绝请求；
-            命中 log 规则只记日志与计数。
-          </p>
-        </div>
+                  </div>
         <div className="flex gap-2">
           <Button variant="outline" onClick={() => void pushNow()}>
             <Send /> 立刻推送

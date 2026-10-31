@@ -118,8 +118,8 @@ export function RedeemCreateDialog({
           <DialogTitle>{created === null ? "生成兑换码批次" : "生成成功：明文只显示这一次"}</DialogTitle>
           <DialogDescription>
             {created === null
-              ? "面额与张数都会落库；明文码只在生成响应里出现，之后列表只有掩码。"
-              : "关掉这个窗口就再也看不到明文了（服务端只存 sha256 与末 4 位）。请先复制保存。"}
+              ? undefined
+              : "关掉这个窗口就再也看不到明文了。请先复制保存。"}
           </DialogDescription>
         </DialogHeader>
 
