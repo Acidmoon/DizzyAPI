@@ -46,6 +46,19 @@ export const OTHER_LABEL = '其他';
 export type PieMeasure = 'tokens' | 'cost';
 
 /**
+ * 占比的**分母**只要这两个字段。
+ *
+ * 服务端给的分母是 `totals`（形状 `UsageTotalsView`：requests / tokens / 四桶 / 费用），
+ * 它**没有 `label`** —— 所以这里不能要求 `PieGroup`，否则调用方被迫给整份汇总编一个假名字。
+ * `PieGroup` 结构上包含这两个字段，可以直接传。
+ */
+export interface PieTotal {
+  /** 精确费用（整数微元的十进制字符串）。 */
+  readonly costMicros: string;
+  readonly tokens: number;
+}
+
+/**
  * 扇区配色：只用主题里的 `--chart-N`（**不硬编码颜色**，随浅色 / 深色变）。
  *
  * 只有 5 个主题色，而饼图最多 12 项，所以循环用；图例里带名字与占比，
@@ -78,7 +91,7 @@ function absMicros(value: string): bigint {
 }
 
 /** 一份分组在指定口径下的度量值。 */
-export function measureOf(group: PieGroup, measure: PieMeasure): bigint {
+export function measureOf(group: PieTotal, measure: PieMeasure): bigint {
   return measure === 'cost' ? absMicros(group.costMicros) : BigInt(Math.max(group.tokens, 0));
 }
 
@@ -91,7 +104,7 @@ export function measureOf(group: PieGroup, measure: PieMeasure): bigint {
 export function toPieSlices(
   groups: readonly PieGroup[],
   measure: PieMeasure = 'tokens',
-  total?: PieGroup,
+  total?: PieTotal,
 ): readonly PieSlice[] {
   const usable = groups
     .filter((group) => group.label !== "" && measureOf(group, measure) > 0n)

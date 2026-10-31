@@ -21,7 +21,7 @@ import { Cell, Pie, PieChart } from "recharts";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { ChartContainer, ChartTooltip, ChartTooltipContent, type ChartConfig } from "@/components/ui/chart";
 import { formatMicrosAsYuan, formatTokens } from "@/lib/format";
-import { isSelectable, toPieSlices, shareText, type PieGroup, type PieMeasure } from "@/lib/usage-pie";
+import { isSelectable, toPieSlices, shareText, type PieGroup, type PieMeasure, type PieTotal } from "@/lib/usage-pie";
 
 export interface UsagePieProps {
   /** 卡片标题（「按模型」/「按接口」/「按用户」）。 */
@@ -32,8 +32,8 @@ export interface UsagePieProps {
   readonly groups: readonly PieGroup[];
   /** 占比口径，默认按费用（owner 关心的是花了多少钱）。 */
   readonly measure?: PieMeasure;
-  /** 占比分母（服务端 totals），不传则用列表之和。 */
-  readonly total?: PieGroup;
+  /** 占比分母（服务端 totals —— 只要 `costMicros` / `tokens`，没有 `label`），不传则用列表之和。 */
+  readonly total?: PieTotal;
   /** 点某个扇区（`null` = 点空白取消）；不传则不联动。 */
   readonly onSelect?: (label: string | null) => void;
   /** 当前筛选值（高亮对应扇区）。 */
