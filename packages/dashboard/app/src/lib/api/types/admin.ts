@@ -121,26 +121,61 @@ export interface ContentAuditRuleView {
   readonly updatedAt: string
 }
 
-/** 审核快照状态（`contentAuditStatusOf()`；白名单键）。 */
+/**
+ * Go 侧命中统计（`packages/content-audit/src/types.ts` 的 `ContentAuditHits`）。
+ *
+ * 带一个 `readonly [key: string]: unknown` 索引签名：服务端把它当**白名单字典**发，
+ * 有了它，下面的字段保留精确类型，同时「把整份 hits 当字典读」的调用点
+ * （管理台 `contentAuditHitsOf(status.hits)` 那层运行时收窄）继续成立。
+ * 等管理台把那层运行时收窄删掉之后，这个索引签名可以一并去掉。
+ */
+export interface ContentAuditHitsView {
+  readonly [key: string]: unknown
+  readonly blocked: number
+  readonly logged: number
+  readonly allowedStale: number
+  readonly strictFailed: number
+  readonly parseFailed: number
+  readonly noText: number
+  readonly truncated: number
+  readonly ruleHitTotal: number
+  /** 按规则 id 的命中次数。 */
+  readonly byRule: Readonly<Record<string, number>>
+  readonly staleStreak: number
+}
+
+/**
+ * 审核快照状态（`contentAuditStatusOf()`；白名单键）。
+ *
+ * **形状依据服务端** `packages/content-audit/src/types.ts` 的 `ContentAuditStatus`：
+ * 服务端把 `null` 原样透传（「读不到」与「读到了 false」是两件事），所以下面
+ * 几个字段是 **可空**的：
+ * - `revision`：还没成功推过是 `null`（不是 `0`）；
+ * - `ageMs` / `ttlMs` / `stale` / `goReady`：Go 侧读不到是 `null`；
+ * - `hits`：Go 侧读不到是 `null`。
+ */
 export interface ContentAuditStatusView {
   readonly enabled: boolean
   readonly pushIntervalMs: number
   readonly ruleCount: number
-  readonly revision: number
+  /** 当前推给 Go 的 revision；还没成功推过为 `null`。 */
+  readonly revision: string | null
   readonly generation: number
-  readonly ageMs: number
-  readonly ttlMs: number
-  readonly stale: boolean
-  readonly goReady: boolean
+  /** Go 侧快照年龄 / TTL；读不到为 `null`。 */
+  readonly ageMs: number | null
+  readonly ttlMs: number | null
+  /** Go 侧快照是否过期；读不到为 `null`。 */
+  readonly stale: boolean | null
+  readonly goReady: boolean | null
   readonly lastPushAt: string | null
   readonly lastError: string | null
   readonly pushes: number
   readonly heartbeats: number
   readonly failureStreak: number
-  readonly goTtlMs: number
+  readonly goTtlMs: number | null
   readonly heartbeatTooSlow: boolean
   /** Go 侧命中统计；读不到是 `null`。 */
-  readonly hits: Readonly<Record<string, unknown>> | null
+  readonly hits: ContentAuditHitsView | null
 }
 
 /** `GET /api/admin/content-audit` 的响应。 */
