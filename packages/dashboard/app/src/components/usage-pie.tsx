@@ -91,9 +91,13 @@ export function UsagePie({
         {slices.length === 0 ? (
           <p className="py-8 text-center text-sm text-muted-foreground">{emptyText}</p>
         ) : (
-          // 544px 以上才横排：1440 管理页卡约 430px → 竖排（图例占满卡宽，一行放得下）；
-          // 1440 用户页卡约 700px → 横排（保持原高度）。
-          <div className="flex flex-col gap-3 @[34rem]:flex-row @[34rem]:items-center">
+          // 480px 以上才横排（阈值按**实测的 content-box 宽度**定，不是估算）：
+          // 容器查询按 content-box 算，`CardContent` 还有 p-6（左右各 24px）。
+          // 1440 用户页：卡 560 → 内容 512 > 480 → 横排（卡高 398）；
+          // 1440 管理页：卡 368 → 内容 320 < 480 → 竖排（图例占满宽、一行放得下）；
+          // 1024 内容 672 → 横排；420 内容 340 → 竖排。
+          // 不用 448：余量太小，padding 一调就翻车。
+          <div className="flex flex-col gap-3 @[30rem]:flex-row @[30rem]:items-center">
             <ChartContainer config={chartConfig} className="mx-auto aspect-square h-48 w-48 shrink-0">
               <PieChart>
                 <Pie
