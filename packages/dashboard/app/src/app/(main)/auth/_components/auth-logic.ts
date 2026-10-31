@@ -75,8 +75,13 @@ export function authErrorTextOf(issue: AuthIssue): string {
 /**
  * 登录成功后的落地页：**管理员进 `/dashboard`，普通用户进 `/user`**。
  *
- * 判据是会话里的 `permissions.admin`（服务端 `sessionResponse()` 算出来的，等价于
- * `user.role === 'admin'`），不用前端的角色猜测。
+ * 入参由**调用方**算好，本函数只做映射、不看原始 DTO。两个调用方的判据不同，都来自服务端：
+ * - 登录 / 注册成功后：`login()` / `confirmRegistration()` 的返回**不带** `permissions`，
+ *   只能看 `result.user.role === 'admin'`；
+ * - 会话闸门里：`fetchSession()` 带 `permissions`，用 `session.permissions.admin`。
+ *
+ * 两者服务端同源（`sessionResponse()` 的 `permissions.admin` 就是 `role === 'admin'`），
+ * 但**别在前端自己从邮箱 / 名字猜角色**。
  */
 export function homePathOf(admin: boolean | null | undefined): string {
   return admin === true ? ADMIN_HOME : USER_HOME
