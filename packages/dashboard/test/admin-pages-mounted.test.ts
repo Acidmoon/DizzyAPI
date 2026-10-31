@@ -59,3 +59,30 @@ test('每个正文组件（*-board / *-overview）都必须被某个 page.tsx �
     `这些正文组件没有任何 page.tsx 挂上（写完忘了 import）：\n${orphans.join('\n')}`,
   )
 })
+
+/**
+ * 第三条：管理台的每个页面目录都必须在 `sidebar-items.ts` 里登记。
+ *
+ * 理由：侧栏清单是路由的**唯一源**。目录建了却没登记 = 用户点不到
+ * （只能靠手输 URL），而页面上不会报错——这类「建了等于没建」只有读代码才看得见。
+ * 反过来，登记了却没建目录 = 点进去是 404，更容易被发现；所以这条只查前半段。
+ */
+test('每个管理页目录都在 sidebar-items.ts 里登记了', () => {
+  const sidebar = readFileSync(
+    join(DASHBOARD_ROOT, '..', '..', '..', 'navigation', 'sidebar', 'sidebar-items.ts'),
+    'utf8',
+  )
+  // `/dashboard` 本身是根页，它的 page.tsx 在 DASHBOARD_ROOT 下，没有自己的目录名。
+  const dirs = new Set<string>()
+  for (const page of pageFiles) {
+    const rel = relative(DASHBOARD_ROOT, page).split(sep)
+    if (rel.length >= 2) dirs.add(rel[0] as string)
+  }
+  assert.ok(dirs.size >= 5, `页面目录太少（${String(dirs.size)}），路径可能写错了`)
+  const offenders = [...dirs].filter((dir) => !sidebar.includes(`"/dashboard/${dir}"`))
+  assert.deepEqual(
+    offenders,
+    [],
+    `这些页面目录没在 sidebar-items.ts 登记（用户只能手输 URL 进来）：\n${offenders.join('\n')}`,
+  )
+})
