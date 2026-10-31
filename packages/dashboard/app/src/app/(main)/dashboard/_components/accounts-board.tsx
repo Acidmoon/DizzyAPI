@@ -83,10 +83,7 @@ export function AccountsBoard() {
   return (
     <div className="flex flex-col gap-4">
       <div className="flex flex-wrap items-end justify-between gap-3">
-        <div>
-          <h1 className="text-xl font-semibold">上游账号池</h1>
-          <p className="text-sm text-muted-foreground">先筛条件，再看列表。凭据与令牌一律不回显。</p>
-        </div>
+        <h1 className="text-xl font-semibold">上游账号池</h1>
         <div className="flex gap-2">
           <Button variant="outline" onClick={() => setImporting(true)}>
             <Upload /> 批量导入
