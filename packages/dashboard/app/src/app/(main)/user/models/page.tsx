@@ -34,8 +34,11 @@ import {
 } from "@/components/ui/table";
 import { api, errorMessage, pricing } from "@/lib/api";
 import type { ModelCatalogView } from "@/lib/api";
+import { clampProbeSlots, probeFailureText, PROBE_BAR_SLOTS } from "@/lib/model-probe";
 
 import { MODEL_REASON_LABELS, statusLabel } from "../_lib/labels";
+import { ModelProbeBars } from "../_components/model-probe-bars";
+import { ModelProbeNotice } from "../_components/model-probe-notice";
 import { EmptyBlock, ErrorBlock, LoadingBlock } from "../_components/page-states";
 
 type Availability = "all" | "available" | "unavailable";
@@ -90,11 +93,38 @@ export default function UserModelsPage() {
   const available = visible.available.filter((entry) => keepByPrice(entry.priced));
   const unavailable = visible.unavailable.filter((entry) => keepByPrice(entry.priced));
 
+  /**
+   * 小柱状图的槽位数：**按本页最多的那个模型算**，好让所有行左端对齐
+   * （24 点的行和 3 点的行宽度一致，一屏柱子才整齐）。上下限由 `clampProbeSlots` 夹住。
+   */
+  const probeSlots = useMemo(() => {
+    if (catalog === null) return PROBE_BAR_SLOTS;
+    let most = 0;
+    for (const entry of [...catalog.available, ...catalog.unavailable]) {
+      const points = entry.probe?.points.length ?? 0;
+      if (points > most) most = points;
+    }
+    return clampProbeSlots(most === 0 ? PROBE_BAR_SLOTS : most);
+  }, [catalog]);
+
+  /** 没接探测服务时**整列都不出现**（响应与改造前一致，页面也不多一列空白）。 */
+  const hasProbe = catalog?.probe !== undefined;
+  /** 连续失败那条小字：阈值来自服务端（`modelhub` 的配置），前端不自作主张。 */
+  const failureOf = (entry: { readonly probe?: { readonly consecutiveFailures: number } }): string | null => {
+    const threshold = catalog?.probe?.failureThreshold;
+    // 不知道阈值就不猜（用 1 会把「失败一次」写成「已连续失败 1 次」，是假的确定）。
+    if (entry.probe === undefined || threshold === undefined) return null;
+    return probeFailureText(entry.probe.consecutiveFailures, threshold);
+  };
+
   return (
     <div className="@container/main flex min-w-0 flex-col gap-4 md:gap-6">
       <div className="flex flex-col gap-1">
         <h1 className="font-heading text-xl font-semibold tracking-tight">模型广场</h1>
       </div>
+
+      {/* 探测停摆必须显眼：停摆时所有模型都没有新数据，但模型可能一个都没挂（不是假红的地方）。 */}
+      <ModelProbeNotice summary={catalog?.probe} />
 
       {error === null ? null : <ErrorBlock message={error} onRetry={() => void load()} />}
 
@@ -173,38 +203,54 @@ export default function UserModelsPage() {
                       <TableHead className="text-right">缓存写</TableHead>
                       <TableHead>定价</TableHead>
                       <TableHead>健康 / 总账号</TableHead>
+                      {hasProbe ? <TableHead>探测</TableHead> : null}
                       <TableHead>协议</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {available.map((entry) => (
-                      <TableRow key={entry.model}>
-                        <TableCell className="max-w-56 truncate font-medium" title={entry.model}>
-                          {entry.model}
-                        </TableCell>
-                        <TableCell className="text-right tabular-nums">
-                          {priceText(entry.price?.inputPerMillion)}
-                        </TableCell>
-                        <TableCell className="text-right tabular-nums">
-                          {priceText(entry.price?.outputPerMillion)}
-                        </TableCell>
-                        <TableCell className="text-right tabular-nums">
-                          {priceText(entry.price?.cacheReadPerMillion)}
-                        </TableCell>
-                        <TableCell className="text-right tabular-nums">
-                          {priceText(entry.price?.cacheWritePerMillion)}
-                        </TableCell>
-                        <TableCell>
-                          {entry.priced ? <Badge>已定价</Badge> : <Badge variant="outline">未定价</Badge>}
-                        </TableCell>
-                        <TableCell className="whitespace-nowrap text-muted-foreground tabular-nums">
-                          {entry.healthyAccountCount} / {entry.accountCount}
-                        </TableCell>
-                        <TableCell className="text-muted-foreground">
-                          {entry.protocols.length === 0 ? "未声明" : entry.protocols.join(" / ")}
-                        </TableCell>
-                      </TableRow>
-                    ))}
+                    {available.map((entry) => {
+                      const failure = failureOf(entry);
+                      return (
+                        <TableRow key={entry.model}>
+                          <TableCell className="max-w-56 truncate font-medium" title={entry.model}>
+                            {entry.model}
+                          </TableCell>
+                          <TableCell className="text-right tabular-nums">
+                            {priceText(entry.price?.inputPerMillion)}
+                          </TableCell>
+                          <TableCell className="text-right tabular-nums">
+                            {priceText(entry.price?.outputPerMillion)}
+                          </TableCell>
+                          <TableCell className="text-right tabular-nums">
+                            {priceText(entry.price?.cacheReadPerMillion)}
+                          </TableCell>
+                          <TableCell className="text-right tabular-nums">
+                            {priceText(entry.price?.cacheWritePerMillion)}
+                          </TableCell>
+                          <TableCell>
+                            {entry.priced ? <Badge>已定价</Badge> : <Badge variant="outline">未定价</Badge>}
+                          </TableCell>
+                          <TableCell className="whitespace-nowrap text-muted-foreground tabular-nums">
+                            {entry.healthyAccountCount} / {entry.accountCount}
+                          </TableCell>
+                          {hasProbe ? (
+                            <TableCell>
+                              <div className="flex flex-col gap-1">
+                                <ModelProbeBars probe={entry.probe} slots={probeSlots} />
+                                {failure === null ? null : (
+                                  <span className="text-[11px] whitespace-nowrap text-destructive">
+                                    {failure}
+                                  </span>
+                                )}
+                              </div>
+                            </TableCell>
+                          ) : null}
+                          <TableCell className="text-muted-foreground">
+                            {entry.protocols.length === 0 ? "未声明" : entry.protocols.join(" / ")}
+                          </TableCell>
+                        </TableRow>
+                      );
+                    })}
                   </TableBody>
                 </Table>
               )}
@@ -229,6 +275,7 @@ export default function UserModelsPage() {
                       <TableHead className="text-right">输入 / 百万</TableHead>
                       <TableHead>原因</TableHead>
                       <TableHead>说明</TableHead>
+                      {hasProbe ? <TableHead>探测</TableHead> : null}
                     </TableRow>
                   </TableHeader>
                   <TableBody>
@@ -244,6 +291,11 @@ export default function UserModelsPage() {
                           <Badge variant="destructive">{statusLabel(MODEL_REASON_LABELS, entry.reason)}</Badge>
                         </TableCell>
                         <TableCell className="text-muted-foreground">{entry.detail}</TableCell>
+                        {hasProbe ? (
+                          <TableCell>
+                            <ModelProbeBars probe={entry.probe} slots={probeSlots} />
+                          </TableCell>
+                        ) : null}
                       </TableRow>
                     ))}
                   </TableBody>
