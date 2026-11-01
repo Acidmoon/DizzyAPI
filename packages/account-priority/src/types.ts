@@ -201,6 +201,16 @@ export interface GatewayAccount {
   readonly models?: readonly string[]
   /** 对外模型名 → 上游真实模型名；账号没声明时不带这个键。 */
   readonly modelMap?: Readonly<Record<string, string>>
+  /**
+   * 客户端指纹档案解析出来的**固定头**（值里可能含 `{{uuid}}` / `{{session}}` / `{{timestamp}}` 模板）。
+   *
+   * 模板**故意不在这里展开**：`{{session}}` 要按「账号 + 首条用户消息」算，TS 侧拿不到请求体；
+   * 展开发生在 Go 的 `modules/transport`。账号没挂档案（或档案被禁用 / 被删）时不带这个键 ——
+   * Go 侧照旧发请求，行为与改造前逐字一致。
+   */
+  readonly clientHeaders?: readonly { readonly name: string; readonly value: string }[]
+  /** 档案声明的 User-Agent；不带这个键 = 沿用网关默认 UA。 */
+  readonly clientUserAgent?: string
   readonly token: string
   readonly expiresAt?: string
   readonly priority?: number

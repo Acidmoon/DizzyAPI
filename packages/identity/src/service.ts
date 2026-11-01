@@ -186,6 +186,7 @@ export class IdentityService extends Service {
         protocol: normalizeProtocol(input.protocol),
         models: normalizeModels(input.models),
         modelMap: normalizeModelMap(input.modelMap),
+        clientProfile: normalizeClientProfile(input.clientProfile),
         priority: normalizePriority(input.priority, 0),
         labels: [],
         weight: null,
@@ -237,6 +238,8 @@ export class IdentityService extends Service {
         protocol: patch.protocol === undefined ? account.protocol : normalizeProtocol(patch.protocol),
         models: patch.models === undefined ? account.models : normalizeModels(patch.models),
         modelMap: patch.modelMap === undefined ? account.modelMap : normalizeModelMap(patch.modelMap),
+        clientProfile:
+          patch.clientProfile === undefined ? account.clientProfile : normalizeClientProfile(patch.clientProfile),
         priority: patch.priority === undefined ? account.priority : normalizePriority(patch.priority, account.priority),
         labels: patch.labels === undefined ? account.labels : normalizeLabels(patch.labels),
         weight: patch.weight === undefined ? account.weight : normalizeWeight(patch.weight),
@@ -1062,11 +1065,34 @@ function normalizeModels(value: unknown): string[] | null {
 }
 
 /**
+ * 客户端指纹档案 id。
+ *
+ * **这里只校验形状，不校验「这个档案存不存在」**：档案归 `clientMask` 插件管，identity 是
+ * 存储方。查不到的 id 在推快照时会被 `clientMask.resolve()` 解析成「不伪装」（安全降级），
+ * 页面上会显示成「引用了不存在的档案」等管理员处置 —— 比在这里拒绝、让账号改不动更好。
+ *
+ * 规则刻意**比 `clientMask` 宽松**（只要求非空、不太长、无控制字符）：
+ * 一边严一边松会让「档案建得出来、账号却挂不上」。真正的 id 规则由写入方（clientMask）定。
+ */
+function normalizeClientProfile(value: unknown): string | null {
+  if (value === undefined || value === null) return null
+  if (typeof value !== 'string') {
+    throw new IdentityError('IDENTITY_ACCOUNT_INVALID', 'clientProfile 必须是字符串或 null')
+  }
+  const trimmed = value.trim()
+  if (trimmed === '') return null
+  if (trimmed.length > 128) {
+    throw new IdentityError('IDENTITY_ACCOUNT_INVALID', 'clientProfile 最长 128 个字符')
+  }
+  rejectControlCharacters(trimmed, 'clientProfile')
+  return trimmed
+}
+
+/**
  * 对外模型名 → 上游真实模型名。`undefined` / `null` → `null`；键值都 trim 且非空；
  * 空对象归一成 `null`。非对象 / 非字符串值 / 控制字符 / 超长明确失败。
  */
-function normalizeModelMap(value: unknown): Record<string, string> | null {
-  if (value === undefined || value === null) return null
+function normalizeModelMap(value: unknown): Record<string, string> | null {  if (value === undefined || value === null) return null
   if (typeof value !== 'object' || Array.isArray(value)) {
     throw new IdentityError('IDENTITY_ACCOUNT_INVALID', 'modelMap 必须是字符串映射或 null')
   }

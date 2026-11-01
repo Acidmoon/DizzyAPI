@@ -30,6 +30,7 @@ interface FakeAccount {
   readonly weight?: number | null
   readonly concurrency?: number | null
   readonly health?: string | null
+  readonly clientProfile?: string | null
   readonly accessExpiresAt: string | null
 }
 
@@ -274,4 +275,50 @@ test('真 identity 的记录直接进快照：字段名与空值语义一致，�
   assert.equal(account.baseUrl, 'https://upstream.example.com/v1')
   // 令牌只有真的（这里是真的）才在桥帧里；账号文件里没有它。
   assert.equal(account.token, 'sk-real')
+})
+
+// ───────────────────────────────── 客户端指纹（client mask） ─────────────────────────────────
+
+/** 假档案服务：只实现 account-priority 用到的 `resolve()`。 */
+class FakeClientMask extends Service {
+  constructor(ctx: Context) {
+    super(ctx, 'clientMask')
+  }
+
+  resolve(id: string | null | undefined) {
+    if (id === 'opencode') {
+      return {
+        profileId: 'opencode',
+        userAgent: 'opencode/0.4.2 (cli; linux x64)',
+        headers: [{ name: 'x-opencode-session', value: '{{session}}' }],
+      }
+    }
+    // 档案不存在 / 被禁用：一律 undefined（账号快照照常推，只是不伪装）。
+    return undefined
+  }
+}
+
+test('客户端指纹：挂了档案的账号带上 clientHeaders / clientUserAgent，没挂的不带这些键', async (t) => {
+  const world = await boot(t)
+  await world.ctx.plugin(FakeClientMask)
+  world.identity.add(account('acc-masked', { clientProfile: 'opencode' }))
+  world.identity.add(account('acc-plain'))
+  world.identity.add(account('acc-dangling', { clientProfile: 'no-such-profile' }))
+
+  const snapshot = await snapshotOf(world.service)
+  const byID = new Map(snapshot.accounts.map((item) => [item.accountId, item]))
+
+  const masked = byID.get('acc-masked')
+  assert.ok(masked !== undefined)
+  assert.equal(masked.clientUserAgent, 'opencode/0.4.2 (cli; linux x64)')
+  assert.deepEqual(masked.clientHeaders, [{ name: 'x-opencode-session', value: '{{session}}' }])
+  // 模板必须原样推到 Go：展开要用请求体算 session，TS 这边算不出来。
+  assert.equal(masked.clientHeaders?.[0]?.value, '{{session}}')
+
+  for (const id of ['acc-plain', 'acc-dangling']) {
+    const item = byID.get(id)
+    assert.ok(item !== undefined)
+    assert.equal(item.clientHeaders, undefined, `${id} 不该带 clientHeaders`)
+    assert.equal(item.clientUserAgent, undefined, `${id} 不该带 clientUserAgent`)
+  }
 })

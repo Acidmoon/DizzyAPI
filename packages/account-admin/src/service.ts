@@ -81,6 +81,8 @@ interface IdentitySeam {
     readonly protocol?: AccountProtocol
     readonly models?: string[]
     readonly modelMap?: Record<string, string>
+    /** 客户端指纹档案 id（`clientMask` 里的一档）；不传 = 不伪装。 */
+    readonly clientProfile?: string
     readonly priority?: number
     readonly enabled?: boolean
     readonly secret?: CredentialBundle
@@ -95,6 +97,8 @@ interface IdentitySeam {
       readonly protocol?: AccountProtocol | null
       readonly models?: string[] | null
       readonly modelMap?: Record<string, string> | null
+      /** `null` = 清空为「不伪装」。 */
+      readonly clientProfile?: string | null
       readonly priority?: number
       readonly labels?: string[] | null
       readonly weight?: number | null
@@ -129,6 +133,8 @@ const LABEL_MAX_LENGTH = 200
 const EMAIL_MAX_LENGTH = 320
 const SUBJECT_MAX_LENGTH = 200
 const SEARCH_MAX_LENGTH = 200
+/** 客户端档案 id 的长度上限（与 identity 侧的归一化口径一致，宽松一点无妨）。 */
+const CLIENT_PROFILE_MAX_LENGTH = 128
 
 const QUERY_KEYS = ['provider', 'kind', 'enabled', 'status', 'search', 'labels', 'health'] as const
 const UPDATE_KEYS = [
@@ -139,6 +145,7 @@ const UPDATE_KEYS = [
   'protocol',
   'models',
   'modelMap',
+  'clientProfile',
   'priority',
   'labels',
   'weight',
@@ -494,6 +501,7 @@ export class AccountAdminService extends Service {
     const protocol = normalizeOptionalProtocol(input.protocol)
     const models = normalizeOptionalModels(input.models)
     const modelMap = normalizeOptionalModelMap(input.modelMap)
+    const clientProfile = normalizeOptionalClientProfile(input.clientProfile)
     const priority = normalizeOptionalPriority(input.priority)
     const enabled = normalizeOptionalBoolean(input.enabled, 'enabled')
 
@@ -532,6 +540,7 @@ export class AccountAdminService extends Service {
       ...(protocol !== undefined ? { protocol } : {}),
       ...(models !== undefined ? { models } : {}),
       ...(modelMap !== undefined ? { modelMap } : {}),
+      ...(clientProfile !== undefined ? { clientProfile } : {}),
       ...(priority !== undefined ? { priority } : {}),
       ...(enabled !== undefined ? { enabled } : {}),
       ...(parsed !== undefined ? { secret: parsed.bundle } : {}),
@@ -561,6 +570,7 @@ export class AccountAdminService extends Service {
       protocol?: AccountProtocol | null
       models?: string[] | null
       modelMap?: Record<string, string> | null
+      clientProfile?: string | null
       priority?: number
       labels?: string[] | null
       weight?: number | null
@@ -573,6 +583,7 @@ export class AccountAdminService extends Service {
     if ('protocol' in patch) normalized.protocol = normalizeNullableProtocol(patch.protocol)
     if ('models' in patch) normalized.models = normalizeNullableModels(patch.models)
     if ('modelMap' in patch) normalized.modelMap = normalizeNullableModelMap(patch.modelMap)
+    if ('clientProfile' in patch) normalized.clientProfile = normalizeNullableClientProfile(patch.clientProfile)
     if ('priority' in patch) normalized.priority = normalizeRequiredPriority(patch.priority)
     if ('labels' in patch) normalized.labels = normalizeNullableLabels(patch.labels)
     if ('weight' in patch) normalized.weight = normalizeNullableWeight(patch.weight)
@@ -957,6 +968,7 @@ function toView(account: AccountRecord, credentialConfigured: boolean): AccountV
     protocol: account.protocol,
     models: account.models,
     modelMap: account.modelMap,
+    clientProfile: account.clientProfile,
     priority: account.priority,
     labels: [...account.labels],
     weight: account.weight,
@@ -1187,6 +1199,35 @@ function normalizeOptionalModelMap(value: unknown): Record<string, string> | und
 function normalizeNullableModelMap(value: unknown): Record<string, string> | null {
   if (value === null) return null
   return requireModelMap(value)
+}
+
+/**
+ * 客户端指纹档案 id（`clientMask` 里的一档）。
+ *
+ * **这里只做形状校验**（非空串 / 长度 / 无控制字符），不检查「档案存在不存在」：
+ * 档案归 `clientMask` 管，这里查不到引用只会让账号发请求时不伪装（安全降级），
+ * 页面上再提示管理员处置。要一致性就得让两个插件互相依赖，不值得。
+ */
+function normalizeOptionalClientProfile(value: unknown): string | undefined {
+  if (value === undefined) return undefined
+  const parsed = requireClientProfile(value)
+  return parsed === null ? undefined : parsed
+}
+
+function normalizeNullableClientProfile(value: unknown): string | null {
+  if (value === null || value === undefined) return null
+  return requireClientProfile(value)
+}
+
+function requireClientProfile(value: unknown): string | null {
+  if (typeof value !== 'string') failInput('clientProfile 必须是字符串或 null')
+  const trimmed = value.trim()
+  if (trimmed === '') return null
+  if (trimmed.length > CLIENT_PROFILE_MAX_LENGTH) {
+    failInput(`clientProfile 最长 ${String(CLIENT_PROFILE_MAX_LENGTH)} 个字符`)
+  }
+  rejectControlCharacters(trimmed, 'clientProfile')
+  return trimmed
 }
 
 /** 键值都 trim 且非空；空对象归一成 `null`；非对象 / 非字符串值 / 控制字符 / 超长明确失败。 */

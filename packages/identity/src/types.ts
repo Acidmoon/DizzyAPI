@@ -72,6 +72,12 @@ export interface IdentityAccount {
   readonly models: string[] | null
   /** 对外模型名 → 上游真实模型名。`null` / 空 = 不改写模型名。 */
   readonly modelMap: Record<string, string> | null
+  /**
+   * 客户端指纹档案 id（`clientMask` 插件里的一档，如 `opencode`）。
+   * `null` = 不伪装（等价于没挂档案）。**这里存 id，不存头**：
+   * 头由 `account-priority` 在推快照时向 `clientMask` 解析，账号文件里不复制一份（防两处漂移）。
+   */
+  readonly clientProfile: string | null
   /** 该账号在 account-priority 评分里的 priority 因子；默认 0。 */
   readonly priority: number
   /**
@@ -135,6 +141,8 @@ export interface CreateIdentityAccountInput {
   readonly models?: string[]
   /** 对外模型名 → 上游真实模型名；空对象与未声明等价。 */
   readonly modelMap?: Record<string, string>
+  /** 客户端指纹档案 id（`clientMask` 里的一档）；不传 = 不伪装。 */
+  readonly clientProfile?: string
   readonly priority?: number
   readonly enabled?: boolean
   readonly secret?: IdentityTokenBundle
@@ -152,6 +160,8 @@ export interface UpdateIdentityAccountInput {
   readonly models?: string[] | null
   /** `undefined` = 不改；`null` 或空对象 = 清空为不改写。 */
   readonly modelMap?: Record<string, string> | null
+  /** `undefined` = 不改；`null` 或空串 = 清空为「不伪装」。 */
+  readonly clientProfile?: string | null
   readonly priority?: number
   /** `undefined` = 不改；`null` 或空数组 = 清空标签。 */
   readonly labels?: string[] | null

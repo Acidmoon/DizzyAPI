@@ -41,6 +41,7 @@
     "@dizzyapi/plugin-auth": "workspace:*",
     "@dizzyapi/plugin-billing": "workspace:*",
     "@dizzyapi/plugin-catalog": "workspace:*",
+    "@dizzyapi/plugin-client-mask": "workspace:*",
     "@dizzyapi/plugin-content-audit": "workspace:*",
     "@dizzyapi/plugin-credentials": "workspace:*",
     "@dizzyapi/plugin-dashboard": "workspace:*",

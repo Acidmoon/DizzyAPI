@@ -275,33 +275,6 @@ type AccountAttempt struct {
 	Code      string `json:"code,omitempty"`
 }
 
-// AccountCredential 是 transport 发请求所需的账号材料（含访问令牌）。
-//
-// 它只存在于 Go 进程内：不得写入日志、HTTP 响应或桥响应。
-// 权威数据在 identity（TS）；Go 持有的是一份只读内存快照。
-type AccountCredential struct {
-	AccountID   string
-	Provider    string
-	Kind        string
-	BaseURL     string
-	AccessToken string
-	ExpiresAt   *time.Time
-	// Protocol 是该账号声明的上游协议（openai-chat / openai-responses / anthropic）。
-	// 空 = 旧快照（未声明协议）：transport 走 Config.Path 回退，不做协议转换。
-	Protocol string
-
-	// Models 是这个账号服务的对外模型名；ModelMap 是「对外模型名 → 上游真实模型名」。
-	// 空 = 未声明：模型路由不过滤该账号、模型映射不生效（向后兼容，旧快照合法）。
-	Models   []string
-	ModelMap map[string]string
-}
-
-// CredentialSource 是 transport 对账号快照缓存的最小依赖。
-// 接口由消费者定义；实现（内存缓存）在 internal/accounts。
-type CredentialSource interface {
-	Credential(accountID string) (AccountCredential, bool)
-}
-
 // StageError 是阶段返回的、可安全渲染给用户并可安全记日志的错误。
 //
 // Message 必须是脱敏后的文本：不得包含请求体、Authorization、访问令牌或
@@ -414,37 +387,6 @@ const (
 	HealthUnhealthy HealthState = "unhealthy"
 )
 
-// AccountCandidate 是账号池中的一个可评分候选。
-//
-// 它**不是**账号的权威记录：账号身份由 identity 管，运行时状态由 account-state 管。
-// 这里只是这两者在本阶段的一次快照。可空字段用指针表达「未知」，
-// 零值不能被误读成「已知的 0」。
-type AccountCandidate struct {
-	AccountID     string            `json:"accountId"`
-	Provider      string            `json:"provider"`
-	Kind          string            `json:"kind,omitempty"`
-	Disabled      bool              `json:"disabled,omitempty"`
-	Priority      int               `json:"priority,omitempty"`
-	Weight        *float64          `json:"weight,omitempty"`
-	Health        HealthState       `json:"health,omitempty"`
-	Tags          map[string]string `json:"tags,omitempty"`
-	CooldownUntil *time.Time        `json:"cooldownUntil,omitempty"`
-
-	QuotaRatio     *float64 `json:"quotaRatio,omitempty"`
-	RateLimitRatio *float64 `json:"rateLimitRatio,omitempty"`
-
-	InFlight    int `json:"inFlight,omitempty"`
-	Concurrency int `json:"concurrency,omitempty"`
-
-	LastUsedAt     *time.Time `json:"lastUsedAt,omitempty"`
-	SuccessRate    *float64   `json:"successRate,omitempty"`
-	LatencyP95Ms   *float64   `json:"latencyP95Ms,omitempty"`
-	CostMultiplier *float64   `json:"costMultiplier,omitempty"`
-
-	// Models 是这个账号服务的对外模型名。空 = 未声明：不参与模型路由过滤（向后兼容）。
-	Models []string `json:"models,omitempty"`
-}
-
 // ScoreFactor 是一个打分因子的可解释明细。
 type ScoreFactor struct {
 	Name         string   `json:"name"`
@@ -454,7 +396,11 @@ type ScoreFactor struct {
 	Contribution float64  `json:"contribution"`
 }
 
-// ScoredAccount 是一个候选的最终得分。
+// AccountCandidate 是账号池中的一个可评分候选。
+//
+// 它**不是**账号的权威记录：账号身份由 identity 管，运行时状态由 account-state 管。
+// 这里只是这两者在本阶段的一次快照。可空字段用指针表达「未知」，
+// 零值不能被误读成「已知的 0」。
 type ScoredAccount struct {
 	AccountID string        `json:"accountId"`
 	Score     float64       `json:"score"`

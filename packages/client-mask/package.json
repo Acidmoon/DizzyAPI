@@ -1,0 +1,21 @@
+{
+  "name": "@dizzyapi/plugin-client-mask",
+  "version": "0.1.0",
+  "private": true,
+  "description": "DizzyAPI · 客户端指纹档案：把上游请求伪装成指定客户端（opencode / codex / claude-cli / browser）；档案的唯一写者，Go 侧在发请求前套用",
+  "type": "module",
+  "license": "MIT",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./package.json": "./package.json"
+  },
+  "scripts": {
+    "test": "node --import tsx --test \"test/*.test.ts\""
+  },
+  "dependencies": {
+    "@dizzyapi/plugin-kit": "workspace:*",
+    "cordis": "^4.0.0-rc.11"
+  }
+}

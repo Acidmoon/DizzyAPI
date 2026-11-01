@@ -191,6 +191,27 @@
       - '@dizzyapi/plugin-account-health'
     maxBatchSize: 100
 
+# 客户端指纹档案：有的上游按「客户端指纹」判定来源（opencode 不带 `x-opencode-session`
+# 会回 `HTTP 400: Request is missing x-opencode-session and cannot be routed efficiently`）。
+# 本插件是**档案的唯一写者**：数据在 data/client-mask.json（原子写），内置 opencode / codex /
+# claude-cli / browser / none 五档预置，可在管理面改、可禁用。
+#
+# 数据流：本插件（档案）→ account-priority（按账号解析、随快照推）→ internal/accounts（只读）
+# → modules/transport（展开 {{uuid}} / {{session}} / {{timestamp}}、贴头）。
+# **本插件不注入请求**：TS 侧拿不到请求体，算不出 {{session}}。
+#
+# 秘密纪律：档案里只有头名与头值模板，**不存任何秘密**；credentials 仍是秘密的唯一去处。
+# 受保护头（Authorization / x-api-key / x-goog-api-key / Host / Accept / Content-Type / UA …）
+# 在 TS 与 Go 两侧都被拒绝，档案改不掉它们。
+- id: client-mask
+  name: '@dizzyapi/plugin-client-mask'
+  config:
+    dataPath: ./data/client-mask.json
+    enabled: true
+    adminPlugins:
+      - '@dizzyapi/plugin-api'
+      - '@dizzyapi/plugin-dashboard'
+
 # 账号健康检查：定时对可参与调度的账号做连通性测试，连续失败自动停用、一次成功即恢复。
 # 它自己不存任何数据：读列表、写状态全部走 account-admin 门面（账号记录仍由 identity 独占写）。
 # 后台任务只有定时器（ctx.setInterval 挂在 effect 上，随插件卸载回收），禁用即停；

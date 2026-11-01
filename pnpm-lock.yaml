@@ -65,6 +65,9 @@ importers:
       '@dizzyapi/plugin-catalog':
         specifier: workspace:*
         version: link:packages/catalog
+      '@dizzyapi/plugin-client-mask':
+        specifier: workspace:*
+        version: link:packages/client-mask
       '@dizzyapi/plugin-content-audit':
         specifier: workspace:*
         version: link:packages/content-audit
@@ -257,6 +260,15 @@ importers:
       '@cordisjs/plugin-loader':
         specifier: ^1.0.0-rc.8
         version: 1.0.0-rc.8(cordis@4.0.0-rc.11)
+      '@dizzyapi/plugin-kit':
+        specifier: workspace:*
+        version: link:../kit
+      cordis:
+        specifier: ^4.0.0-rc.11
+        version: 4.0.0-rc.11(@cordisjs/plugin-include@1.1.1)(@cordisjs/plugin-loader@1.0.0-rc.8)
+
+  packages/client-mask:
+    dependencies:
       '@dizzyapi/plugin-kit':
         specifier: workspace:*
         version: link:../kit

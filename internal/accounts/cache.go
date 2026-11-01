@@ -73,6 +73,13 @@ type Account struct {
 	// 空 = 旧快照（未声明），合法：不参与模型路由过滤、不做模型映射。
 	Models   []string          `json:"models,omitempty"`
 	ModelMap map[string]string `json:"modelMap,omitempty"`
+	// ClientHeaders 是客户端指纹档案解出来的固定头（值里可能含模板，由 transport 展开）。
+	// ClientUserAgent 是档案声明的 UA。两者都为空 = 不伪装（旧快照合法）。
+	//
+	// 这些头**不许覆盖鉴权 / 内容协商头**：保护名单在 modules/transport，
+	// 这里额外把「受保护头名」在装载阶段就拒掉（整份拒绝，不部分应用）。
+	ClientHeaders   []contracts.AccountHeader `json:"clientHeaders,omitempty"`
+	ClientUserAgent string                    `json:"clientUserAgent,omitempty"`
 }
 
 // State 是给管理面看的运行期状态：只有计数与 revision，没有令牌。
@@ -155,26 +162,6 @@ func (c *Cache) State() State {
 	}
 }
 
-// Credential 返回某个账号的派发材料。令牌过期或账号不存在时返回 false。
-func (c *Cache) Credential(accountID string) (contracts.AccountCredential, bool) {
-	snap := c.snap.Load()
-	account, ok := snap.accounts[accountID]
-	if !ok || !usable(account, time.Now()) {
-		return contracts.AccountCredential{}, false
-	}
-	return contracts.AccountCredential{
-		AccountID:   account.AccountID,
-		Provider:    account.Provider,
-		Kind:        account.Kind,
-		BaseURL:     account.BaseURL,
-		AccessToken: account.Token,
-		ExpiresAt:   account.ExpiresAt,
-		Protocol:    account.Protocol,
-		Models:      cloneStrings(account.Models),
-		ModelMap:    cloneModelMap(account.ModelMap),
-	}, true
-}
-
 // Models 返回当前所有可用账号声明的对外模型名的并集，去重并按字典序稳定排序。
 //
 // 未声明 Models 的账号不贡献任何模型名；不可用（令牌缺失 / 即将过期）的账号被跳过。
@@ -199,34 +186,6 @@ func (c *Cache) Models() []string {
 		out = append(out, model)
 	}
 	sort.Strings(out)
-	return out
-}
-
-// Candidates 返回可参与打分的候选快照。不可用账号直接不出现。
-//
-// weight / concurrency / health / tags 全部从快照透传：调度模块早就实现了按标签与
-// 健康状态过滤、按权重与并发容量打分，这里少透传一个字段，那些实现就是死数据。
-func (c *Cache) Candidates() []contracts.AccountCandidate {
-	snap := c.snap.Load()
-	now := time.Now()
-	out := make([]contracts.AccountCandidate, 0, len(snap.order))
-	for _, id := range snap.order {
-		account := snap.accounts[id]
-		if !usable(account, now) {
-			continue
-		}
-		out = append(out, contracts.AccountCandidate{
-			AccountID:   account.AccountID,
-			Provider:    account.Provider,
-			Kind:        account.Kind,
-			Priority:    account.Priority,
-			Weight:      account.Weight,
-			Concurrency: account.Concurrency,
-			Health:      healthStateOf(account.Health),
-			Tags:        cloneTags(account.Tags),
-			Models:      cloneStrings(account.Models),
-		})
-	}
 	return out
 }
 
@@ -275,6 +234,7 @@ func compile(snapshot Snapshot) (*cacheSnapshot, error) {
 		account.Tags = cloneTags(account.Tags)
 		account.Models = cloneStrings(account.Models)
 		account.ModelMap = cloneModelMap(account.ModelMap)
+		account.ClientHeaders = cloneAccountHeaders(account.ClientHeaders)
 		compiled.accounts[account.AccountID] = account
 		compiled.order = append(compiled.order, account.AccountID)
 	}
@@ -334,6 +294,9 @@ func validateAccount(account Account) error {
 		return err
 	}
 	if err := validateModelMap(account.AccountID, account.ModelMap); err != nil {
+		return err
+	}
+	if err := validateClientMask(account.AccountID, account.ClientHeaders, account.ClientUserAgent); err != nil {
 		return err
 	}
 	return nil

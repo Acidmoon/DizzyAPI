@@ -45,6 +45,11 @@ export interface AccountRecord {
   readonly models: string[] | null
   /** 对外模型名 → 上游真实模型名；null / 空 = 不改写模型名。 */
   readonly modelMap: Record<string, string> | null
+  /**
+   * 客户端指纹档案 id（`clientMask` 里的一档）；null = 不伪装。
+   * 这里只存 id：头由 `account-priority` 在推快照时解析，账号记录里不复制一份（防漂移）。
+   */
+  readonly clientProfile: string | null
   readonly priority: number
   /** 多标签数组；空数组 = 未打标签。 */
   readonly labels: readonly string[]

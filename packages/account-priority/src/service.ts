@@ -87,6 +87,8 @@ interface IdentitySeam {
     readonly protocol?: string | null
     readonly models?: readonly string[] | null
     readonly modelMap?: Readonly<Record<string, string>> | null
+    /** 客户端指纹档案 id；`null` / 缺失 = 不伪装。 */
+    readonly clientProfile?: string | null
     readonly priority: number
     /** 多标签数组；`null` / 缺失 = 旧实现没有这个字段。 */
     readonly labels?: readonly string[] | null
@@ -115,6 +117,20 @@ interface EventRoot {
     listener: (...args: unknown[]) => void,
     options?: { global?: boolean },
   ): () => void
+}
+
+/**
+ * `clientMask` 的结构性视图：只要「把档案 id 解析成头」这一个方法。
+ *
+ * 不 import 它的实现（AGENTS.md §2.2）：它被禁用 / 没装载时这里拿到 `undefined`，
+ * 账号快照照常推（只是没有 `clientHeaders`），探测与请求链路都不受影响。
+ */
+interface ClientMaskSeam {
+  resolve(id: string | null | undefined): {
+    readonly profileId: string
+    readonly userAgent: string | null
+    readonly headers: readonly { readonly name: string; readonly value: string }[]
+  } | undefined
 }
 
 const ACCOUNTS_PUSH_DEBOUNCE_MS = 100
@@ -844,6 +860,9 @@ export class AccountPriorityService extends Service {
     const offUpdated = root.on('identity/account-updated', trigger, { global: true })
     const offRefreshed = root.on('identity/account-refreshed', trigger, { global: true })
     const offFailed = root.on('identity/account-failed', trigger, { global: true })
+    // 改了客户端档案（UA / 头）也得重推一次：快照里的 clientHeaders 是**推送时**解析出来的，
+    // 不重推的话 Go 会一直用旧头，管理员改了档案却看不到效果。
+    const offMask = root.on('client-mask/updated', trigger, { global: true })
     // identity 被启用 / 软重启后服务会重新 provide，此时没有账号事件，
     // 但已有令牌需要立刻再推一次；被卸载时推空快照，避免 Go 继续用旧账号。
     const offService = root.on(
@@ -857,6 +876,7 @@ export class AccountPriorityService extends Service {
       offUpdated()
       offRefreshed()
       offFailed()
+      offMask()
       offService()
     }
   }
@@ -915,6 +935,8 @@ export class AccountPriorityService extends Service {
 
   private async buildAccountSnapshot(): Promise<GatewayAccountSnapshot> {
     const identity = this.ctx.get('identity', false) as IdentitySeam | undefined
+    // 档案 → 头 的解析在推送时做（而不是写进账号文件）：改档案立刻生效，账号文件不复制一份头。
+    const clientMask = this.ctx.get('clientMask', false) as ClientMaskSeam | undefined
     const accounts: GatewayAccount[] = []
     if (identity !== undefined) {
       for (const account of identity.list()) {
@@ -927,6 +949,10 @@ export class AccountPriorityService extends Service {
           // 标签 → Go tags 的约定只在 tags.ts 一处；空标签不占快照体积。
           const tags = labelsToTags(account.labels)
           const health = healthOf(account.health)
+          // 没挂档案 / 档案被禁用 / 档案已被删 → 三者都解析成 undefined，快照里就不带这两个键
+          // （Go 侧照旧发请求，与改造前逐字一致）。这是刻意的安全降级，不抛错。
+          const mask = clientMask?.resolve(account.clientProfile)
+          const maskHeaders = mask?.headers ?? []
           accounts.push({
             accountId: account.id,
             provider: account.provider,
@@ -935,6 +961,11 @@ export class AccountPriorityService extends Service {
             ...(account.protocol === null || account.protocol === undefined ? {} : { protocol: account.protocol }),
             ...(account.models === null || account.models === undefined ? {} : { models: account.models }),
             ...(account.modelMap === null || account.modelMap === undefined ? {} : { modelMap: account.modelMap }),
+            // 模板不在这里展开：`{{session}}` 要用请求体算，只有 Go 侧知道。
+            ...(maskHeaders.length === 0
+              ? {}
+              : { clientHeaders: maskHeaders.map((header) => ({ name: header.name, value: header.value })) }),
+            ...(mask === undefined || mask.userAgent === null ? {} : { clientUserAgent: mask.userAgent }),
             token,
             priority: account.priority,
             ...(Object.keys(tags).length === 0 ? {} : { tags }),

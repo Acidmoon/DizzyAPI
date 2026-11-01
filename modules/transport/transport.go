@@ -299,8 +299,10 @@ func (s *Stage) Run(ctx *contracts.Ctx) (contracts.Decision, error) {
 		request.Header.Set("Accept", "application/json")
 	}
 	request.Header.Set("User-Agent", s.config.UserAgent)
-	// 只放账号令牌；客户端的 Authorization（网关密钥）绝不外传。
-	applyAuth(request, dialect, credential.AccessToken)
+	// 鉴权头 + 客户端指纹头。顺序与保护名单在 headers.go / clientmask.go 里：
+	// 只放账号令牌（客户端的 Authorization 绝不外传），档案头在鉴权**之后**贴，
+	// 受保护头由 applyClientMask 自己跳过。
+	applyUpstreamHeaders(request, dialect, credential, accountID, body)
 
 	response, err := s.client.Do(request)
 	if err != nil {
@@ -392,24 +394,6 @@ func requestBody(ctx *contracts.Ctx) ([]byte, error) {
 		return nil, contracts.Errorf(http.StatusBadRequest, "REQUEST_BODY_INVALID", "请求体读取失败")
 	}
 	return body, nil
-}
-
-// applyAuth 按方言写鉴权头。客户端的 Authorization 永不转发。
-func applyAuth(request *http.Request, dialect Dialect, token string) {
-	switch dialect.Auth {
-	case AuthXAPIKey:
-		request.Header.Set("x-api-key", token)
-	case AuthXGoogAPIKey:
-		request.Header.Set("x-goog-api-key", token)
-	default:
-		request.Header.Set("Authorization", "Bearer "+token)
-	}
-	for name, value := range dialect.ExtraHeaders {
-		if value == "" {
-			continue
-		}
-		request.Header.Set(name, value)
-	}
 }
 
 func (s *Stage) networkError(ctx *contracts.Ctx, err error, token string) error {

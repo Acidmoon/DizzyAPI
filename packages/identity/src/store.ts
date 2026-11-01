@@ -179,6 +179,8 @@ function decodeAccount(raw: unknown, key: string): IdentityAccount {
     protocol: readOptionalNullableString(source, 'protocol', where) as IdentityAccount['protocol'],
     models: readOptionalStringArray(source, 'models', where),
     modelMap: readOptionalStringMap(source, 'modelMap', where),
+    // 旧账号文件没有这个键 → `null`（不伪装）。缺字段不等于坏数据。
+    clientProfile: readOptionalNullableString(source, 'clientProfile', where),
     priority: readOptionalInteger(source, 'priority', where),
     labels: readOptionalLabels(source, where),
     weight: readOptionalNullableWeight(source, 'weight', where),
