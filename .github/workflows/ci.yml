@@ -170,3 +170,17 @@ jobs:
       - name: 构建
         working-directory: packages/dashboard/app
         run: npm run build
+
+      # 产物就是**部署用的那些字节**：本地不再需要跑 `next build`（本机内存吃紧，
+      # 而 `next build` 起手要 ~3.5GB）。部署时 `gh run download` 取这个 artifact，
+      # 再 scp 到服务器的 `packages/dashboard/dist/`。
+      # 注意：artifact 里含 `build-info.json`，它的 commit 就是这次构建的 HEAD，
+      # 所以部署后 `/build-info.json` 应当与仓库 HEAD 一致 —— 对不上就是有人没换产物。
+      - name: 上传 dist 产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: dashboard-dist
+          path: packages/dashboard/dist
+          retention-days: 7
+          if-no-files-found: error
+          compression-level: 6
