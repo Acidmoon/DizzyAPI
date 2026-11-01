@@ -171,13 +171,67 @@ export function deleteAccount(
   )
 }
 
-/** `POST /api/accounts/:id/test`：连通性测试（管理员，发一条最小真实请求）。 */
+/**
+ * `POST /api/accounts/:id/test`：连通性测试（管理员，发一条最小真实请求）。
+ *
+ * 返回形状与服务端 `AccountTestResult` 一致：**没有凭据**，只有状态码 / 耗时 /
+ * 脱敏后的错误文本。`status === null` 表示请求根本没拿到 HTTP 响应（网络错误 / 超时）。
+ */
+export interface AccountTestResultView {
+  readonly ok: boolean
+  readonly status: number | null
+  readonly latencyMs: number
+  readonly model: string | null
+  readonly protocol: string | null
+  readonly error: string | null
+  readonly testedAt: string
+}
+
 export function testAccount(
   client: ApiClient,
   id: string,
   input: { readonly model?: string; readonly protocol?: string } = {},
-): Promise<unknown> {
-  return client.request(`/api/accounts/${encodeURIComponent(id)}/test`, {
+): Promise<AccountTestResultView> {
+  return client.request<AccountTestResultView>(
+    `/api/accounts/${encodeURIComponent(id)}/test`,
+    { method: 'POST', body: input },
+  )
+}
+
+// ─────────────────────── 上游账号 · 批量操作 ───────────────────────
+
+/** 批量操作里单项的结果；失败只带稳定 code 与可读消息（不含秘密）。 */
+export interface AccountBulkItemView {
+  readonly id: string
+  readonly ok: boolean
+  readonly error: { readonly code: string; readonly message: string } | null
+}
+
+/** `BulkOperationResult` 的页面口径：只要条数与逐项成败，不要整份账号视图。 */
+export interface AccountBulkResultView {
+  readonly total: number
+  readonly succeeded: number
+  readonly failed: number
+  readonly items: readonly AccountBulkItemView[]
+}
+
+/**
+ * `POST /api/accounts/bulk`：批量启用 / 停用 / 改字段。
+ *
+ * - `action` 只能是 `enable` / `disable` / `update`；
+ * - **`patch` 里不许带 `enabled`**（启停走独立通道，服务端会拒）；
+ * - **逐项成功或失败**，不是全有或全无 —— 调用方要按 `items` 展示哪几条失败。
+ * - **批量删除不在这里**：删除按 `DELETE /api/accounts/:id` 逐条发（每条一条审计）。
+ */
+export function bulkAccounts(
+  client: ApiClient,
+  input: {
+    readonly action: 'enable' | 'disable' | 'update'
+    readonly ids: readonly string[]
+    readonly patch?: Record<string, unknown>
+  },
+): Promise<AccountBulkResultView> {
+  return client.request<AccountBulkResultView>('/api/accounts/bulk', {
     method: 'POST',
     body: input,
   })

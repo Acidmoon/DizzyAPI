@@ -223,3 +223,76 @@ test('管理员账号：导入 body 带 source 时走来源预检 / 导入，响
   assert.ok(!imported.text.includes('credential-ref-acc-1'))
 })
 
+
+test('管理员账号：POST /api/accounts/bulk 批量启停 / 改字段，patch 不许带 enabled', async (t) => {
+  const { server, accountAdmin } = await setup(t)
+  const { cookie } = await login(server)
+
+  const enabled = await call(server, '/api/accounts/bulk', {
+    method: 'POST',
+    cookie,
+    body: JSON.stringify({ action: 'enable', ids: ['acc_1', 'acc_2'] }),
+  })
+  assert.equal(enabled.status, 200, enabled.text)
+  assert.equal(enabled.json.total, 2)
+  assert.equal(enabled.json.succeeded, 2)
+  assert.deepEqual(
+    accountAdmin.calls.find((entry) => entry.method === 'bulkEnable')?.args,
+    [API_ACTOR, ['acc_1', 'acc_2']],
+  )
+  // 批量响应里也不许出现凭据引用。
+  assert.ok(!enabled.text.includes('credentialRef'))
+
+  const disabled = await call(server, '/api/accounts/bulk', {
+    method: 'POST',
+    cookie,
+    body: JSON.stringify({ action: 'disable', ids: ['acc_1'] }),
+  })
+  assert.equal(disabled.status, 200, disabled.text)
+  assert.deepEqual(
+    accountAdmin.calls.find((entry) => entry.method === 'bulkDisable')?.args,
+    [API_ACTOR, ['acc_1']],
+  )
+
+  const patched = await call(server, '/api/accounts/bulk', {
+    method: 'POST',
+    cookie,
+    body: JSON.stringify({ action: 'update', ids: ['acc_1'], patch: { priority: 42, protocol: null } }),
+  })
+  assert.equal(patched.status, 200, patched.text)
+  assert.deepEqual(
+    accountAdmin.calls.find((entry) => entry.method === 'bulkUpdate')?.args,
+    [API_ACTOR, ['acc_1'], { priority: 42, protocol: null }],
+  )
+
+  // enabled 混进 patch：服务端直接拒（启停是独立通道，由 action 表达）。
+  const withEnabled = await call(server, '/api/accounts/bulk', {
+    method: 'POST',
+    cookie,
+    body: JSON.stringify({ action: 'update', ids: ['acc_1'], patch: { enabled: false } }),
+  })
+  assert.equal(withEnabled.status, 400, withEnabled.text)
+
+  // 空 ids / 未知 action / 未知字段都是 400，不会静默成功。
+  for (const body of [
+    { action: 'enable', ids: [] },
+    { action: 'detonate', ids: ['acc_1'] },
+    { action: 'update', ids: ['acc_1'], patch: { nickname: 'x' } },
+  ]) {
+    const bad = await call(server, '/api/accounts/bulk', {
+      method: 'POST',
+      cookie,
+      body: JSON.stringify(body),
+    })
+    assert.equal(bad.status, 400, `${JSON.stringify(body)} → ${bad.text}`)
+  }
+
+  // 普通用户一律 403（这条路要管理员权限）。
+  const member = await login(server, 'alice@example.com', 'password2')
+  const denied = await call(server, '/api/accounts/bulk', {
+    method: 'POST',
+    cookie: member.cookie,
+    body: JSON.stringify({ action: 'enable', ids: ['acc_1'] }),
+  })
+  assert.equal(denied.status, 403)
+})

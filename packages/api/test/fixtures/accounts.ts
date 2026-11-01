@@ -142,6 +142,43 @@ export class FakeAccountAdmin implements AccountAdminPort {
     return { removed: true }
   }
 
+  async bulkEnable(actor: string, ids: readonly string[]): Promise<unknown> {
+    this.calls.push({ method: 'bulkEnable', args: [actor, ids] })
+    return this.applyAll(ids, { enabled: true })
+  }
+
+  async bulkDisable(actor: string, ids: readonly string[]): Promise<unknown> {
+    this.calls.push({ method: 'bulkDisable', args: [actor, ids] })
+    return this.applyAll(ids, { enabled: false })
+  }
+
+  async bulkUpdate(actor: string, ids: readonly string[], patch: Record<string, unknown>): Promise<unknown> {
+    this.calls.push({ method: 'bulkUpdate', args: [actor, ids, patch] })
+    // 真服务会拒 `enabled`（它只认元数据字段）；夹具也照做，别把错误吞掉。
+    if (Object.hasOwn(patch, 'enabled')) {
+      throw new DomainError('ACCOUNT_ADMIN_INPUT_INVALID', 'enabled 请用 batchEnable / batchDisable')
+    }
+    return this.applyAll(ids, patch)
+  }
+
+  /** 逐项成功或失败（与真服务的 `BulkOperationResult` 同形）。 */
+  private applyAll(ids: readonly string[], patch: Record<string, unknown>): unknown {
+    const items = ids.map((id) => {
+      const account = this.accounts.find((item) => item.id === id)
+      if (account === undefined) {
+        return {
+          id,
+          ok: false,
+          account: null,
+          error: { code: 'IDENTITY_NOT_FOUND', message: '没有这个账号' },
+        }
+      }
+      return { id, ok: true, account: this.replace(id, patch), error: null }
+    })
+    const succeeded = items.filter((item) => item.ok).length
+    return { total: items.length, succeeded, failed: items.length - succeeded, items }
+  }
+
   async importCredentials(actor: string, id: string, input: unknown): Promise<unknown> {
     this.calls.push({ method: 'importCredentials', args: [actor, id, input] })
     return this.get(id)

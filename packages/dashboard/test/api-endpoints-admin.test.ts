@@ -100,6 +100,21 @@ test('账号：批量导入与预检是两个不同路径（preview 是三段）
   assert.equal(fake.last().url, '/api/accounts/import/preview')
 })
 
+test('账号：批量启停 / 改字段走 POST /api/accounts/bulk（body 带 action + ids）', async () => {
+  const { client, fake } = call()
+
+  await users.bulkAccounts(client, { action: 'enable', ids: ['acc-1', 'acc-2'] })
+  assert.equal(`${fake.last().method} ${fake.last().url}`, 'POST /api/accounts/bulk')
+  assert.deepEqual(jsonBodyOf(fake), { action: 'enable', ids: ['acc-1', 'acc-2'] })
+
+  await users.bulkAccounts(client, { action: 'update', ids: ['acc-1'], patch: { priority: 42 } })
+  assert.deepEqual(jsonBodyOf(fake), { action: 'update', ids: ['acc-1'], patch: { priority: 42 } })
+
+  // 启停不许混进 patch：由 action 表达，服务端 patch 里出现 enabled 会被 400。
+  await users.bulkAccounts(client, { action: 'disable', ids: ['acc-1'] })
+  assert.equal(JSON.stringify(jsonBodyOf(fake)).includes('enabled'), false)
+})
+
 // ───────────────────────────── 管理面运维（/api/admin/*） ─────────────────────────────
 
 test('用量：主接口 / 导出 / 隔离区分页', async () => {

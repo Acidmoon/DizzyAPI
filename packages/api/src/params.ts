@@ -258,6 +258,57 @@ export function accountCredentialOf(value: unknown): Record<string, unknown> | u
 }
 
 
+/**
+ * 上游账号**元数据**可改字段（不含 `enabled`）。
+ *
+ * `enabled` 刻意不在这个集合里：启停走 `accountAdmin.enable / disable` 这两条独立通道，
+ * 与「改字段」是两笔独立审计（`account.update` vs `account.enable / account.disable`）。
+ * 混在一起会出现「改名字顺带把账号启用了」这种审计上看不出来的副作用。
+ */
+export const ACCOUNT_PATCH_FIELDS = [
+  'label',
+  'email',
+  'subject',
+  'baseUrl',
+  'protocol',
+  'models',
+  'modelMap',
+  'priority',
+] as const
+
+/** 上游账号元数据补丁；只含**真的给了**的键。 */
+export interface AccountPatchInput {
+  label?: string
+  email?: string | null
+  subject?: string | null
+  baseUrl?: string | null
+  protocol?: string | null
+  models?: string[] | null
+  modelMap?: Record<string, string> | null
+  priority?: number
+}
+
+/**
+ * 从请求体里取出账号元数据补丁（`PATCH /api/accounts/:id` 与 `POST /api/accounts/bulk`
+ * 的 `patch` 共用同一套字段口径，避免两条路径慢慢漂移）。
+ *
+ * **不**自己 `assertOnlyKeys`：单条 PATCH 允许带 `enabled`、批量 patch 不允许，
+ * 键集合由调用方按场景挡。
+ */
+export function accountPatchOf(body: Record<string, unknown>): AccountPatchInput {
+  const patch: AccountPatchInput = {}
+  if (Object.hasOwn(body, 'label')) patch.label = requiredString(body, 'label')
+  if (Object.hasOwn(body, 'email')) patch.email = nullableString(body, 'email')
+  if (Object.hasOwn(body, 'subject')) patch.subject = nullableString(body, 'subject')
+  if (Object.hasOwn(body, 'baseUrl')) patch.baseUrl = nullableString(body, 'baseUrl')
+  if (Object.hasOwn(body, 'protocol')) patch.protocol = nullableString(body, 'protocol')
+  if (Object.hasOwn(body, 'models')) patch.models = nullableStringArray(body, 'models')
+  if (Object.hasOwn(body, 'modelMap')) patch.modelMap = nullableStringMap(body, 'modelMap')
+  if (Object.hasOwn(body, 'priority')) patch.priority = optionalInteger(body, 'priority', 0, 1000)
+  return patch
+}
+
+
 export function errorCodeOf(error: unknown): string | undefined {
   if (typeof error !== 'object' || error === null) return undefined
   const code = (error as { code?: unknown }).code

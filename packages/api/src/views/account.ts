@@ -151,3 +151,26 @@ export function normalizeBulkImport(value: unknown): unknown {
     }),
   }
 }
+
+
+/**
+ * 批量启停 / 批量改字段的结果（`BulkOperationResult`）→ HTTP DTO。
+ *
+ * 与 `normalizeBulkImport` 同一个理由：**逐项里的 `account` 也要走 `accountOf`**，
+ * 否则会把服务内部的 `credentialRef`（凭据引用名）透到浏览器。
+ * 列表 / 详情 / 新建都挑了字段，批量操作不能是唯一的例外。
+ */
+export function normalizeBulkOperation(value: unknown): unknown {
+  if (!isPlainObject(value)) return value
+  const items = Array.isArray(value.items) ? value.items : []
+  return {
+    ...value,
+    items: items.map((item) => {
+      if (!isPlainObject(item)) return item
+      return {
+        ...item,
+        account: item.account === null || item.account === undefined ? null : accountOf(item.account),
+      }
+    }),
+  }
+}

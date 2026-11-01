@@ -51,6 +51,7 @@ import { api, adminUsers, ApiError } from "@/lib/api";
 import {
   accountCreateBodyOf,
   accountDraftError,
+  CREDENTIAL_FORMATS,
   credentialFormatLabel,
   emptyAccountDraft,
   kindLabel,
@@ -69,14 +70,6 @@ const PROTOCOLS: readonly AccountProtocol[] = [
   "openai-responses",
   "anthropic",
   "gemini",
-];
-
-const CREDENTIAL_FORMATS: readonly CredentialFormat[] = [
-  "auto",
-  "claude-oauth",
-  "openai-codex",
-  "api-key",
-  "identity-bundle",
 ];
 
 /** 一组表单字段的标题（分组用，不是解释性小字）。 */

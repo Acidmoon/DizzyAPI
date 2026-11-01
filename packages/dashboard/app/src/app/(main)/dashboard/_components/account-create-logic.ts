@@ -30,6 +30,20 @@ export type AccountProtocol = "openai-chat" | "openai-responses" | "anthropic" |
 /** 凭据格式（服务端 `CredentialImportFormat`）。 */
 export type CredentialFormat = "auto" | "claude-oauth" | "openai-codex" | "api-key" | "identity-bundle";
 
+/**
+ * 全部凭据格式（服务端的 `CredentialImportFormat` 全集）。
+ *
+ * 只此一份：新建账号、编辑账号里「导入凭据」都用它 —— 服务端加一种格式时改这一处，
+ * 两个表单一起跟上，不会出现「新建能选、导入不能选」这种半截状态。
+ */
+export const CREDENTIAL_FORMATS: readonly CredentialFormat[] = [
+  "auto",
+  "claude-oauth",
+  "openai-codex",
+  "api-key",
+  "identity-bundle",
+];
+
 /** provider 的中文标签。 */
 export function providerLabel(provider: AccountProvider): string {
   if (provider === "claude") return "Claude";

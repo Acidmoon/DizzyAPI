@@ -6,12 +6,11 @@
  */
 import type { ApiServer } from '../http.ts'
 import {
+  ACCOUNT_PATCH_FIELDS,
   accountCredentialOf,
+  accountPatchOf,
   assertOnlyKeys,
   isPlainObject,
-  nullableString,
-  nullableStringArray,
-  nullableStringMap,
   optionalInteger,
   optionalString,
   optionalStringArray,
@@ -20,6 +19,7 @@ import {
   requiredBoolean,
   requiredString,
 } from '../params.ts'
+import { routeAccountBulk } from './admin_account_bulk.ts'
 import { accountOf, normalizeBulkImport } from '../views/account.ts'
 import { auditActorOf, audited } from '../audit.ts'
 import { API_ACTOR } from '../constants.ts'
@@ -209,6 +209,17 @@ export async function routeAccounts(host: ApiServer, req: IncomingMessage, res: 
     return
   }
 
+  /**
+   * `POST /api/accounts/bulk`：批量启停 / 批量改字段（细节见 `admin_account_bulk.ts`）。
+   *
+   * 批量**删除**不在这里：删除是逐条独立审计的高危动作，页面按 `DELETE /api/accounts/:id`
+   * 逐条发，不做「一条审计盖掉 N 次删除」。
+   */
+  if (parts.length === 2 && parts[1] === 'bulk') {
+    await routeAccountBulk(host, req, res, identity, accountAdmin)
+    return
+  }
+
   const id = parts[1] as string
   if (parts.length === 2) {
     if (req.method === 'GET' || req.method === 'HEAD') {
@@ -217,48 +228,13 @@ export async function routeAccounts(host: ApiServer, req: IncomingMessage, res: 
     }
     if (req.method === 'PATCH') {
       const body = await jsonBody(host, req)
-      assertOnlyKeys(body, [
-        'label',
-        'email',
-        'subject',
-        'baseUrl',
-        'protocol',
-        'models',
-        'modelMap',
-        'priority',
-        'enabled',
-      ])
-      const hasMeta =
-        Object.hasOwn(body, 'label') ||
-        Object.hasOwn(body, 'email') ||
-        Object.hasOwn(body, 'subject') ||
-        Object.hasOwn(body, 'baseUrl') ||
-        Object.hasOwn(body, 'protocol') ||
-        Object.hasOwn(body, 'models') ||
-        Object.hasOwn(body, 'modelMap') ||
-        Object.hasOwn(body, 'priority')
+      assertOnlyKeys(body, [...ACCOUNT_PATCH_FIELDS, 'enabled'])
+      const patch = accountPatchOf(body)
+      const hasMeta = Object.keys(patch).length > 0
       const hasEnabled = Object.hasOwn(body, 'enabled')
       if (!hasMeta && !hasEnabled) throw badRequest('没有可修改的字段')
 
       if (hasMeta) {
-        const patch: {
-          label?: string
-          email?: string | null
-          subject?: string | null
-          baseUrl?: string | null
-          protocol?: string | null
-          models?: string[] | null
-          modelMap?: Record<string, string> | null
-          priority?: number
-        } = {}
-        if (Object.hasOwn(body, 'label')) patch.label = requiredString(body, 'label')
-        if (Object.hasOwn(body, 'email')) patch.email = nullableString(body, 'email')
-        if (Object.hasOwn(body, 'subject')) patch.subject = nullableString(body, 'subject')
-        if (Object.hasOwn(body, 'baseUrl')) patch.baseUrl = nullableString(body, 'baseUrl')
-        if (Object.hasOwn(body, 'protocol')) patch.protocol = nullableString(body, 'protocol')
-        if (Object.hasOwn(body, 'models')) patch.models = nullableStringArray(body, 'models')
-        if (Object.hasOwn(body, 'modelMap')) patch.modelMap = nullableStringMap(body, 'modelMap')
-        if (Object.hasOwn(body, 'priority')) patch.priority = optionalInteger(body, 'priority', 0, 1000)
         await audited(
           host.runtime,
           identity,
