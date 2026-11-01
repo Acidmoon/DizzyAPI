@@ -126,35 +126,47 @@ jobs:
   # ---------------------------------------------------------------------------
   # 3. Dashboard：Next 静态导出（`npm --prefix packages/dashboard/app run build`）
   # ---------------------------------------------------------------------------
+  # 两个包管理器**都要**，这不是冗余（2026-11-01 首次跑 CI 实测）：
+  #   - app 自己的依赖走 `npm ci`（它自带 `package-lock.json`，不在 pnpm workspace 里）；
+  #   - 但 app 的源码 **import 了 pnpm workspace 里的兄弟包**（`@dizzyapi/plugin-api/types`
+  #     等），那些软链只有根目录 `pnpm install` 会建。少了它，`next build` 直接报
+  #     `Cannot find module '@dizzyapi/plugin-api/types'`，还连带把类型退化成一堆假错
+  #     （`Property 'name' does not exist on type 'CreatedApiKeyView'` 就是这么来的）。
   dashboard:
     name: Dashboard · next build
     runs-on: ubuntu-latest
     timeout-minutes: 35
-    defaults:
-      run:
-        # `packages/dashboard/app` **不在** pnpm workspace 里（`packages/*` 只匹配到
-        # `packages/dashboard` 这个插件包），它自带 `package-lock.json`，所以这里用 npm，
-        # 且**不需要**根目录的 `pnpm install`。
-        working-directory: packages/dashboard/app
     steps:
       - uses: actions/checkout@v4
+
+      - name: 装 pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
 
       - name: 装 Node
         uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}
-          cache: npm
-          cache-dependency-path: packages/dashboard/app/package-lock.json
+          # 缓存根 workspace 的 pnpm store（app 的 npm 依赖没有缓存，一次 `npm ci` 可接受）。
+          cache: pnpm
 
-      - name: 装依赖（锁文件必须与 package.json 一致，漂了就在这里红）
+      # 只为建立 workspace 软链（app 的 import 指向兄弟包），不参与 app 自己的依赖安装。
+      - name: 根目录装工作区（建立 @dizzyapi/* 软链）
+        run: pnpm install --frozen-lockfile
+
+      - name: 装 app 依赖（锁文件必须与 package.json 一致，漂了就在这里红）
+        working-directory: packages/dashboard/app
         run: npm ci
 
       # `next build` 自己也会类型检查，这一步只是让失败更早、报错更干净。
       - name: 类型检查
+        working-directory: packages/dashboard/app
         run: npm run typecheck
 
       # `build` = `sync-docs.mjs`（docs/api/*.md → public/docs/，构建期同步、不入库）
       #        → `next build`（静态导出到 out/）
       #        → `export-dist.mjs`（out/ → packages/dashboard/dist/，并写 build-info.json）
       - name: 构建
+        working-directory: packages/dashboard/app
         run: npm run build
