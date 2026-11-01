@@ -10,6 +10,8 @@
  * 拼进错误信息。本文件是纯函数：不落盘、不写日志。
  */
 import { AccountAdminError } from './errors.ts'
+import { applyAccountMask, type AccountMask } from './client-mask-apply.ts'
+import { firstLine, networkErrorText, truncate } from './test-error-text.ts'
 import { endpointOf, redactToken as redact, snippetOf } from './test-snippet.ts'
 import type {
   AccountProtocol,
@@ -39,11 +41,14 @@ export interface ConnectionTestDeps {
   readonly now?: () => number
   /** 超时；默认 15s。 */
   readonly timeoutMs?: number
+  /** 被测账号的 id：`{{session}}` 要按「账号 + 首条用户消息」算，与 Go 同口径。 */
+  readonly accountId?: string
+  /** 账号挂的客户端指纹档案（解析后的那一小段）；缺席 = 照旧发裸请求。 */
+  readonly mask?: AccountMask
 }
 
 const DEFAULT_TIMEOUT_MS = 15_000
 const BODY_LIMIT = 8 * 1024
-const ERROR_DETAIL_LIMIT = 300
 const MODEL_NAME_LIMIT = 200
 
 const PROVIDER_DEFAULT_BASE_URL: Readonly<Record<AccountProvider, string | null>> = {
@@ -226,12 +231,18 @@ export async function runConnectionTest(
     endpoint: endpointOf(plan.url),
   }
 
+  // 档案头贴在**网关自己的头之后**，受保护头由 applyAccountMask 跳过（与 Go 一致）。
+  const headers: Record<string, string> = { ...plan.headers }
+  if (deps.mask !== undefined) {
+    applyAccountMask(headers, deps.mask, { accountId: deps.accountId ?? '', body: plan.body })
+  }
+
   let response: Response
   let text: string
   try {
     response = await deps.fetch(plan.url, {
       method: plan.method,
-      headers: plan.headers,
+      headers,
       ...(plan.body === undefined ? {} : { body: plan.body }),
       redirect: 'manual',
       signal: AbortSignal.timeout(timeoutMs),
@@ -363,37 +374,6 @@ function errorDetail(value: unknown): string | undefined {
     if (typeof candidate === 'string' && candidate.trim() !== '') return candidate.trim()
   }
   return undefined
-}
-
-function firstLine(text: string): string | undefined {
-  const line = text.trim().split(/\r?\n/, 1)[0]?.trim() ?? ''
-  return line === '' ? undefined : line
-}
-
-function truncate(text: string): string {
-  const single = text.replace(/\s+/g, ' ').trim()
-  return single.length <= ERROR_DETAIL_LIMIT ? single : `${single.slice(0, ERROR_DETAIL_LIMIT)}…`
-}
-
-/** 网络错误只保留短原因；绝不拼接请求 URL（尤其 query）。 */
-function networkErrorText(error: unknown, timeoutMs: number): string {
-  if (typeof error === 'object' && error !== null) {
-    const name = (error as { name?: unknown }).name
-    if (name === 'TimeoutError' || name === 'AbortError') return `请求超时（${timeoutMs}ms）`
-  }
-  if (error instanceof TypeError) {
-    const cause = (error as { cause?: unknown }).cause
-    const code =
-      typeof cause === 'object' && cause !== null && typeof (cause as { code?: unknown }).code === 'string'
-        ? (cause as { code: string }).code
-        : undefined
-    return code === undefined ? '网络请求失败' : `网络请求失败：${code}`
-  }
-  if (error instanceof Error) {
-    const message = firstLine(error.message)
-    return message === undefined ? '网络请求失败' : `网络请求失败：${message}`
-  }
-  return '网络请求失败'
 }
 
 /** token、URL-encoded token、`Bearer <token>` → 打码。实现见 `test-snippet.ts`（与响应片段共用一套，不重复）。 */

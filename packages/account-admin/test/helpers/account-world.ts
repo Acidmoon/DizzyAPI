@@ -11,6 +11,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { type TestContext } from 'node:test'
 import { Context } from 'cordis'
+import ClientMaskService from '../../../client-mask/src/index.ts'
 import CredentialsService from '../../../credentials/src/index.ts'
 import IdentityService, { type IdentityAccount } from '../../../identity/src/index.ts'
 import AccountAdminService, {
@@ -31,11 +32,20 @@ export interface FetchCall {
   readonly init: RequestInit | undefined
 }
 
-/** 起一套真插件（credentials + identity + account-admin），数据落在临时目录。 */
-export async function boot(t: TestContext): Promise<World> {
+/** boot 的选项：`withClientMask` 时多装 client-mask（默认不装 = 账号管理在「没有档案服务」下工作）。 */
+export interface BootOptions {
+  readonly withClientMask?: boolean
+}
+
+/** 起一套真插件（credentials + identity + account-admin，可选 client-mask），数据落在临时目录。 */
+export async function boot(t: TestContext, options: BootOptions = {}): Promise<World> {
   const dir = await mkdtemp(join(tmpdir(), 'dizzyapi-account-test-'))
   const ctx = new Context()
   const credentialsFiber = await ctx.plugin(CredentialsService, { dataPath: join(dir, 'credentials.json') })
+  const maskFiber =
+    options.withClientMask === true
+      ? await ctx.plugin(ClientMaskService, { dataPath: join(dir, 'client-mask.json'), enabled: true })
+      : undefined
   const identityFiber = await ctx.plugin(IdentityService, {
     dataPath: join(dir, 'accounts.json'),
     pollIntervalMs: 3_600_000,
@@ -44,6 +54,7 @@ export async function boot(t: TestContext): Promise<World> {
   const adminFiber = await ctx.plugin(AccountAdminService, { adminPlugins: [ACTOR], maxBatchSize: 100 })
   t.after(async () => {
     await adminFiber.dispose()
+    await maskFiber?.dispose()
     await identityFiber.dispose()
     await credentialsFiber.dispose()
     await rm(dir, { recursive: true, force: true })
@@ -89,7 +100,11 @@ export function bodyOf(init: RequestInit | undefined): Record<string, unknown> {
 /** 建一个带秘密的上游账号。 */
 export async function createAccount(
   world: World,
-  input: Partial<CreateAccountInput> & Pick<CreateAccountInput, 'provider' | 'kind' | 'label'>,
+  input: Partial<CreateAccountInput> &
+    Pick<CreateAccountInput, 'provider' | 'kind' | 'label'> & {
+      /** 账号挂的客户端指纹档案 id（identity 记录上的字段；account-admin 的 create 也透传）。 */
+      readonly clientProfile?: string
+    },
   secret: { apiKey?: string; accessToken?: string } | null = { apiKey: 'sk-test' },
 ): Promise<IdentityAccount> {
   return world.identity.create({

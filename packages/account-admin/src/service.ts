@@ -28,6 +28,8 @@ import {
   type ParsedCredential,
 } from './importers.ts'
 import { parseImportSource } from './import-sources.ts'
+import { resolveAccountMask } from './client-mask-apply.ts'
+import { toView } from './view.ts'
 import {
   resolveTestBaseUrl,
   resolveTestModel,
@@ -382,6 +384,10 @@ export class AccountAdminService extends Service {
       return result
     }
 
+    // 客户端指纹档案（可选依赖）：账号挂了哪一档就解析成头，贴到这次测试请求上。
+    // 解析不出来（没挂 / 被禁用 / 插件不在运行）返回 undefined —— 照旧发裸请求。
+    const mask = resolveAccountMask(this.ctx.get('clientMask', false), account.clientProfile)
+
     const result = await runConnectionTest(
       {
         provider: account.provider,
@@ -391,7 +397,11 @@ export class AccountAdminService extends Service {
       },
       token,
       params,
-      { fetch: this.fetchImpl },
+      {
+        fetch: this.fetchImpl,
+        accountId,
+        ...(mask === undefined ? {} : { mask }),
+      },
     )
     await this.persistTestResult(identity, accountId, result)
     return result
@@ -944,52 +954,6 @@ export class AccountAdminService extends Service {
         `插件 ${name} 未被授权管理账号（当前授权：${this.adminPlugins.join(' / ') || '无'}）`,
       )
     }
-  }
-}
-
-// ───────────────────────────────── 视图 ─────────────────────────────────
-
-/**
- * 显式逐字段复制：不 spread identity 的记录。
- * 这样将来 identity 的记录里即使多出一个字段，也不会自动漏到管理面。
- */
-function toView(account: AccountRecord, credentialConfigured: boolean): AccountView {
-  return {
-    id: account.id,
-    provider: account.provider,
-    kind: account.kind,
-    label: account.label,
-    enabled: account.enabled,
-    status: account.status,
-    credentialRef: account.credentialRef,
-    email: account.email,
-    subject: account.subject,
-    baseUrl: account.baseUrl,
-    protocol: account.protocol,
-    models: account.models,
-    modelMap: account.modelMap,
-    clientProfile: account.clientProfile,
-    priority: account.priority,
-    labels: [...account.labels],
-    weight: account.weight,
-    concurrency: account.concurrency,
-    health: account.health,
-    autoDisabledAt: account.autoDisabledAt,
-    autoDisabledReason: account.autoDisabledReason,
-    lastUsedAt: account.lastUsedAt,
-    accessExpiresAt: account.accessExpiresAt,
-    refreshDueAt: account.refreshDueAt,
-    lastRefreshAt: account.lastRefreshAt,
-    lastError: account.lastError,
-    failureCount: account.failureCount,
-    backoffUntil: account.backoffUntil,
-    lastTestAt: account.lastTestAt,
-    lastTestOk: account.lastTestOk,
-    lastTestError: account.lastTestError,
-    lastTestLatencyMs: account.lastTestLatencyMs,
-    createdAt: account.createdAt,
-    updatedAt: account.updatedAt,
-    credentialConfigured,
   }
 }
 
