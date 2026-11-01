@@ -82,8 +82,18 @@ export interface ProbeBar {
   readonly status: ProbePointStatus | null
   /** 柱高占轨道高度的百分比。 */
   readonly heightPercent: number
-  /** 颜色（CSS 变量表达式，随主题变）。 */
-  readonly color: string
+  /**
+   * 颜色 / 描边的 **Tailwind 类**（状态色，不是分类色）。
+   *
+   * 为什么是类而不是 `var(--chart-N)`：`--chart-N` 是**分类**用的（饼图里第 1 项、第 2 项…），
+   * 在默认主题里整组是灰阶 —— 拿它当**状态**色，`ok` 就成了一段深灰，用户读成「灰 = 没通过」。
+   * 这是 owner 2026-11-01 直接提出来的问题，`总工` 定了「状态用语义色」的口径。
+   *
+   * 为什么用 Tailwind 类而不是行内 `var(--color-emerald-600)`：深色主题要另一档颜色
+   * （600 → 500），而本站主题是 **class 驱动**（`@custom-variant dark (&:is(.dark *))`），
+   * 行内样式表达不了「随主题切换」，`light-dark()` 跟的是 `color-scheme` 而不是这个 class。
+   */
+  readonly tone: string
   /** **形态编码**：`hollow` = 只描边不填充（表示「这次没测出结论」）。 */
   readonly shape: ProbeBarShape
   /** 是不是「左侧补灰」的占位（当时还没开始探测）。 */
@@ -98,19 +108,31 @@ export interface ProbeBar {
  * 三层编码，**从强到弱**：
  * 1. **高度**按健康序（越高越健康）—— 灰度打印、色盲、随便换主题都还在；
  * 2. **形态**（实心 / 空心）—— 主题配色变了也不失效，见下面 `probe-error` 的说明；
- * 3. **颜色**（`--chart-N` / `--destructive`）—— 只当第三层，别把判断压在它身上。
+ * 3. **颜色**（**状态语义色**：绿 = 通 / 琥珀 = 慢 / 红 = 挂）—— 只当第三层，别把判断压在它身上。
+ *
+ * **状态色不许借用 `--chart-N`**：那套是分类色（灰阶主题下就是灰的），拿来做状态会让
+ * 「测试通过」看起来像没通过。`ok` / `degraded` / `failed` 分别用绿 / 琥珀 / 红三档语义色，
+ * 深色主题各给一档（`dark:` 变体）。
  */
 const BAR_STYLES: Readonly<
   Record<
     ProbePointStatus,
-    { readonly heightPercent: number; readonly color: string; readonly shape: ProbeBarShape; readonly text: string }
+    { readonly heightPercent: number; readonly tone: string; readonly shape: ProbeBarShape; readonly text: string }
   >
 > = {
-  ok: { heightPercent: 100, color: 'var(--chart-3)', shape: 'solid', text: '正常' },
-  degraded: { heightPercent: 65, color: 'var(--chart-2)', shape: 'solid', text: '偏慢' },
+  ok: {
+    heightPercent: 100,
+    tone: 'bg-emerald-600 dark:bg-emerald-500',
+    shape: 'solid',
+    text: '正常',
+  },
+  // 浅色下 amber-500 对白底只有 2.13:1（低于图形元素 3:1 的门槛），所以浅色用 600（3.20:1）、深色用 500。
+  degraded: { heightPercent: 65, tone: 'bg-amber-600 dark:bg-amber-500', shape: 'solid', text: '偏慢' },
   /**
    * 「没结论」≠「坏了」：
    * - 不用红色（那就是假红：余额不足会让所有模型都变成红的，而模型其实没挂）；
+   * - **也不给任何状态色** —— 绿 / 琥珀 / 红都表示「测出来了，结论是这个」，
+   *   而这一档的字面意思是「没测出结论」，给彩色等于把「不知道」画成「有结论」；
    * - **用空心描边，不用填充**。2026-10-31 真机验收抓到的真问题：这一档原来用
    *   `--chart-1`，而灰阶主题里 `--chart-1` 是 `oklch(0.87 0 0)`，白底对比度约 1.3:1，
    *   和「左侧补灰」的 `--muted` 占位肉眼分不开 —— 等于这个状态**隐身**。
@@ -120,15 +142,15 @@ const BAR_STYLES: Readonly<
    */
   'probe-error': {
     heightPercent: 35,
-    color: 'var(--muted-foreground)',
+    tone: 'border border-muted-foreground bg-transparent',
     shape: 'hollow',
     text: '探测自身异常',
   },
-  failed: { heightPercent: 15, color: 'var(--destructive)', shape: 'solid', text: '失败' },
+  failed: { heightPercent: 15, tone: 'bg-destructive', shape: 'solid', text: '失败' },
 }
 
 /** 空占位（左侧补灰）的样式：最矮、最淡、**实心**（这样和空心的 `probe-error` 一眼分得开）。 */
-const PLACEHOLDER_STYLE = { heightPercent: 15, color: 'var(--muted)', shape: 'solid' } as const
+const PLACEHOLDER_STYLE = { heightPercent: 15, tone: 'bg-muted', shape: 'solid' } as const
 
 /** 轨道高度（px）。**固定值**：柱子高度用百分比，所以容器必须有确定高度。 */
 export const PROBE_BAR_TRACK_PX = 28
@@ -210,7 +232,7 @@ export function probeBars(points: readonly ProbePointLike[], slots?: number): Pr
       key: `empty${index}`,
       status: null,
       heightPercent: PLACEHOLDER_STYLE.heightPercent,
-      color: PLACEHOLDER_STYLE.color,
+      tone: PLACEHOLDER_STYLE.tone,
       shape: PLACEHOLDER_STYLE.shape,
       placeholder: true,
       label: '（还没有这一次探测）',
@@ -223,7 +245,7 @@ export function probeBars(points: readonly ProbePointLike[], slots?: number): Pr
       key: `t${point.testedAtMs}`,
       status,
       heightPercent: style.heightPercent,
-      color: style.color,
+      tone: style.tone,
       shape: style.shape,
       placeholder: false,
       label: `${style.text} · 耗时 ${Math.max(0, Math.trunc(point.latencyMs))} 毫秒${

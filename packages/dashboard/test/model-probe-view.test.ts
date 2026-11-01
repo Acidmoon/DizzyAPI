@@ -96,7 +96,7 @@ describe('probeBars：最右是「现在」，左侧补灰', () => {
     const bars = probeBars([], 8)
     assert.equal(bars.length, 8)
     assert.ok(bars.every((bar) => bar.placeholder && bar.status === null))
-    assert.equal(bars[0].color, 'var(--muted)')
+    assert.equal(bars[0].tone, 'bg-muted', '占位是极浅的实心灰')
   })
 
   it('槽位数被夹在上下限之间', () => {
@@ -125,17 +125,35 @@ describe('四态：高度 + 形态 + 颜色三层编码，且不制造假红', (
     }
   })
 
-  it('只有 failed 用红色（--destructive），探测自身异常绝不用红', () => {
+  /**
+   * owner 2026-11-01 的原话：「模型广场的探测怎么测试通过也是灰色的？」
+   *
+   * 根因是拿 `--chart-N`（**分类**色，默认主题里整组是灰阶）当**状态**色用：`ok` 拿到
+   * `lab(34.9 0 0)` 一段深灰，用户当然读成「灰 = 没通过」。
+   * 口径改成：`ok` 绿、`degraded` 琥珀、`failed` 红 —— 三种状态色两两不同。
+   */
+  it('三档状态色：绿 / 琥珀 / 红，两两不同', () => {
     const [ok, degraded, probeError, failed] = heights
-    assert.equal((ok as { color: string }).color, 'var(--chart-3)')
-    assert.equal((degraded as { color: string }).color, 'var(--chart-2)')
-    assert.equal((probeError as { color: string }).color, 'var(--muted-foreground)')
-    assert.equal((failed as { color: string }).color, 'var(--destructive)')
-    assert.notEqual(
-      (probeError as { color: string }).color,
-      (failed as { color: string }).color,
-      'probe-error 与 failed 同色就是假红',
-    )
+    const toneOf = (bar: unknown): string => (bar as { tone: string }).tone
+
+    assert.match(toneOf(ok), /bg-emerald-600/, 'ok 必须是绿色系')
+    assert.match(toneOf(ok), /dark:bg-emerald-500/, '深色主题要单独给一档，别只在浅色下看')
+    // Edge 实测：浅色 amber-500 对白底只有 2.13:1，低于图形元素 3:1 的门槛，所以浅色给 600（3.20:1）。
+    assert.match(toneOf(degraded), /bg-amber-600/, 'degraded 必须是琥珀（浅色 600）')
+    assert.match(toneOf(degraded), /dark:bg-amber-500/, '深色主题给 500（对 #0a0a0a 9.27:1）')
+    assert.match(toneOf(failed), /bg-destructive/, 'failed 仍是红')
+
+    const tones = [toneOf(ok), toneOf(degraded), toneOf(failed)]
+    assert.equal(new Set(tones).size, 3, `三档状态色必须两两不同：${tones.join(' / ')}`)
+
+    // 探测自身异常**不给状态色**：绿/琥珀/红都表示「测出来了」，它表示「没测出结论」。
+    assert.doesNotMatch(toneOf(probeError), /emerald|amber|destructive|red-|green-|yellow-/, 'probe-error 不许上状态色')
+  })
+
+  it('状态色不许借用 --chart-N（那是分类色，灰阶主题下就是灰的）', () => {
+    for (const bar of heights) {
+      assert.doesNotMatch((bar as { tone: string }).tone, /--chart-/, '探测柱里出现了分类色变量')
+    }
   })
 
   /**
@@ -152,21 +170,15 @@ describe('四态：高度 + 形态 + 颜色三层编码，且不制造假红', (
     const placeholder = probeBars([], 8)[0]
     assert.ok(placeholder !== undefined)
     assert.equal(placeholder.shape, 'solid', '补灰占位必须是实心，否则和空心柱撞形状')
-    assert.notEqual(
-      (probeError as { color: string }).color,
-      placeholder.color,
-      'probe-error 与占位不能同色（那就又分不开了）',
-    )
-    assert.notEqual(
-      (probeError as { color: string }).color,
-      'var(--chart-1)',
-      '--chart-1 在灰阶主题里几乎不可见，不许再用于这一档',
-    )
+    assert.notEqual(placeholder.tone, (probeError as { tone: string }).tone, 'probe-error 与占位不能同一套样式')
+    assert.match(placeholder.tone, /bg-muted/, '占位是极浅的实心灰')
   })
 
-  it('配色只走主题变量，不是十六进制', () => {
+  it('柱子的样式只由 Tailwind 类给出，不写十六进制 / rgb()', () => {
     for (const bar of heights) {
-      assert.match((bar as { color: string }).color, /^var\(--[a-z0-9-]+\)$/)
+      const tone = (bar as { tone: string }).tone
+      assert.doesNotMatch(tone, /#[0-9a-fA-F]{3,8}\b/)
+      assert.doesNotMatch(tone, /rgb\(|hsl\(/)
     }
   })
 
@@ -272,7 +284,8 @@ describe('probeNoticeOf：停摆必须显眼', () => {
 })
 
 describe('源码护栏：CSP 与配色', () => {
-  const files = ['_components/model-probe-bars.tsx', '_components/model-probe-notice.tsx'] as const
+  const barsComponent = '_components/model-probe-bars.tsx';
+  const files = [barsComponent, '_components/model-probe-notice.tsx'] as const
 
   /** 去掉注释（护栏约束代码，不是文案）。 */
   function readCode(relative: string): string {
@@ -290,7 +303,7 @@ describe('源码护栏：CSP 与配色', () => {
     }
   })
 
-  it('不硬编码颜色（配色一律走 CSS 变量 / Tailwind token）', () => {
+  it('不硬编码颜色（配色一律走 Tailwind token）', () => {
     for (const file of files) {
       const code = readCode(file)
       assert.equal(/#[0-9a-fA-F]{3,8}\b/.test(code), false, `${file} 里有十六进制颜色`)
@@ -298,13 +311,33 @@ describe('源码护栏：CSP 与配色', () => {
     }
   })
 
-  it('空心柱真的画了描边（形态编码不许被当成装饰删掉）', () => {
-    const code = readCode('_components/model-probe-bars.tsx')
-    for (const token of ['bar.shape === "hollow"', 'borderColor', 'borderWidth', 'transparent']) {
-      assert.ok(code.includes(token), `柱状图没把空心形态画出来：${token}`)
+  it('组件把 lib 算好的 tone 类贴到柱子上（颜色只在 lib 里定义）', () => {
+    const code = readCode(barsComponent)
+    assert.ok(code.includes('${bar.tone}'), '柱子没应用 lib 给的 tone 类')
+    // 反向：组件里不许再出现具体状态色 / 分类色，配色只许来自 lib/model-probe.ts。
+    for (const forbidden of ['--chart-', 'bg-emerald', 'bg-amber', 'bg-destructive', 'borderColor']) {
+      assert.ok(!code.includes(forbidden), `组件里出现了具体颜色：${forbidden}`)
     }
-    // 反向：不许在组件里按状态名写死颜色（配色只许来自 lib 里的样式表）。
-    assert.ok(!code.includes('--destructive'), '组件里不该出现具体颜色变量，配色只在 lib/model-probe.ts')
+  })
+
+  it('空心柱真的画了描边（形态编码不许被当成装饰删掉）', () => {
+    // 描边现在写在 lib 的 tone 类里（`border border-muted-foreground bg-transparent`）。
+    const barTones = ['ok', 'degraded', 'probe-error', 'failed'].map((status) => {
+      const bars = probeBars([point(status, 1000)], 8)
+      const last = bars[bars.length - 1]
+      assert.ok(last !== undefined)
+      return last
+    })
+    const hollow = barTones[2]
+    assert.ok(hollow !== undefined)
+    assert.equal(hollow.shape, 'hollow')
+    for (const token of ['border', 'border-muted-foreground', 'bg-transparent']) {
+      assert.ok(hollow.tone.includes(token), `空心柱少了描边类：${token}`)
+    }
+    // 四种状态里只有它没有填充色。
+    for (const bar of barTones) {
+      if (bar.shape === 'hollow') assert.ok(!/bg-(emerald|amber|destructive|muted)\b/.test(bar.tone))
+    }
   })
 
   it('柱状图组件不自己算钱、不自己格式化时间', () => {
