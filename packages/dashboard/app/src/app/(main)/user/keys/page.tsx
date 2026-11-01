@@ -1,13 +1,15 @@
 "use client";
 
 /**
- * API 密钥 `/user/keys`：列表 + 新建 / 改名 / 启停 / 轮换 / 删除。
+ * API 密钥 `/user/keys`：列表 + 新建 / 编辑（名称 / 启用 / 三个上限）/ 启停 / 轮换 / 删除 / 复制。
  *
- * 三条纪律：
- * - 完整密钥**只在新建 / 轮换的那一次**出现（`KeySecretDialog`），关掉即清空；
- *   页面不复述明文、不写 URL、不落 storage、不打 console。
+ * 四条纪律：
+ * - 完整密钥**只经剪贴板出去**：列表里显示的是掩码（`KeyCopyCell`），明文既不打进
+ *   页面文本、也不进 URL / storage / console；新建与轮换的一次性明文只走 `KeySecretDialog`。
+ * - 行上只留「编辑 / 轮换 / 删除」；名称、启用、过期时间、金额上限、并发上限全在编辑弹窗里
+ *   （owner 的口径：操作收进编辑，不把表单摊在行上）。
  * - 删除与轮换是危险动作 → `AlertDialog` 二次确认（不是 `window.confirm`，那是浏览器默认控件）。
- * - 启停走乐观更新：先改 UI、失败回滚（`交互` 的阶段 2 `mutations.ts` 落地前，这里用同一套语义的最小实现）。
+ * - 启停留用乐观更新：先改 UI、失败回滚。
  */
 
 import { useCallback, useEffect, useState } from "react";
@@ -43,19 +45,17 @@ import { api, errorMessage, keys as keysApi, type ApiKeySummaryView } from "@/li
 
 import { isUnauthenticated, redirectToLogin } from "../_lib/session";
 import { EmptyBlock, ErrorBlock, LoadingBlock } from "../_components/page-states";
+import { KeyCopyCell } from "./_components/key-copy-cell";
+import { KeyEditDialog } from "./_components/key-edit-dialog";
 import { KeyNameDialog } from "./_components/key-name-dialog";
 import { KeySecretDialog } from "./_components/key-secret-dialog";
-
-type NameDialogState =
-  | { readonly mode: "create" }
-  | { readonly mode: "rename"; readonly key: ApiKeySummaryView }
-  | null;
 
 export default function UserKeysPage() {
   const [keys, setKeys] = useState<readonly ApiKeySummaryView[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [nameDialog, setNameDialog] = useState<NameDialogState>(null);
+  const [createOpen, setCreateOpen] = useState(false);
+  const [editTarget, setEditTarget] = useState<ApiKeySummaryView | null>(null);
   const [pending, setPending] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
   const [secret, setSecret] = useState<{ name: string; secret: string } | null>(null);
@@ -82,27 +82,25 @@ export default function UserKeysPage() {
     void load();
   }, [load]);
 
-  const submitName = async (name: string) => {
-    if (nameDialog === null) return;
+  const submitCreate = async (name: string) => {
     setPending(true);
     setFormError(null);
     try {
-      if (nameDialog.mode === "create") {
-        const created = await keysApi.createKey(api, { name });
-        setNameDialog(null);
-        setSecret({ name: created.name, secret: created.secret });
-        await load();
-      } else {
-        const updated = await keysApi.updateKey(api, nameDialog.key.id, { name });
-        setNameDialog(null);
-        setKeys((current) => current.map((item) => (item.id === updated.id ? updated : item)));
-        toast.success("名称已更新");
-      }
+      const created = await keysApi.createKey(api, { name });
+      setCreateOpen(false);
+      setSecret({ name: created.name, secret: created.secret });
+      await load();
     } catch (caught) {
       setFormError(errorMessage(caught));
     } finally {
       setPending(false);
     }
+  };
+
+  /** 编辑弹窗保存成功后：用它返回的权威条目替换本行（不整表重取，避免闪一次 loading）。 */
+  const applyUpdated = (updated: ApiKeySummaryView) => {
+    setEditTarget(null);
+    setKeys((current) => current.map((item) => (item.id === updated.id ? updated : item)));
   };
 
   const toggleEnabled = async (key: ApiKeySummaryView, enabled: boolean) => {
@@ -143,19 +141,18 @@ export default function UserKeysPage() {
     }
   };
 
+  const openCreate = () => {
+    setFormError(null);
+    setCreateOpen(true);
+  };
+
   return (
     <div className="@container/main flex flex-col gap-4 md:gap-6">
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div className="flex flex-col gap-1">
           <h1 className="font-heading text-xl font-semibold tracking-tight">API 密钥</h1>
-          </div>
-        <Button
-          size="sm"
-          onClick={() => {
-            setFormError(null);
-            setNameDialog({ mode: "create" });
-          }}
-        >
+        </div>
+        <Button size="sm" onClick={openCreate}>
           <Plus className="size-3.5" />
           新建密钥
         </Button>
@@ -172,13 +169,7 @@ export default function UserKeysPage() {
           {loading ? <LoadingBlock rows={5} label="正在加载密钥列表…" /> : null}
           {!loading && error === null && keys.length === 0 ? (
             <EmptyBlock title="还没有 API 密钥" description="新建一把，然后用它调用 /v1/chat/completions">
-              <Button
-                size="sm"
-                onClick={() => {
-                  setFormError(null);
-                  setNameDialog({ mode: "create" });
-                }}
-              >
+              <Button size="sm" onClick={openCreate}>
                 <KeyRound className="size-3.5" />
                 新建密钥
               </Button>
@@ -207,7 +198,9 @@ export default function UserKeysPage() {
                         </Badge>
                       ) : null}
                     </TableCell>
-                    <TableCell className="font-mono text-xs text-muted-foreground">{key.maskedKey}</TableCell>
+                    <TableCell>
+                      <KeyCopyCell maskedKey={key.maskedKey} secret={key.secret} />
+                    </TableCell>
                     <TableCell>
                       <div className="flex items-center gap-2">
                         <Switch
@@ -226,15 +219,8 @@ export default function UserKeysPage() {
                     </TableCell>
                     <TableCell className="text-right">
                       <div className="flex justify-end gap-1">
-                        <Button
-                          size="sm"
-                          variant="ghost"
-                          onClick={() => {
-                            setFormError(null);
-                            setNameDialog({ mode: "rename", key });
-                          }}
-                        >
-                          改名
+                        <Button size="sm" variant="ghost" onClick={() => setEditTarget(key)}>
+                          编辑
                         </Button>
                         <Button size="sm" variant="ghost" onClick={() => setRotateTarget(key)}>
                           轮换
@@ -258,16 +244,17 @@ export default function UserKeysPage() {
       </Card>
 
       <KeyNameDialog
-        open={nameDialog !== null}
-        mode={nameDialog?.mode ?? "create"}
-        initialName={nameDialog?.mode === "rename" ? nameDialog.key.name : ""}
+        open={createOpen}
+        initialName=""
         pending={pending}
         error={formError}
         onOpenChange={(open) => {
-          if (!open) setNameDialog(null);
+          if (!open) setCreateOpen(false);
         }}
-        onSubmit={(name) => void submitName(name)}
+        onSubmit={(name) => void submitCreate(name)}
       />
+
+      <KeyEditDialog apiKey={editTarget} onClose={() => setEditTarget(null)} onSaved={applyUpdated} />
 
       <KeySecretDialog secret={secret} onClose={() => setSecret(null)} />
 

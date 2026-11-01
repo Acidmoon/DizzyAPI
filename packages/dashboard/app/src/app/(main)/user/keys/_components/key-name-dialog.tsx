@@ -1,8 +1,10 @@
 "use client";
 
 /**
- * 新建 / 改名共用的小表单弹窗（只有「名称」一个字段 —— 过期时间、金额上限、并发数是
- * 管理台编辑弹窗的事，用户侧不开放，避免用户给自己设一个「请求全失败」的上限）。
+ * 新建密钥的弹窗（只有「名称」一个字段）。
+ *
+ * 改名已经收进 `KeyEditDialog`（名称 / 启用 / 过期时间 / 金额上限 / 并发上限一起改），
+ * 所以这里只管创建，不再有 rename 分支——两条路径并存只会让「改名字」有两个入口、两份校验。
  */
 
 import { useEffect, useState } from "react";
@@ -21,7 +23,6 @@ import { Input } from "@/components/ui/input";
 
 export interface KeyNameDialogProps {
   readonly open: boolean;
-  readonly mode: "create" | "rename";
   readonly initialName?: string;
   readonly pending: boolean;
   readonly error: string | null;
@@ -31,7 +32,6 @@ export interface KeyNameDialogProps {
 
 export function KeyNameDialog({
   open,
-  mode,
   initialName = "",
   pending,
   error,
@@ -50,16 +50,13 @@ export function KeyNameDialog({
 
   const trimmed = name.trim();
   const invalid = trimmed === "";
-  const title = mode === "create" ? "新建 API 密钥" : "重命名密钥";
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
-          <DialogTitle>{title}</DialogTitle>
-          <DialogDescription>
-            {mode === "create" ? "名称只用于你自己分辨用途，例如「本地调试」「线上服务」。" : "只改显示名称，密钥本身不变。"}
-          </DialogDescription>
+          <DialogTitle>新建 API 密钥</DialogTitle>
+          <DialogDescription>名称只用于你自己分辨用途，例如「本地调试」「线上服务」。</DialogDescription>
         </DialogHeader>
 
         <form
@@ -95,7 +92,7 @@ export function KeyNameDialog({
               取消
             </Button>
             <Button type="submit" disabled={pending}>
-              {pending ? "提交中…" : mode === "create" ? "创建" : "保存"}
+              {pending ? "提交中…" : "创建"}
             </Button>
           </DialogFooter>
         </form>

@@ -34,6 +34,9 @@ const COMPONENT_FILES = [
   'usage/_components/usage-filters.tsx',
   'keys/_components/key-name-dialog.tsx',
   'keys/_components/key-secret-dialog.tsx',
+  'keys/_components/key-copy-cell.tsx',
+  'keys/_components/key-edit-dialog.tsx',
+  'keys/_components/key-edit-logic.ts',
 ] as const
 
 const LIB_FILES = [
