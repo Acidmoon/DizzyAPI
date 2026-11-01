@@ -124,7 +124,7 @@ test('头数上限：超过 24 个报错', () => {
 
 // ───────────────────────────── 请求体 ─────────────────────────────
 
-test('新建：空名字的行丢掉、首尾空白 trim、可选项留空就不发', () => {
+test('新建：完全空的行丢掉、首尾空白 trim、可选项留空就不发', () => {
   const draft = {
     ...emptyClientDraft(),
     id: 'my-cli',
@@ -133,7 +133,8 @@ test('新建：空名字的行丢掉、首尾空白 trim、可选项留空就不
     description: '  ',
     headers: [
       { name: ' x-client ', value: 'cli' },
-      { name: '   ', value: 'ignored' },
+      // 完全空的一行 = 点「添加一行」多出来的，提交时丢掉。
+      { name: '   ', value: '' },
     ],
   }
   const body = clientCreateBodyOf(draft)
@@ -145,6 +146,18 @@ test('新建：空名字的行丢掉、首尾空白 trim、可选项留空就不
     enabled: true,
     headers: [{ name: 'x-client', value: 'cli' }],
   })
+})
+
+test('新建：头名空但值填了 → 报错（不许把用户填的值静默丢掉）', () => {
+  const draft = {
+    ...emptyClientDraft(),
+    id: 'my-cli',
+    label: 'x',
+    headers: [{ name: '   ', value: 'x-opencode-session' }],
+  }
+  assert.equal(clientCreateBodyOf(draft), 'invalid')
+  const issues = clientDraftIssues(draft, true)
+  assert.ok(issues.some((issue) => issue.message.includes('第 1 行：头名不能为空')))
 })
 
 test('新建：不合法直接 "invalid"（不发请求）', () => {

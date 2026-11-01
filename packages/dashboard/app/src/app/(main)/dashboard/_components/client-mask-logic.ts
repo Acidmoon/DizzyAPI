@@ -187,10 +187,24 @@ export function clientDraftIssues(draft: ClientDraft, isNew: boolean): ClientDra
     });
   }
   draft.headers.forEach((header, index) => {
+    const row = index + 1;
+    const nameEmpty = header.name.trim() === "";
+    const valueEmpty = header.value === "";
+    // 完全空的一行 = 「加多了」，提交时整行丢掉，不算错误。
+    if (nameEmpty && valueEmpty) return;
+    // 但**只有头名空、值却填了**不能静默丢：那会把用户填的内容吃掉，必须报错。
+    if (nameEmpty) {
+      issues.push({ field: `headers.${String(index)}.name`, message: `第 ${String(row)} 行：头名不能为空` });
+      return;
+    }
     const nameError = clientHeaderNameError(header.name);
-    if (nameError !== null) issues.push({ field: `headers.${String(index)}.name`, message: `第 ${String(index + 1)} 行：${nameError}` });
+    if (nameError !== null) {
+      issues.push({ field: `headers.${String(index)}.name`, message: `第 ${String(row)} 行：${nameError}` });
+    }
     const valueError = clientHeaderValueError(header.value);
-    if (valueError !== null) issues.push({ field: `headers.${String(index)}.value`, message: `第 ${String(index + 1)} 行：${valueError}` });
+    if (valueError !== null) {
+      issues.push({ field: `headers.${String(index)}.value`, message: `第 ${String(row)} 行：${valueError}` });
+    }
   });
   return issues;
 }
@@ -202,10 +216,15 @@ export function clientDraftError(draft: ClientDraft, isNew: boolean): string | n
 
 // ───────────────────────────── 请求体 ─────────────────────────────
 
-/** 头草稿 → 请求体（去掉首尾空白；空名字的行整行丢掉，允许「点多了加一行」）。 */
+/**
+ * 头草稿 → 请求体（头名去掉首尾空白）。
+ *
+ * **只丢掉完全空的行**（「加多了」的那一行）：头名空、值却有内容的行不在这里丢，
+ * 由 `clientDraftIssues` 报错挡住 —— 静默丢掉用户填的值比报错更难查。
+ */
 export function clientHeadersOf(draft: readonly ClientHeaderDraft[]): { name: string; value: string }[] {
   return draft
-    .filter((header) => header.name.trim() !== "")
+    .filter((header) => !(header.name.trim() === "" && header.value === ""))
     .map((header) => ({ name: header.name.trim(), value: header.value }));
 }
 
