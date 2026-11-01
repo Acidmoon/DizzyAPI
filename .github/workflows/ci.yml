@@ -1,0 +1,160 @@
+# DizzyAPI · GitHub Actions 验收流水线
+#
+# 仓库 2026-11-01 起是公开仓（`github.com/Acidmoon/DizzyAPI`），Actions 分钟不限量，
+# 所以这里跑**全量**：三个 job 并行，**每个 job 内部严格串行**。
+# 这个 workflow 只做验收，不承担发布 —— 部署仍然走本地 `git archive` + `scp`
+# （服务器不直连 GitHub，见 AGENTS.md §6.3）。
+#
+# 为什么是这三件：
+#   - `next build` 是整个仓库里**唯一**能抓 `packages/dashboard/app/**/*.tsx` 类型错误的
+#     一步（`pnpm typecheck` 只覆盖根 tsconfig 与 `packages/console/tsconfig.json`），
+#     而且它不在 pnpm workspace 里（自带的 `package-lock.json`），所以单独一个 job。
+#   - `pnpm test` 里有**真进程用例**（spawn `bin/gatewayd`、`freePort()` 拿临时端口），
+#     所以 TS job 必须先 `pnpm build:go`，否则那批用例直接 skip —— **skip 不算绿**。
+#   - `go test` 与 `gofmt` / `go vet` 在 Windows 上有覆盖不到的地方（`go test -race` 在
+#     本机直接 `STATUS_ENTRYPOINT_NOT_FOUND`），Linux 是唯一能补齐的地方。
+#
+# 这个文件里**不许**出现：`continue-on-error`、`|| true`、任何 secret。
+# 红就是红，修实现，不要修测试。
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# 同一分支的新推送取消旧跑：省额度、防堆积。
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# 最小权限：CI 只读仓库，不写任何东西。
+permissions:
+  contents: read
+
+env:
+  # 与 AGENTS.md §6.1「Node 24 + tsx」一致。注意 `@types/node` 是 25.x、
+  # 服务器是 Node 26 —— 如果哪天 CI 报「Node 24 没有某个 API」，把这两个一起抬到 26。
+  NODE_VERSION: '24'
+  # 与根 package.json 的 `packageManager` 字段一致。
+  PNPM_VERSION: '11.21.0'
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # 1. TS：类型检查 + 全量测试（约 1600 例）
+  # ---------------------------------------------------------------------------
+  ts:
+    name: TS · typecheck + test
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 装 pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: 装 Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+
+      # `pnpm test` 要 spawn `bin/gatewayd`，所以这个 job 也要 Go 工具链。
+      - name: 装 Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: go.mod
+
+      - name: 装依赖
+        run: pnpm install --frozen-lockfile
+
+      - name: 编 Go 二进制（真进程用例的前置条件）
+        run: pnpm build:go
+
+      - name: 类型检查
+        run: pnpm typecheck
+
+      # 不能写成 `pnpm test -- --test-concurrency=3`：pnpm 会把参数拼到脚本**末尾**，
+      # 变在 glob 之后，Node 会把它当成又一条测试文件模式，flag 静默不生效
+      # （默认并发 = CPU 核数，十几个 node 进程互相抢端口，本机实测过）。
+      # 所以这里直接写完整命令，把 flag 放在 glob **前面**。
+      - name: 全量测试（并发固定 3）
+        run: node --import tsx --test --test-concurrency=3 "packages/*/test/*.test.ts"
+
+  # ---------------------------------------------------------------------------
+  # 2. Go：编译 / 格式 / vet / 单测
+  # ---------------------------------------------------------------------------
+  go:
+    name: Go · build + fmt + vet + test
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 装 Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: go.mod
+
+      # `./...` 同时覆盖 `cmd/gatewayd` 与 `cmd/dizzy`（命令行客户端必须能编）。
+      - name: 编译全部包
+        run: go build ./...
+
+      - name: gofmt 必须无输出
+        run: |
+          out="$(gofmt -l .)"
+          if [ -n "$out" ]; then
+            echo "::error::以下文件没有按 gofmt 格式化，本地跑 \`gofmt -w\` 修："
+            echo "$out"
+            exit 1
+          fi
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: go test
+        run: go test ./...
+
+  # ---------------------------------------------------------------------------
+  # 3. Dashboard：Next 静态导出（`npm --prefix packages/dashboard/app run build`）
+  # ---------------------------------------------------------------------------
+  dashboard:
+    name: Dashboard · next build
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    defaults:
+      run:
+        # `packages/dashboard/app` **不在** pnpm workspace 里（`packages/*` 只匹配到
+        # `packages/dashboard` 这个插件包），它自带 `package-lock.json`，所以这里用 npm，
+        # 且**不需要**根目录的 `pnpm install`。
+        working-directory: packages/dashboard/app
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 装 Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: packages/dashboard/app/package-lock.json
+
+      - name: 装依赖（锁文件必须与 package.json 一致，漂了就在这里红）
+        run: npm ci
+
+      # `next build` 自己也会类型检查，这一步只是让失败更早、报错更干净。
+      - name: 类型检查
+        run: npm run typecheck
+
+      # `build` = `sync-docs.mjs`（docs/api/*.md → public/docs/，构建期同步、不入库）
+      #        → `next build`（静态导出到 out/）
+      #        → `export-dist.mjs`（out/ → packages/dashboard/dist/，并写 build-info.json）
+      - name: 构建
+        run: npm run build
