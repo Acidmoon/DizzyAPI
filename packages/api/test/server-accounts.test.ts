@@ -176,6 +176,18 @@ test('管理员账号：连通性测试只回状态与耗时，普通用户 403'
   assert.ok(!replied.text.includes('credentialRef'))
   assert.ok(!replied.text.includes('credentialConfigured'))
   assert.ok(!replied.text.includes('credential-ref-acc-1'))
+  // 详情块：提示词与响应片段要透出去（管理台弹窗靠它显示「上游到底回了什么」）。
+  assert.deepEqual(replied.json.request, {
+    prompt: 'hi',
+    model: 'gpt-5',
+    protocol: 'openai-chat',
+    endpoint: 'https://api.openai.com/v1/chat/completions',
+  })
+  assert.deepEqual(replied.json.response, {
+    status: 200,
+    bodySnippet: '{"id":"chatcmpl-1"}',
+    truncated: false,
+  })
   assert.deepEqual(
     accountAdmin.calls.find((entry) => entry.method === 'testConnection')?.args,
     ['acc_1', { model: 'gpt-5', protocol: 'openai-chat' }],

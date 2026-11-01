@@ -274,8 +274,42 @@ export interface AccountTestInput {
 }
 
 /**
+ * 一次连通性测试**实际发出去的请求**（给管理台弹窗展示用）。
+ *
+ * **绝不含凭据**：鉴权头不在里面（`Authorization` / `x-api-key` / `x-goog-api-key`），
+ * 端点也已经去掉 query 与 fragment —— 有些上游会把 key 放进 query，整条 URL 不能直接给前端。
+ * 提示词不是秘密，原样给。
+ */
+export interface AccountTestRequest {
+  /** 实际发出去的提示词；只查模型列表（`GET /models`）这种没有正文的请求为 `null`。 */
+  readonly prompt: string | null
+  /** 实际使用的模型名；模型列表探测为 `null`。 */
+  readonly model: string | null
+  readonly protocol: string
+  /** 实际请求的端点（已脱敏：去 query、去 fragment）。 */
+  readonly endpoint: string
+}
+
+/**
+ * 上游回来的响应**片段**（截断 + 打码后）。
+ *
+ * 只在本次响应里返回，**不持久化**：写进 `accounts.json` 会让文件膨胀，
+ * 也会把上游报错原文长期留在磁盘上。
+ */
+export interface AccountTestResponse {
+  readonly status: number
+  /** 正文（截断到 2000 字符，疑似密钥打码）；空响应体是 `''`。 */
+  readonly bodySnippet: string
+  /** 正文被截断过（超过 2000 字符，或读的时候就撞到上限）。 */
+  readonly truncated: boolean
+}
+
+/**
  * 一次连通性测试的结果。**没有凭据**：只有状态码、耗时与脱敏后的错误文本。
  * `status` 为 `null` 表示请求根本没拿到 HTTP 响应（网络错误 / 超时）。
+ *
+ * `request` / `response` 是 2026-11-01 owner 要求「测试结果要能看详情」后**增量**加的两个块：
+ * 老调用方不读它们，行为不变；它们**只随本次响应返回**，不进账号记录。
  */
 export interface AccountTestResult {
   readonly ok: boolean
@@ -285,6 +319,9 @@ export interface AccountTestResult {
   readonly protocol: AccountProtocol | null
   readonly error: string | null
   readonly testedAt: string
+  readonly request?: AccountTestRequest
+  /** 拿到 HTTP 响应才有；网络错误 / 超时为 `null`。 */
+  readonly response?: AccountTestResponse | null
 }
 
 // ───────────────────────────── 导入来源 ─────────────────────────────

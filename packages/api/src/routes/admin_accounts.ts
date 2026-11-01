@@ -20,7 +20,7 @@ import {
   requiredString,
 } from '../params.ts'
 import { routeAccountBulk } from './admin_account_bulk.ts'
-import { accountOf, normalizeBulkImport } from '../views/account.ts'
+import { accountOf, accountTestOf, normalizeBulkImport } from '../views/account.ts'
 import { auditActorOf, audited } from '../audit.ts'
 import { API_ACTOR } from '../constants.ts'
 import { ApiError, badRequest, notFound } from '../errors.ts'
@@ -299,7 +299,7 @@ export async function routeAccounts(host: ApiServer, req: IncomingMessage, res: 
       ...(model === undefined ? {} : { model }),
       ...(protocol === undefined ? {} : { protocol }),
     }
-    sendJson(host, req, res, 200, await testConnection.call(accountAdmin, id, input))
+    sendJson(host, req, res, 200, accountTestOf(await testConnection.call(accountAdmin, id, input)))
     return
   }
 

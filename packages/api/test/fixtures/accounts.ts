@@ -220,18 +220,30 @@ export class FakeAccountAdmin implements AccountAdminPort {
     protocol: string | null
     error: string | null
     testedAt: string
+    request: { prompt: string | null; model: string | null; protocol: string; endpoint: string }
+    response: { status: number; bodySnippet: string; truncated: boolean } | null
   }> {
     this.calls.push({ method: 'testConnection', args: [id, input] })
     const account = this.accounts.find((item) => item.id === id)
     if (account === undefined) throw new DomainError('IDENTITY_NOT_FOUND', '没有这个账号')
+    const model = input.model ?? account.models?.[0] ?? null
+    const protocol = input.protocol ?? account.protocol ?? 'openai-chat'
     return {
       ok: true,
       status: 200,
       latencyMs: 123,
-      model: input.model ?? account.models?.[0] ?? null,
-      protocol: input.protocol ?? account.protocol ?? 'openai-chat',
+      model,
+      protocol,
       error: null,
       testedAt: '2026-10-21T00:00:00.000Z',
+      // 详情块：真服务从**实际发出去的请求**取值，这里用同样的形状。
+      request: {
+        prompt: 'hi',
+        model,
+        protocol,
+        endpoint: 'https://api.openai.com/v1/chat/completions',
+      },
+      response: { status: 200, bodySnippet: '{"id":"chatcmpl-1"}', truncated: false },
     }
   }
 

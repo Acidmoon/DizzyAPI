@@ -33,6 +33,7 @@ import { api, adminUsers, ApiError, type AccountViewLike } from "@/lib/api";
 
 import { AccountCreateDialog } from "./account-create-dialog";
 import { AccountCredentialDialog } from "./account-credential-dialog";
+import { AccountTestDialog } from "./account-test-dialog";
 import { AccountDeleteDialog } from "./account-delete-dialog";
 import { AccountEditDialog } from "./account-edit-dialog";
 import { AccountImportDialog } from "./account-import-dialog";
@@ -61,6 +62,7 @@ export function AccountsBoard() {
   const [editing, setEditing] = useState<AccountViewLike | null>(null);
   const [deleting, setDeleting] = useState<readonly AccountViewLike[] | null>(null);
   const [credentialFor, setCredentialFor] = useState<AccountViewLike | null>(null);
+  const [testing, setTesting] = useState<AccountViewLike | null>(null);
   const [selected, setSelected] = useState<readonly string[]>([]);
   const [bulkBusy, setBulkBusy] = useState(false);
 
@@ -212,6 +214,7 @@ export function AccountsBoard() {
               onToggleSelectAll={() => setSelected(toggleSelectAll(selected, pageIds))}
               onEdit={(account) => setEditing(account)}
               onCredential={(account) => setCredentialFor(account)}
+              onTest={(account) => setTesting(account)}
               onDelete={(account) => setDeleting([account])}
               onChanged={reload}
             />
@@ -285,6 +288,15 @@ export function AccountsBoard() {
             setCredentialFor(null);
             reload();
           }}
+        />
+      )}
+
+      {testing === null ? null : (
+        <AccountTestDialog
+          key={testing.id}
+          account={testing}
+          onClose={() => setTesting(null)}
+          onRan={reload}
         />
       )}
 

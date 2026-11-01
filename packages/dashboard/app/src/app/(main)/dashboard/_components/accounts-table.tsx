@@ -58,6 +58,7 @@ export function AccountsTable({
   onToggleSelectAll,
   onEdit,
   onCredential,
+  onTest,
   onDelete,
   onChanged,
 }: {
@@ -67,6 +68,7 @@ export function AccountsTable({
   onToggleSelectAll: () => void;
   onEdit: (account: AccountViewLike) => void;
   onCredential: (account: AccountViewLike) => void;
+  onTest: (account: AccountViewLike) => void;
   onDelete: (account: AccountViewLike) => void;
   onChanged: () => void;
 }) {
@@ -148,6 +150,7 @@ export function AccountsTable({
                   account={account}
                   onEdit={onEdit}
                   onCredential={onCredential}
+                  onTest={onTest}
                   onDelete={onDelete}
                   onChanged={onChanged}
                 />

@@ -137,6 +137,82 @@ export function stringMapOf(value: unknown): Record<string, string> | null {
 }
 
 
+/**
+ * 连通性测试结果 → HTTP DTO（管理台「测试详情」弹窗用）。
+ *
+ * 三条口径，缺一条就会出事：
+ * 1. **逐字段挑选**：与 `accountOf` 同一个理由 —— 服务层视图里可能有 `credentialRef`，
+ *    原样透出去就是把凭据引用名交给浏览器。
+ * 2. **`request` / `response` 是可选块**：老调用方（或服务层没升级）不返回它们也要能跑，
+ *    缺省给 `null`，不是给空对象（页面要能区分「没有」与「空正文」）。
+ * 3. **片段再截一道**：服务层已截到 2000 字符，这里再兜一次底 ——
+ *    HTTP 响应体不该因为上游换了实现就突然变成几十 KB。
+ */
+export interface AccountTestDetail {
+  readonly ok: boolean
+  readonly status: number | null
+  readonly latencyMs: number
+  readonly model: string | null
+  readonly protocol: string | null
+  readonly error: string | null
+  readonly testedAt: string
+  readonly request: {
+    readonly prompt: string | null
+    readonly model: string | null
+    readonly protocol: string
+    readonly endpoint: string
+  } | null
+  readonly response: {
+    readonly status: number
+    readonly bodySnippet: string
+    readonly truncated: boolean
+  } | null
+}
+
+/** 响应片段在 HTTP 层的上限（与服务层 `TEST_SNIPPET_LIMIT` 同值，独立兜底）。 */
+const TEST_SNIPPET_MAX = 2000
+
+export function accountTestOf(value: unknown): AccountTestDetail {
+  const record = asRecord(value)
+  if (record === null) {
+    throw new ApiError('API_RESPONSE_INVALID', 502, '账号管理服务返回了无法识别的测试结果')
+  }
+  return {
+    ok: record.ok === true,
+    status: typeof record.status === 'number' ? record.status : null,
+    latencyMs: typeof record.latencyMs === 'number' ? record.latencyMs : 0,
+    model: typeof record.model === 'string' ? record.model : null,
+    protocol: typeof record.protocol === 'string' ? record.protocol : null,
+    error: typeof record.error === 'string' ? record.error : null,
+    testedAt: typeof record.testedAt === 'string' ? record.testedAt : '',
+    request: requestOf(record.request),
+    response: responseOf(record.response),
+  }
+}
+
+function requestOf(value: unknown): AccountTestDetail['request'] {
+  if (!isPlainObject(value)) return null
+  const protocol = typeof value.protocol === 'string' ? value.protocol : ''
+  return {
+    prompt: typeof value.prompt === 'string' ? value.prompt : null,
+    model: typeof value.model === 'string' ? value.model : null,
+    protocol,
+    endpoint: typeof value.endpoint === 'string' ? value.endpoint : '',
+  }
+}
+
+function responseOf(value: unknown): AccountTestDetail['response'] {
+  if (!isPlainObject(value) || typeof value.status !== 'number') return null
+  const body = typeof value.bodySnippet === 'string' ? value.bodySnippet : ''
+  const truncated = value.truncated === true || body.length > TEST_SNIPPET_MAX
+  return {
+    status: value.status,
+    bodySnippet: truncated ? body.slice(0, TEST_SNIPPET_MAX) : body,
+    truncated,
+  }
+}
+
+
 export function normalizeBulkImport(value: unknown): unknown {
   if (!isPlainObject(value)) return value
   const items = Array.isArray(value.items) ? value.items : []

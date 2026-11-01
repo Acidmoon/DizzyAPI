@@ -1,92 +1,20 @@
+/**
+ * 连通性测试：三个协议的最小请求、结果落库、错误脱敏。
+ *
+ * 公共夹具（启动 world / 注入 fetch / 造账号）已抽到 `test/helpers/account-world.ts`：
+ * 本文件接近 §5.6 的 500 行上限，而详情块要另开一个测试文件，两边必须共用同一套夹具。
+ */
 import assert from 'node:assert/strict'
-import { mkdtemp, rm } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
-import { test, type TestContext } from 'node:test'
-import { Context } from 'cordis'
-import CredentialsService from '../../credentials/src/index.ts'
-import IdentityService, { type IdentityAccount } from '../../identity/src/index.ts'
-import AccountAdminService, {
-  type AccountAdminService as AccountAdminServiceType,
-  type CreateAccountInput,
-} from '../src/index.ts'
+import { test } from 'node:test'
 
-const ACTOR = '@dizzyapi/plugin-admin'
-
-interface World {
-  readonly admin: AccountAdminServiceType
-  readonly identity: IdentityService
-}
-
-interface FetchCall {
-  readonly url: string
-  readonly init: RequestInit | undefined
-}
-
-async function boot(t: TestContext): Promise<World> {
-  const dir = await mkdtemp(join(tmpdir(), 'dizzyapi-account-test-'))
-  const ctx = new Context()
-  const credentialsFiber = await ctx.plugin(CredentialsService, { dataPath: join(dir, 'credentials.json') })
-  const identityFiber = await ctx.plugin(IdentityService, {
-    dataPath: join(dir, 'accounts.json'),
-    pollIntervalMs: 3_600_000,
-    requestTimeoutMs: 5_000,
-  })
-  const adminFiber = await ctx.plugin(AccountAdminService, { adminPlugins: [ACTOR], maxBatchSize: 100 })
-  t.after(async () => {
-    await adminFiber.dispose()
-    await identityFiber.dispose()
-    await credentialsFiber.dispose()
-    await rm(dir, { recursive: true, force: true })
-  })
-  return {
-    admin: ctx.get('accountAdmin') as AccountAdminServiceType,
-    identity: ctx.get('identity') as IdentityService,
-  }
-}
-
-/** 直接替换服务里的 fetch（生产用全局 fetch）；返回记录到的请求。 */
-function injectFetch(
-  world: World,
-  handler: (url: string, init: RequestInit | undefined) => Promise<Response>,
-): FetchCall[] {
-  const calls: FetchCall[] = []
-  const mutable = world.admin as unknown as { fetchImpl: typeof fetch }
-  mutable.fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
-    const url = String(input)
-    calls.push({ url, init })
-    return handler(url, init)
-  }) as typeof fetch
-  return calls
-}
-
-function jsonResponse(body: unknown, status = 200): Response {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { 'content-type': 'application/json' },
-  })
-}
-
-function headersOf(init: RequestInit | undefined): Record<string, string> {
-  return (init?.headers ?? {}) as Record<string, string>
-}
-
-function bodyOf(init: RequestInit | undefined): Record<string, unknown> {
-  assert.ok(init !== undefined, '请求必须带 init')
-  assert.equal(typeof init.body, 'string')
-  return JSON.parse(init.body as string) as Record<string, unknown>
-}
-
-async function createAccount(
-  world: World,
-  input: Partial<CreateAccountInput> & Pick<CreateAccountInput, 'provider' | 'kind' | 'label'>,
-  secret: { apiKey?: string; accessToken?: string } | null = { apiKey: 'sk-test' },
-): Promise<IdentityAccount> {
-  return world.identity.create({
-    ...input,
-    ...(secret === null ? {} : { secret }),
-  })
-}
+import {
+  bodyOf,
+  boot,
+  createAccount,
+  headersOf,
+  injectFetch,
+  jsonResponse,
+} from './helpers/account-world.ts'
 
 // ───────────────────────────────── 三个协议的最小请求 ─────────────────────────────────
 

@@ -10,12 +10,20 @@
  * 拼进错误信息。本文件是纯函数：不落盘、不写日志。
  */
 import { AccountAdminError } from './errors.ts'
+import { endpointOf, redactToken as redact, snippetOf } from './test-snippet.ts'
 import type {
   AccountProtocol,
   AccountProvider,
   AccountTestInput,
+  AccountTestRequest,
   AccountTestResult,
 } from './types.ts'
+
+/**
+ * 探针提示词：**请求体里发的是它，测试详情里展示的也是它**（只此一份，
+ * 不允许前端硬编一个、请求里再发另一个）。
+ */
+const PROBE_PROMPT = 'hi'
 
 /** 账号里与测试相关的只读字段（不 import identity 的实现）。 */
 export interface ConnectionTestTarget {
@@ -149,7 +157,7 @@ function planRequest(
       headers,
       body: JSON.stringify({
         model,
-        messages: [{ role: 'user', content: 'hi' }],
+        messages: [{ role: 'user', content: PROBE_PROMPT }],
         max_tokens: 16,
         stream: false,
       }),
@@ -162,7 +170,7 @@ function planRequest(
       headers,
       body: JSON.stringify({
         model,
-        input: [{ role: 'user', content: 'hi' }],
+        input: [{ role: 'user', content: PROBE_PROMPT }],
         max_output_tokens: 16,
         stream: false,
       }),
@@ -175,7 +183,7 @@ function planRequest(
       url: `${base}/models/${encodeURIComponent(model)}:generateContent`,
       headers,
       body: JSON.stringify({
-        contents: [{ role: 'user', parts: [{ text: 'hi' }] }],
+        contents: [{ role: 'user', parts: [{ text: PROBE_PROMPT }] }],
         generationConfig: { maxOutputTokens: 16 },
       }),
     }
@@ -187,7 +195,7 @@ function planRequest(
     body: JSON.stringify({
       model,
       max_tokens: 16,
-      messages: [{ role: 'user', content: 'hi' }],
+      messages: [{ role: 'user', content: PROBE_PROMPT }],
     }),
   }
 }
@@ -209,6 +217,15 @@ export async function runConnectionTest(
   const now = deps.now ?? Date.now
   const startedAt = now()
 
+  // 详情块：真的发出去的东西（提示词取自计划里的正文，端点去掉 query）。
+  // **不含任何请求头** —— 鉴权头根本没有出口。
+  const requestInfo: AccountTestRequest = {
+    prompt: plan.body === undefined ? null : PROBE_PROMPT,
+    model,
+    protocol,
+    endpoint: endpointOf(plan.url),
+  }
+
   let response: Response
   let text: string
   try {
@@ -221,6 +238,7 @@ export async function runConnectionTest(
     })
     text = (await response.text()).slice(0, BODY_LIMIT)
   } catch (error) {
+    // 没拿到 HTTP 响应：`response` 块为 null（「未拿到响应」与「HTTP 500」必须能分开读）。
     return {
       ok: false,
       status: null,
@@ -229,12 +247,16 @@ export async function runConnectionTest(
       protocol,
       error: redact(networkErrorText(error, timeoutMs), token),
       testedAt: new Date(now()).toISOString(),
+      request: requestInfo,
+      response: null,
     }
   }
 
   const latencyMs = elapsed(now, startedAt)
   const testedAt = new Date(now()).toISOString()
   const parsed = parseJson(text)
+  // 响应片段：截断 + 打码。非 2xx 时这里就是**上游的错误正文**，正是 owner 要看的那个。
+  const responseInfo = { status: response.status, ...snippetOf(text, token) }
 
   if (response.status < 200 || response.status >= 300) {
     const detail = parsed.ok ? errorDetail(parsed.value) : firstLine(text)
@@ -246,6 +268,8 @@ export async function runConnectionTest(
       protocol,
       error: redact(`HTTP ${response.status}${detail === undefined ? '' : `：${truncate(detail)}`}`, token),
       testedAt,
+      request: requestInfo,
+      response: responseInfo,
     }
   }
 
@@ -258,6 +282,8 @@ export async function runConnectionTest(
       protocol,
       error: redact(`响应不是 JSON${text.trim() === '' ? '（响应体为空）' : ''}`, token),
       testedAt,
+      request: requestInfo,
+      response: responseInfo,
     }
   }
 
@@ -271,10 +297,22 @@ export async function runConnectionTest(
       protocol,
       error: redact(`上游返回错误：${truncate(payloadError)}`, token),
       testedAt,
+      request: requestInfo,
+      response: responseInfo,
     }
   }
 
-  return { ok: true, status: response.status, latencyMs, model, protocol, error: null, testedAt }
+  return {
+    ok: true,
+    status: response.status,
+    latencyMs,
+    model,
+    protocol,
+    error: null,
+    testedAt,
+    request: requestInfo,
+    response: responseInfo,
+  }
 }
 
 function elapsed(now: () => number, startedAt: number): number {
@@ -358,17 +396,5 @@ function networkErrorText(error: unknown, timeoutMs: number): string {
   return '网络请求失败'
 }
 
-/** token、URL-encoded token、`Bearer <token>` → `[REDACTED]`。 */
-export function redact(text: string, token: string): string {
-  if (token === '') return text
-  let out = text.split(`Bearer ${token}`).join('[REDACTED]')
-  out = out.split(token).join('[REDACTED]')
-  let encoded = token
-  try {
-    encoded = encodeURIComponent(token)
-  } catch {
-    encoded = token
-  }
-  if (encoded !== token && encoded !== '') out = out.split(encoded).join('[REDACTED]')
-  return out
-}
+/** token、URL-encoded token、`Bearer <token>` → 打码。实现见 `test-snippet.ts`（与响应片段共用一套，不重复）。 */
+export { redactToken as redact } from './test-snippet.ts'

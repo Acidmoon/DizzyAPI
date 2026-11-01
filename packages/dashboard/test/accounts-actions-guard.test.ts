@@ -37,24 +37,32 @@ test('每行都要有「编辑 / 测试 / 启停 / 删除」四个入口', () =>
   const actions = source('account-row-actions.tsx')
   // 表格必须真的挂上行操作组件（写完忘挂 = 页面上啥也没有，这正是被 owner 抓到的那次）。
   assert.match(table, /<AccountRowActions/, 'accounts-table.tsx 没挂 AccountRowActions')
-  for (const label of ['编辑', '测试', '删除']) {
-    assert.ok(actions.includes(`>${label}<`) || actions.includes(`{testing ? "测试中…" : "测试"}`), `缺少「${label}」按钮`)
+  for (const handler of ['onEdit(account)', 'onCredential(account)', 'onTest(account)', 'onDelete(account)']) {
+    assert.ok(actions.includes(handler), `行操作缺少「${handler}」入口`)
   }
   // 启停按钮文案只看 enabled（系统自动停用的语义不在这里表达）。
   assert.ok(actions.includes('{account.enabled ? "停用" : "启用"}'), '启停按钮没按 enabled 给文案')
 })
 
-test('行操作走对端点：测试 POST :id/test、启停 PATCH + enabled', () => {
+test('测试走详情弹窗：请求提示词 / 响应片段 / 再测一次', () => {
   const actions = source('account-row-actions.tsx')
-  assert.ok(actions.includes('adminUsers.testAccount(api, account.id)'), '测试没调 testAccount')
+  assert.ok(actions.includes('onTest(account)'), '行操作没有「测试」入口')
+  assert.equal(actions.includes('testAccount('), false, '测试不许在行里直接发（要进详情弹窗）')
   assert.ok(
     /adminUsers\.updateAccount\(api, account\.id, \{ enabled: next \}\)/.test(actions),
     '启停没走 updateAccount + enabled（它必须是单独的 body 键）',
   )
-  // 测试结果要区分成功与失败，并把 HTTP 状态 / 耗时给出来。
-  assert.ok(actions.includes('formatDurationMs(outcome.latencyMs)'), '测试结果没显示耗时')
-  assert.ok(actions.includes('outcome.status'), '测试结果没显示 HTTP 状态')
-  assert.ok(actions.includes('setFailed(true)'), '测试失败没单独态')
+
+  const dialog = source('account-test-dialog.tsx')
+  assert.ok(dialog.includes('adminUsers.testAccount(api, account.id)'), '测试弹窗没调 testAccount')
+  assert.ok(dialog.includes('formatDurationMs(result.latencyMs)'), '测试弹窗没显示耗时')
+  assert.ok(dialog.includes('HTTP ${String(status)}'), '测试弹窗没显示 HTTP 状态')
+  assert.ok(dialog.includes('未拿到 HTTP 响应'), '没拿到响应的情况没单独表达')
+  assert.ok(dialog.includes('request.prompt'), '测试弹窗没显示实际发出去的提示词')
+  assert.ok(dialog.includes('response.bodySnippet'), '测试弹窗没显示上游响应片段')
+  assert.ok(dialog.includes('再测一次'), '测试弹窗没有「再测一次」')
+  assert.ok(dialog.includes('max-h-56 overflow-auto'), '长正文没有滚动容器（会把弹窗撑爆）')
+  assert.ok(dialog.includes('response.truncated'), '截断时没有提示')
 })
 
 test('编辑弹窗：patch 与 enabled 分开（enabled 不进 patch 对象）', () => {

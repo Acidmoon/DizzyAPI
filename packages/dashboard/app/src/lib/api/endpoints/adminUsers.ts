@@ -175,8 +175,25 @@ export function deleteAccount(
  * `POST /api/accounts/:id/test`：连通性测试（管理员，发一条最小真实请求）。
  *
  * 返回形状与服务端 `AccountTestResult` 一致：**没有凭据**，只有状态码 / 耗时 /
- * 脱敏后的错误文本。`status === null` 表示请求根本没拿到 HTTP 响应（网络错误 / 超时）。
+ * 脱敏后的错误文本，外加两块**本次响应才有的详情**：
+ * - `request`：实际发出去的请求（提示词 / 模型 / 协议 / 端点，端点已去 query）；
+ * - `response`：上游响应**片段**（截断到 2000 字符、疑似密钥已打码）；网络错误时为 `null`。
+ *
+ * 两块都**不持久化**，所以刷新列表是看不到的，只有测试当时能看。
  */
+export interface AccountTestRequestView {
+  readonly prompt: string | null
+  readonly model: string | null
+  readonly protocol: string
+  readonly endpoint: string
+}
+
+export interface AccountTestResponseView {
+  readonly status: number
+  readonly bodySnippet: string
+  readonly truncated: boolean
+}
+
 export interface AccountTestResultView {
   readonly ok: boolean
   readonly status: number | null
@@ -185,6 +202,8 @@ export interface AccountTestResultView {
   readonly protocol: string | null
   readonly error: string | null
   readonly testedAt: string
+  readonly request: AccountTestRequestView | null
+  readonly response: AccountTestResponseView | null
 }
 
 export function testAccount(
