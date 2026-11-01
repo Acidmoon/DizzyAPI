@@ -79,6 +79,7 @@ export const sidebarItems: NavGroup[] = [
       { id: "users", title: "用户", url: "/dashboard/users", icon: Users },
       { id: "roles", title: "角色", url: "/dashboard/roles", icon: ShieldCheck },
       { id: "accounts", title: "上游账号", url: "/dashboard/accounts", icon: Server },
+      { id: "clients", title: "客户端档案", url: "/dashboard/clients", icon: Bot },
       { id: "pricing", title: "模型价格", url: "/dashboard/pricing", icon: Tags },
       { id: "redeem", title: "兑换码", url: "/dashboard/redeem", icon: Ticket },
       { id: "topup", title: "充值订单", url: "/dashboard/topup", icon: ShoppingCart },

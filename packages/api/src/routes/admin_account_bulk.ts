@@ -102,6 +102,11 @@ export async function routeAccountBulk(
     if (Object.hasOwn(body.patch, 'enabled')) {
       throw badRequest('patch 不能带 enabled：启停请用 action=enable / disable')
     }
+    // 客户端档案**不参与批量**：哪个账号挂哪套指纹是一账号一决定（owner 也没要批量挂），
+    // 批量把它改成一刀切只会让「这条账号本来能通」悄悄失效。
+    if (Object.hasOwn(body.patch, 'clientProfile')) {
+      throw badRequest('patch 不能带 clientProfile：客户端档案请逐条账号在编辑弹窗里选')
+    }
     assertOnlyKeys(body.patch, ACCOUNT_PATCH_FIELDS)
     const patch = accountPatchOf(body.patch)
     const fields = Object.keys(patch)

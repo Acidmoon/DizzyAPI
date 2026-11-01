@@ -25,6 +25,7 @@ export class FakeAccountAdmin implements AccountAdminPort {
       models: ['gpt-5', 'gpt-5-codex'],
       modelMap: { 'gpt-5-codex': 'gpt-5-codex-2025-01-01' },
       priority: 5,
+      clientProfile: 'opencode',
       accessExpiresAt: null,
       refreshDueAt: null,
       lastRefreshAt: null,
@@ -52,6 +53,7 @@ export class FakeAccountAdmin implements AccountAdminPort {
       models: null,
       modelMap: null,
       priority: 0,
+      clientProfile: null,
       accessExpiresAt: null,
       refreshDueAt: null,
       lastRefreshAt: null,
@@ -105,6 +107,7 @@ export class FakeAccountAdmin implements AccountAdminPort {
           ? (input.modelMap as Record<string, string>)
           : null,
       priority: typeof input.priority === 'number' ? input.priority : 0,
+      clientProfile: typeof input.clientProfile === 'string' ? input.clientProfile : null,
       accessExpiresAt: null,
       refreshDueAt: null,
       lastRefreshAt: null,

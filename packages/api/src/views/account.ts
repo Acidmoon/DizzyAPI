@@ -100,6 +100,9 @@ export function accountOf(value: unknown): AccountViewLike {
     models: stringArrayOf(record.models),
     modelMap: stringMapOf(record.modelMap),
     priority: typeof record.priority === 'number' ? record.priority : 0,
+    // 客户端指纹档案 id：**只是 id**（真实请求头在 account-priority 推快照时解析），
+    // null = 不伪装。白名单挑选漏了它，管理台的「客户端档案」下拉就永远是空的。
+    clientProfile: typeof record.clientProfile === 'string' ? record.clientProfile : null,
     accessExpiresAt: typeof record.accessExpiresAt === 'string' ? record.accessExpiresAt : null,
     refreshDueAt: typeof record.refreshDueAt === 'string' ? record.refreshDueAt : null,
     lastRefreshAt: typeof record.lastRefreshAt === 'string' ? record.lastRefreshAt : null,

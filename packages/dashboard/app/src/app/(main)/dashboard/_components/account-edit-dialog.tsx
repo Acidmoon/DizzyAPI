@@ -21,7 +21,7 @@
  * - 下拉一律自研 `Select`，不用浏览器原生 `<select>`。
  * - 字段级校验先在前端做一遍，非法不发请求。
  */
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 import { toast } from "sonner";
 
@@ -40,7 +40,7 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
-import { api, adminUsers, ApiError, type AccountViewLike } from "@/lib/api";
+import { api, adminClients, adminUsers, ApiError, type AccountViewLike, type ClientProfileView } from "@/lib/api";
 
 import { accountStateLabel } from "./admin-logic";
 import { protocolLabel, type AccountProtocol } from "./account-create-logic";
@@ -76,6 +76,22 @@ export function AccountEditDialog({
   const [draft, setDraft] = useState<AccountEditDraft>(() => accountEditDraftOf(account));
   const [saving, setSaving] = useState(false);
   const [fieldError, setFieldError] = useState<string | null>(null);
+  /** 可选档案：只列启用的；停用 / 已删的那个也要能显示（否则这一栏会静默变空）。 */
+  const [profiles, setProfiles] = useState<readonly ClientProfileView[]>([]);
+
+  useEffect(() => {
+    let alive = true;
+    adminClients
+      .listClientMasks(api)
+      .then((result) => {
+        if (alive) setProfiles(result.items);
+      })
+      // 档案插件不在运行时选不到档，但**账号编辑本身照旧可用**（别把整张表单一起废掉）。
+      .catch(() => undefined);
+    return () => {
+      alive = false;
+    };
+  }, []);
 
   function patchDraft(next: Partial<AccountEditDraft>): void {
     setDraft((current) => ({ ...current, ...next }));
@@ -109,6 +125,18 @@ export function AccountEditDialog({
   }
 
   const autoDisabled = account.status === "auto_disabled";
+  /**
+   * 当前挂的档案若不在「已启用」列表里（被停用 / 被删），也要能显示出来：
+   * 否则下拉会静默跳到「不伪装」，保存时把 `clientProfile` 冲掉。
+   */
+  const enabledProfiles = profiles.filter((profile) => profile.enabled);
+  const currentProfileFallback =
+    draft.clientProfile === "" || enabledProfiles.some((profile) => profile.id === draft.clientProfile)
+      ? null
+      : {
+          id: draft.clientProfile,
+          label: `${draft.clientProfile}（${profiles.some((profile) => profile.id === draft.clientProfile) ? "已停用" : "已删除"}）`,
+        };
 
   return (
     <Dialog
@@ -234,6 +262,30 @@ export function AccountEditDialog({
           </div>
 
           <GroupTitle>调度</GroupTitle>
+          <div className="grid gap-2">
+            <Label htmlFor="account-client-profile">客户端档案</Label>
+            <Select
+              value={draft.clientProfile === "" ? "none" : draft.clientProfile}
+              onValueChange={(value) => patchDraft({ clientProfile: value === "none" ? "" : value })}
+            >
+              <SelectTrigger id="account-client-profile">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectGroup>
+                  <SelectItem value="none">不伪装</SelectItem>
+                  {enabledProfiles.map((profile) => (
+                    <SelectItem key={profile.id} value={profile.id}>
+                      {profile.label}
+                    </SelectItem>
+                  ))}
+                  {currentProfileFallback === null ? null : (
+                    <SelectItem value={currentProfileFallback.id}>{currentProfileFallback.label}</SelectItem>
+                  )}
+                </SelectGroup>
+              </SelectContent>
+            </Select>
+          </div>
           <div className="flex items-start justify-between gap-3 rounded-lg border px-3 py-2">
             <div className="flex flex-col gap-1">
               <span className="text-sm font-medium">启用</span>

@@ -56,3 +56,10 @@ export * as profile from './endpoints/profile.ts'
 export * as adminUsers from './endpoints/adminUsers.ts'
 export * as adminOps from './endpoints/adminOps.ts'
 export * as adminCommerce from './endpoints/adminCommerce.ts'
+export * as adminClients from './endpoints/adminClients.ts'
+// 客户端档案的类型：页面只从 @/lib/api 取类型，不从 endpoints 深层路径 import。
+export type {
+  ClientHeaderView,
+  ClientMaskStatusView,
+  ClientProfileView,
+} from './endpoints/adminClients.ts'

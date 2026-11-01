@@ -34,6 +34,7 @@ import type {
   AuthPort,
   BillingPort,
   CatalogPort,
+  ClientMaskPort,
   ContentAuditPort,
   FrontendPort,
   ModelHubPort,
@@ -181,6 +182,9 @@ export class ApiService extends Service {
           'status',
           'pushNow',
         ]),
+      // 客户端指纹档案：读面三件套必须齐（账号页的「客户端档案」下拉靠它）；
+      // 写面（upsert / update / remove / reset）由路由按需检查，缺了就 503，不静默变成 500。
+      clientMask: () => this.optionalService<ClientMaskPort>('clientMask', ['list', 'get', 'status']),
       now: () => new Date(),
       uptimeSec: () => Math.round(process.uptime()),
       log: (level, message) => {

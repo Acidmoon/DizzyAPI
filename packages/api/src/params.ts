@@ -274,6 +274,7 @@ export const ACCOUNT_PATCH_FIELDS = [
   'models',
   'modelMap',
   'priority',
+  'clientProfile',
 ] as const
 
 /** 上游账号元数据补丁；只含**真的给了**的键。 */
@@ -286,6 +287,8 @@ export interface AccountPatchInput {
   models?: string[] | null
   modelMap?: Record<string, string> | null
   priority?: number
+  /** 客户端指纹档案 id；`null` = 清空（不伪装）。 */
+  clientProfile?: string | null
 }
 
 /**
@@ -305,6 +308,8 @@ export function accountPatchOf(body: Record<string, unknown>): AccountPatchInput
   if (Object.hasOwn(body, 'models')) patch.models = nullableStringArray(body, 'models')
   if (Object.hasOwn(body, 'modelMap')) patch.modelMap = nullableStringMap(body, 'modelMap')
   if (Object.hasOwn(body, 'priority')) patch.priority = optionalInteger(body, 'priority', 0, 1000)
+  // 客户端指纹档案 id：字符串或 null（null = 清空，回到「不伪装」）。
+  if (Object.hasOwn(body, 'clientProfile')) patch.clientProfile = nullableString(body, 'clientProfile')
   return patch
 }
 

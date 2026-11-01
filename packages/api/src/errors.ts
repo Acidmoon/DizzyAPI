@@ -181,6 +181,10 @@ const EXPLICIT_STATUS: Readonly<Record<string, number>> = {
   CONTENT_AUDIT_STORE_CORRUPT: 500,
   CONTENT_AUDIT_STORE_FAILED: 500,
   CONTENT_AUDIT_GO_UNAVAILABLE: 503,
+  // 客户端指纹档案：未知 id 必须是 404（页面要能区分「档案被删了」与「服务坏了」）；
+  // 输入非法 / 白名单 / 未就绪走下面的通用后缀规则（400 / 403 / 503）。
+  CLIENT_MASK_PROFILE_UNKNOWN: 404,
+  CLIENT_MASK_CONFIG_INVALID: 500,
 }
 
 export function statusOfCode(code: string): number {

@@ -23,6 +23,7 @@ test('管理员账号：列表 / 详情剥掉 credentialRef，PATCH enabled 走 
       'accessExpiresAt',
       'backoffUntil',
       'baseUrl',
+      'clientProfile',
       'createdAt',
       'email',
       'enabled',

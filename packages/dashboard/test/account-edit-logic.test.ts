@@ -36,6 +36,7 @@ function accountOf(overrides: Partial<AccountEditSource> = {}): AccountEditSourc
     models: ['claude-sonnet', 'claude-haiku'],
     modelMap: { 'claude-sonnet': 'sonnet-4' },
     priority: 10,
+    clientProfile: null,
     enabled: true,
     ...overrides,
   }
@@ -224,4 +225,41 @@ test('多字段一起改：patch 键集合与提示文案都对得上', () => {
   assert.equal(plan.enabled, false)
   assert.deepEqual(changedFieldLabels(plan), ['名称', '对外模型名', '优先级', '停用'])
   assert.equal(isNoopPlan(plan), false)
+})
+
+// ───────────────────────────── 客户端档案 ─────────────────────────────
+
+test('clientProfile：挂档 / 换档 / 清空都进 patch，没变不发', () => {
+  const account = accountOf({ clientProfile: null })
+
+  const attached = accountEditPlanOf({ ...draftOf(account), clientProfile: 'opencode' }, account)
+  assert.notEqual(attached, 'invalid')
+  if (attached === 'invalid') return
+  assert.deepEqual(attached.patch, { clientProfile: 'opencode' })
+
+  const switched = accountEditPlanOf({ ...draftOf(account), clientProfile: 'codex' }, accountOf({ clientProfile: 'opencode' }))
+  assert.notEqual(switched, 'invalid')
+  if (switched === 'invalid') return
+  assert.deepEqual(switched.patch, { clientProfile: 'codex' })
+
+  // 清空 = 发 null（服务端用 Object.hasOwn 判「给了没」，省略 != 清空）。
+  const cleared = accountEditPlanOf({ ...draftOf(account), clientProfile: '' }, accountOf({ clientProfile: 'opencode' }))
+  assert.notEqual(cleared, 'invalid')
+  if (cleared === 'invalid') return
+  assert.deepEqual(cleared.patch, { clientProfile: null })
+
+  // 原来是 null、现在还是空 → 一个键都不发。
+  const untouched = accountEditPlanOf(draftOf(account), account)
+  assert.notEqual(untouched, 'invalid')
+  if (untouched === 'invalid') return
+  assert.deepEqual(untouched.patch, {})
+})
+
+test('clientProfile：草稿从账号带出，提示文案叫「客户端档案」', () => {
+  const account = accountOf({ clientProfile: 'opencode' })
+  assert.equal(draftOf(account).clientProfile, 'opencode')
+  const plan = accountEditPlanOf({ ...draftOf(account), clientProfile: '' }, account)
+  assert.notEqual(plan, 'invalid')
+  if (plan === 'invalid') return
+  assert.deepEqual(changedFieldLabels(plan), ['客户端档案'])
 })

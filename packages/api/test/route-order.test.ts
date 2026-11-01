@@ -113,6 +113,7 @@ test('routeApi 判定顺序：整条链逐条比对，不许悄悄插队', () =>
     'routeAdminTopupOrders@parts[0] === \'admin\' && parts[1] === \'topup-orders\'',
     'routeAdminAudit@parts[0] === \'admin\' && parts[1] === \'audit\'',
     'routeAdminContentAudit@parts[0] === \'admin\' && parts[1] === \'content-audit\'',
+    'routeAdminClientMasks@parts[0] === \'admin\' && parts[1] === \'client-masks\'',
     'routeAdminObservability@parts.length === 2 && parts[0] === \'admin\' && parts[1] === \'observability\'',
     'routeAdminUsage@parts[0] === \'admin\' && parts[1] === \'usage\'',
     'adminStats@parts.length === 2 && parts[0] === \'admin\' && parts[1] === \'stats\'',
@@ -130,7 +131,7 @@ test('routeApi 判定顺序：每个管理面前缀都必须自己先 requireAdm
   const adminTargets = [
     'routeAdminRedeemCodes', 'routeAdminRedeemBatches', 'routeAdminRedeemStats',
     'routeAdminBilling', 'routeAdminTopupOrders', 'routeAdminAudit',
-    'routeAdminContentAudit', 'routeAdminObservability', 'routeAdminUsage',
+    'routeAdminContentAudit', 'routeAdminClientMasks', 'routeAdminObservability', 'routeAdminUsage',
     'routeUsers', 'routeAccounts', 'routeSettings',
   ]
   for (const target of adminTargets) {

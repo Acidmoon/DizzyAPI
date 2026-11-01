@@ -50,6 +50,7 @@ import { routeAdminBilling } from './routes/admin_billing.ts'
 import { routeAdminTopupOrders } from './routes/admin_topup.ts'
 import { routeAdminAudit } from './routes/admin_audit.ts'
 import { routeAdminContentAudit } from './routes/admin_content_audit.ts'
+import { routeAdminClientMasks } from './routes/admin_client_masks.ts'
 import { routeAdminObservability } from './routes/admin_observability.ts'
 import { routeAdminUsage } from './routes/admin_usage.ts'
 import { adminStats } from './routes/admin_stats.ts'
@@ -326,6 +327,10 @@ export class ApiServer {
     }
     if (parts[0] === 'admin' && parts[1] === 'content-audit') {
       await routeAdminContentAudit(this, req, res, parts)
+      return
+    }
+    if (parts[0] === 'admin' && parts[1] === 'client-masks') {
+      await routeAdminClientMasks(this, req, res, parts)
       return
     }
     if (parts.length === 2 && parts[0] === 'admin' && parts[1] === 'observability') {

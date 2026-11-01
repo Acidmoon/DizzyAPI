@@ -35,6 +35,8 @@ export interface AccountEditSource {
   readonly models: readonly string[] | null;
   readonly modelMap: Readonly<Record<string, string>> | null;
   readonly priority: number;
+  /** 客户端指纹档案 id；`null` = 不伪装。 */
+  readonly clientProfile: string | null;
   readonly enabled: boolean;
 }
 
@@ -49,6 +51,8 @@ export interface AccountEditDraft {
   models: string;
   modelMap: string;
   priority: string;
+  /** `""` = 不伪装（提交时发 `null`）。 */
+  clientProfile: string;
   enabled: boolean;
 }
 
@@ -62,6 +66,8 @@ export interface AccountMetaPatch {
   models?: string[] | null;
   modelMap?: Record<string, string> | null;
   priority?: number;
+  /** 客户端指纹档案 id；`null` = 清空（不伪装）。 */
+  clientProfile?: string | null;
 }
 
 /** 一次编辑的结果：元数据补丁 + 启停（`null` = 没动）。 */
@@ -80,6 +86,7 @@ const FIELD_LABELS: Readonly<Record<keyof AccountMetaPatch, string>> = {
   models: "对外模型名",
   modelMap: "模型映射",
   priority: "优先级",
+  clientProfile: "客户端档案",
 };
 
 const PROTOCOLS: readonly AccountProtocol[] = [
@@ -106,6 +113,7 @@ export function accountEditDraftOf(account: AccountEditSource): AccountEditDraft
       .map(([from, to]) => `${from}=${to}`)
       .join("\n"),
     priority: String(account.priority),
+    clientProfile: account.clientProfile ?? "",
     enabled: account.enabled,
   };
 }
@@ -186,6 +194,10 @@ export function accountEditPlanOf(
   }
 
   if (priority !== account.priority) patch.priority = priority;
+
+  // 客户端档案：`""` = 不伪装（发 null）；没变就不发（少一条空审计）。
+  const clientProfileValue: string | null = draft.clientProfile === "" ? null : draft.clientProfile;
+  if (clientProfileValue !== (account.clientProfile ?? null)) patch.clientProfile = clientProfileValue;
 
   return { patch, enabled: draft.enabled === account.enabled ? null : draft.enabled };
 }

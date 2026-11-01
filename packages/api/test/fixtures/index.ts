@@ -17,6 +17,7 @@ import { FakePricing } from './pricing.ts'
 import { FakeRedeem, FakeBilling, FakeTopup } from './commerce.ts'
 import { FakeModelHub } from './modelhub.ts'
 import { FakeAudit, FakeContentAudit } from './audit.ts'
+import { FakeClientMask } from './client-mask.ts'
 import { FakeObservability, sampleObservabilityReport } from './observability.ts'
 
 export { DomainError, resolvedConfig } from './support.ts'
@@ -31,6 +32,7 @@ export { FakePricing } from './pricing.ts'
 export { FakeRedeem, FakeBilling, FakeTopup } from './commerce.ts'
 export { FakeModelHub } from './modelhub.ts'
 export { FakeAudit, FakeContentAudit } from './audit.ts'
+export { FakeClientMask } from './client-mask.ts'
 export { FakeObservability, sampleObservabilityReport } from './observability.ts'
 
 export interface Fixture {
@@ -52,6 +54,7 @@ export interface Fixture {
   readonly audit: FakeAudit
   readonly observability: FakeObservability
   readonly contentAudit: FakeContentAudit
+  readonly clientMask: FakeClientMask
   readonly cleanup: () => Promise<void>
 }
 
@@ -74,6 +77,7 @@ export interface FixtureOptions {
   readonly withoutAudit?: boolean
   readonly withoutObservability?: boolean
   readonly withoutContentAudit?: boolean
+  readonly withoutClientMask?: boolean
   readonly pages?: FrontendPageLike[]
 }
 
@@ -95,6 +99,7 @@ export async function createFixture(options: FixtureOptions = {}): Promise<Fixtu
   const audit = new FakeAudit()
   const observability = new FakeObservability()
   const contentAudit = new FakeContentAudit()
+  const clientMask = new FakeClientMask()
 
   const runtime: ApiRuntime = {
     config: resolvedConfig(options.config),
@@ -116,6 +121,7 @@ export async function createFixture(options: FixtureOptions = {}): Promise<Fixtu
     audit: () => (options.withoutAudit === true ? undefined : audit),
     observability: () => (options.withoutObservability === true ? undefined : observability),
     contentAudit: () => (options.withoutContentAudit === true ? undefined : contentAudit),
+    clientMask: () => (options.withoutClientMask === true ? undefined : clientMask),
     now: () => new Date('2026-10-19T12:00:00.000Z'),
     uptimeSec: () => 42,
     log: () => undefined,
@@ -140,6 +146,7 @@ export async function createFixture(options: FixtureOptions = {}): Promise<Fixtu
     audit,
     observability,
     contentAudit,
+    clientMask,
     async cleanup() {
       await rm(frontend.root, { recursive: true, force: true })
     },

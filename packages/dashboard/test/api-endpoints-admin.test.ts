@@ -12,6 +12,7 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 
 import { ApiClient } from '../app/src/lib/api/client.ts'
+import * as clients from '../app/src/lib/api/endpoints/adminClients.ts'
 import * as commerce from '../app/src/lib/api/endpoints/adminCommerce.ts'
 import * as ops from '../app/src/lib/api/endpoints/adminOps.ts'
 import * as users from '../app/src/lib/api/endpoints/adminUsers.ts'
@@ -259,4 +260,30 @@ test('批次与统计', async () => {
   assert.equal(fake.last().url, '/api/admin/redeem-batches/b%2F1')
   await commerce.fetchRedeemStats(client)
   assert.equal(fake.last().url, '/api/admin/redeem-stats')
+})
+
+// ───────────────────────────── 客户端档案（/api/admin/client-masks） ─────────────────────────────
+
+test('客户端档案：列表 / 新建 / 改 / 删 / 恢复出厂各走对路径与方法', async () => {
+  const { client, fake } = call()
+
+  await clients.listClientMasks(client)
+  assert.equal(`${fake.last().method} ${fake.last().url}`, 'GET /api/admin/client-masks')
+
+  await clients.createClientMask(client, { id: 'my-cli', label: '我的 CLI', headers: [] })
+  assert.equal(`${fake.last().method} ${fake.last().url}`, 'POST /api/admin/client-masks')
+  assert.deepEqual(jsonBodyOf(fake), { id: 'my-cli', label: '我的 CLI', headers: [] })
+
+  await clients.updateClientMask(client, 'my-cli', { enabled: false, userAgent: null })
+  assert.equal(`${fake.last().method} ${fake.last().url}`, 'PATCH /api/admin/client-masks/my-cli')
+  assert.deepEqual(jsonBodyOf(fake), { enabled: false, userAgent: null })
+
+  await clients.deleteClientMask(client, 'my-cli')
+  assert.equal(`${fake.last().method} ${fake.last().url}`, 'DELETE /api/admin/client-masks/my-cli')
+
+  await clients.resetClientMask(client, 'opencode')
+  assert.equal(`${fake.last().method} ${fake.last().url}`, 'POST /api/admin/client-masks/opencode/reset')
+  // 档案 id 要转义（它是路径段）。
+  await clients.deleteClientMask(client, 'a b')
+  assert.equal(fake.last().url, '/api/admin/client-masks/a%20b')
 })

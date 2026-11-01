@@ -173,82 +173,20 @@ export interface CatalogModuleView {
 
 // ───────────────────────────── 账号管理 ─────────────────────────────
 
-export interface AccountViewLike {
-  readonly id: string
-  readonly provider: string
-  readonly kind: string
-  readonly label: string
-  readonly enabled: boolean
-  readonly status: string
-  readonly email: string | null
-  readonly subject: string | null
-  readonly baseUrl: string | null
-  readonly protocol: string | null
-  readonly models: string[] | null
-  readonly modelMap: Record<string, string> | null
-  readonly priority: number
-  readonly accessExpiresAt: string | null
-  readonly refreshDueAt: string | null
-  readonly lastRefreshAt: string | null
-  readonly lastError: string | null
-  readonly failureCount: number
-  readonly backoffUntil: string | null
-  readonly lastTestAt: string | null
-  readonly lastTestOk: boolean | null
-  readonly lastTestError: string | null
-  readonly lastTestLatencyMs: number | null
-  readonly createdAt: string
-  readonly updatedAt: string
-}
+/**
+ * 账号 DTO 与端口已拆到 `./types-accounts.ts`：本文件超限，只许缩短（AGENTS.md §5.6）。
+ * 这里再导出一次，既有 `from './types.ts'` 的 import 全部不用改；
+ * `export *` 不会把名字带进**本文件**作用域，下面 `ApiRuntime` 还要单独 import。
+ */
+export * from './types-accounts.ts'
+import type { AccountAdminPort } from './types-accounts.ts'
 
-export interface AccountAdminQueryLike {
-  readonly provider?: string
-  readonly status?: string
-  readonly cursor?: string
-  readonly limit?: number
-}
+/**
+ * 客户端指纹档案：只给管理面用（`/api/admin/client-masks`）。同样单开文件，理由同上。
+ */
+export * from './types-client-mask.ts'
+import type { ClientMaskPort } from './types-client-mask.ts'
 
-export interface AccountAdminPort {
-  list(query?: AccountAdminQueryLike): readonly AccountViewLike[] | Promise<readonly AccountViewLike[]>
-  get(id: string): AccountViewLike | Promise<AccountViewLike>
-  create?(actor: string, input: unknown): Promise<unknown>
-  update(
-    actor: string,
-    id: string,
-    patch: {
-      label?: string
-      email?: string | null
-      subject?: string | null
-      baseUrl?: string | null
-      protocol?: string | null
-      models?: string[] | null
-      modelMap?: Record<string, string> | null
-      priority?: number
-    },
-  ): Promise<unknown>
-  enable(actor: string, id: string): Promise<unknown>
-  disable(actor: string, id: string): Promise<unknown>
-  remove(actor: string, id: string): Promise<unknown>
-  importCredentials?(actor: string, id: string, input: unknown): Promise<unknown>
-  importAccounts?(actor: string, input: unknown): Promise<unknown>
-  previewImport?(input: unknown): unknown
-  /** 连通性测试：不发秘密、不回显秘密；返回状态码与耗时。 */
-  testConnection?(id: string, input: { model?: string; protocol?: string }): Promise<AccountTestResultLike>
-  /** 导入来源预检：逐条归一化，不含凭据。 */
-  previewImportSource?(input: unknown): unknown
-  /** 导入来源批量创建：部分成功，逐条返回结果。 */
-  importSource?(actor: string, input: unknown): Promise<unknown>
-}
-
-export interface AccountTestResultLike {
-  readonly ok: boolean
-  readonly status: number | null
-  readonly latencyMs: number
-  readonly model: string | null
-  readonly protocol: string | null
-  readonly error: string | null
-  readonly testedAt: string
-}
 
 // ───────────────────────────── 用量 ─────────────────────────────
 
@@ -916,6 +854,8 @@ export interface ApiRuntime {
   observability(): ObservabilityPort | undefined
   /** 内容审核规则；不在运行时只有内容审核相关路由 503，LLM 链路照常放行。 */
   contentAudit(): ContentAuditPort | undefined
+  /** 客户端指纹档案；不在运行时只有 /api/admin/client-masks 503（账号页照常可读）。 */
+  clientMask(): ClientMaskPort | undefined
   now(): Date
   uptimeSec(): number
   log(level: 'info' | 'warn' | 'error', message: string): void
