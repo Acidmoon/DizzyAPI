@@ -214,6 +214,114 @@ func TestFirstUserTextAcrossProtocols(t *testing.T) {
 	}
 }
 
+// session 算法的**固定向量**：防「Go 一份、TS 一份」然后悄悄漂移。
+//
+// 期望值是**写死的 32 位 hex**，不是用例里自己算出来的。算法是
+//
+//	hex( sha256( accountID ‖ 0x00 ‖ 首条用户消息文本 ) )[:32]
+//
+// 这三个值先用两个独立实现算过再抄进来（PowerShell 的 .NET SHA256 与 Node 的
+// crypto，两边结果逐字相同），所以它钉的是**算法本身**，不是这份 Go 代码的当前行为。
+//
+// **TS 侧必须断言同一个字符串**：`account-admin` 的连通性测试要在 TS 里复刻这个算法
+// （Go 的 transport 与 TS 的 test-connection 是两条独立链路，各写一份就会漂）。两边
+// 用同一组向量，谁改了算法 CI 就立刻红。
+//
+// 别把这里改成「调 sessionIDFor 再和自己比」——那是拿实现验实现，一个字符都锁不住。
+const (
+	// sha256("acc-test" ‖ 0x00 ‖ "Hi")[:32]
+	sessionVectorAccTestHi = "8defb1d7ad2e28e789863e433266cf9c"
+	// sha256("acc-test" ‖ 0x00 ‖ "")[:32] —— 取不到用户文本时的退化值。
+	sessionVectorAccTestEmpty = "ccfd15abe421f177d596bfc2200c34c1"
+	// sha256("acc-other" ‖ 0x00 ‖ "Hi")[:32] —— 同对话、不同账号。
+	sessionVectorAccOtherHi = "c90407fb1f5748150ad635737ee8c022"
+)
+
+// responsesShapeBody 是 OpenAI responses 形状的请求体（opencode 那条账号就是
+// `protocol: openai-responses`）。首条 user 消息的文本是 "Hi"。
+const responsesShapeBody = `{"model":"gpt-5","input":[{"role":"user","content":[{"type":"input_text","text":"Hi"}]}]}`
+
+func TestSessionIDFixedVector(t *testing.T) {
+	// ① 主向量：responses 形状 + 首条用户消息 "Hi"。
+	if got := sessionIDFor("acc-test", []byte(responsesShapeBody)); got != sessionVectorAccTestHi {
+		t.Fatalf("固定向量漂了：responses 形状算出 %q，期望 %q", got, sessionVectorAccTestHi)
+	}
+
+	// ② 形状无关：同一段话换成 chat / anthropic / gemini 形状，session 必须一样。
+	//    这钉的是「只取决于取出的文本」——TS 侧四个协议分支必须取出同一个文本。
+	sameText := map[string]string{
+		"openai-chat": `{"model":"gpt-test","messages":[{"role":"user","content":"Hi"}]}`,
+		"anthropic":   `{"model":"claude-test","messages":[{"role":"user","content":[{"type":"text","text":"Hi"}]}]}`,
+		"gemini":      `{"contents":[{"role":"user","parts":[{"text":"Hi"}]}]}`,
+	}
+	for name, body := range sameText {
+		if got := sessionIDFor("acc-test", []byte(body)); got != sessionVectorAccTestHi {
+			t.Fatalf("%s 形状算出 %q，与 responses 形状不一致（期望 %q）", name, got, sessionVectorAccTestHi)
+		}
+	}
+
+	// ③ 退化值：拿不到用户文本时按「账号 + 空文本」算 —— 仍然稳定，只是亲和粒度变粗。
+	for name, body := range map[string]string{
+		"空体":      ``,
+		"不是 JSON": `not json`,
+		"没有 user": `{"messages":[{"role":"assistant","content":"Hi"}]}`,
+	} {
+		if got := sessionIDFor("acc-test", []byte(body)); got != sessionVectorAccTestEmpty {
+			t.Fatalf("%s 的退化值漂了：%q，期望 %q", name, got, sessionVectorAccTestEmpty)
+		}
+	}
+
+	// ④ 亲和语义：首条用户消息相同、后面的对话不同 → 同一个 session。
+	//    （这正是「对话越聊越长也不换会话」的意思，取整份请求体的哈希会破坏它。）
+	longer := `{"model":"gpt-5","input":[{"role":"user","content":[{"type":"input_text","text":"Hi"}]},` +
+		`{"role":"assistant","content":[{"type":"output_text","text":"你好，有什么可以帮你？"}]},` +
+		`{"role":"user","content":[{"type":"input_text","text":"讲个笑话"}]}]}`
+	if got := sessionIDFor("acc-test", []byte(longer)); got != sessionVectorAccTestHi {
+		t.Fatalf("同一段对话变长后 session 变了：%q（期望 %q）", got, sessionVectorAccTestHi)
+	}
+
+	// ⑤ 账号隔离：同对话、换账号 → 必须不同。
+	if got := sessionIDFor("acc-other", []byte(responsesShapeBody)); got != sessionVectorAccOtherHi {
+		t.Fatalf("不同账号的固定向量漂了：%q，期望 %q", got, sessionVectorAccOtherHi)
+	}
+}
+
+// TestSessionIDFixedVectorReachesUpstream 把同一个向量走完整条链路：
+// 从 responses 形状的请求体取出 "Hi" → 展开进 `x-opencode-session` → 假上游亲眼看到。
+// 只测 sessionIDFor 的话，「头到底贴没贴、贴的是不是这个值」还是没人管。
+func TestSessionIDFixedVectorReachesUpstream(t *testing.T) {
+	var seenSession string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seenSession = r.Header.Get("x-opencode-session")
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer upstream.Close()
+
+	stage, err := New(Config{}, staticSource{"acc-test": contracts.AccountCredential{
+		AccountID:   "acc-test",
+		Provider:    "openai",
+		Kind:        "api_key",
+		BaseURL:     upstream.URL,
+		AccessToken: "sk-account-token",
+		ClientHeaders: []contracts.AccountHeader{
+			{Name: "x-opencode-session", Value: contracts.PlaceholderSession},
+		},
+	}}, nil)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	ctx := requestContext(false)
+	ctx.Body = contracts.BytesBody([]byte(responsesShapeBody))
+	ctx.AccountRoute = &contracts.AccountRoute{Picked: &contracts.ScoredAccount{AccountID: "acc-test"}}
+	if _, err := stage.Run(ctx); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if seenSession != sessionVectorAccTestHi {
+		t.Fatalf("上游收到的会话头是 %q，期望写死的 %q", seenSession, sessionVectorAccTestHi)
+	}
+}
+
 func TestClientMaskWithoutProfileChangesNothing(t *testing.T) {
 	var seenSession string
 	var seenAgent string
