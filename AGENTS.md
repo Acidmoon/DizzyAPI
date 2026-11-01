@@ -682,18 +682,26 @@ pnpm build:all        # 两个二进制一起编
 - 服务器没有 Go 工具链：本地 `GOOS=linux GOARCH=amd64 go build -trimpath -o bin/gatewayd ./cmd/gatewayd`
   交叉编译后 scp `bin/gatewayd`；服务器 Node 26，用 `npx pnpm@11.21.0 install --frozen-lockfile`。
 - **静态前端不再本地构建**（2026-11-01 起）：`next build` 起手要 ~3.5GB 内存，本机扛不住，
-  改由 CI 的 `dashboard` job 构建并上传 artifact（名字 `dashboard-dist`，保留 7 天）。部署时：
+  改由 CI 的 `dashboard` job 构建。产物走 **`ci/dist` 分支**（孤立历史、强制推送、永远只有一个提交）：
   ```bash
-  gh run download <run-id> -n dashboard-dist -D temp/dist-cicd
-  tar -cf temp/dist-cicd.tar -C temp/dist-cicd .
-  scp temp/dist-cicd.tar <server>:/opt/dizzyapi/temp/
+  git -c http.version=HTTP/1.1 fetch --depth=1 origin \
+      "refs/heads/ci/dist:refs/remotes/origin/ci/dist" --force
+  mkdir -p temp/dist-ci && git archive --format=tar origin/ci/dist | tar -x -C temp/dist-ci
+  tar -cf temp/dist-ci.tar -C temp/dist-ci .
+  scp temp/dist-ci.tar <server>:/opt/dizzyapi/temp/
   # 服务器：rm -rf dist.prev && mv dist dist.prev && mkdir dist && tar xf ... -C dist && systemctl restart dizzyapi
   ```
-  好处不只省内存：artifact 里的 `build-info.json` 的 `commit` 就是 CI 那次构建的 HEAD，
-  部署后 `/build-info.json` 与仓库 HEAD 对得上；**对不上就是有人没换产物**。
+  **为什么不用 artifact**：`gh run download` 的地址是 Azure Blob
+  （`productionresultssa*.blob.core.windows.net`），本机那条网络一律 TLS 握手超时
+  （`api.github.com` 正常、连试 8 次全失败）。所以 CI 里保留 upload-artifact 只作备份，
+  真正走的是经 git 传字节。git 那边也可能 flaky（`early EOF`），**加 `--depth=1` 与
+  `-c http.version=HTTP/1.1` 就稳**。
+  好处不只省内存：产物里 `build-info.json` 的 `commit` 就是 CI 那次构建的 HEAD，
+  部署代码也用同一个提交，`/build-info.json` 与仓库 HEAD 对得上；**对不上就是有人没换产物**。
   前端**托管位置不变**（仍由 `dashboard` 插件在自己域名下发字节），所以 CSP nonce、
   同源 cookie、`Host` / `Origin` 校验全都不用动 —— 不要把它搬到 GitHub Pages，
   那会打破同源，代价见 §7「前端」。
+- **`ci/dist` 是构建产物分支，不是代码分支**：不要在上面提交，也不要 merge 它进 `main`。
 - 反向代理必须把 `Host` 改写成回环（`127.0.0.1:7792` / `127.0.0.1:7791`）：
   `web` 与 `api` 都校验 Host 来挡 DNS rebinding，原样转发会 403；表单 POST 还要求
   `Origin` 与站点同源。
