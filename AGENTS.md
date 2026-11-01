@@ -48,6 +48,12 @@ owner 说「实现若干个插件 / 功能」时，按下面流程：
 - 提交署名是 owner 本人（`Dzy`）。
 - **禁止** `Co-Authored-By`、`Signed-off-by`、"coworker" 或任何署名 trailer。
 - 只有 owner 明确说「提交 / 推送 / 部署」才执行对应动作。
+- **历史已在 2026-11-01 重写**（仓库转公开后脱敏）：`git filter-repo` 把主机名 / IP / 域名
+  从**全部历史 blob 与提交信息**里替换掉，**所有旧 SHA 都变了**。
+  - 旧历史里的分支（各条线的 `feat/*` worktree）**必须 rebase 到新 `main` 再合**；
+    **不许**直接 `git merge` 旧分支——那会把带真实坐标的旧提交重新带回历史。
+  - `.git/hooks/pre-push` 有一道护栏：推送范围内任何提交含真实主机名 / IP / 域名就直接拒绝。
+    被拒了说明分支还挂在旧历史上，rebase 即可，**不要**删 hook 绕过。
 
 ---
 
