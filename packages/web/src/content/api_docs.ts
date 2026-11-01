@@ -36,8 +36,13 @@ export const DOC_FILES: readonly string[] = [
 /** 文档目录（仓库根 `docs/api/`）。从本文件 `packages/web/src/content/` 往上四级。 */
 export const DOCS_DIR = new URL('../../../../docs/api/', import.meta.url)
 
-/** 默认站点地址（示例里出现，页面可用 `?base=` 覆盖）。 */
-export const DEFAULT_BASE = 'https://<站点域名>'
+/**
+ * 默认站点地址（示例里出现，页面可用 `?base=` 覆盖）。
+ *
+ * 仓库里**不留真实域名**：生产由环境变量 `DIZZYAPI_PUBLIC_BASE` 注入，没配就退回占位域名，
+ * 示例照样能读、也不会把部署地址写进公开仓库。
+ */
+export const DEFAULT_BASE = process.env.DIZZYAPI_PUBLIC_BASE ?? 'https://api.example.com'
 
 /** 占位符：事实表插在这里（一段 HTML 注释，渲染前会被替换掉）。 */
 export const FACT_PLACEHOLDERS = {

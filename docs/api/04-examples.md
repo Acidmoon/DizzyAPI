@@ -6,7 +6,7 @@
 ### OpenAI Chat（非流式）
 
 ```bash
-curl https://<站点域名>/v1/chat/completions \
+curl https://api.example.com/v1/chat/completions \
   -H "Authorization: Bearer $DIZZY_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
@@ -19,7 +19,7 @@ curl https://<站点域名>/v1/chat/completions \
 import os, requests
 
 resp = requests.post(
-    "https://<站点域名>/v1/chat/completions",
+    "https://api.example.com/v1/chat/completions",
     headers={"Authorization": f"Bearer {os.environ['DIZZY_API_KEY']}"},
     json={
         "model": "deepseek-chat",
@@ -32,7 +32,7 @@ print(resp.json()["choices"][0]["message"]["content"])
 ```
 
 ```javascript
-const resp = await fetch("https://<站点域名>/v1/chat/completions", {
+const resp = await fetch("https://api.example.com/v1/chat/completions", {
   method: "POST",
   headers: {
     Authorization: `Bearer ${process.env.DIZZY_API_KEY}`,
@@ -51,7 +51,7 @@ console.log(data.choices[0].message.content);
 ### OpenAI Chat（流式）
 
 ```bash
-curl -N https://<站点域名>/v1/chat/completions \
+curl -N https://api.example.com/v1/chat/completions \
   -H "Authorization: Bearer $DIZZY_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"model": "deepseek-chat", "stream": true,
@@ -62,7 +62,7 @@ curl -N https://<站点域名>/v1/chat/completions \
 import os, requests
 
 with requests.post(
-    "https://<站点域名>/v1/chat/completions",
+    "https://api.example.com/v1/chat/completions",
     headers={"Authorization": f"Bearer {os.environ['DIZZY_API_KEY']}"},
     json={
         "model": "deepseek-chat",
@@ -79,7 +79,7 @@ with requests.post(
 ```
 
 ```javascript
-const resp = await fetch("https://<站点域名>/v1/chat/completions", {
+const resp = await fetch("https://api.example.com/v1/chat/completions", {
   method: "POST",
   headers: {
     Authorization: `Bearer ${process.env.DIZZY_API_KEY}`,
@@ -101,7 +101,7 @@ for await (const chunk of resp.body) {
 ### Anthropic Messages
 
 ```bash
-curl https://<站点域名>/v1/messages \
+curl https://api.example.com/v1/messages \
   -H "Authorization: Bearer $DIZZY_API_KEY" \
   -H "Content-Type: application/json" \
   -H "anthropic-version: 2023-06-01" \
@@ -116,7 +116,7 @@ curl https://<站点域名>/v1/messages \
 import os, requests
 
 resp = requests.post(
-    "https://<站点域名>/v1/messages",
+    "https://api.example.com/v1/messages",
     headers={
         "Authorization": f"Bearer {os.environ['DIZZY_API_KEY']}",
         "anthropic-version": "2023-06-01",
@@ -133,7 +133,7 @@ print(resp.json()["content"][0]["text"])
 ```
 
 ```javascript
-const resp = await fetch("https://<站点域名>/v1/messages", {
+const resp = await fetch("https://api.example.com/v1/messages", {
   method: "POST",
   headers: {
     Authorization: `Bearer ${process.env.DIZZY_API_KEY}`,
@@ -154,7 +154,7 @@ console.log(data.content[0].text);
 ### Gemini generateContent
 
 ```bash
-curl https://<站点域名>/v1beta/models/gemini-2.0-flash:generateContent \
+curl https://api.example.com/v1beta/models/gemini-2.0-flash:generateContent \
   -H "Authorization: Bearer $DIZZY_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
@@ -167,7 +167,7 @@ curl https://<站点域名>/v1beta/models/gemini-2.0-flash:generateContent \
 import os, requests
 
 resp = requests.post(
-    "https://<站点域名>/v1beta/models/gemini-2.0-flash:generateContent",
+    "https://api.example.com/v1beta/models/gemini-2.0-flash:generateContent",
     headers={"Authorization": f"Bearer {os.environ['DIZZY_API_KEY']}"},
     json={
         "contents": [{"role": "user", "parts": [{"text": "你好"}]}],
@@ -181,7 +181,7 @@ print(resp.json()["candidates"][0]["content"]["parts"][0]["text"])
 
 ```javascript
 const resp = await fetch(
-  "https://<站点域名>/v1beta/models/gemini-2.0-flash:generateContent",
+  "https://api.example.com/v1beta/models/gemini-2.0-flash:generateContent",
   {
     method: "POST",
     headers: {
@@ -202,7 +202,7 @@ console.log(data.candidates[0].content.parts[0].text);
 ### Gemini 流式（必须带 alt=sse）
 
 ```bash
-curl -N "https://<站点域名>/v1beta/models/gemini-2.0-flash:streamGenerateContent?alt=sse" \
+curl -N "https://api.example.com/v1beta/models/gemini-2.0-flash:streamGenerateContent?alt=sse" \
   -H "Authorization: Bearer $DIZZY_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"contents": [{"role": "user", "parts": [{"text": "你好"}]}]}'
@@ -211,7 +211,7 @@ curl -N "https://<站点域名>/v1beta/models/gemini-2.0-flash:streamGenerateCon
 ```python
 import os, requests
 
-url = "https://<站点域名>/v1beta/models/gemini-2.0-flash:streamGenerateContent"
+url = "https://api.example.com/v1beta/models/gemini-2.0-flash:streamGenerateContent"
 with requests.post(
     url,
     params={"alt": "sse"},
@@ -228,7 +228,7 @@ with requests.post(
 
 ```javascript
 const url = new URL(
-  "https://<站点域名>/v1beta/models/gemini-2.0-flash:streamGenerateContent",
+  "https://api.example.com/v1beta/models/gemini-2.0-flash:streamGenerateContent",
 );
 url.searchParams.set("alt", "sse");
 const resp = await fetch(url, {
@@ -249,7 +249,7 @@ for await (const chunk of resp.body) {
 ### 列出模型
 
 ```bash
-curl https://<站点域名>/v1/models \
+curl https://api.example.com/v1/models \
   -H "Authorization: Bearer $DIZZY_API_KEY"
 ```
 
@@ -257,7 +257,7 @@ curl https://<站点域名>/v1/models \
 import os, requests
 
 resp = requests.get(
-    "https://<站点域名>/v1/models",
+    "https://api.example.com/v1/models",
     headers={"Authorization": f"Bearer {os.environ['DIZZY_API_KEY']}"},
     timeout=30,
 )
@@ -267,7 +267,7 @@ for model in resp.json()["data"]:
 ```
 
 ```javascript
-const resp = await fetch("https://<站点域名>/v1/models", {
+const resp = await fetch("https://api.example.com/v1/models", {
   headers: { Authorization: `Bearer ${process.env.DIZZY_API_KEY}` },
 });
 if (!resp.ok) throw new Error(`HTTP ${resp.status}: ${await resp.text()}`);

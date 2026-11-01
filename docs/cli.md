@@ -8,7 +8,7 @@
 ## 0. 快速开始
 
 ```bash
-dizzy config set base https://<站点域名>   # ① 先配入口（没有默认 base）
+dizzy config set base https://api.example.com   # ① 先配入口（没有默认 base）
 dizzy login --email me@example.com                    # ② 再登录（密码走环境变量或 stdin）
 dizzy whoami                                          # ③ 验一下
 dizzy chat -m deepseek-flash "你好"                    # ④ 打模型（用 API key，见下）
@@ -74,7 +74,7 @@ CLI 内部按入口自动选路：`chat` / `models` 走 Bearer，`usage` / `keys
 生产是一个域名（nginx 同时反代 `/v1/*` 与 `/api/*`），所以配一个 `base` 就够：
 
 ```bash
-dizzy config set base https://<站点域名>
+dizzy config set base https://api.example.com
 ```
 
 本地开发是两个端口（gatewayd `8080` / api `7791`），要分开配：

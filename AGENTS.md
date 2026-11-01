@@ -204,8 +204,9 @@ export default FooService
   gatewayd `127.0.0.1:8080`、面板 `127.0.0.1:7788`。旧的 `frontend` SPA 与
   `deepseek-usage`（7793）已禁用。
 - 生产服务器：`<生产服务器>` / `<SERVER_IP>`，gatewayd `127.0.0.1:18080`，入口
-  `https://<站点域名>`（宝塔 nginx `80/443`）；`sub2api` 并存于 `127.0.0.1:8080`
-  （`<站点域名>`），不要动。
+  `https://<站点域名>`（宝塔 nginx `80/443`）；`sub2api` 并存于 `127.0.0.1:8080`，不要动。
+  真实主机名 / IP / 域名**不进仓库**（2026-11-01 公开仓库后脱敏）：查部署坐标看服务器上的
+  `app.yml` 与本机 `temp/` 下的部署笔记。
 
 ### 4.4 已实现的能力
 
@@ -684,8 +685,9 @@ pnpm build:all        # 两个二进制一起编
   否则 163 回 `553 Mail from must equal authorized user`。
 - 服务器 `app.yml` 的 `account-priority.httpListen` 用 `18080`：仓库默认的 `8080` 在 `<生产服务器>`
   属于 sub2api，`18080` 原属已删除的 dsh-proxy。
-- 服务器无法直连私有 GitHub 仓库：用本地 `git archive` + `scp` 部署，不要覆盖服务器
-  `app.yml`、`data/`、`bin/`。
+- 仓库 2026-11-01 起是**公开**的（`github.com/Acidmoon/DizzyAPI`），但服务器仍不直连 GitHub：
+  继续用本地 `git archive` + `scp` 部署，不要覆盖服务器 `app.yml`、`data/`、`bin/`。
+  公开仓的 GitHub Actions 只做 CI 验收，不承担发布。
 - 部署前备份代码与 `data/`；部署后重启 `dizzyapi`，检查 `systemctl is-active` 与
   `/api/health`。
 

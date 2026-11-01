@@ -186,7 +186,7 @@ Select-String -Path cmd\dizzy\*.go -Pattern 'api-docs|llms\.txt'
 ## 6. 未验证 / 不在本批次范围
 
 - **未在真机生产验证**：以上判断来自代码与本地实测（`pnpm test` / e2e 全链路），
-  没有对 `https://<站点域名>` 发真请求。生产 nginx 对 `/api/*` 的 `Host` 改写
+  没有对 `https://api.example.com` 发真请求。生产 nginx 对 `/api/*` 的 `Host` 改写
   在 `AGENTS.md:668-671` 有记载；**`Origin` 对 `/api/*` 的改写我没核到配置**（仓库里没有 nginx 配置），
   这条留给部署线用真浏览器验。
 - **不做**：本批次不改 CLI 代码、不改 `packages/api`、不改新前端工程、不碰 `app.yml` / nginx。

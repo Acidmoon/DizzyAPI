@@ -95,7 +95,7 @@ DizzyAPI，页面里不出现 Next.js 品牌。
 - `files` / `bytes`：统计的是**导出的内容本身**，不含 `build-info.json` 自己；
 - git 不可用时落到 `commit: "unknown"` / `dirty: null`，**不让构建因此失败**。
 
-它是**公开**的（owner 定）：部署验收直接 `curl -s https://<站点域名>/build-info.json`
+它是**公开**的（owner 定）：部署验收直接 `curl -s https://api.example.com/build-info.json`
 就知道发上去的是哪个 commit，不必 ssh 上服务器。仓库不公开，风险为零。
 插件按普通静态文件发它（`application/json` + `no-store`，所以不会读到旧值）。
 

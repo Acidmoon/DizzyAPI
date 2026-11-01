@@ -208,7 +208,7 @@ func printHelp(out io.Writer, commands []*command, globalsHelp string) {
 	fmt.Fprintln(out, "        5 权限不足 · 6 不存在 · 7 余额不足 · 8 限流 · 9 上游/网关错误")
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, "示例：")
-	fmt.Fprintln(out, "  dizzy login --base https://<站点域名>")
+	fmt.Fprintln(out, "  dizzy login --base https://your-gateway.example.com")
 	fmt.Fprintln(out, "  dizzy chat -m deepseek-flash \"你好\" --stream")
 	fmt.Fprintln(out, "  dizzy usage --range 7d --by model")
 	fmt.Fprintln(out, "  dizzy keys list")
