@@ -86,7 +86,7 @@ export function ClientsBoard() {
       if (body === "invalid") return;
       setSaving(true);
       try {
-        const created = await adminClients.createClientMask(api, body as Parameters<typeof adminClients.createClientMask>[1]);
+        const created = await adminClients.createClientMask(api, body);
         toast.success(`已新建档案「${created.profile.label}」`);
         selectProfile(created.profile);
         reload();
@@ -107,11 +107,7 @@ export function ClientsBoard() {
     }
     setSaving(true);
     try {
-      const updated = await adminClients.updateClientMask(
-        api,
-        selected.id,
-        patch as Parameters<typeof adminClients.updateClientMask>[2],
-      );
+      const updated = await adminClients.updateClientMask(api, selected.id, patch);
       toast.success(`已保存档案「${updated.profile.label}」`);
       selectProfile(updated.profile);
       reload();

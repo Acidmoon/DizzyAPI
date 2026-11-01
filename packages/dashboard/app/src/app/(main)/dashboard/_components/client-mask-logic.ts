@@ -209,10 +209,29 @@ export function clientHeadersOf(draft: readonly ClientHeaderDraft[]): { name: st
     .map((header) => ({ name: header.name.trim(), value: header.value }));
 }
 
+/** 新建 / 全量替换的请求体（与 `adminClients.createClientMask` 的入参同形）。 */
+export interface ClientCreateBody {
+  id: string;
+  label: string;
+  enabled: boolean;
+  headers: { name: string; value: string }[];
+  description?: string;
+  userAgent?: string;
+}
+
+/** 局部修改的补丁（与 `adminClients.updateClientMask` 的入参同形；只含改了的键）。 */
+export interface ClientPatchBody {
+  label?: string;
+  description?: string | null;
+  enabled?: boolean;
+  userAgent?: string | null;
+  headers?: { name: string; value: string }[];
+}
+
 /** 新建 / 全量替换的请求体；不合法返回 `"invalid"`。 */
-export function clientCreateBodyOf(draft: ClientDraft): Record<string, unknown> | "invalid" {
+export function clientCreateBodyOf(draft: ClientDraft): ClientCreateBody | "invalid" {
   if (clientDraftError(draft, true) !== null) return "invalid";
-  const body: Record<string, unknown> = {
+  const body: ClientCreateBody = {
     id: draft.id.trim(),
     label: draft.label.trim(),
     enabled: draft.enabled,
@@ -240,9 +259,9 @@ export function clientUpdatePatchOf(
     readonly userAgent: string | null;
     readonly headers: readonly { readonly name: string; readonly value: string }[];
   },
-): Record<string, unknown> | "invalid" {
+): ClientPatchBody | "invalid" {
   if (clientDraftError(draft, false) !== null) return "invalid";
-  const patch: Record<string, unknown> = {};
+  const patch: ClientPatchBody = {};
 
   const label = draft.label.trim();
   if (label !== profile.label) patch.label = label;
