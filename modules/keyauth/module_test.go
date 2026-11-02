@@ -52,6 +52,31 @@ func TestStaticKeys(t *testing.T) {
 	}
 }
 
+func ctxWithXAPIKey(value string) *contracts.Ctx {
+	headers := http.Header{}
+	if value != "" {
+		headers.Set("x-api-key", value)
+	}
+	return &contracts.Ctx{Context: context.Background(), Headers: headers}
+}
+
+func TestAnthropicXAPIKey(t *testing.T) {
+	stage := New(Config{Keys: []string{"anthropic-key"}})
+	ctx := ctxWithXAPIKey("anthropic-key")
+	if _, err := stage.Run(ctx); err != nil {
+		t.Fatalf("x-api-key 应被接受：%v", err)
+	}
+	if ctx.Key == nil || ctx.Key.ID == "" {
+		t.Fatal("x-api-key 通过后没有写入 Key")
+	}
+
+	_, err := stage.Run(ctxWithXAPIKey("wrong"))
+	var stageErr *contracts.StageError
+	if !errors.As(err, &stageErr) || stageErr.Status != http.StatusUnauthorized || stageErr.Code != "INVALID_API_KEY" {
+		t.Fatalf("错误 x-api-key 期望 401 INVALID_API_KEY，得到 %v", err)
+	}
+}
+
 func TestRejectsMissingOrMalformedHeader(t *testing.T) {
 	stage := New(Config{})
 	cases := []string{"", "Basic abc", "Bearer ", "Bearer"}

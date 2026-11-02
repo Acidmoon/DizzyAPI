@@ -83,7 +83,7 @@ func (s *Stage) Phase() contracts.Phase { return contracts.PhasePre }
 func (s *Stage) Required() bool         { return true }
 func (s *Stage) NeedBody() bool         { return false }
 
-// Run 解析并校验 Authorization 头。
+// Run 解析并校验 Authorization / x-api-key 头。
 func (s *Stage) Run(ctx *contracts.Ctx) (contracts.Decision, error) {
 	if ctx == nil {
 		return contracts.Decision{}, contracts.Errorf(http.StatusInternalServerError, "KEY_AUTH_INVALID_REQUEST", "请求上下文为空")
@@ -97,7 +97,7 @@ func (s *Stage) Run(ctx *contracts.Ctx) (contracts.Decision, error) {
 	return contracts.Decision{Action: contracts.ActionContinue}, nil
 }
 
-// Authorize 校验 Authorization 头并返回调用方身份，语义与 Run 完全一致。
+// Authorize 校验 Authorization / x-api-key 头并返回调用方身份，语义与 Run 完全一致。
 //
 // 它供不经过 engine 的路由（如 GET /v1/models）复用同一套判定，避免另写一套鉴权：
 //   - 已收到过快照：只认快照里的 key，未命中直接 401，绝不回退（空快照同样 fail-closed）；
@@ -148,11 +148,16 @@ func (s *Stage) hasSnapshot() bool {
 
 func bearerToken(headers http.Header) (string, error) {
 	if headers == nil {
-		return "", contracts.Errorf(http.StatusUnauthorized, "MISSING_API_KEY", "缺少 Authorization: Bearer API key")
+		return "", contracts.Errorf(http.StatusUnauthorized, "MISSING_API_KEY", "缺少 Authorization: Bearer 或 x-api-key")
 	}
 	value := strings.TrimSpace(headers.Get("Authorization"))
 	if value == "" {
-		return "", contracts.Errorf(http.StatusUnauthorized, "MISSING_API_KEY", "缺少 Authorization: Bearer API key")
+		// Anthropic 客户端标准用 x-api-key，不带 Authorization；/v1/messages
+		// 必须接受这种写法，否则 Claude Code / Anthropic SDK 直接 401。
+		if key := strings.TrimSpace(headers.Get("x-api-key")); key != "" {
+			return key, nil
+		}
+		return "", contracts.Errorf(http.StatusUnauthorized, "MISSING_API_KEY", "缺少 Authorization: Bearer 或 x-api-key")
 	}
 	scheme, token, found := strings.Cut(value, " ")
 	if !found || !strings.EqualFold(strings.TrimSpace(scheme), "Bearer") {
