@@ -290,6 +290,12 @@ func (s *Server) llmRouteHandler(route llmRoute) http.HandlerFunc {
 		if err != nil {
 			return
 		}
+		// DeepSeek 等只认 system/user/assistant/tool 的上游不接收
+		// OpenAI 的 developer 角色；同协议快路径不会走 codec，所以在这里
+		// 做一次最小改写。没有 developer 时保持字节完全不变。
+		if protocol == contracts.ProtocolOpenAIChat {
+			body = normalizeOpenAICompatRoles(body)
+		}
 		var envelope struct {
 			Model  string `json:"model"`
 			Stream bool   `json:"stream"`
