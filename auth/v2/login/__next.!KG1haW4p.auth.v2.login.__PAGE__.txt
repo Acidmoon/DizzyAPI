@@ -1,0 +1,119 @@
+1:"$Sreact.fragment"
+:HL["/_next/static/chunks/3eici8s01akb2.css","style"]
+:HL["/_next/static/chunks/0ifnboh-ve6cu.css","style"]
+2:Tac9,
+    (function () {
+      try {
+        var root = document.documentElement;
+        var REGISTRY = {"theme_mode":{"values":["light","dark","system"],"defaultValue":"light","persistence":"client-cookie","attribute":"data-theme-mode"},"theme_preset":{"values":["default","brutalist","soft-pop","tangerine"],"defaultValue":"default","persistence":"client-cookie","attribute":"data-theme-preset"},"font":{"values":["geist","geistMono","geistPixelSquare"],"defaultValue":"geist","persistence":"client-cookie","attribute":"data-font"},"content_layout":{"values":["centered","full-width"],"defaultValue":"centered","persistence":"client-cookie","attribute":"data-content-layout"},"navbar_style":{"values":["sticky","scroll"],"defaultValue":"sticky","persistence":"client-cookie","attribute":"data-navbar-style"},"sidebar_variant":{"values":["sidebar","inset","floating"],"defaultValue":"sidebar","persistence":"client-cookie","attribute":"data-sidebar-variant"},"sidebar_collapsible":{"values":["icon","offcanvas"],"defaultValue":"icon","persistence":"client-cookie","attribute":"data-sidebar-collapsible"}};
+
+        function readCookie(name) {
+          var match = document.cookie.split("; ").find(function(c) {
+            return c.startsWith(name + "=");
+          });
+          return match ? decodeURIComponent(match.split("=")[1]) : null;
+        }
+
+        function readLocal(name) {
+          try {
+            return window.localStorage.getItem(name);
+          } catch (e) {
+            return null;
+          }
+        }
+
+        function readPreference(key, definition) {
+          var mode = definition.persistence;
+          var value = null;
+
+          if (mode === "localStorage") {
+            value = readLocal(key);
+          }
+
+          if (!value && (mode === "client-cookie" || mode === "server-cookie")) {
+            value = readCookie(key);
+          }
+
+          return definition.values.indexOf(value) >= 0 ? value : definition.defaultValue;
+        }
+
+        var preferences = {};
+
+        Object.keys(REGISTRY).forEach(function(key) {
+          var definition = REGISTRY[key];
+          var value = readPreference(key, definition);
+
+          preferences[key] = value;
+          root.setAttribute(definition.attribute, value);
+        });
+
+        var mode = preferences.theme_mode;
+        var resolvedMode =
+          mode === "system" && window.matchMedia
+            ? (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light")
+            : mode === "dark"
+              ? "dark"
+              : "light";
+
+        root.classList.toggle("dark", resolvedMode === "dark");
+        root.style.colorScheme = resolvedMode;
+
+      } catch (e) {
+        console.warn("ThemeBootScript error:", e);
+      }
+    })();
+  5:X
+9:X
+9:C
+13:[["children",{"s":"__PAGE__","h":160,"d":{"r":"$L14","p":"$@15","v":null,"s":"$5"}}]]
+10:[["children",{"s":"login","h":96,"d":{"r":"$L11","p":"$@12","v":"$9","s":"$5"},"c":"$Q13"}]]
+d:[["children",{"s":"v2","h":96,"d":{"r":"$Le","p":"$@f","v":null,"s":"$5"},"c":"$Q10"}]]
+a:[["children",{"s":"auth","h":96,"d":{"r":"$Lb","p":"$@c","v":"$9","s":"$5"},"c":"$Qd"}]]
+6:[["children",{"s":"(main)","h":96,"d":{"r":"$L7","p":"$@8","v":"$9","s":"$5"},"c":"$Qa"}]]
+0:{"t":{"t":{"s":"","h":80,"d":{"r":["$","$1","c",{"children":[[["$","link","0",{"rel":"stylesheet","href":"/_next/static/chunks/3eici8s01akb2.css","precedence":"next"}],["$","link","1",{"rel":"stylesheet","href":"/_next/static/chunks/0ifnboh-ve6cu.css","precedence":"next"}],["$","script","script-0",{"src":"/_next/static/chunks/1bt9bi8qycnvw.js","async":true}],["$","script","script-1",{"src":"/_next/static/chunks/24c7qzw_gvimp.js","async":true}],["$","script","script-2",{"src":"/_next/static/chunks/2fki7x1t1wyy6.js","async":true}],["$","script","script-3",{"src":"/_next/static/chunks/1zmy-h1-d5xw2.js","async":true}],["$","script","script-4",{"src":"/_next/static/chunks/44enqi7zxyv0a.js","async":true}]],["$","html",null,{"lang":"zh-CN","data-theme-mode":"light","data-theme-preset":"default","data-content-layout":"centered","data-navbar-style":"sticky","data-sidebar-variant":"sidebar","data-sidebar-collapsible":"icon","data-font":"geist","suppressHydrationWarning":true,"children":[["$","head",null,{"children":["$","script",null,{"dangerouslySetInnerHTML":{"__html":"$2"}}]}],"$L3"]}]]}],"p":"$@4","v":null,"s":"$5"},"c":"$Q6"},"h":{"r":"$L16","p":"$@17","v":null,"s":"$5"}},"a":"$@18","u":"$@19","b":"XXYScyjlUN7KJWUK_kKEa"}
+1a:"/_next/static/chunks/1bt9bi8qycnvw.js"
+1b:"/_next/static/chunks/24c7qzw_gvimp.js"
+1c:"/_next/static/chunks/2fki7x1t1wyy6.js"
+1d:"/_next/static/chunks/1zmy-h1-d5xw2.js"
+1e:"/_next/static/chunks/44enqi7zxyv0a.js"
+1f:I[19300,["$1a","$1b","$1c","$1d","$1e"],"TooltipProvider"]
+20:"PreferencesStoreProvider"
+21:I[38501,["$1a","$1b","$1c","$1d","$1e"],"$20"]
+22:I[15603,["$1a","$1b","$1c","$1d","$1e"],"default"]
+23:I[4069,["$1a","$1b","$1c","$1d","$1e"],"default"]
+24:"/_next/static/chunks/1_lci1sv4-_fe.js"
+25:I[76055,["$1a","$1b","$1c","$1d","$1e","$24"],"default"]
+26:I[38382,["$1a","$1b","$1c","$1d","$1e"],"Toaster"]
+27:"/_next/static/chunks/28fr2-olyah77.js"
+28:I[23812,["$1a","$1b","$1c","$1d","$1e","$27"],"default"]
+29:I[12397,["$1a","$1b","$1c","$1d","$1e","$27"],"Separator"]
+2a:"/_next/static/chunks/26431vym_hfhs.js"
+2b:"/_next/static/chunks/2wpwmllvytw9b.js"
+2c:I[75750,["$1a","$1b","$1c","$1d","$1e","$27","$2a","$2b"],"LoginForm"]
+2d:I[56216,["$1a","$1b","$1c","$1d","$1e","$27","$2a","$2b"],""]
+2e:I[70483,["$1a","$1b","$1c","$1d","$1e"],"OutletBoundary"]
+2f:"$Sreact.suspense"
+31:"ViewportBoundary"
+32:I[70483,["$1a","$1b","$1c","$1d","$1e"],"$31"]
+33:"MetadataBoundary"
+34:I[70483,["$1a","$1b","$1c","$1d","$1e"],"$33"]
+35:I[59193,["$1a","$1b","$1c","$1d","$1e"],"IconMark"]
+3:["$","body",null,{"className":"HX28iG_variable _zD4Dq_variable q0vG1G_variable min-h-screen antialiased","children":["$","$L1f",null,{"children":["$","$L21",null,{"initialValues":{"theme_mode":"light","theme_preset":"default","font":"geist","content_layout":"centered","navbar_style":"sticky","sidebar_variant":"sidebar","sidebar_collapsible":"icon"},"children":[["$","$L22",null,{"parallelRouterKey":"children","template":["$","$L23",null,{}],"notFound":[["$","$L25",null,{}],[]]}],["$","$L26",null,{}]]}]}]}]
+7:["$","$1","c",{"children":[null,["$","$L22",null,{"parallelRouterKey":"children","template":["$","$L23",null,{}],"notFound":[["$","$L25",null,{}],[]]}]]}]
+b:["$","$1","c",{"children":[null,["$","$L22",null,{"parallelRouterKey":"children","template":["$","$L23",null,{}]}]]}]
+e:["$","$1","c",{"children":[[["$","script","script-0",{"src":"/_next/static/chunks/28fr2-olyah77.js","async":true}]],["$","main",null,{"children":["$","div",null,{"className":"grid h-dvh justify-center p-2 lg:grid-cols-2","children":[["$","div",null,{"className":"bg-primary relative order-2 hidden h-full rounded-3xl lg:flex","children":[["$","div",null,{"className":"text-primary-foreground absolute top-10 space-y-1 px-10","children":[["$","$L28",null,{"icon":{"name":"command","size":24,"node":[["path",{"d":"M15 6v12a3 3 0 1 0 3-3H6a3 3 0 1 0 3 3V6a3 3 0 1 0-3 3h12a3 3 0 1 0-3-3","key":"11bfej"}]]},"className":"size-10"}],["$","h1",null,{"className":"text-2xl font-medium","children":"DizzyAPI"}],["$","p",null,{"className":"text-sm","children":"自托管的模型网关"}]]}],["$","div",null,{"className":"absolute bottom-10 flex w-full justify-between px-10","children":[["$","div",null,{"className":"text-primary-foreground flex-1 space-y-1","children":[["$","h2",null,{"className":"font-medium","children":"一套入口"}],["$","p",null,{"className":"text-sm","children":"OpenAI、Anthropic 与 Gemini 三种协议的客户端入口，共用同一个账号池。"}]]}],["$","$L29",null,{"orientation":"vertical","className":"mx-3 h-auto!"}],["$","div",null,{"className":"text-primary-foreground flex-1 space-y-1","children":[["$","h2",null,{"className":"font-medium","children":"用量可查"}],["$","p",null,{"className":"text-sm","children":"每次请求的 token、费用与耗时都落库，按模型与密钥随时对账。"}]]}]]}]]}],["$","div",null,{"className":"relative order-1 flex h-full","children":["$","$L22",null,{"parallelRouterKey":"children","template":["$","$L23",null,{}]}]}]]}]}]]}]
+11:["$","$1","c",{"children":[null,["$","$L22",null,{"parallelRouterKey":"children","template":["$","$L23",null,{}]}]]}]
+14:["$","$1","c",{"children":[[["$","div",null,{"className":"mx-auto flex w-full flex-col justify-center space-y-8 sm:w-[350px]","children":[["$","div",null,{"className":"space-y-2 text-center","children":["$","h1",null,{"className":"text-3xl font-medium","children":"登录账号"}]}],["$","div",null,{"className":"space-y-4","children":["$","$L2c",null,{}]}]]}],["$","div",null,{"className":"absolute top-5 flex w-full justify-end px-10","children":["$","div",null,{"className":"text-muted-foreground text-sm","children":["还没有账号？"," ",["$","$L2d",null,{"prefetch":false,"className":"text-foreground","href":"register","children":"注册"}]]}]}],["$","div",null,{"className":"absolute bottom-5 flex w-full justify-between px-10","children":["$","div",null,{"className":"text-sm","children":"© 2026 DizzyAPI"}]}]],[["$","script","script-0",{"src":"/_next/static/chunks/26431vym_hfhs.js","async":true}],["$","script","script-1",{"src":"/_next/static/chunks/2wpwmllvytw9b.js","async":true}]],["$","$L2e",null,{"children":["$","$2f",null,{"name":"Next.MetadataOutlet","children":"$@30"}]}]]}]
+16:["$","$1","h",{"children":[null,["$","$L32",null,{"children":[["$","meta","0",{"charSet":"utf-8"}],["$","meta","1",{"name":"viewport","content":"width=device-width, initial-scale=1"}]]}],["$","$L34",null,{"children":[["$","div",null,{"hidden":true,"children":["$","$2f",null,{"name":"Next.Metadata","children":[["$","title","0",{"children":"登录 · DizzyAPI 控制台"}],["$","meta","1",{"name":"description","content":"登录 DizzyAPI 控制台，管理上游账号、模型价格与用量。"}],["$","meta","2",{"name":"application-name","content":"DizzyAPI"}],["$","link","3",{"rel":"canonical","href":"http://127.0.0.1:7792/auth/v2/login/"}],["$","meta","4",{"property":"og:title","content":"登录 · DizzyAPI 控制台"}],["$","meta","5",{"property":"og:description","content":"登录 DizzyAPI 控制台，管理上游账号、模型价格与用量。"}],["$","meta","6",{"property":"og:site_name","content":"DizzyAPI"}],["$","meta","7",{"property":"og:locale","content":"zh_CN"}],["$","meta","8",{"property":"og:type","content":"website"}],["$","meta","9",{"name":"twitter:card","content":"summary"}],["$","meta","10",{"name":"twitter:title","content":"登录 · DizzyAPI 控制台"}],["$","meta","11",{"name":"twitter:description","content":"登录 DizzyAPI 控制台，管理上游账号、模型价格与用量。"}],["$","link","12",{"rel":"icon","href":"/favicon.ico?favicon.2vob68tjqpejf.ico","sizes":"256x256","type":"image/x-icon"}],["$","$L35","13",{}]]}]}],null]}],["$","meta",null,{"name":"next-size-adjust","content":""}]]}]
+30:null
+19:true
+5:300
+5:C
+18:0
+12:"$undefined"
+f:"$undefined"
+c:"$undefined"
+8:"$undefined"
+17:"$undefined"
+15:"$undefined"
+4:"$undefined"

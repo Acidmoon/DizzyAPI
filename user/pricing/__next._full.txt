@@ -1,0 +1,128 @@
+1:"$Sreact.fragment"
+e:"/_next/static/chunks/1bt9bi8qycnvw.js"
+f:"/_next/static/chunks/24c7qzw_gvimp.js"
+10:"/_next/static/chunks/2fki7x1t1wyy6.js"
+11:"/_next/static/chunks/1zmy-h1-d5xw2.js"
+12:"/_next/static/chunks/44enqi7zxyv0a.js"
+13:I[41512,["$e","$f","$10","$11","$12"],"default",1]
+:HL["/_next/static/chunks/3eici8s01akb2.css","style"]
+:HL["/_next/static/chunks/0ifnboh-ve6cu.css","style"]
+:HL["/_next/static/media/GeistMono_Variable.p.3wg2gzp0j70gu.woff2","font",{"crossOrigin":"","type":"font/woff2"}]
+:HL["/_next/static/media/GeistPixel_Circle.p.0rqe0db4f0cia.woff2","font",{"crossOrigin":"","type":"font/woff2"}]
+:HL["/_next/static/media/GeistPixel_Grid.p.2ss63b6eqyzy4.woff2","font",{"crossOrigin":"","type":"font/woff2"}]
+:HL["/_next/static/media/GeistPixel_Line.p.1gvmpev-r-ty_.woff2","font",{"crossOrigin":"","type":"font/woff2"}]
+:HL["/_next/static/media/GeistPixel_Square.p.2hsizu-z_gncm.woff2","font",{"crossOrigin":"","type":"font/woff2"}]
+:HL["/_next/static/media/GeistPixel_Triangle.p.04xw1z5oncddb.woff2","font",{"crossOrigin":"","type":"font/woff2"}]
+:HL["/_next/static/media/Geist_Variable-s.p.2py-ke1f706a6.woff2","font",{"crossOrigin":"","type":"font/woff2"}]
+2:Tac9,
+    (function () {
+      try {
+        var root = document.documentElement;
+        var REGISTRY = {"theme_mode":{"values":["light","dark","system"],"defaultValue":"light","persistence":"client-cookie","attribute":"data-theme-mode"},"theme_preset":{"values":["default","brutalist","soft-pop","tangerine"],"defaultValue":"default","persistence":"client-cookie","attribute":"data-theme-preset"},"font":{"values":["geist","geistMono","geistPixelSquare"],"defaultValue":"geist","persistence":"client-cookie","attribute":"data-font"},"content_layout":{"values":["centered","full-width"],"defaultValue":"centered","persistence":"client-cookie","attribute":"data-content-layout"},"navbar_style":{"values":["sticky","scroll"],"defaultValue":"sticky","persistence":"client-cookie","attribute":"data-navbar-style"},"sidebar_variant":{"values":["sidebar","inset","floating"],"defaultValue":"sidebar","persistence":"client-cookie","attribute":"data-sidebar-variant"},"sidebar_collapsible":{"values":["icon","offcanvas"],"defaultValue":"icon","persistence":"client-cookie","attribute":"data-sidebar-collapsible"}};
+
+        function readCookie(name) {
+          var match = document.cookie.split("; ").find(function(c) {
+            return c.startsWith(name + "=");
+          });
+          return match ? decodeURIComponent(match.split("=")[1]) : null;
+        }
+
+        function readLocal(name) {
+          try {
+            return window.localStorage.getItem(name);
+          } catch (e) {
+            return null;
+          }
+        }
+
+        function readPreference(key, definition) {
+          var mode = definition.persistence;
+          var value = null;
+
+          if (mode === "localStorage") {
+            value = readLocal(key);
+          }
+
+          if (!value && (mode === "client-cookie" || mode === "server-cookie")) {
+            value = readCookie(key);
+          }
+
+          return definition.values.indexOf(value) >= 0 ? value : definition.defaultValue;
+        }
+
+        var preferences = {};
+
+        Object.keys(REGISTRY).forEach(function(key) {
+          var definition = REGISTRY[key];
+          var value = readPreference(key, definition);
+
+          preferences[key] = value;
+          root.setAttribute(definition.attribute, value);
+        });
+
+        var mode = preferences.theme_mode;
+        var resolvedMode =
+          mode === "system" && window.matchMedia
+            ? (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light")
+            : mode === "dark"
+              ? "dark"
+              : "light";
+
+        root.classList.toggle("dark", resolvedMode === "dark");
+        root.style.colorScheme = resolvedMode;
+
+      } catch (e) {
+        console.warn("ThemeBootScript error:", e);
+      }
+    })();
+  6:X
+b:[["children",{"s":"__PAGE__","h":512,"d":{"r":"$Lc","p":false,"v":null}}]]
+9:[["children",{"s":"pricing","h":512,"d":{"r":"$La","p":false,"v":"$6"},"c":"$Qb"}]]
+7:[["children",{"s":"user","h":512,"d":{"r":"$L8","p":false,"v":null},"c":"$Q9"}]]
+4:[["children",{"s":"(main)","h":512,"d":{"r":"$L5","p":false,"v":"$6"},"c":"$Q7"}]]
+0:{"P":null,"c":["","user","pricing",""],"q":"","i":false,"t":{"t":{"s":"","h":528,"d":{"r":["$","$1","c",{"children":[[["$","link","0",{"rel":"stylesheet","href":"/_next/static/chunks/3eici8s01akb2.css","precedence":"next","crossOrigin":"$undefined","nonce":"$undefined"}],["$","link","1",{"rel":"stylesheet","href":"/_next/static/chunks/0ifnboh-ve6cu.css","precedence":"next","crossOrigin":"$undefined","nonce":"$undefined"}],["$","script","script-0",{"src":"/_next/static/chunks/1bt9bi8qycnvw.js","async":true,"nonce":"$undefined"}],["$","script","script-1",{"src":"/_next/static/chunks/24c7qzw_gvimp.js","async":true,"nonce":"$undefined"}],["$","script","script-2",{"src":"/_next/static/chunks/2fki7x1t1wyy6.js","async":true,"nonce":"$undefined"}],["$","script","script-3",{"src":"/_next/static/chunks/1zmy-h1-d5xw2.js","async":true,"nonce":"$undefined"}],["$","script","script-4",{"src":"/_next/static/chunks/44enqi7zxyv0a.js","async":true,"nonce":"$undefined"}]],["$","html",null,{"lang":"zh-CN","data-theme-mode":"light","data-theme-preset":"default","data-content-layout":"centered","data-navbar-style":"sticky","data-sidebar-variant":"sidebar","data-sidebar-collapsible":"icon","data-font":"geist","suppressHydrationWarning":true,"children":[["$","head",null,{"children":["$","script",null,{"dangerouslySetInnerHTML":{"__html":"$2"}}]}],"$L3"]}]]}],"p":false,"v":null},"c":"$Q4"},"h":{"r":"$Ld","p":false,"v":null}},"m":"$undefined","G":["$13",["$L14","$L15"]],"S":true,"r":"$undefined","s":"$undefined","a":"$undefined","l":"$undefined","p":"$undefined","d":"$undefined","b":"XXYScyjlUN7KJWUK_kKEa"}
+16:I[19300,["$e","$f","$10","$11","$12"],"TooltipProvider"]
+17:"PreferencesStoreProvider"
+18:I[38501,["$e","$f","$10","$11","$12"],"$17"]
+19:I[15603,["$e","$f","$10","$11","$12"],"default"]
+1a:I[4069,["$e","$f","$10","$11","$12"],"default"]
+1b:"/_next/static/chunks/1_lci1sv4-_fe.js"
+1c:I[76055,["$e","$f","$10","$11","$12","$1b"],"default"]
+1d:I[38382,["$e","$f","$10","$11","$12"],"Toaster"]
+1e:"/_next/static/chunks/38iblv3a6y3i9.js"
+1f:"/_next/static/chunks/1f1zirduavl7u.js"
+20:"/_next/static/chunks/0kh6so2rmqrz3.js"
+21:"/_next/static/chunks/2n1v76sco_l_i.js"
+22:I[52071,["$e","$f","$10","$11","$12","$1e","$1f","$20","$21"],"SessionGuard"]
+23:I[89659,["$e","$f","$10","$11","$12","$1e","$1f","$20","$21"],"SidebarProvider"]
+24:I[86640,["$e","$f","$10","$11","$12","$1e","$1f","$20","$21"],"AppSidebar"]
+25:I[89659,["$e","$f","$10","$11","$12","$1e","$1f","$20","$21"],"SidebarInset"]
+26:I[89659,["$e","$f","$10","$11","$12","$1e","$1f","$20","$21"],"SidebarTrigger"]
+27:I[12397,["$e","$f","$10","$11","$12","$1e","$1f","$20","$21"],"Separator"]
+28:I[92675,["$e","$f","$10","$11","$12","$1e","$1f","$20","$21"],"SearchDialog"]
+29:I[92633,["$e","$f","$10","$11","$12","$1e","$1f","$20","$21"],"LayoutControls"]
+2a:I[8841,["$e","$f","$10","$11","$12","$1e","$1f","$20","$21"],"ThemeSwitcher"]
+2b:I[22014,["$e","$f","$10","$11","$12"],"ClientPageRoot"]
+2c:"/_next/static/chunks/3ltyy7f9-3gjo.js"
+2d:I[52215,["$e","$f","$10","$11","$12","$1e","$1f","$20","$21","$2c"],"default"]
+30:I[70483,["$e","$f","$10","$11","$12"],"OutletBoundary"]
+31:"$Sreact.suspense"
+33:"ViewportBoundary"
+34:I[70483,["$e","$f","$10","$11","$12"],"$33"]
+36:"MetadataBoundary"
+37:I[70483,["$e","$f","$10","$11","$12"],"$36"]
+3:["$","body",null,{"className":"HX28iG_variable _zD4Dq_variable q0vG1G_variable min-h-screen antialiased","children":["$","$L16",null,{"children":["$","$L18",null,{"initialValues":{"theme_mode":"light","theme_preset":"default","font":"geist","content_layout":"centered","navbar_style":"sticky","sidebar_variant":"sidebar","sidebar_collapsible":"icon"},"children":[["$","$L19",null,{"parallelRouterKey":"children","error":"$undefined","errorStyles":"$undefined","errorScripts":"$undefined","template":["$","$L1a",null,{}],"templateStyles":"$undefined","templateScripts":"$undefined","notFound":[["$","$L1c",null,{}],[]],"forbidden":"$undefined","unauthorized":"$undefined"}],["$","$L1d",null,{}]]}]}]}]
+5:["$","$1","c",{"children":[null,["$","$L19",null,{"parallelRouterKey":"children","error":"$undefined","errorStyles":"$undefined","errorScripts":"$undefined","template":["$","$L1a",null,{}],"templateStyles":"$undefined","templateScripts":"$undefined","notFound":[["$","$L1c",null,{}],[]],"forbidden":"$undefined","unauthorized":"$undefined"}]]}]
+8:["$","$1","c",{"children":[[["$","script","script-0",{"src":"/_next/static/chunks/38iblv3a6y3i9.js","async":true,"nonce":"$undefined"}],["$","script","script-1",{"src":"/_next/static/chunks/1f1zirduavl7u.js","async":true,"nonce":"$undefined"}],["$","script","script-2",{"src":"/_next/static/chunks/0kh6so2rmqrz3.js","async":true,"nonce":"$undefined"}],["$","script","script-3",{"src":"/_next/static/chunks/2n1v76sco_l_i.js","async":true,"nonce":"$undefined"}]],["$","$L22",null,{"children":["$","$L23",null,{"children":[["$","$L24",null,{}],["$","$L25",null,{"className":"[html[data-content-layout=centered]_&>*]:mx-auto [html[data-content-layout=centered]_&>*]:w-full [html[data-content-layout=centered]_&>*]:max-w-screen-2xl peer-data-[variant=inset]:border [--dashboard-header-height:--spacing(12)] min-w-0 overflow-x-clip","children":[["$","header",null,{"className":"flex h-12 shrink-0 items-center gap-2 border-b transition-[width,height] ease-linear group-has-data-[collapsible=icon]/sidebar-wrapper:h-12 [html[data-navbar-style=sticky]_&]:bg-background/50 [html[data-navbar-style=sticky]_&]:sticky [html[data-navbar-style=sticky]_&]:top-0 [html[data-navbar-style=sticky]_&]:z-50 [html[data-navbar-style=sticky]_&]:overflow-hidden [html[data-navbar-style=sticky]_&]:rounded-t-[inherit] [html[data-navbar-style=sticky]_&]:backdrop-blur-md","children":["$","div",null,{"className":"flex w-full items-center justify-between px-4 lg:px-6","children":[["$","div",null,{"className":"flex items-center gap-1 lg:gap-2","children":[["$","$L26",null,{"className":"-ml-1"}],["$","$L27",null,{"orientation":"vertical","className":"mx-2 data-[orientation=vertical]:h-4 data-[orientation=vertical]:self-center"}],["$","$L28",null,{}]]}],["$","div",null,{"className":"flex items-center gap-2","children":[["$","$L29",null,{}],["$","$L2a",null,{}]]}]]}]}],["$","div",null,{"className":"min-h-0 min-w-0 flex-1 overflow-x-hidden p-4 has-data-[content-padding=false]:p-0 md:p-6 md:has-data-[content-padding=false]:p-0","children":["$","$L19",null,{"parallelRouterKey":"children","error":"$undefined","errorStyles":"$undefined","errorScripts":"$undefined","template":["$","$L1a",null,{}],"templateStyles":"$undefined","templateScripts":"$undefined","notFound":"$undefined","forbidden":"$undefined","unauthorized":"$undefined"}]}]]}]]}]}]]}]
+a:["$","$1","c",{"children":[null,["$","$L19",null,{"parallelRouterKey":"children","error":"$undefined","errorStyles":"$undefined","errorScripts":"$undefined","template":["$","$L1a",null,{}],"templateStyles":"$undefined","templateScripts":"$undefined","notFound":"$undefined","forbidden":"$undefined","unauthorized":"$undefined"}]]}]
+c:["$","$1","c",{"children":[["$","$L2b",null,{"Component":"$2d","serverProvidedParams":{"searchParams":{},"params":{},"promises":["$@2e","$@2f"]}}],[["$","script","script-0",{"src":"/_next/static/chunks/3ltyy7f9-3gjo.js","async":true,"nonce":"$undefined"}]],["$","$L30",null,{"children":["$","$31",null,{"name":"Next.MetadataOutlet","children":"$@32"}]}]]}]
+d:["$","$1","h",{"children":[null,["$","$L34",null,{"children":"$L35"}],["$","$L37",null,{"children":[["$","div",null,{"hidden":true,"children":["$","$31",null,{"name":"Next.Metadata","children":"$L38"}]}],null]}],["$","meta",null,{"name":"next-size-adjust","content":""}]]}]
+14:["$","link","0",{"rel":"stylesheet","href":"/_next/static/chunks/3eici8s01akb2.css","precedence":"next","crossOrigin":"$undefined","nonce":"$undefined"}]
+15:["$","link","1",{"rel":"stylesheet","href":"/_next/static/chunks/0ifnboh-ve6cu.css","precedence":"next","crossOrigin":"$undefined","nonce":"$undefined"}]
+6:C
+2e:{}
+2f:"$c:props:children:0:props:serverProvidedParams:params"
+35:[["$","meta","0",{"charSet":"utf-8"}],["$","meta","1",{"name":"viewport","content":"width=device-width, initial-scale=1"}]]
+39:I[59193,["$e","$f","$10","$11","$12"],"IconMark"]
+32:null
+38:[["$","title","0",{"children":"DizzyAPI 控制台"}],["$","meta","1",{"name":"description","content":"DizzyAPI 自托管模型网关的控制台：账号池、模型价格、用量结算与 API 密钥管理。"}],["$","meta","2",{"name":"application-name","content":"DizzyAPI"}],["$","meta","3",{"property":"og:title","content":"DizzyAPI 控制台"}],["$","meta","4",{"property":"og:description","content":"DizzyAPI 自托管模型网关的控制台：账号池、模型价格、用量结算与 API 密钥管理。"}],["$","meta","5",{"property":"og:site_name","content":"DizzyAPI"}],["$","meta","6",{"property":"og:locale","content":"zh_CN"}],["$","meta","7",{"property":"og:type","content":"website"}],["$","meta","8",{"name":"twitter:card","content":"summary"}],["$","meta","9",{"name":"twitter:title","content":"DizzyAPI 控制台"}],["$","meta","10",{"name":"twitter:description","content":"DizzyAPI 自托管模型网关的控制台：账号池、模型价格、用量结算与 API 密钥管理。"}],["$","link","11",{"rel":"icon","href":"/favicon.ico?favicon.2vob68tjqpejf.ico","sizes":"256x256","type":"image/x-icon"}],["$","$L39","12",{}]]
