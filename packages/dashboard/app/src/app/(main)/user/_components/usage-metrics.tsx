@@ -1,7 +1,7 @@
 "use client";
 
 /**
- * 概览页的四张指标卡：本期消费 / 请求数 / Token 总量 / 账户余额。
+ * 概览页的四张指标卡：本期实际扣费 / 请求数 / Token 总量 / 账户余额。
  *
  * 金额一律走 `@/lib/format`（整数微元、无浮点）；余额未启用时显示「未启用」而不是 0 ——
  * 「后台没开余额」与「余额是 0」是两件事，显示成 0 会让用户以为钱被扣光了。
@@ -39,7 +39,7 @@ function MetricCard({ icon: Icon, title, value, hint, badge }: MetricCardProps) 
           <div className="text-2xl leading-none font-medium tracking-tight tabular-nums">{value}</div>
           {badge === undefined ? null : <Badge variant="secondary">{badge}</Badge>}
         </div>
-        {hint === undefined ? null : <p className="text-sm text-muted-foreground">{hint}</p>}
+        {hint === undefined ? null : <p className="whitespace-pre-line text-sm text-muted-foreground">{hint}</p>}
       </CardContent>
     </Card>
   );
@@ -57,7 +57,7 @@ export function UsageMetrics({ totals, rangeLabel, balanceCents }: UsageMetricsP
     <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
       <MetricCard
         icon={Receipt}
-        title={`${rangeLabel}消费`}
+        title={`${rangeLabel}实际扣费`}
         value={formatYuan(totals.costMicros)}
       />
       <MetricCard
@@ -69,7 +69,7 @@ export function UsageMetrics({ totals, rangeLabel, balanceCents }: UsageMetricsP
         icon={Waves}
         title={`${rangeLabel}Token 总量`}
         value={formatTokens(totals.tokens)}
-        hint={`输入 ${formatTokens(totals.inputTokens)} · 输出 ${formatTokens(totals.outputTokens)}`}
+        hint={`输入 ${formatTokens(totals.inputTokens)} · 输出 ${formatTokens(totals.outputTokens)}\n缓存读 ${formatTokens(totals.cacheReadTokens)} · 缓存写 ${formatTokens(totals.cacheWriteTokens)}`}
       />
       <MetricCard
         icon={Coins}

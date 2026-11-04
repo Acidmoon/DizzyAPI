@@ -1,7 +1,7 @@
 "use client";
 
 /**
- * 单条用量详情弹窗：**模型、总耗时、TTFT、token 四桶、金额**（owner 点名的五项）。
+ * 单条用量详情弹窗：**模型、总耗时、TTFT、token 四桶、实际扣费**（owner 点名的五项）。
  *
  * 数据按 `reqId` 现取（`GET /api/usage/:reqId`），不拿列表行凑：列表行没有
  * `ttftMs` / `reasoningTokens` / `usageComplete`，而且详情接口的 404 与「不是自己的」同形，
@@ -101,7 +101,7 @@ export function UsageDetailDialog({ reqId, onOpenChange }: UsageDetailDialogProp
             <DetailRow label="缓存读取 token" value={formatTokens(record.cacheReadTokens)} />
             <DetailRow label="缓存写入 token" value={formatTokens(record.cacheWriteTokens)} />
             <DetailRow label="合计 token" value={formatTokens(record.totalTokens)} />
-            <DetailRow label="金额" value={formatYuan(record.costMicros)} />
+            <DetailRow label="实际扣费" value={formatYuan(record.costMicros)} hint="按真实 token 用量计算" />
             <DetailRow label="API 密钥" value={record.apiKeyName === "" ? "—" : record.apiKeyName} />
             <DetailRow
               label="状态"

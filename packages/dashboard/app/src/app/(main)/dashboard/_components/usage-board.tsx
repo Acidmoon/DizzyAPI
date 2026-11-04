@@ -24,6 +24,7 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { UsagePie } from "@/components/usage-pie";
+import { UsageTokenCell } from "@/components/usage-token-cell";
 import { api, adminOps, ApiError } from "@/lib/api";
 import { userPieLabel } from "@/lib/usage-pie";
 import {
@@ -317,10 +318,10 @@ export function UsageBoard() {
                     <TableHead className="pl-4">时间</TableHead>
                     <TableHead>用户</TableHead>
                     <TableHead>模型</TableHead>
-                    <TableHead className="text-right">输入 / 输出</TableHead>
+                    <TableHead className="text-right">Token 明细</TableHead>
                     <TableHead className="text-right">耗时</TableHead>
                     <TableHead className="text-right">状态</TableHead>
-                    <TableHead className="pr-4 text-right">费用（元）</TableHead>
+                    <TableHead className="pr-4 text-right">实际扣费（元）</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -337,7 +338,13 @@ export function UsageBoard() {
                         )}
                       </TableCell>
                       <TableCell className="text-right text-xs tabular-nums">
-                        {formatTokens(record.inputTokens)} / {formatTokens(record.outputTokens)}
+                        <UsageTokenCell
+                          inputTokens={record.inputTokens}
+                          outputTokens={record.outputTokens}
+                          cacheReadTokens={record.cacheReadTokens}
+                          cacheWriteTokens={record.cacheWriteTokens}
+                          title={`合计 ${formatTokens(record.totalTokens)} token`}
+                        />
                       </TableCell>
                       <TableCell className="text-right text-xs tabular-nums">
                         {formatDurationMs(record.durationMs)}

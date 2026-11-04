@@ -26,6 +26,7 @@ import type { UsageRowView } from "@/lib/api";
 
 import { EmptyBlock } from "./page-states";
 import { UsageDetailDialog } from "./usage-detail-dialog";
+import { UsageTokenCell } from "@/components/usage-token-cell";
 
 function StatusBadge({ record }: { record: UsageRowView }) {
   const ok = record.status === 200;
@@ -66,9 +67,9 @@ export function UsageTable({ records, emptyTitle, emptyDescription, compact = fa
             <TableHead>时间</TableHead>
             <TableHead>模型</TableHead>
             <TableHead>状态</TableHead>
-            <TableHead className="text-right">Token</TableHead>
+            <TableHead className="text-right">Token 明细</TableHead>
             {compact ? null : <TableHead className="text-right">耗时</TableHead>}
-            <TableHead className="text-right">金额</TableHead>
+            <TableHead className="text-right">实际扣费</TableHead>
             <TableHead className="text-right">操作</TableHead>
           </TableRow>
         </TableHeader>
@@ -84,11 +85,21 @@ export function UsageTable({ records, emptyTitle, emptyDescription, compact = fa
               <TableCell>
                 <StatusBadge record={record} />
               </TableCell>
-              <TableCell className="text-right tabular-nums">{formatTokens(record.totalTokens)}</TableCell>
+              <TableCell className="text-right tabular-nums">
+                <UsageTokenCell
+                  inputTokens={record.inputTokens}
+                  outputTokens={record.outputTokens}
+                  cacheReadTokens={record.cacheReadTokens}
+                  cacheWriteTokens={record.cacheWriteTokens}
+                  title={`合计 ${formatTokens(record.totalTokens)} token`}
+                />
+              </TableCell>
               {compact ? null : (
                 <TableCell className="text-right tabular-nums">{formatDurationMs(record.durationMs)}</TableCell>
               )}
-              <TableCell className="text-right tabular-nums">{formatYuan(record.costMicros)}</TableCell>
+              <TableCell className="text-right tabular-nums" title="按真实 token 用量计算">
+                {formatYuan(record.costMicros)}
+              </TableCell>
               <TableCell className="text-right">
                 <Button size="sm" variant="ghost" onClick={() => setActiveReqId(record.reqId)}>
                   详情
